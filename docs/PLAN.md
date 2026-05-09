@@ -107,6 +107,8 @@ resolved to node data and included in the LLM context.
 - **Phase 5** Pipeline executor + WS streaming + auto-layout
 - **Phase 6** Node short-ID + mention autocomplete
 - **Phase 7** UX polish
+- **Phase 7.5** Storyboard node (continuity-tree N=1..8 narrative shots)
+  — see `.omc/plans/storyboard-image-node.md`
 
 ## Post-MVP
 

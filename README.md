@@ -477,6 +477,16 @@ cd frontend && npx tsc -p . --noEmit && npx vite build
     "hand-on-hip" variants in the same gen).
   - Default aspect ratio inherits from upstream node; mismatched
     upstream aspects fall back to 9:16.
+- **Storyboard** — sequenced 1–8 narrative shots in one node. The
+  planner LLM emits per-beat prompts AND a continuity tree: each beat
+  declares whether it's a fresh root (`gen_image`) or continues from
+  an earlier beat (`edit_image` from that beat's mediaId). Roots
+  dispatch in parallel batches of 4; continuations BFS through the
+  tree, siblings parallel. Refs from upstream edges apply to every
+  shot. Failed shots stay `partial` and can be retried per-tile —
+  blocked descendants surface a 🔒 until their parent is retried.
+  Useful for unbox → try-on → going-out arcs, scene chains, and
+  e-commerce shot lists.
 - **Video** — image-to-video via Veo. **Multi-source i2v**: a 4-variant
   upstream image dispatches a single batch with one item per variant →
   one video per source. Or pick a subset (toggleable thumbnails +
