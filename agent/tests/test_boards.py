@@ -1,9 +1,15 @@
+import uuid
+
+
 def test_create_list_get_board(client):
     r = client.post("/api/boards", json={"name": "Scene 01"})
     assert r.status_code == 200
     board = r.json()
     assert board["name"] == "Scene 01"
-    assert isinstance(board["id"], int)
+    # board.id is the Shot UUID under the Phase 1 shim.
+    assert isinstance(board["id"], str)
+    uuid.UUID(board["id"])  # raises ValueError on malformed → fail test
+    assert isinstance(board["project_id"], str)
 
     r = client.get("/api/boards")
     assert r.status_code == 200
@@ -19,7 +25,7 @@ def test_create_list_get_board(client):
 
 
 def test_get_missing_board_returns_404(client):
-    r = client.get("/api/boards/999")
+    r = client.get(f"/api/boards/{uuid.uuid4()}")
     assert r.status_code == 404
 
 
@@ -35,37 +41,43 @@ def test_patch_board_rename(client):
 
 
 def test_patch_missing_board_returns_404(client):
-    r = client.patch("/api/boards/999", json={"name": "x"})
+    r = client.patch(f"/api/boards/{uuid.uuid4()}", json={"name": "x"})
     assert r.status_code == 404
 
 
 def test_delete_board_cascades_children(client):
     """DELETE /api/boards/{id} must remove every child row that references
-    the board so a re-create with the same id (sqlite autoincrement edge
-    case) doesn't pull in orphan rows."""
+    the board's project tree. Project CASCADE handles most; we also
+    explicitly clear plan/pipelinerun/projectflowmapping so the assertion
+    can verify."""
     from flowboard.db import get_session
     from flowboard.db.models import (
         Asset,
-        BoardFlowProject,
         ChatMessage,
         Edge,
         Node,
         PipelineRun,
         Plan,
         PlanRevision,
+        Project,
+        ProjectFlowMapping,
         Request,
+        Scene,
+        Shot,
     )
     from sqlmodel import select
 
     b = client.post("/api/boards", json={"name": "to-be-deleted"}).json()
-    bid = b["id"]
+    shot_uuid = uuid.UUID(b["id"])
+    project_uuid = uuid.UUID(b["project_id"])
 
     # Seed: 2 nodes + 1 edge + 1 request + 1 asset + 1 chat + 1 plan with
     # 1 revision + 1 pipeline run + Flow-project mapping.
-    n1 = client.post("/api/nodes", json={"board_id": bid, "type": "image"}).json()
-    n2 = client.post("/api/nodes", json={"board_id": bid, "type": "video"}).json()
+    n1 = client.post("/api/nodes", json={"shot_id": b["id"], "type": "image"}).json()
+    n2 = client.post("/api/nodes", json={"shot_id": b["id"], "type": "video"}).json()
     client.post(
-        "/api/edges", json={"board_id": bid, "source_id": n1["id"], "target_id": n2["id"]}
+        "/api/edges",
+        json={"shot_id": b["id"], "source_id": n1["id"], "target_id": n2["id"]},
     ).json()
     client.post(
         "/api/requests",
@@ -76,33 +88,47 @@ def test_delete_board_cascades_children(client):
         },
     ).json()
     with get_session() as s:
-        s.add(Asset(uuid_media_id="11111111-2222-3333-4444-555555555555", node_id=n1["id"], kind="image"))
-        s.add(ChatMessage(board_id=bid, role="user", content="hi"))
-        plan = Plan(board_id=bid, spec={"k": "v"})
+        s.add(
+            Asset(
+                uuid_media_id="11111111-2222-3333-4444-555555555555",
+                node_id=n1["id"],
+                kind="image",
+            )
+        )
+        s.add(ChatMessage(project_id=project_uuid, role="user", content="hi"))
+        plan = Plan(shot_id=shot_uuid, spec={"k": "v"})
         s.add(plan)
         s.commit()
         s.refresh(plan)
         s.add(PlanRevision(plan_id=plan.id, rev_no=1, spec={}, edits={}))
         s.add(PipelineRun(plan_id=plan.id, status="pending"))
-        s.add(BoardFlowProject(board_id=bid, flow_project_id="fpfpfpfp"))
+        s.add(
+            ProjectFlowMapping(project_id=project_uuid, flow_project_id="fpfpfpfp")
+        )
         s.commit()
 
     # Delete.
-    r = client.delete(f"/api/boards/{bid}")
+    r = client.delete(f"/api/boards/{b['id']}")
     assert r.status_code == 200, r.text
-    assert r.json() == {"deleted": bid}
+    assert r.json() == {"deleted": b["id"]}
 
     # Board itself gone.
-    assert client.get(f"/api/boards/{bid}").status_code == 404
+    assert client.get(f"/api/boards/{b['id']}").status_code == 404
 
     # Every child table swept.
     with get_session() as s:
         for table, where in [
-            (Node, Node.board_id == bid),
-            (Edge, Edge.board_id == bid),
-            (ChatMessage, ChatMessage.board_id == bid),
-            (Plan, Plan.board_id == bid),
-            (BoardFlowProject, BoardFlowProject.board_id == bid),
+            (Node, Node.shot_id == shot_uuid),
+            (Edge, Edge.shot_id == shot_uuid),
+            (ChatMessage, ChatMessage.project_id == project_uuid),
+            (Plan, Plan.shot_id == shot_uuid),
+            (
+                ProjectFlowMapping,
+                ProjectFlowMapping.project_id == project_uuid,
+            ),
+            (Shot, Shot.id == shot_uuid),
+            (Scene, Scene.project_id == project_uuid),
+            (Project, Project.id == project_uuid),
         ]:
             rows = s.exec(select(table).where(where)).all()
             assert rows == [], f"{table.__name__} not cleared: {rows}"
@@ -112,5 +138,5 @@ def test_delete_board_cascades_children(client):
 
 
 def test_delete_missing_board_returns_404(client):
-    r = client.delete("/api/boards/999")
+    r = client.delete(f"/api/boards/{uuid.uuid4()}")
     assert r.status_code == 404

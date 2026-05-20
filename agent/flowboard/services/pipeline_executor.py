@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
@@ -169,10 +170,10 @@ def materialize_plan(session, plan_id: int) -> dict:
                 "created": False,
             }
 
-    board_id = plan.board_id
+    shot_id = plan.shot_id
     # Existing #shortId index for edge endpoint resolution.
     existing_nodes = list(
-        session.exec(select(Node).where(Node.board_id == board_id)).all()
+        session.exec(select(Node).where(Node.shot_id == shot_id)).all()
     )
     short_id_to_node: dict[str, Node] = {n.short_id: n for n in existing_nodes if n.short_id}
 
@@ -208,12 +209,12 @@ def materialize_plan(session, plan_id: int) -> dict:
         prompt = params.get("prompt") if isinstance(params.get("prompt"), str) else None
 
         x, y = layout.get(tmp_id, (ORIGIN_X, ORIGIN_Y))
-        short_id = generate_unique_short_id(session, board_id)
+        short_id = generate_unique_short_id(session, shot_id)
         data: dict[str, Any] = {"title": title}
         if prompt:
             data["prompt"] = prompt
         node = Node(
-            board_id=board_id,
+            shot_id=shot_id,
             short_id=short_id,
             type=node_type,
             x=x,
@@ -252,7 +253,7 @@ def materialize_plan(session, plan_id: int) -> dict:
             continue
 
         edge = Edge(
-            board_id=board_id, source_id=src_id, target_id=dst_id, kind=kind,
+            shot_id=shot_id, source_id=src_id, target_id=dst_id, kind=kind,
         )
         session.add(edge)
         session.flush()
@@ -347,11 +348,11 @@ async def run_pipeline(
             s.exec(select(Node).where(Node.id.in_(node_ids))).all()  # type: ignore[attr-defined]
         )
         node_by_id = {n.id: n for n in nodes}
-        board_id = plan.board_id
+        shot_id = plan.shot_id
         edges = list(
             s.exec(
                 select(Edge).where(
-                    Edge.board_id == board_id,
+                    Edge.shot_id == shot_id,
                     Edge.source_id.in_(node_ids) | Edge.target_id.in_(node_ids),  # type: ignore[attr-defined]
                 )
             ).all()
@@ -389,8 +390,8 @@ async def run_pipeline(
             # No prompt → leave node idle. Not an error.
             continue
 
-        # Resolve project_id from board → BoardFlowProject.
-        project_id = _project_id_for_board(board_id)
+        # Resolve flow project_id from shot → Scene → ProjectFlowMapping.
+        project_id = _flow_project_id_for_shot(shot_id)
         if project_id is None:
             failed_nodes.add(nid)
             _stamp_node_status(nid, "error", error="no_project")
@@ -519,11 +520,18 @@ def _topo_sort(node_ids: Iterable[int], incoming: dict[int, list[int]]) -> list[
     return out
 
 
-def _project_id_for_board(board_id: int) -> Optional[str]:
-    from flowboard.db.models import BoardFlowProject  # local import to avoid cycle
+def _flow_project_id_for_shot(shot_id: uuid.UUID) -> Optional[str]:
+    """Resolve Shot → Scene → Project → ProjectFlowMapping.flow_project_id."""
+    from flowboard.db.models import ProjectFlowMapping, Scene, Shot  # local import to avoid cycle
 
     with get_session() as s:
-        row = s.get(BoardFlowProject, board_id)
+        shot = s.get(Shot, shot_id)
+        if shot is None:
+            return None
+        scene = s.get(Scene, shot.scene_id)
+        if scene is None:
+            return None
+        row = s.get(ProjectFlowMapping, scene.project_id)
         return row.flow_project_id if row is not None else None
 
 

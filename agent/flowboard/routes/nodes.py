@@ -1,3 +1,4 @@
+import uuid
 from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -5,7 +6,7 @@ from pydantic import BaseModel, Field
 from sqlmodel import select
 
 from flowboard.db import get_session
-from flowboard.db.models import Board, Edge, Node
+from flowboard.db.models import Edge, Node, Shot
 from flowboard.short_id import generate_unique_short_id
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
@@ -19,7 +20,7 @@ _SIZE_MAX = 100_000.0
 
 
 class NodeCreate(BaseModel):
-    board_id: int
+    shot_id: uuid.UUID
     type: NodeType
     x: float = Field(default=0.0, ge=_COORD_MIN, le=_COORD_MAX)
     y: float = Field(default=0.0, ge=_COORD_MIN, le=_COORD_MAX)
@@ -41,11 +42,11 @@ class NodeUpdate(BaseModel):
 @router.post("")
 def create_node(body: NodeCreate):
     with get_session() as s:
-        if not s.get(Board, body.board_id):
-            raise HTTPException(404, "board not found")
-        short_id = generate_unique_short_id(s, body.board_id)
+        if not s.get(Shot, body.shot_id):
+            raise HTTPException(404, "shot not found")
+        short_id = generate_unique_short_id(s, body.shot_id)
         node = Node(
-            board_id=body.board_id,
+            shot_id=body.shot_id,
             short_id=short_id,
             type=body.type,
             x=body.x,

@@ -512,7 +512,7 @@ def test_create_visual_asset_node(client):
     b = client.post("/api/boards", json={"name": "vt"}).json()
     r = client.post(
         "/api/nodes",
-        json={"board_id": b["id"], "type": "visual_asset", "data": {"title": "Hero"}},
+        json={"shot_id": b["id"], "type": "visual_asset", "data": {"title": "Hero"}},
     )
     assert r.status_code == 200, r.text
     n = r.json()

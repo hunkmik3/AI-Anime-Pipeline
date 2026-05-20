@@ -6,9 +6,11 @@ import asyncio
 import pytest
 from sqlmodel import Session, select
 
+import uuid
+
 from flowboard.db import get_session
 from flowboard.db.models import (
-    Board, BoardFlowProject, Edge, Node, PipelineRun, Plan, Request,
+    Edge, Node, PipelineRun, Plan, ProjectFlowMapping, Request,
 )
 from flowboard.services import pipeline_executor
 
@@ -20,9 +22,17 @@ def _make_board(client, name="P") -> dict:
     return client.post("/api/boards", json={"name": name}).json()
 
 
-def _make_plan(board_id: int, spec: dict) -> int:
+def _shot_uuid(b: dict) -> uuid.UUID:
+    return uuid.UUID(b["id"])
+
+
+def _project_uuid(b: dict) -> uuid.UUID:
+    return uuid.UUID(b["project_id"])
+
+
+def _make_plan(shot_id: str, spec: dict) -> int:
     with get_session() as s:
-        plan = Plan(board_id=board_id, spec=spec, status="draft")
+        plan = Plan(shot_id=uuid.UUID(shot_id), spec=spec, status="draft")
         s.add(plan)
         s.commit()
         s.refresh(plan)
@@ -85,7 +95,7 @@ def test_materialize_plan_creates_nodes_and_edges(client):
     assert len(summary["node_ids"]) == 2
     with get_session() as s:
         nodes = s.exec(select(Node).where(Node.id.in_(summary["node_ids"]))).all()
-        edges = s.exec(select(Edge).where(Edge.board_id == b["id"])).all()
+        edges = s.exec(select(Edge).where(Edge.shot_id == _shot_uuid(b))).all()
     by_type = {n.type for n in nodes}
     assert by_type == {"prompt", "image"}
     assert len(edges) == 1
@@ -101,7 +111,7 @@ def test_materialize_plan_resolves_existing_short_id(client):
     b = _make_board(client)
     # Pre-create a node we'll reference.
     n = client.post(
-        "/api/nodes", json={"board_id": b["id"], "type": "character"}
+        "/api/nodes", json={"shot_id": b["id"], "type": "character"}
     ).json()
     short_id = n["short_id"]
     plan_id = _make_plan(
@@ -115,7 +125,7 @@ def test_materialize_plan_resolves_existing_short_id(client):
         pipeline_executor.materialize_plan(s, plan_id)
         s.commit()
     with get_session() as s:
-        edges = s.exec(select(Edge).where(Edge.board_id == b["id"])).all()
+        edges = s.exec(select(Edge).where(Edge.shot_id == _shot_uuid(b))).all()
         existing = s.get(Node, n["id"])
         assert len(edges) == 1
         assert edges[0].source_id == existing.id
@@ -137,9 +147,9 @@ def test_materialize_plan_skips_unresolvable_endpoint(client):
         pipeline_executor.materialize_plan(s, plan_id)
         s.commit()
     with get_session() as s:
-        assert len(s.exec(select(Edge).where(Edge.board_id == b["id"])).all()) == 0
+        assert len(s.exec(select(Edge).where(Edge.shot_id == _shot_uuid(b))).all()) == 0
         # The image node still got created.
-        assert len(s.exec(select(Node).where(Node.board_id == b["id"])).all()) == 1
+        assert len(s.exec(select(Node).where(Node.shot_id == _shot_uuid(b))).all()) == 1
 
 
 def test_materialize_plan_idempotent(client):
@@ -183,7 +193,7 @@ def test_post_plan_run_returns_pipeline_run(client, monkeypatch):
     assert body["status"] == "pending"
     # And we materialised the plan.
     with get_session() as s:
-        nodes = s.exec(select(Node).where(Node.board_id == b["id"])).all()
+        nodes = s.exec(select(Node).where(Node.shot_id == _shot_uuid(b))).all()
         assert len(nodes) == 1
 
 
@@ -217,7 +227,11 @@ def test_get_pipeline_run_returns_404_when_missing(client):
 def _make_board_with_project(client, project_id="abcd1234"):
     b = _make_board(client)
     with get_session() as s:
-        s.add(BoardFlowProject(board_id=b["id"], flow_project_id=project_id))
+        s.add(
+            ProjectFlowMapping(
+                project_id=_project_uuid(b), flow_project_id=project_id
+            )
+        )
         s.commit()
     return b
 
@@ -281,7 +295,7 @@ async def test_run_pipeline_dispatches_image_in_topo_order(client, monkeypatch):
         plan = s.get(Plan, plan_id)
         assert run is not None and run.status == "done"
         assert plan is not None and plan.status == "done"
-        nodes = s.exec(select(Node).where(Node.board_id == b["id"])).all()
+        nodes = s.exec(select(Node).where(Node.shot_id == _shot_uuid(b))).all()
         by_type = {n.type: n for n in nodes}
         assert by_type["image"].status == "done"
         assert by_type["image"].data.get("mediaId") == "m-1"
@@ -333,7 +347,7 @@ async def test_run_pipeline_marks_downstream_failed_on_upstream_error(client, mo
     with get_session() as s:
         run = s.get(PipelineRun, rid)
         assert run is not None and run.status == "failed"
-        nodes = s.exec(select(Node).where(Node.board_id == b["id"])).all()
+        nodes = s.exec(select(Node).where(Node.shot_id == _shot_uuid(b))).all()
         by_type = {n.type: n for n in nodes}
         assert by_type["image"].status == "error"
         assert by_type["video"].status == "error"

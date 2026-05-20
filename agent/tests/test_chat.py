@@ -9,7 +9,7 @@ def test_send_chat_persists_user_and_assistant(client):
     b = _board(client)
     r = client.post(
         "/api/chat",
-        json={"board_id": b["id"], "message": "hello", "mentions": []},
+        json={"shot_id": b["id"], "message": "hello", "mentions": []},
     )
     assert r.status_code == 200
     body = r.json()
@@ -17,21 +17,21 @@ def test_send_chat_persists_user_and_assistant(client):
     assert body["user"]["content"] == "hello"
     assert body["assistant"]["role"] == "assistant"
     assert body["assistant"]["content"]  # non-empty mock reply
-    assert body["assistant"]["board_id"] == b["id"]
+    assert body["assistant"]["project_id"] == b["project_id"]
 
 
 def test_chat_mentions_referenced_in_reply(client):
     b = _board(client)
     node = client.post(
         "/api/nodes",
-        json={"board_id": b["id"], "type": "character", "data": {"title": "Lira"}},
+        json={"shot_id": b["id"], "type": "character", "data": {"title": "Lira"}},
     ).json()
     short = node["short_id"]
 
     r = client.post(
         "/api/chat",
         json={
-            "board_id": b["id"],
+            "shot_id": b["id"],
             "message": "animate this",
             "mentions": [short],
         },
@@ -47,7 +47,7 @@ def test_chat_unknown_mention_noted(client):
     b = _board(client)
     r = client.post(
         "/api/chat",
-        json={"board_id": b["id"], "message": "what", "mentions": ["zzzz"]},
+        json={"shot_id": b["id"], "message": "what", "mentions": ["zzzz"]},
     )
     assert r.status_code == 200
     assert "zzzz" in r.json()["assistant"]["content"]
@@ -58,7 +58,7 @@ def test_list_chat_returns_history_ordered(client):
     for i in range(3):
         client.post(
             "/api/chat",
-            json={"board_id": b["id"], "message": f"msg{i}", "mentions": []},
+            json={"shot_id": b["id"], "message": f"msg{i}", "mentions": []},
         )
     r = client.get(f"/api/boards/{b['id']}/chat")
     assert r.status_code == 200
@@ -74,7 +74,7 @@ def test_send_chat_rejects_empty_message(client):
     b = _board(client)
     r = client.post(
         "/api/chat",
-        json={"board_id": b["id"], "message": "", "mentions": []},
+        json={"shot_id": b["id"], "message": "", "mentions": []},
     )
     assert r.status_code == 422
 
@@ -82,13 +82,18 @@ def test_send_chat_rejects_empty_message(client):
 def test_send_chat_unknown_board(client):
     r = client.post(
         "/api/chat",
-        json={"board_id": 999, "message": "hi", "mentions": []},
+        json={
+            "shot_id": "00000000-0000-0000-0000-000000000000",
+            "message": "hi",
+            "mentions": [],
+        },
     )
     assert r.status_code == 404
 
 
 def test_list_chat_unknown_board(client):
-    r = client.get("/api/boards/999/chat")
+    # Non-UUID path segment → 404 from the resolver.
+    r = client.get("/api/boards/00000000-0000-0000-0000-000000000000/chat")
     assert r.status_code == 404
 
 
@@ -111,7 +116,7 @@ def test_send_chat_returns_plan_when_planner_emits_one(client):
     ):
         r = client.post(
             "/api/chat",
-            json={"board_id": b["id"], "message": "plan this", "mentions": []},
+            json={"shot_id": b["id"], "message": "plan this", "mentions": []},
         )
     assert r.status_code == 200
     body = r.json()
@@ -131,7 +136,7 @@ def test_send_chat_omits_plan_when_planner_returns_none(client):
     ):
         r = client.post(
             "/api/chat",
-            json={"board_id": b["id"], "message": "hi", "mentions": []},
+            json={"shot_id": b["id"], "message": "hi", "mentions": []},
         )
     assert r.status_code == 200
     body = r.json()

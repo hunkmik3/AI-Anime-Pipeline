@@ -18,7 +18,7 @@ import asyncio
 import pytest
 
 from flowboard.db import get_session
-from flowboard.db.models import Board, Node, Request
+from flowboard.db.models import Node, Project, Request, Scene, Shot
 from flowboard.worker import processor as proc
 from flowboard.worker.processor import (
     WorkerController,
@@ -31,12 +31,16 @@ from flowboard.worker.processor import (
 
 
 def _seed_storyboard_node() -> int:
-    """Create a Board + a Storyboard target node. Return node.id."""
+    """Create a Project → Scene → Shot + a Storyboard target node. Returns node.id."""
     with get_session() as s:
-        b = Board(name="sb-worker")
-        s.add(b); s.commit(); s.refresh(b)
+        project = Project(name="sb-worker")
+        s.add(project); s.flush()
+        scene = Scene(project_id=project.id, name="Scene 1")
+        s.add(scene); s.flush()
+        shot = Shot(scene_id=scene.id)
+        s.add(shot); s.commit(); s.refresh(shot)
         target = Node(
-            board_id=b.id, short_id="sbtg", type="Storyboard",
+            shot_id=shot.id, short_id="sbtg", type="Storyboard",
             x=0, y=0, w=240, h=180,
             data={"title": "Story"},
             status="idle",
@@ -321,10 +325,14 @@ async def test_gen_storyboard_validates_count_range(client, monkeypatch):
 def _seed_storyboard_with_shots(shots: list[dict]) -> int:
     """Create a node with a pre-populated shots[] state for retry tests."""
     with get_session() as s:
-        b = Board(name="sb-retry")
-        s.add(b); s.commit(); s.refresh(b)
+        project = Project(name="sb-retry")
+        s.add(project); s.flush()
+        scene = Scene(project_id=project.id, name="Scene 1")
+        s.add(scene); s.flush()
+        shot = Shot(scene_id=scene.id)
+        s.add(shot); s.commit(); s.refresh(shot)
         n = Node(
-            board_id=b.id, short_id="sbrt", type="Storyboard",
+            shot_id=shot.id, short_id="sbrt", type="Storyboard",
             x=0, y=0, w=240, h=180,
             data={
                 "shots": shots,

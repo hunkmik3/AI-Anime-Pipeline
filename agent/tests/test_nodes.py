@@ -6,11 +6,11 @@ def test_create_node_assigns_short_id(client):
     b = _make_board(client)
     r = client.post(
         "/api/nodes",
-        json={"board_id": b["id"], "type": "image", "x": 10, "y": 20},
+        json={"shot_id": b["id"], "type": "image", "x": 10, "y": 20},
     )
     assert r.status_code == 200
     node = r.json()
-    assert node["board_id"] == b["id"]
+    assert node["shot_id"] == b["id"]
     assert node["type"] == "image"
     assert node["x"] == 10 and node["y"] == 20
     assert len(node["short_id"]) == 4
@@ -22,7 +22,7 @@ def test_short_ids_unique_within_board(client):
     ids = set()
     for _ in range(50):
         n = client.post(
-            "/api/nodes", json={"board_id": b["id"], "type": "note"}
+            "/api/nodes", json={"shot_id": b["id"], "type": "note"}
         ).json()
         assert n["short_id"] not in ids
         ids.add(n["short_id"])
@@ -32,7 +32,7 @@ def test_patch_node_partial(client):
     b = _make_board(client)
     n = client.post(
         "/api/nodes",
-        json={"board_id": b["id"], "type": "image", "x": 0, "y": 0},
+        json={"shot_id": b["id"], "type": "image", "x": 0, "y": 0},
     ).json()
 
     r = client.patch(f"/api/nodes/{n['id']}", json={"x": 123.5, "status": "running"})
@@ -67,7 +67,7 @@ def _make_image_node(client) -> dict:
     return client.post(
         "/api/nodes",
         json={
-            "board_id": b["id"],
+            "shot_id": b["id"],
             "type": "image",
             "data": {
                 "title": "Hero",
@@ -236,11 +236,11 @@ def test_patch_non_data_fields_still_replace(client):
 
 def test_delete_node_cascades_edges(client):
     b = _make_board(client)
-    a = client.post("/api/nodes", json={"board_id": b["id"], "type": "image"}).json()
-    c = client.post("/api/nodes", json={"board_id": b["id"], "type": "image"}).json()
+    a = client.post("/api/nodes", json={"shot_id": b["id"], "type": "image"}).json()
+    c = client.post("/api/nodes", json={"shot_id": b["id"], "type": "image"}).json()
     e = client.post(
         "/api/edges",
-        json={"board_id": b["id"], "source_id": a["id"], "target_id": c["id"]},
+        json={"shot_id": b["id"], "source_id": a["id"], "target_id": c["id"]},
     ).json()
 
     r = client.delete(f"/api/nodes/{a['id']}")

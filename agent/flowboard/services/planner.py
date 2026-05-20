@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import uuid
 from typing import Any, Iterable, Optional
 
 from sqlmodel import select
@@ -70,24 +71,24 @@ Rules:
 """
 
 
-def _lookup_nodes(session, board_id: int, short_ids: Iterable[str]) -> list[Node]:
+def _lookup_nodes(session, shot_id: uuid.UUID, short_ids: Iterable[str]) -> list[Node]:
     ids = [s for s in short_ids if s]
     if not ids:
         return []
     return list(
         session.exec(
             select(Node).where(
-                Node.board_id == board_id, Node.short_id.in_(ids)  # type: ignore[attr-defined]
+                Node.shot_id == shot_id, Node.short_id.in_(ids)  # type: ignore[attr-defined]
             )
         ).all()
     )
 
 
-def _node_summary_for_context(session, board_id: int, limit: int = 20) -> list[dict]:
+def _node_summary_for_context(session, shot_id: uuid.UUID, limit: int = 20) -> list[dict]:
     """Brief digest of the board's nodes for the LLM context."""
     rows = list(
         session.exec(
-            select(Node).where(Node.board_id == board_id).limit(limit)
+            select(Node).where(Node.shot_id == shot_id).limit(limit)
         ).all()
     )
     out = []
@@ -99,12 +100,12 @@ def _node_summary_for_context(session, board_id: int, limit: int = 20) -> list[d
 
 def generate_mock_reply(
     session,
-    board_id: int,
+    shot_id: uuid.UUID,
     user_text: str,
     mention_short_ids: list[str],
 ) -> str:
     """Deterministic reply — acknowledges mentions, no LLM call."""
-    resolved = _lookup_nodes(session, board_id, mention_short_ids)
+    resolved = _lookup_nodes(session, shot_id, mention_short_ids)
     resolved_by_id = {n.short_id: n for n in resolved}
 
     refs_parts: list[str] = []
@@ -196,7 +197,7 @@ def _is_valid_plan_shape(plan: Any) -> bool:
 
 async def generate_plan_reply(
     session,
-    board_id: int,
+    shot_id: uuid.UUID,
     user_text: str,
     mention_short_ids: list[str],
 ) -> dict:
@@ -219,7 +220,7 @@ async def generate_plan_reply(
     if backend == "mock":
         return {
             "reply_text": generate_mock_reply(
-                session, board_id, user_text, mention_short_ids
+                session, shot_id, user_text, mention_short_ids
             ),
             "plan": None,
         }
@@ -238,13 +239,13 @@ async def generate_plan_reply(
             )
             return {
                 "reply_text": generate_mock_reply(
-                    session, board_id, user_text, mention_short_ids
+                    session, shot_id, user_text, mention_short_ids
                 ),
                 "plan": None,
             }
 
-    resolved = _lookup_nodes(session, board_id, mention_short_ids)
-    board_context = _node_summary_for_context(session, board_id)
+    resolved = _lookup_nodes(session, shot_id, mention_short_ids)
+    board_context = _node_summary_for_context(session, shot_id)
     mention_lines = [
         f"- #{n.short_id} ({n.type}) — {(n.data or {}).get('title') or n.type}"
         for n in resolved
@@ -289,7 +290,7 @@ async def generate_plan_reply(
             }
         return {
             "reply_text": generate_mock_reply(
-                session, board_id, user_text, mention_short_ids
+                session, shot_id, user_text, mention_short_ids
             ),
             "plan": None,
         }

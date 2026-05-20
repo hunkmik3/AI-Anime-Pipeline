@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException, Header, Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
 
 from flowboard.config import WS_HOST
-from flowboard.db import get_session, init_db
+from flowboard.db import get_session
 from flowboard.db.models import Request
 from flowboard.routes import activity, auth, boards, chat, edges, llm, media, nodes, plans, projects, prompt, upload, vision
 from flowboard.routes import references as references_route
@@ -51,7 +51,10 @@ def _recover_orphan_running_requests() -> int:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    # Schema is owned by Alembic now — run `alembic upgrade head` before
+    # boot. We deliberately don't auto-create tables on startup so a
+    # missing migration surfaces as a clean failure instead of drifting
+    # the schema silently.
     recovered = _recover_orphan_running_requests()
     if recovered:
         logger.info("recovered %d orphan running request(s) → failed", recovered)

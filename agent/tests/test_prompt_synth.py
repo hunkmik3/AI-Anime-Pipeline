@@ -10,21 +10,39 @@ from __future__ import annotations
 import pytest
 
 from flowboard.db import get_session
-from flowboard.db.models import Edge, Node, Board
+from flowboard.db.models import Edge, Node, Project, Scene, Shot
 from flowboard.services import prompt_synth
 from flowboard.services.llm.base import LLMError
+
+
+def _make_shot(session, name: str = "t") -> Shot:
+    """Build a Project → Scene → Shot pyramid and return the Shot.
+
+    Used by tests that previously created `Board(name=...)` rows directly.
+    Each Shot is now the analogue of a legacy Board; project_id stays
+    auto-created so chat/asset/reference rows scoped to that project
+    work unchanged.
+    """
+    project = Project(name=name)
+    session.add(project)
+    session.flush()
+    scene = Scene(project_id=project.id, name="Scene 1", order_index=0)
+    session.add(scene)
+    session.flush()
+    shot = Shot(scene_id=scene.id, order_index=0)
+    session.add(shot)
+    session.commit()
+    session.refresh(shot)
+    return shot
 
 
 def _seed_board_with_chain(monkeypatch=None) -> dict:
     """Create a Board + 3 nodes (character, visual_asset, image) + edges
     char→image, asset→image. Return their ids."""
     with get_session() as s:
-        b = Board(name="t")
-        s.add(b)
-        s.commit()
-        s.refresh(b)
+        b = _make_shot(s, name="t")
         char = Node(
-            board_id=b.id,
+            shot_id=b.id,
             short_id="char",
             type="character",
             x=0, y=0, w=240, h=180,
@@ -36,7 +54,7 @@ def _seed_board_with_chain(monkeypatch=None) -> dict:
             status="done",
         )
         asset = Node(
-            board_id=b.id,
+            shot_id=b.id,
             short_id="asse",
             type="visual_asset",
             x=0, y=0, w=240, h=180,
@@ -48,7 +66,7 @@ def _seed_board_with_chain(monkeypatch=None) -> dict:
             status="done",
         )
         target = Node(
-            board_id=b.id,
+            shot_id=b.id,
             short_id="targ",
             type="image",
             x=0, y=0, w=240, h=180,
@@ -58,8 +76,8 @@ def _seed_board_with_chain(monkeypatch=None) -> dict:
         s.add_all([char, asset, target])
         s.commit()
         s.refresh(char); s.refresh(asset); s.refresh(target)
-        s.add(Edge(board_id=b.id, source_id=char.id, target_id=target.id))
-        s.add(Edge(board_id=b.id, source_id=asset.id, target_id=target.id))
+        s.add(Edge(shot_id=b.id, source_id=char.id, target_id=target.id))
+        s.add(Edge(shot_id=b.id, source_id=asset.id, target_id=target.id))
         s.commit()
         return {"target_id": target.id, "char_id": char.id, "asset_id": asset.id}
 
@@ -75,12 +93,11 @@ async def test_auto_prompt_multi_variant_node_still_gets_ref_image_label(
     the backend's matching `has_media` check that drives `ref_index`
     assignment in `_collect_upstream`."""
     with get_session() as s:
-        b = Board(name="multi-variant")
-        s.add(b); s.commit(); s.refresh(b)
+        b = _make_shot(s, name="multi-variant")
         # Multi-variant source: only `mediaIds` populated (4 entries).
         # `mediaId` intentionally omitted to prove the fallback path.
         outfit = Node(
-            board_id=b.id, short_id="ofit", type="image",
+            shot_id=b.id, short_id="ofit", type="image",
             x=0, y=0, w=240, h=180,
             data={
                 "title": "Beige outfit (4 variants)",
@@ -95,14 +112,14 @@ async def test_auto_prompt_multi_variant_node_still_gets_ref_image_label(
             status="done",
         )
         target = Node(
-            board_id=b.id, short_id="trgt", type="image",
+            shot_id=b.id, short_id="trgt", type="image",
             x=0, y=0, w=240, h=180, data={"title": "Output"},
             status="idle",
         )
         s.add_all([outfit, target]); s.commit()
         for n in (outfit, target):
             s.refresh(n)
-        s.add(Edge(board_id=b.id, source_id=outfit.id, target_id=target.id))
+        s.add(Edge(shot_id=b.id, source_id=outfit.id, target_id=target.id))
         s.commit()
         tgt_id = target.id
 
@@ -178,36 +195,35 @@ def _seed_couple_via_image_siblings() -> dict:
     couple-shot graph: char_male → img_male, char_female → img_female,
     img_male + img_female → target."""
     with get_session() as s:
-        b = Board(name="couple")
-        s.add(b); s.commit(); s.refresh(b)
+        b = _make_shot(s, name="couple")
         char_m = Node(
-            board_id=b.id, short_id="cmal", type="character",
+            shot_id=b.id, short_id="cmal", type="character",
             x=0, y=0, w=240, h=180,
             data={"title": "Male", "aiBrief": "young Vietnamese man",
                   "mediaId": "uuuuuuuu-aaaa-1111-1111-111111111111"},
             status="done",
         )
         char_f = Node(
-            board_id=b.id, short_id="cfem", type="character",
+            shot_id=b.id, short_id="cfem", type="character",
             x=0, y=0, w=240, h=180,
             data={"title": "Female", "aiBrief": "young Vietnamese woman",
                   "mediaId": "uuuuuuuu-bbbb-1111-1111-111111111111"},
             status="done",
         )
         img_m = Node(
-            board_id=b.id, short_id="imgm", type="image",
+            shot_id=b.id, short_id="imgm", type="image",
             x=0, y=0, w=240, h=180,
             data={"title": "M shot", "mediaId": "uuuuuuuu-mmmm-1111-1111-111111111111"},
             status="done",
         )
         img_f = Node(
-            board_id=b.id, short_id="imgf", type="image",
+            shot_id=b.id, short_id="imgf", type="image",
             x=0, y=0, w=240, h=180,
             data={"title": "F shot", "mediaId": "uuuuuuuu-ffff-1111-1111-111111111111"},
             status="done",
         )
         target = Node(
-            board_id=b.id, short_id="ctgt", type="image",
+            shot_id=b.id, short_id="ctgt", type="image",
             x=0, y=0, w=240, h=180,
             data={"title": "Couple shot"},
             status="idle",
@@ -216,10 +232,10 @@ def _seed_couple_via_image_siblings() -> dict:
         s.commit()
         for n in (char_m, char_f, img_m, img_f, target):
             s.refresh(n)
-        s.add(Edge(board_id=b.id, source_id=char_m.id, target_id=img_m.id))
-        s.add(Edge(board_id=b.id, source_id=char_f.id, target_id=img_f.id))
-        s.add(Edge(board_id=b.id, source_id=img_m.id, target_id=target.id))
-        s.add(Edge(board_id=b.id, source_id=img_f.id, target_id=target.id))
+        s.add(Edge(shot_id=b.id, source_id=char_m.id, target_id=img_m.id))
+        s.add(Edge(shot_id=b.id, source_id=char_f.id, target_id=img_f.id))
+        s.add(Edge(shot_id=b.id, source_id=img_m.id, target_id=target.id))
+        s.add(Edge(shot_id=b.id, source_id=img_f.id, target_id=target.id))
         s.commit()
         return {
             "target_id": target.id,
@@ -301,24 +317,23 @@ async def test_auto_prompt_multi_subject_via_two_character_upstream(
     """Two character nodes connected directly to the target also count as
     multi-subject (no image-siblings indirection needed)."""
     with get_session() as s:
-        b = Board(name="couple-direct")
-        s.add(b); s.commit(); s.refresh(b)
+        b = _make_shot(s, name="couple-direct")
         c1 = Node(
-            board_id=b.id, short_id="cd01", type="character",
+            shot_id=b.id, short_id="cd01", type="character",
             x=0, y=0, w=240, h=180,
             data={"title": "P1", "aiBrief": "man",
                   "mediaId": "uuuuuuuu-cccc-1111-1111-111111111111"},
             status="done",
         )
         c2 = Node(
-            board_id=b.id, short_id="cd02", type="character",
+            shot_id=b.id, short_id="cd02", type="character",
             x=0, y=0, w=240, h=180,
             data={"title": "P2", "aiBrief": "woman",
                   "mediaId": "uuuuuuuu-dddd-1111-1111-111111111111"},
             status="done",
         )
         tgt = Node(
-            board_id=b.id, short_id="cdtg", type="image",
+            shot_id=b.id, short_id="cdtg", type="image",
             x=0, y=0, w=240, h=180,
             data={"title": "Couple"},
             status="idle",
@@ -326,8 +341,8 @@ async def test_auto_prompt_multi_subject_via_two_character_upstream(
         s.add_all([c1, c2, tgt]); s.commit()
         for n in (c1, c2, tgt):
             s.refresh(n)
-        s.add(Edge(board_id=b.id, source_id=c1.id, target_id=tgt.id))
-        s.add(Edge(board_id=b.id, source_id=c2.id, target_id=tgt.id))
+        s.add(Edge(shot_id=b.id, source_id=c1.id, target_id=tgt.id))
+        s.add(Edge(shot_id=b.id, source_id=c2.id, target_id=tgt.id))
         s.commit()
         tgt_id = tgt.id
 
@@ -360,10 +375,9 @@ async def test_auto_prompt_image_with_location_reference_keeps_setting(
     was honouring the system prompt's 'neutral indoor or studio background'
     default rather than using the location upstream as the setting."""
     with get_session() as s:
-        b = Board(name="loc-ref")
-        s.add(b); s.commit(); s.refresh(b)
+        b = _make_shot(s, name="loc-ref")
         garment = Node(
-            board_id=b.id, short_id="zy6g", type="image",
+            shot_id=b.id, short_id="zy6g", type="image",
             x=0, y=0, w=240, h=180,
             data={
                 "title": "T-shirt",
@@ -374,7 +388,7 @@ async def test_auto_prompt_image_with_location_reference_keeps_setting(
             status="done",
         )
         location = Node(
-            board_id=b.id, short_id="vx3x", type="image",
+            shot_id=b.id, short_id="vx3x", type="image",
             x=0, y=0, w=240, h=180,
             data={
                 "title": "Jogging path",
@@ -385,7 +399,7 @@ async def test_auto_prompt_image_with_location_reference_keeps_setting(
             status="done",
         )
         target = Node(
-            board_id=b.id, short_id="cgx0", type="image",
+            shot_id=b.id, short_id="cgx0", type="image",
             x=0, y=0, w=240, h=180,
             data={"title": "Composed shot"},
             status="idle",
@@ -393,8 +407,8 @@ async def test_auto_prompt_image_with_location_reference_keeps_setting(
         s.add_all([garment, location, target]); s.commit()
         for n in (garment, location, target):
             s.refresh(n)
-        s.add(Edge(board_id=b.id, source_id=garment.id, target_id=target.id))
-        s.add(Edge(board_id=b.id, source_id=location.id, target_id=target.id))
+        s.add(Edge(shot_id=b.id, source_id=garment.id, target_id=target.id))
+        s.add(Edge(shot_id=b.id, source_id=location.id, target_id=target.id))
         s.commit()
         tgt_id = target.id
 
@@ -472,17 +486,16 @@ async def test_auto_prompt_surfaces_prompt_nodes_as_direction(
     the 'Direction / style notes' group so Claude weaves it into the
     output. Note nodes by contrast stay decorative and must NOT surface."""
     with get_session() as s:
-        b = Board(name="prompt-feed")
-        s.add(b); s.commit(); s.refresh(b)
+        b = _make_shot(s, name="prompt-feed")
         ch = Node(
-            board_id=b.id, short_id="pfch", type="character",
+            shot_id=b.id, short_id="pfch", type="character",
             x=0, y=0, w=240, h=180,
             data={"title": "P", "aiBrief": "young Vietnamese woman",
                   "mediaId": "uuuuuuuu-pfch-1111-1111-111111111111"},
             status="done",
         )
         direction = Node(
-            board_id=b.id, short_id="pfdr", type="prompt",
+            shot_id=b.id, short_id="pfdr", type="prompt",
             x=0, y=0, w=240, h=180,
             data={"title": "Brand tone",
                   "prompt": "magazine editorial mood, cinematic warm tone, "
@@ -490,14 +503,14 @@ async def test_auto_prompt_surfaces_prompt_nodes_as_direction(
             status="idle",
         )
         sticky = Node(
-            board_id=b.id, short_id="pfnt", type="note",
+            shot_id=b.id, short_id="pfnt", type="note",
             x=0, y=0, w=240, h=180,
             data={"title": "TODO",
                   "prompt": "remember to ask Tuan about the deadline"},
             status="idle",
         )
         tgt = Node(
-            board_id=b.id, short_id="pftg", type="image",
+            shot_id=b.id, short_id="pftg", type="image",
             x=0, y=0, w=240, h=180,
             data={"title": "Hero shot"},
             status="idle",
@@ -505,9 +518,9 @@ async def test_auto_prompt_surfaces_prompt_nodes_as_direction(
         s.add_all([ch, direction, sticky, tgt]); s.commit()
         for n in (ch, direction, sticky, tgt):
             s.refresh(n)
-        s.add(Edge(board_id=b.id, source_id=ch.id, target_id=tgt.id))
-        s.add(Edge(board_id=b.id, source_id=direction.id, target_id=tgt.id))
-        s.add(Edge(board_id=b.id, source_id=sticky.id, target_id=tgt.id))
+        s.add(Edge(shot_id=b.id, source_id=ch.id, target_id=tgt.id))
+        s.add(Edge(shot_id=b.id, source_id=direction.id, target_id=tgt.id))
+        s.add(Edge(shot_id=b.id, source_id=sticky.id, target_id=tgt.id))
         s.commit()
         tgt_id = tgt.id
 
@@ -541,10 +554,9 @@ async def test_auto_prompt_video_uses_motion_system_prompt(client, monkeypatch):
     expressions) — distinct from the composition prompt for image targets.
     The user message still surfaces the source image's brief."""
     with get_session() as s:
-        b = Board(name="t")
-        s.add(b); s.commit(); s.refresh(b)
+        b = _make_shot(s, name="t")
         src = Node(
-            board_id=b.id, short_id="src", type="image",
+            shot_id=b.id, short_id="src", type="image",
             x=0, y=0, w=240, h=180,
             data={
                 "title": "Source",
@@ -554,13 +566,13 @@ async def test_auto_prompt_video_uses_motion_system_prompt(client, monkeypatch):
             status="done",
         )
         vid = Node(
-            board_id=b.id, short_id="vid", type="video",
+            shot_id=b.id, short_id="vid", type="video",
             x=0, y=0, w=240, h=180,
             data={"title": "Vid"},
             status="idle",
         )
         s.add_all([src, vid]); s.commit(); s.refresh(src); s.refresh(vid)
-        s.add(Edge(board_id=b.id, source_id=src.id, target_id=vid.id))
+        s.add(Edge(shot_id=b.id, source_id=src.id, target_id=vid.id))
         s.commit()
         vid_id = vid.id
 
@@ -597,10 +609,9 @@ async def test_auto_prompt_video_static_camera_locks_system_prompt(client, monke
     system variant and NOT propose dolly/pan/zoom (which crops the product
     out of frame in e-commerce shots)."""
     with get_session() as s:
-        b = Board(name="t")
-        s.add(b); s.commit(); s.refresh(b)
+        b = _make_shot(s, name="t")
         src = Node(
-            board_id=b.id, short_id="src2", type="image",
+            shot_id=b.id, short_id="src2", type="image",
             x=0, y=0, w=240, h=180,
             data={
                 "title": "Source",
@@ -610,13 +621,13 @@ async def test_auto_prompt_video_static_camera_locks_system_prompt(client, monke
             status="done",
         )
         vid = Node(
-            board_id=b.id, short_id="vid2", type="video",
+            shot_id=b.id, short_id="vid2", type="video",
             x=0, y=0, w=240, h=180,
             data={"title": "Vid"},
             status="idle",
         )
         s.add_all([src, vid]); s.commit(); s.refresh(src); s.refresh(vid)
-        s.add(Edge(board_id=b.id, source_id=src.id, target_id=vid.id))
+        s.add(Edge(shot_id=b.id, source_id=src.id, target_id=vid.id))
         s.commit()
         vid_id = vid.id
 
@@ -654,22 +665,21 @@ async def test_auto_prompt_video_default_drops_canned_scene_vocab(client, monkey
     clip identical. Verify those canned mappings are gone — Claude is
     trusted to pick natural motion from the source brief instead."""
     with get_session() as s:
-        b = Board(name="t")
-        s.add(b); s.commit(); s.refresh(b)
+        b = _make_shot(s, name="t")
         src = Node(
-            board_id=b.id, short_id="srcd", type="image",
+            shot_id=b.id, short_id="srcd", type="image",
             x=0, y=0, w=240, h=180,
             data={"title": "x", "aiBrief": "scene", "mediaId": "uuuuuuuu-bbbb-3333-3333-444444444444"},
             status="done",
         )
         vid = Node(
-            board_id=b.id, short_id="vidd", type="video",
+            shot_id=b.id, short_id="vidd", type="video",
             x=0, y=0, w=240, h=180,
             data={"title": "v"},
             status="idle",
         )
         s.add_all([src, vid]); s.commit(); s.refresh(src); s.refresh(vid)
-        s.add(Edge(board_id=b.id, source_id=src.id, target_id=vid.id))
+        s.add(Edge(shot_id=b.id, source_id=src.id, target_id=vid.id))
         s.commit()
         vid_id = vid.id
 
@@ -702,22 +712,21 @@ async def test_auto_prompt_video_default_camera_allows_movement(client, monkeypa
     """No camera arg → default video system prompt; doesn't include the
     static-only constraint."""
     with get_session() as s:
-        b = Board(name="t")
-        s.add(b); s.commit(); s.refresh(b)
+        b = _make_shot(s, name="t")
         src = Node(
-            board_id=b.id, short_id="src3", type="image",
+            shot_id=b.id, short_id="src3", type="image",
             x=0, y=0, w=240, h=180,
             data={"title": "x", "aiBrief": "scene", "mediaId": "uuuuuuuu-aaaa-3333-3333-444444444444"},
             status="done",
         )
         vid = Node(
-            board_id=b.id, short_id="vid3", type="video",
+            shot_id=b.id, short_id="vid3", type="video",
             x=0, y=0, w=240, h=180,
             data={"title": "v"},
             status="idle",
         )
         s.add_all([src, vid]); s.commit(); s.refresh(src); s.refresh(vid)
-        s.add(Edge(board_id=b.id, source_id=src.id, target_id=vid.id))
+        s.add(Edge(shot_id=b.id, source_id=src.id, target_id=vid.id))
         s.commit()
         vid_id = vid.id
 
@@ -743,24 +752,23 @@ async def test_auto_prompt_video_multi_subject_when_source_has_two_chars(
     this, Veo gets a singular 'the model' direction and typically freezes
     one person while animating the other."""
     with get_session() as s:
-        b = Board(name="couple-vid")
-        s.add(b); s.commit(); s.refresh(b)
+        b = _make_shot(s, name="couple-vid")
         cm = Node(
-            board_id=b.id, short_id="cvm1", type="character",
+            shot_id=b.id, short_id="cvm1", type="character",
             x=0, y=0, w=240, h=180,
             data={"title": "M", "aiBrief": "man",
                   "mediaId": "uuuuuuuu-mmm1-1111-1111-111111111111"},
             status="done",
         )
         cf = Node(
-            board_id=b.id, short_id="cvf1", type="character",
+            shot_id=b.id, short_id="cvf1", type="character",
             x=0, y=0, w=240, h=180,
             data={"title": "F", "aiBrief": "woman",
                   "mediaId": "uuuuuuuu-fff1-1111-1111-111111111111"},
             status="done",
         )
         couple_img = Node(
-            board_id=b.id, short_id="cvi1", type="image",
+            shot_id=b.id, short_id="cvi1", type="image",
             x=0, y=0, w=240, h=180,
             data={"title": "Couple still",
                   "aiBrief": "two people side-by-side in studio",
@@ -768,7 +776,7 @@ async def test_auto_prompt_video_multi_subject_when_source_has_two_chars(
             status="done",
         )
         vid = Node(
-            board_id=b.id, short_id="cvv1", type="video",
+            shot_id=b.id, short_id="cvv1", type="video",
             x=0, y=0, w=240, h=180,
             data={"title": "Couple clip"},
             status="idle",
@@ -776,9 +784,9 @@ async def test_auto_prompt_video_multi_subject_when_source_has_two_chars(
         s.add_all([cm, cf, couple_img, vid]); s.commit()
         for n in (cm, cf, couple_img, vid):
             s.refresh(n)
-        s.add(Edge(board_id=b.id, source_id=cm.id, target_id=couple_img.id))
-        s.add(Edge(board_id=b.id, source_id=cf.id, target_id=couple_img.id))
-        s.add(Edge(board_id=b.id, source_id=couple_img.id, target_id=vid.id))
+        s.add(Edge(shot_id=b.id, source_id=cm.id, target_id=couple_img.id))
+        s.add(Edge(shot_id=b.id, source_id=cf.id, target_id=couple_img.id))
+        s.add(Edge(shot_id=b.id, source_id=couple_img.id, target_id=vid.id))
         s.commit()
         vid_id = vid.id
 
@@ -817,24 +825,23 @@ async def test_auto_prompt_video_solo_skips_multi_subject_clause(
     """Regression: a solo source (1 character → image → video) must NOT
     pick up the multi-subject clause."""
     with get_session() as s:
-        b = Board(name="solo-vid")
-        s.add(b); s.commit(); s.refresh(b)
+        b = _make_shot(s, name="solo-vid")
         ch = Node(
-            board_id=b.id, short_id="svch", type="character",
+            shot_id=b.id, short_id="svch", type="character",
             x=0, y=0, w=240, h=180,
             data={"title": "P", "aiBrief": "person",
                   "mediaId": "uuuuuuuu-svch-1111-1111-111111111111"},
             status="done",
         )
         img = Node(
-            board_id=b.id, short_id="svim", type="image",
+            shot_id=b.id, short_id="svim", type="image",
             x=0, y=0, w=240, h=180,
             data={"title": "Shot", "aiBrief": "studio portrait",
                   "mediaId": "uuuuuuuu-svim-1111-1111-111111111111"},
             status="done",
         )
         vid = Node(
-            board_id=b.id, short_id="svvi", type="video",
+            shot_id=b.id, short_id="svvi", type="video",
             x=0, y=0, w=240, h=180,
             data={"title": "Clip"},
             status="idle",
@@ -842,8 +849,8 @@ async def test_auto_prompt_video_solo_skips_multi_subject_clause(
         s.add_all([ch, img, vid]); s.commit()
         for n in (ch, img, vid):
             s.refresh(n)
-        s.add(Edge(board_id=b.id, source_id=ch.id, target_id=img.id))
-        s.add(Edge(board_id=b.id, source_id=img.id, target_id=vid.id))
+        s.add(Edge(shot_id=b.id, source_id=ch.id, target_id=img.id))
+        s.add(Edge(shot_id=b.id, source_id=img.id, target_id=vid.id))
         s.commit()
         vid_id = vid.id
 
@@ -865,10 +872,9 @@ async def test_auto_prompt_video_solo_skips_multi_subject_clause(
 async def test_auto_prompt_with_no_upstream_falls_back_to_title(client, monkeypatch):
     """A bare image node with no edges still gets a sensible prompt."""
     with get_session() as s:
-        b = Board(name="t")
-        s.add(b); s.commit(); s.refresh(b)
+        b = _make_shot(s, name="t")
         n = Node(
-            board_id=b.id, short_id="bare", type="image",
+            shot_id=b.id, short_id="bare", type="image",
             x=0, y=0, w=240, h=180,
             data={"title": "A red sneaker on white"},
             status="idle",
@@ -1056,10 +1062,9 @@ async def test_prompt_wins_over_aibrief(client, monkeypatch):
     has stamped a prompt onto the node — that text is the source of
     truth for downstream synth, regardless of what vision wrote."""
     with get_session() as s:
-        b = Board(name="prompt-wins")
-        s.add(b); s.commit(); s.refresh(b)
+        b = _make_shot(s, name="prompt-wins")
         upstream = Node(
-            board_id=b.id, short_id="pwup", type="image",
+            shot_id=b.id, short_id="pwup", type="image",
             x=0, y=0, w=240, h=180,
             data={
                 "title": "Hero",
@@ -1070,13 +1075,13 @@ async def test_prompt_wins_over_aibrief(client, monkeypatch):
             status="done",
         )
         target = Node(
-            board_id=b.id, short_id="pwtg", type="video",
+            shot_id=b.id, short_id="pwtg", type="video",
             x=0, y=0, w=240, h=180, data={"title": "Motion"},
             status="idle",
         )
         s.add_all([upstream, target]); s.commit()
         s.refresh(upstream); s.refresh(target)
-        s.add(Edge(board_id=b.id, source_id=upstream.id, target_id=target.id))
+        s.add(Edge(shot_id=b.id, source_id=upstream.id, target_id=target.id))
         s.commit()
         tgt_id = target.id
 
@@ -1101,10 +1106,9 @@ async def test_aibrief_used_when_no_prompt(client, monkeypatch):
     still surface aiBrief into the synth context. Otherwise upload-only
     nodes contribute nothing and downstream prompts go generic."""
     with get_session() as s:
-        b = Board(name="brief-fallback")
-        s.add(b); s.commit(); s.refresh(b)
+        b = _make_shot(s, name="brief-fallback")
         upstream = Node(
-            board_id=b.id, short_id="bfup", type="visual_asset",
+            shot_id=b.id, short_id="bfup", type="visual_asset",
             x=0, y=0, w=240, h=180,
             data={
                 "title": "Uploaded jacket",
@@ -1114,13 +1118,13 @@ async def test_aibrief_used_when_no_prompt(client, monkeypatch):
             status="done",
         )
         target = Node(
-            board_id=b.id, short_id="bftg", type="image",
+            shot_id=b.id, short_id="bftg", type="image",
             x=0, y=0, w=240, h=180, data={"title": "Hero shot"},
             status="idle",
         )
         s.add_all([upstream, target]); s.commit()
         s.refresh(upstream); s.refresh(target)
-        s.add(Edge(board_id=b.id, source_id=upstream.id, target_id=target.id))
+        s.add(Edge(shot_id=b.id, source_id=upstream.id, target_id=target.id))
         s.commit()
         tgt_id = target.id
 
@@ -1149,10 +1153,9 @@ def _seed_storyboard_target(narrative_seed: str = "") -> int:
     """Create a Board with one upstream character + one Storyboard target.
     Returns the storyboard target node id."""
     with get_session() as s:
-        b = Board(name="sb")
-        s.add(b); s.commit(); s.refresh(b)
+        b = _make_shot(s, name="sb")
         char = Node(
-            board_id=b.id, short_id="sbch", type="character",
+            shot_id=b.id, short_id="sbch", type="character",
             x=0, y=0, w=240, h=180,
             data={
                 "title": "Model",
@@ -1162,7 +1165,7 @@ def _seed_storyboard_target(narrative_seed: str = "") -> int:
             status="done",
         )
         target = Node(
-            board_id=b.id, short_id="sbtg", type="Storyboard",
+            shot_id=b.id, short_id="sbtg", type="Storyboard",
             x=0, y=0, w=240, h=180,
             data={
                 "title": "Story",
@@ -1173,7 +1176,7 @@ def _seed_storyboard_target(narrative_seed: str = "") -> int:
         s.add_all([char, target]); s.commit()
         for n in (char, target):
             s.refresh(n)
-        s.add(Edge(board_id=b.id, source_id=char.id, target_id=target.id))
+        s.add(Edge(shot_id=b.id, source_id=char.id, target_id=target.id))
         s.commit()
         return target.id
 

@@ -7,6 +7,7 @@ auto-managed media cache index): references have user-curated
 lifetime and metadata; cache files in storage/media/{id}.{ext} are
 owned by Asset and never touched on reference DELETE.
 """
+import uuid
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Response
@@ -30,7 +31,7 @@ class ReferenceCreate(BaseModel):
     ai_brief: Optional[str] = None
     aspect_ratio: Optional[str] = None
     url: Optional[str] = None
-    source_board_id: Optional[int] = None
+    source_shot_id: Optional[uuid.UUID] = None
     source_node_short_id: Optional[str] = None
     tags: Optional[list[str]] = None
 
@@ -69,7 +70,7 @@ def _row_dict(row: Reference) -> dict[str, Any]:
         "tags": list(row.tags or []),
         "pinned": row.pinned,
         "position": row.position,
-        "source_board_id": row.source_board_id,
+        "source_shot_id": str(row.source_shot_id) if row.source_shot_id else None,
         "source_node_short_id": row.source_node_short_id,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
@@ -105,7 +106,7 @@ def create_reference(body: ReferenceCreate):
             ai_brief=body.ai_brief,
             aspect_ratio=body.aspect_ratio,
             url=body.url,
-            source_board_id=body.source_board_id,
+            source_shot_id=body.source_shot_id,
             source_node_short_id=body.source_node_short_id,
             tags=list(body.tags or []),
         )

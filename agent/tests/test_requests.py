@@ -12,7 +12,7 @@ def _board(client, name="T"):
 
 def test_create_request_persists_and_returns_row(client):
     b = _board(client)
-    n = client.post("/api/nodes", json={"board_id": b["id"], "type": "image"}).json()
+    n = client.post("/api/nodes", json={"shot_id": b["id"], "type": "image"}).json()
 
     r = client.post(
         "/api/requests",

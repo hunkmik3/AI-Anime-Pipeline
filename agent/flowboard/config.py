@@ -3,7 +3,14 @@ import os
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 STORAGE_DIR = Path(os.getenv("FLOWBOARD_STORAGE", ROOT / "storage"))
-DB_PATH = Path(os.getenv("FLOWBOARD_DB", STORAGE_DIR / "flowboard.db"))
+
+# Postgres connection string. The docker-compose.yml at agent/docker-compose.yml
+# binds the container to host port 15432 (5432 was busy on the dev machine).
+# Override via FLOWBOARD_DATABASE_URL for production.
+DATABASE_URL = os.getenv(
+    "FLOWBOARD_DATABASE_URL",
+    "postgresql+psycopg://flowboard:flowboard@localhost:15432/flowboard",
+)
 
 HTTP_PORT = int(os.getenv("FLOWBOARD_HTTP_PORT", "8101"))
 WS_HOST = os.getenv("FLOWBOARD_WS_HOST", "127.0.0.1")

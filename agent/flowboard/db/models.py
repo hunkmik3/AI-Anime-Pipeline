@@ -1,36 +1,98 @@
-from datetime import datetime, timezone
-from typing import Optional
+"""ORM models for the anime narrative pipeline (Phase 1 refactor).
 
-from sqlmodel import Field, SQLModel, Column, JSON
+Hierarchy: Project → Scene → Shot → (Node, Edge). Project/Scene/Shot use
+UUID PKs; child tables keep INT PKs for compatibility with existing tests
+and frontend. JSON columns use Postgres JSONB so future queries can index
+into them.
+"""
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlmodel import Column, Field, SQLModel
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class Board(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
+def _uuid_pk() -> uuid.UUID:
+    return uuid.uuid4()
+
+
+def _jsonb_dict() -> Column:
+    return Column(JSONB, nullable=False, server_default="{}")
+
+
+def _jsonb_list() -> Column:
+    return Column(JSONB, nullable=False, server_default="[]")
+
+
+# ── Hierarchy: Project → Scene → Shot ────────────────────────────────────
+
+
+class Project(SQLModel, table=True):
+    id: uuid.UUID = Field(
+        default_factory=_uuid_pk,
+        primary_key=True,
+        sa_column_kwargs={"server_default": None},
+    )
     name: str
+    project_bible: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
+    settings: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
     created_at: datetime = Field(default_factory=_utcnow)
+
+
+class Scene(SQLModel, table=True):
+    id: uuid.UUID = Field(default_factory=_uuid_pk, primary_key=True)
+    project_id: uuid.UUID = Field(foreign_key="project.id", index=True)
+    name: str
+    order_index: int = 0
+    scene_bible_text: str = ""
+    # Master establishing asset is set later (after first shot completes).
+    # FK is declared at the Postgres level via the migration; we don't
+    # model the relationship here because Asset has its own project_id
+    # which is the canonical ownership signal.
+    master_establishing_asset_id: Optional[int] = Field(default=None, foreign_key="asset.id")
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class Shot(SQLModel, table=True):
+    id: uuid.UUID = Field(default_factory=_uuid_pk, primary_key=True)
+    scene_id: uuid.UUID = Field(foreign_key="scene.id", index=True)
+    order_index: int = 0
+    script_text: str = ""
+    # idle | running | awaiting_approval | done | error
+    status: str = "idle"
+    current_node_id: Optional[int] = Field(default=None, foreign_key="node.id")
+    final_video_asset_id: Optional[int] = Field(default=None, foreign_key="asset.id")
+    workflow_metadata: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+# ── Per-shot workflow graph ─────────────────────────────────────────────
 
 
 class Node(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    board_id: int = Field(foreign_key="board.id", index=True)
+    shot_id: uuid.UUID = Field(foreign_key="shot.id", index=True)
     short_id: str = Field(index=True)
     type: str
     x: float = 0.0
     y: float = 0.0
     w: float = 240.0
     h: float = 160.0
-    data: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    data: dict = Field(default_factory=dict, sa_column=_jsonb_dict())
     status: str = "idle"
     created_at: datetime = Field(default_factory=_utcnow)
 
 
 class Edge(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    board_id: int = Field(foreign_key="board.id", index=True)
+    shot_id: uuid.UUID = Field(foreign_key="shot.id", index=True)
     source_id: int = Field(foreign_key="node.id")
     target_id: int = Field(foreign_key="node.id")
     kind: str = "ref"
@@ -38,13 +100,6 @@ class Edge(SQLModel, table=True):
     # (`data.mediaIds`), this index selects WHICH variant feeds the
     # downstream as a reference. None = "fall back to the source's
     # active mediaId" (the natural single-variant case).
-    #
-    # Why per-edge instead of expanding all variants on the wire: each
-    # variant of the same upstream produces a SEPARATE Flow API call
-    # (Flow doesn't bind output[i] to input[i] when both are
-    # multi-variant). Pinning lets the user say "use variant 2 for
-    # downstream A, variant 3 for downstream B" with two clicks; the
-    # edge UI surfaces the pinned index so the binding stays visible.
     source_variant_idx: Optional[int] = None
 
 
@@ -52,9 +107,9 @@ class Request(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     node_id: Optional[int] = Field(default=None, foreign_key="node.id", index=True)
     type: str
-    params: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    params: dict = Field(default_factory=dict, sa_column=_jsonb_dict())
     status: str = "queued"
-    result: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    result: dict = Field(default_factory=dict, sa_column=_jsonb_dict())
     error: Optional[str] = None
     created_at: datetime = Field(default_factory=_utcnow)
     finished_at: Optional[datetime] = None
@@ -62,6 +117,10 @@ class Request(SQLModel, table=True):
 
 class Asset(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
+    # project_id is the canonical ownership signal (Phase 1 addition).
+    # Nullable for pre-binding ingest (extension can drop a media row
+    # before the user wires it to a node/project).
+    project_id: Optional[uuid.UUID] = Field(default=None, foreign_key="project.id", index=True)
     # node_id is optional — assets can arrive from TRPC before any node
     # binding (e.g. the user browses an old Flow project).
     node_id: Optional[int] = Field(default=None, foreign_key="node.id", index=True)
@@ -73,45 +132,51 @@ class Asset(SQLModel, table=True):
     url: Optional[str] = None
     local_path: Optional[str] = None
     mime: Optional[str] = None
+    asset_metadata: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
     created_at: datetime = Field(default_factory=_utcnow)
 
 
 class Reference(SQLModel, table=True):
-    """User-curated saved media for cross-board reuse.
+    """User-curated saved media for cross-project reuse.
 
     Distinct from Asset (auto-managed cache index). Each Reference
     points at one media_id and snapshots enough metadata to spawn a
-    brand-new visual_asset node in any board without re-vision or
-    re-upload.
+    brand-new visual_asset node in any shot without re-vision or
+    re-upload. Scoped to a project so cross-project leakage doesn't
+    happen.
     """
     id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: Optional[uuid.UUID] = Field(default=None, foreign_key="project.id", index=True)
     media_id: str = Field(index=True, unique=True)
     url: Optional[str] = None
     label: str = ""
     kind: str  # "image" | "character" | "visual_asset" | "storyboard_shot"
     ai_brief: Optional[str] = None
     aspect_ratio: Optional[str] = None
-    tags: list = Field(default_factory=list, sa_column=Column(JSON))
+    tags: list = Field(default_factory=list, sa_column=_jsonb_list())
     pinned: bool = False
     position: int = 0
-    source_board_id: Optional[int] = Field(default=None, foreign_key="board.id", index=True)
+    source_shot_id: Optional[uuid.UUID] = Field(default=None, foreign_key="shot.id", index=True)
     source_node_short_id: Optional[str] = None
     created_at: datetime = Field(default_factory=_utcnow)
 
 
 class ChatMessage(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    board_id: int = Field(foreign_key="board.id", index=True)
+    project_id: uuid.UUID = Field(foreign_key="project.id", index=True)
     role: str  # user | assistant | system
     content: str
-    mentions: list = Field(default_factory=list, sa_column=Column(JSON))
+    mentions: list = Field(default_factory=list, sa_column=_jsonb_list())
     created_at: datetime = Field(default_factory=_utcnow)
+
+
+# ── Plan stack (kept transitionally; replaced by Phase 7 approval flow) ──
 
 
 class Plan(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    board_id: int = Field(foreign_key="board.id", index=True)
-    spec: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    shot_id: uuid.UUID = Field(foreign_key="shot.id", index=True)
+    spec: dict = Field(default_factory=dict, sa_column=_jsonb_dict())
     status: str = "draft"  # draft | approved | running | done | failed
     created_at: datetime = Field(default_factory=_utcnow)
 
@@ -120,8 +185,8 @@ class PlanRevision(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     plan_id: int = Field(foreign_key="plan.id", index=True)
     rev_no: int
-    spec: dict = Field(default_factory=dict, sa_column=Column(JSON))
-    edits: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    spec: dict = Field(default_factory=dict, sa_column=_jsonb_dict())
+    edits: dict = Field(default_factory=dict, sa_column=_jsonb_dict())
     created_at: datetime = Field(default_factory=_utcnow)
 
 
@@ -134,13 +199,15 @@ class PipelineRun(SQLModel, table=True):
     error: Optional[str] = None
 
 
-class BoardFlowProject(SQLModel, table=True):
-    """1:1 link between a local board and a Google Flow project_id.
+class ProjectFlowMapping(SQLModel, table=True):
+    """1:1 link between a local project and a Google Flow project_id.
 
-    Kept as a separate table so we don't have to migrate the Board schema.
-    Paygate tier is loaded realtime from the extension via /api/auth/me,
-    not persisted here — the binding is purely about project identity.
+    Renamed from BoardFlowProject. Paygate tier is loaded realtime from
+    the extension via /api/auth/me, not persisted here — the binding is
+    purely about project identity.
     """
-    board_id: int = Field(primary_key=True, foreign_key="board.id")
+    __tablename__ = "project_flow_mapping"  # type: ignore[assignment]
+
+    project_id: uuid.UUID = Field(primary_key=True, foreign_key="project.id")
     flow_project_id: str
     created_at: datetime = Field(default_factory=_utcnow)

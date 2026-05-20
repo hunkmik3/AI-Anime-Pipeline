@@ -1,3 +1,4 @@
+import uuid
 from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -12,7 +13,7 @@ EdgeKind = Literal["ref", "hint"]
 
 
 class EdgeCreate(BaseModel):
-    board_id: int
+    shot_id: uuid.UUID
     source_id: int
     target_id: int
     kind: EdgeKind = "ref"
@@ -37,10 +38,10 @@ def create_edge(body: EdgeCreate):
         target = s.get(Node, body.target_id)
         if not source or not target:
             raise HTTPException(404, "source or target node not found")
-        if source.board_id != body.board_id or target.board_id != body.board_id:
-            raise HTTPException(400, "nodes must belong to the same board")
+        if source.shot_id != body.shot_id or target.shot_id != body.shot_id:
+            raise HTTPException(400, "nodes must belong to the same shot")
         edge = Edge(
-            board_id=body.board_id,
+            shot_id=body.shot_id,
             source_id=body.source_id,
             target_id=body.target_id,
             kind=body.kind,
@@ -65,8 +66,6 @@ def patch_edge(edge_id: int, body: EdgePatch):
         edge = s.get(Edge, edge_id)
         if not edge:
             raise HTTPException(404, "edge not found")
-        # Distinguish "unset" (don't touch) from "null" (clear). Pydantic
-        # gives us model_fields_set for that.
         if "source_variant_idx" in body.model_fields_set:
             edge.source_variant_idx = body.source_variant_idx
         s.add(edge)
