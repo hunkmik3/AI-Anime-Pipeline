@@ -3084,6 +3084,11 @@ button:disabled {
   color: var(--muted);
 }
 
+.gen-dialog__textarea--custom {
+  min-height: 260px;
+  resize: vertical;
+}
+
 /* Aspect ratio chips */
 
 .aspect-chip-row {
@@ -5568,4 +5573,3 @@ button:disabled {
   background: var(--panel-higher);
   border-color: var(--accent);
 }
-

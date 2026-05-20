@@ -89,6 +89,9 @@ function cameraInstruction(key: CameraKey): string {
   return CAMERA_MOVEMENTS.find((c) => c.key === key)?.instruction ?? "";
 }
 
+type CharacterPromptMode = "builder" | "custom";
+const CHARACTER_CUSTOM_PROMPT_MAX = 8000;
+
 type ImageAspectKey = (typeof IMAGE_ASPECT_RATIOS)[number]["key"];
 type VideoAspectKey = (typeof VIDEO_ASPECT_RATIOS)[number]["key"];
 type AspectKey = ImageAspectKey | VideoAspectKey;
@@ -165,6 +168,7 @@ export function GenerationDialog() {
   const [charCountry, setCharCountry] = useState<CountryKey | null>(null);
   const [charVibe, setCharVibe] = useState<VibeKey>("clean");
   const [charExtras, setCharExtras] = useState("");
+  const [charPromptMode, setCharPromptMode] = useState<CharacterPromptMode>("builder");
 
   // Auto-prompt state — set when the user submits an empty prompt and we
   // synthesise one from upstream context. Surfaced as a small ✨ badge.
@@ -317,6 +321,7 @@ export function GenerationDialog() {
       setCharCountry(null);
       setCharVibe("clean");
       setCharExtras("");
+      setCharPromptMode("builder");
       setAutoBuilding(false);
       setAutoPromptUsed(false);
       // Default-select every upstream source variant for video targets so
@@ -488,7 +493,9 @@ export function GenerationDialog() {
       return;
     }
     if (isCharacter) {
-      const built = buildCharacterPrompt(charGender, charCountry, charVibe, charExtras);
+      const built = charPromptMode === "custom"
+        ? prompt.trim()
+        : buildCharacterPrompt(charGender, charCountry, charVibe, charExtras);
       // Stamp the picker selections directly onto the node so the detail
       // panel can show "Country: Nhật Bản · Vibe: Douyin" later. These
       // choices don't round-trip through the backend params (they're
@@ -496,10 +503,12 @@ export function GenerationDialog() {
       // time. patchNode merges, so this fires alongside the generation
       // store's own status patches without colliding.
       const charStamp: Record<string, unknown> = {};
-      if (charCountry) charStamp.charCountry = charCountry;
-      if (charVibe) charStamp.charVibe = charVibe;
-      if (charGender) charStamp.charGender = charGender;
-      if (Object.keys(charStamp).length > 0) {
+      if (charPromptMode === "builder") {
+        if (charCountry) charStamp.charCountry = charCountry;
+        if (charVibe) charStamp.charVibe = charVibe;
+        if (charGender) charStamp.charGender = charGender;
+      }
+      if (charPromptMode === "builder" && Object.keys(charStamp).length > 0) {
         useBoardStore.getState().updateNodeData(rfId, charStamp);
         const dbId = parseInt(rfId, 10);
         if (!isNaN(dbId)) {
@@ -608,7 +617,9 @@ export function GenerationDialog() {
   // Both image and video allow empty prompt — we'll auto-synth on submit.
   // Video needs at least one selected source variant.
   const canGenerate = isCharacter
-    ? charGender !== null || charCountry !== null || charExtras.trim().length > 0
+    ? charPromptMode === "custom"
+      ? prompt.trim().length > 0
+      : charGender !== null || charCountry !== null || charExtras.trim().length > 0
     : isVideo
     ? selectedSourceIdx.size > 0 && !isWorking
     : !isWorking;
@@ -703,6 +714,28 @@ export function GenerationDialog() {
         {isCharacter && (
           <>
             <div className="gen-dialog__field">
+              <span className="gen-dialog__label">Prompt mode</span>
+              <div className="aspect-chip-row">
+                <button
+                  type="button"
+                  className={`aspect-chip${charPromptMode === "builder" ? " aspect-chip--active" : ""}`}
+                  onClick={() => setCharPromptMode("builder")}
+                >
+                  Builder
+                </button>
+                <button
+                  type="button"
+                  className={`aspect-chip${charPromptMode === "custom" ? " aspect-chip--active" : ""}`}
+                  onClick={() => setCharPromptMode("custom")}
+                >
+                  Custom prompt
+                </button>
+              </div>
+            </div>
+
+            {charPromptMode === "builder" && (
+              <>
+            <div className="gen-dialog__field">
               <span className="gen-dialog__label">Gender</span>
               <div className="aspect-chip-row">
                 {CHARACTER_GENDERS.map((g) => (
@@ -772,6 +805,34 @@ export function GenerationDialog() {
                 photorealistic — tối ưu cho character reference.
               </p>
             </div>
+              </>
+            )}
+
+            {charPromptMode === "custom" && (
+              <div className="gen-dialog__field">
+                <div className="gen-dialog__label-row">
+                  <label className="gen-dialog__label" htmlFor="gen-char-custom-prompt">
+                    Custom prompt
+                  </label>
+                  <span className="gen-dialog__char-count">
+                    {prompt.length}/{CHARACTER_CUSTOM_PROMPT_MAX}
+                  </span>
+                </div>
+                <textarea
+                  id="gen-char-custom-prompt"
+                  ref={firstFocusRef}
+                  className="gen-dialog__textarea gen-dialog__textarea--custom"
+                  rows={12}
+                  maxLength={CHARACTER_CUSTOM_PROMPT_MAX}
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder="Paste full character sheet / turnaround / style prompt..."
+                />
+                <p className="gen-dialog__hint">
+                  Flowboard sẽ gửi nguyên prompt này, không ghép preset headshot.
+                </p>
+              </div>
+            )}
           </>
         )}
 
