@@ -1,0 +1,14 @@
+{
+  "_comment": "Submit with all configurable options. `duration` is a top-level field. Aspect ratio and resolution use inline prompt flags (--rt, --rs). See dreamina_api_contract.md §2 for the full param table.",
+  "request": {
+    "model": "seedance-1-5-pro-251215",
+    "duration": 8,
+    "content": [
+      {"type": "text", "text": "Wide cinematic shot of a mountain at golden hour --rt 16:9 --rs 1080p"},
+      {"type": "image_url", "image_url": {"url": "https://example.com/first.png"}}
+    ]
+  },
+  "response_200": {
+    "id": "cgt-20260521230504-mgtr7"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "_comment": "HTTP 400. Triggered by omitting a required field (here: `content`). Same shape applies when `model` is missing.",
+  "error": {
+    "code": "MissingParameter",
+    "message": "The request failed because it is missing `content` parameter. Request id: 02177937557392040df8d8926005c369421892d4819382e617c71",
+    "param": "content",
+    "type": "BadRequest"
+  }
+}

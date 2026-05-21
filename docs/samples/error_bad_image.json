@@ -1,0 +1,9 @@
+{
+  "_comment": "HTTP 400. The API fetches every image_url at submit time and fails the submit synchronously if any URL is unreachable. (It does NOT defer this to the polling stage.) Implication for Flowboard: image hosting must be live before the submit call, not just before the poll succeeds.",
+  "error": {
+    "code": "InvalidParameter",
+    "message": "The parameter `content[1].image_url` specified in the request is not valid: resource download failed. Request id: 021779375573928378c141953f92ec627da9d675fe03be08c6d5c",
+    "param": "content[1].image_url",
+    "type": "BadRequest"
+  }
+}

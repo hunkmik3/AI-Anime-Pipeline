@@ -1,0 +1,9 @@
+{
+  "_comment": "HTTP 400. Triggered by `role: 'reference'` on an image_url with seedance-1-5-pro. Valid roles on this model: 'first_frame', 'last_frame'. Note: omitting role with >1 image_url fails with a different message: 'role must be specified for image contents'.",
+  "error": {
+    "code": "InvalidParameter",
+    "message": "The parameter `content` specified in the request is not valid: invalid role specified for image content. Request id: 021779375904875ec39001cad8ae999c8f17eed1b37944e1b1a9f",
+    "param": "content",
+    "type": "BadRequest"
+  }
+}

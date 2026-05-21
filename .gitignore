@@ -47,3 +47,4 @@ coverage/
 # Keep on disk; never commit.
 /video_model*.md
 .claude/
+docs/samples/raw/

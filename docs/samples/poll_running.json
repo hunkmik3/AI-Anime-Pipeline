@@ -1,0 +1,12 @@
+{
+  "id": "cgt-20260521225953-zr48p",
+  "model": "seedance-1-5-pro-251215",
+  "status": "running",
+  "created_at": 1779375595,
+  "updated_at": 1779375595,
+  "service_tier": "default",
+  "execution_expires_after": 172800,
+  "generate_audio": true,
+  "draft": false,
+  "priority": 0
+}

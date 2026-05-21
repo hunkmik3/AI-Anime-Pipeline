@@ -1,0 +1,9 @@
+{
+  "_comment": "HTTP 400. Triggered by `role: 'reference_image'` on seedance-1-5-pro — the API auto-classifies multi-reference-image requests as task_type=r2v (reference-to-video), which this model does not support. seedance-1-5-pro is an i2v (image-to-video) model only. If you need multi-image character/style anchoring, a different model class is required.",
+  "error": {
+    "code": "InvalidParameter",
+    "message": "The parameter `task_type` specified in the request is not valid: the specified task_type r2v does not support model seedance-1-5-pro. Request id: 021779375904880c41b39946b92a3163d51611244fc4a0d4c37a3",
+    "param": "task_type",
+    "type": "BadRequest"
+  }
+}

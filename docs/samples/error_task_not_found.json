@@ -1,0 +1,9 @@
+{
+  "_comment": "HTTP 404 from GET /api/v3/contents/generations/tasks/<id>. Triggered by polling an ID that never existed or that has aged out (the 48h `execution_expires_after` window expired).",
+  "error": {
+    "code": "ResourceNotFound",
+    "message": "The specified resource `cgt-00000000000000-xxxxx` is not found. Request id: 02177937557392835b29c922ac7ba22cc26b6e12169d2135a5315",
+    "param": "",
+    "type": "NotFound"
+  }
+}

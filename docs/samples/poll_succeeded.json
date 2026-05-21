@@ -1,0 +1,25 @@
+{
+  "_comment": "Sanitized — real video_url is a signed TOS URL: https://ark-content-generation-ap-southeast-1.tos-ap-southeast-1.volces.com/seedance-1-5-pro/<file>.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=<...>&X-Tos-Date=<...>&X-Tos-Expires=86400&X-Tos-Signature=<...>&X-Tos-SignedHeaders=host . Signature is good for 24h AND the file itself is auto-deleted after 24h (TOS lifecycle rule '24h文件自动删除') — download immediately on success.",
+  "id": "cgt-20260521225953-zr48p",
+  "model": "seedance-1-5-pro-251215",
+  "status": "succeeded",
+  "content": {
+    "video_url": "https://ark-content-generation-ap-southeast-1.tos-ap-southeast-1.volces.com/seedance-1-5-pro/<file-id>.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=<REDACTED>&X-Tos-Date=20260521T150135Z&X-Tos-Expires=86400&X-Tos-Signature=<REDACTED>&X-Tos-SignedHeaders=host"
+  },
+  "usage": {
+    "completion_tokens": 108900,
+    "total_tokens": 108900
+  },
+  "created_at": 1779375595,
+  "updated_at": 1779375695,
+  "seed": 67015,
+  "resolution": "720p",
+  "ratio": "1:1",
+  "duration": 5,
+  "framespersecond": 24,
+  "service_tier": "default",
+  "execution_expires_after": 172800,
+  "generate_audio": true,
+  "draft": false,
+  "priority": 0
+}

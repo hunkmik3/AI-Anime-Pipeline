@@ -1,0 +1,9 @@
+{
+  "_comment": "HTTP 401. Two slightly different shapes: malformed-key (code AuthenticationError, message 'The API key format is incorrect') vs missing header (same code, message 'the API key or AK/SK in the request is missing or invalid'). Both have type=Unauthorized.",
+  "error": {
+    "code": "AuthenticationError",
+    "message": "The API key format is incorrect. Request id: 021779375573927c5f50319cb4d4388d7836967b82aebe5f11041",
+    "param": "",
+    "type": "Unauthorized"
+  }
+}

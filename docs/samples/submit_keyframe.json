@@ -1,0 +1,14 @@
+{
+  "_comment": "First-frame + last-frame keyframe interpolation. Requires `role` field on each image_url. Valid roles for seedance-1-5-pro: 'first_frame', 'last_frame'. Other roles (e.g. 'reference', 'reference_image') are rejected — see error_invalid_role.json and error_multiref_unsupported.json.",
+  "request": {
+    "model": "seedance-1-5-pro-251215",
+    "content": [
+      {"type": "text", "text": "Smooth cinematic transition between two scenes"},
+      {"type": "image_url", "image_url": {"url": "https://example.com/frame_start.png"}, "role": "first_frame"},
+      {"type": "image_url", "image_url": {"url": "https://example.com/frame_end.png"}, "role": "last_frame"}
+    ]
+  },
+  "response_200": {
+    "id": "cgt-20260521230030-qxk4b"
+  }
+}

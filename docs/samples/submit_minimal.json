@@ -1,0 +1,13 @@
+{
+  "_comment": "Minimal happy-path submit. Request body POSTed to /api/v3/contents/generations/tasks. Response on the right.",
+  "request": {
+    "model": "seedance-1-5-pro-251215",
+    "content": [
+      {"type": "text", "text": "A girl turns her head and smiles, cinematic lighting"},
+      {"type": "image_url", "image_url": {"url": "https://example.com/character.png"}}
+    ]
+  },
+  "response_200": {
+    "id": "cgt-20260521225953-zr48p"
+  }
+}
