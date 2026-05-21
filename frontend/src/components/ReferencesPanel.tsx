@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { mediaUrl, type ReferenceItem } from "../api/client";
-import { useBoardStore } from "../store/board";
+import { useShotWorkflowStore } from "../store/shotWorkflow";
 import { filterReferences, useReferencesStore } from "../store/references";
 
 /**
@@ -172,7 +172,7 @@ function ReferenceCard({
     // exposed outside <ReactFlow> (this component lives outside that
     // subtree, so we don't have access to the hook here).
     const pos = { x: 200, y: 200 };
-    await useBoardStore.getState().addReferenceNode(
+    await useShotWorkflowStore.getState().addReferenceNode(
       {
         mediaId: item.mediaId,
         aiBrief: item.aiBrief,

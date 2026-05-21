@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useGenerationStore } from "../store/generation";
-import { useBoardStore } from "../store/board";
+import { useShotWorkflowStore } from "../store/shotWorkflow";
+import { useProjectStore } from "../store/project";
 import {
   autoPrompt as autoPromptApi,
   autoPromptBatch as autoPromptBatchApi,
@@ -114,8 +115,8 @@ function imageAspectToVideo(img: string | undefined): VideoAspectKey | null {
 function pickDefaultAspect(
   rfId: string,
   targetType: string,
-  nodes: ReturnType<typeof useBoardStore.getState>["nodes"],
-  edges: ReturnType<typeof useBoardStore.getState>["edges"],
+  nodes: ReturnType<typeof useShotWorkflowStore.getState>["nodes"],
+  edges: ReturnType<typeof useShotWorkflowStore.getState>["edges"],
 ): AspectKey | null {
   const upstreamAspects: string[] = [];
   for (const e of edges) {
@@ -152,7 +153,7 @@ export function GenerationDialog() {
   const closeGenerationDialog = useGenerationStore((s) => s.closeGenerationDialog);
   const dispatchGeneration = useGenerationStore((s) => s.dispatchGeneration);
   const dispatchStoryboard = useGenerationStore((s) => s.dispatchStoryboard);
-  const nodes = useBoardStore((s) => s.nodes);
+  const nodes = useShotWorkflowStore((s) => s.nodes);
 
   const [prompt, setPrompt] = useState(openDialog.prompt);
   const [aspectRatio, setAspectRatio] = useState<AspectKey>("IMAGE_ASPECT_RATIO_LANDSCAPE");
@@ -191,14 +192,14 @@ export function GenerationDialog() {
 
   const rfId = openDialog.rfId;
   const node = nodes.find((n) => n.id === rfId);
-  const boardName = useBoardStore((s) => s.boardName);
+  const boardName = useProjectStore((s) => s.currentProject?.name ?? "");
   const nodeCount = nodes.length;
-  const edges = useBoardStore((s) => s.edges);
+  const edges = useShotWorkflowStore((s) => s.edges);
 
   const targetType = node?.data.type ?? "image";
   const isVideo = targetType === "video";
   const isCharacter = targetType === "character";
-  const isStoryboard = targetType === "Storyboard";
+  const isStoryboard = targetType === "storyboard";
   // Prompt nodes are text-only — clicking Generate runs auto_prompt
   // synthesis from upstream context and writes the result back to
   // node.data.prompt. No image dispatch, no aspect/variants.
@@ -304,7 +305,7 @@ export function GenerationDialog() {
           rfId,
           openNodeType,
           nodes,
-          useBoardStore.getState().edges,
+          useShotWorkflowStore.getState().edges,
         );
         if (inherited !== null) {
           nextAspect = inherited;
@@ -326,11 +327,11 @@ export function GenerationDialog() {
       setAutoPromptUsed(false);
       // Default-select every upstream source variant for video targets so
       // the user just hits Generate when they want all videos.
-      const upstreamEdge = useBoardStore
+      const upstreamEdge = useShotWorkflowStore
         .getState()
         .edges.find((e) => e.target === rfId);
       const upstreamNode = upstreamEdge
-        ? useBoardStore.getState().nodes.find((n) => n.id === upstreamEdge.source)
+        ? useShotWorkflowStore.getState().nodes.find((n) => n.id === upstreamEdge.source)
         : undefined;
       const ups =
         upstreamNode?.data.mediaIds ??
@@ -433,7 +434,7 @@ export function GenerationDialog() {
       const updated = await patchEdge(edgeDbId, {
         source_variant_idx: variantIdx,
       });
-      useBoardStore.getState().updateEdgeData(edgeId, {
+      useShotWorkflowStore.getState().updateEdgeData(edgeId, {
         sourceVariantIdx: updated.source_variant_idx,
       });
     } catch (err) {
@@ -481,7 +482,7 @@ export function GenerationDialog() {
         return;
       }
       const finalPrompt = prompt;
-      useBoardStore.getState().updateNodeData(rfId, {
+      useShotWorkflowStore.getState().updateNodeData(rfId, {
         prompt: finalPrompt,
         status: finalPrompt.trim() ? "done" : "idle",
       });
@@ -509,7 +510,7 @@ export function GenerationDialog() {
         if (charGender) charStamp.charGender = charGender;
       }
       if (charPromptMode === "builder" && Object.keys(charStamp).length > 0) {
-        useBoardStore.getState().updateNodeData(rfId, charStamp);
+        useShotWorkflowStore.getState().updateNodeData(rfId, charStamp);
         const dbId = parseInt(rfId, 10);
         if (!isNaN(dbId)) {
           patchNode(dbId, { data: charStamp }).catch(() => {});
@@ -538,7 +539,7 @@ export function GenerationDialog() {
       // Mark the target node as "auto-prompt running" so the canvas
       // can render a busy treatment + block duplicate dispatches on
       // the same node. Cleared in finally below regardless of outcome.
-      useBoardStore.getState().updateNodeData(rfId, { autoPromptStatus: "pending" });
+      useShotWorkflowStore.getState().updateNodeData(rfId, { autoPromptStatus: "pending" });
       try {
         if (!isVideo && variants > 1) {
           const res = await autoPromptBatchApi(dbId, variants);
@@ -556,10 +557,10 @@ export function GenerationDialog() {
           setPrompt(finalPrompt);
         }
         setAutoPromptUsed(true);
-        useBoardStore.getState().updateNodeData(rfId, { autoPromptStatus: undefined });
+        useShotWorkflowStore.getState().updateNodeData(rfId, { autoPromptStatus: undefined });
       } catch (err) {
         setAutoBuilding(false);
-        useBoardStore.getState().updateNodeData(rfId, { autoPromptStatus: "failed" });
+        useShotWorkflowStore.getState().updateNodeData(rfId, { autoPromptStatus: "failed" });
         useGenerationStore.setState({
           error: err instanceof Error
             ? `Auto-prompt failed: ${err.message}`

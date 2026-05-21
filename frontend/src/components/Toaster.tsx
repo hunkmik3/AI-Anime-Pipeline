@@ -1,15 +1,15 @@
 import { useEffect, useRef } from "react";
-import { useBoardStore } from "../store/board";
+import { useShotWorkflowStore } from "../store/shotWorkflow";
 import { useChatStore } from "../store/chat";
 import { useGenerationStore } from "../store/generation";
 import { usePipelineStore } from "../store/pipeline";
 
 export function Toaster() {
-  const boardError = useBoardStore((s) => s.error);
+  const boardError = useShotWorkflowStore((s) => s.error);
   const chatError = useChatStore((s) => s.error);
   const genError = useGenerationStore((s) => s.error);
   const pipelineError = usePipelineStore((s) => s.error);
-  const clearBoardError = useBoardStore((s) => s.clearError);
+  const clearBoardError = useShotWorkflowStore((s) => s.clearError);
   const clearChatError = useChatStore((s) => s.clearError);
   const clearGenError = useGenerationStore((s) => s.clearError);
   const clearPipelineError = usePipelineStore((s) => s.clearError);

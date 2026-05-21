@@ -1165,7 +1165,7 @@ def _seed_storyboard_target(narrative_seed: str = "") -> int:
             status="done",
         )
         target = Node(
-            shot_id=b.id, short_id="sbtg", type="Storyboard",
+            shot_id=b.id, short_id="sbtg", type="storyboard",
             x=0, y=0, w=240, h=180,
             data={
                 "title": "Story",

@@ -77,8 +77,7 @@ def test_extract_plan_bare_json_without_fence():
 # ── Real planner dispatcher ────────────────────────────────────────────────
 
 
-def _board(client, name="T"):
-    return client.post("/api/boards", json={"name": name}).json()
+from tests.conftest import make_shot as _board  # noqa: F401
 
 
 def _claude_provider():

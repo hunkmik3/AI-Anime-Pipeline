@@ -6,8 +6,7 @@ import pytest
 from flowboard.worker.processor import WorkerController
 
 
-def _board(client, name="T"):
-    return client.post("/api/boards", json={"name": name}).json()
+from tests.conftest import make_shot as _board  # noqa: F401
 
 
 def test_create_request_persists_and_returns_row(client):

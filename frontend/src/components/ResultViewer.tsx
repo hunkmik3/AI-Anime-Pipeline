@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useGenerationStore } from "../store/generation";
-import { useBoardStore } from "../store/board";
+import { useShotWorkflowStore } from "../store/shotWorkflow";
 import { useSettingsStore } from "../store/settings";
 import { getMediaStatus, mediaUrl, type MediaStatus } from "../api/client";
 import { countryLabel, vibeLabel } from "../constants/character";
@@ -68,8 +68,8 @@ export function ResultViewer() {
   const openGenerationDialog = useGenerationStore((s) => s.openGenerationDialog);
   const dispatchGeneration = useGenerationStore((s) => s.dispatchGeneration);
   const projectId = useGenerationStore((s) => s.projectId);
-  const nodes = useBoardStore((s) => s.nodes);
-  const edges = useBoardStore((s) => s.edges);
+  const nodes = useShotWorkflowStore((s) => s.nodes);
+  const edges = useShotWorkflowStore((s) => s.edges);
   const settingsImageModel = useSettingsStore((s) => s.imageModel);
   const settingsVideoQuality = useSettingsStore((s) => s.videoQuality);
 
@@ -379,7 +379,7 @@ export function ResultViewer() {
 
   async function handleNewVariant() {
     if (!rfId || llmBusy) return;
-    const newRfId = await useBoardStore
+    const newRfId = await useShotWorkflowStore
       .getState()
       .cloneNodeWithUpstream(rfId);
     if (!newRfId) return;

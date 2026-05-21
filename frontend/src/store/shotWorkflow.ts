@@ -60,6 +60,14 @@ export interface FlowboardNodeData extends Record<string, unknown> {
   shots?: StoryboardShot[];
   shotCount?: number;
   narrativeSeed?: string;
+
+  // Phase 4 anime nodes
+  scriptText?: string;
+  bibleType?: "project" | "scene";
+  bibleText?: string;
+  masterShotAssetId?: number;
+  gateTitle?: string;
+  gateNotes?: string;
 }
 
 export type FlowNode = Node<FlowboardNodeData>;
@@ -91,7 +99,11 @@ const TYPE_TITLE: Record<NodeType, string> = {
   prompt: "Prompt",
   note: "Note",
   visual_asset: "Visual asset",
-  Storyboard: "Storyboard",
+  storyboard: "Storyboard",
+  script: "Script",
+  bible_ref: "Bible",
+  master_shot: "Master shot",
+  approval_gate: "Approval gate",
 };
 
 const positionTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -142,6 +154,15 @@ function nodeFromDto(n: RawNode): FlowNode {
       charVibe: n.data["charVibe"] as string | undefined,
       charGender: n.data["charGender"] as string | undefined,
       error: n.data["error"] as string | undefined,
+      shots: n.data["shots"] as StoryboardShot[] | undefined,
+      shotCount: n.data["shotCount"] as number | undefined,
+      narrativeSeed: n.data["narrativeSeed"] as string | undefined,
+      scriptText: n.data["scriptText"] as string | undefined,
+      bibleType: n.data["bibleType"] as "project" | "scene" | undefined,
+      bibleText: n.data["bibleText"] as string | undefined,
+      masterShotAssetId: n.data["masterShotAssetId"] as number | undefined,
+      gateTitle: n.data["gateTitle"] as string | undefined,
+      gateNotes: n.data["gateNotes"] as string | undefined,
     },
   };
 }

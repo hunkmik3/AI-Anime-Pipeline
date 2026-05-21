@@ -229,7 +229,7 @@ class PromptSynthError(RuntimeError):
 # frontend's ``REF_SOURCE_TYPES`` set in ``store/generation.ts`` so the
 # ``ref_image_N`` numbering we hand the LLM aligns with the actual
 # positional slot Flow sees on the wire.
-_REF_SOURCE_TYPES = {"character", "image", "visual_asset", "Storyboard"}
+_REF_SOURCE_TYPES = {"character", "image", "visual_asset", "storyboard"}
 
 
 def _collect_upstream(node_id: int) -> tuple[list[dict], Optional[Node]]:

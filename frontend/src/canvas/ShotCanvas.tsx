@@ -20,19 +20,9 @@ import {
   type FlowNode,
   type NodeType,
 } from "../store/shotWorkflow";
-import { NodeCard } from "./NodeCard";
+import { nodeTypes } from "./nodes";
 import { VariantEdge } from "./VariantEdge";
 import { useGenerationStore } from "../store/generation";
-
-const nodeTypes = {
-  character: NodeCard,
-  image: NodeCard,
-  video: NodeCard,
-  prompt: NodeCard,
-  note: NodeCard,
-  visual_asset: NodeCard,
-  Storyboard: NodeCard,
-};
 
 // Single edge type used for everything — VariantEdge renders the
 // default bezier line and additionally surfaces a `v{N}` chip when the

@@ -6,7 +6,8 @@ import {
   type KeyboardEvent,
   type ChangeEvent,
 } from "react";
-import { useBoardStore } from "../store/board";
+import { useProjectStore } from "../store/project";
+import { useShotWorkflowStore } from "../store/shotWorkflow";
 import { useChatStore } from "../store/chat";
 import { usePipelineStore } from "../store/pipeline";
 import type { ChatMessageDTO, PlanDTO } from "../api/client";
@@ -162,7 +163,7 @@ function ChatComposer() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
 
-  const nodes = useBoardStore((s) => s.nodes);
+  const nodes = useShotWorkflowStore((s) => s.nodes);
   const pending = useChatStore((s) => s.pending);
   const sendMessage = useChatStore((s) => s.sendMessage);
 
@@ -341,8 +342,11 @@ function ChatComposer() {
 // ── ChatSidebar ───────────────────────────────────────────────────────────────
 
 export function ChatSidebar() {
-  const boardId = useBoardStore((s) => s.boardId);
-  const boardName = useBoardStore((s) => s.boardName);
+  // ChatSidebar is currently hidden from App.tsx (Phase 3) — kept compiling
+  // so it can be revived without a rewrite. Driven off shot.id for now;
+  // a Phase 7+ rebuild will switch to project-scoped chat directly.
+  const boardId = useShotWorkflowStore((s) => s.shotId);
+  const boardName = useProjectStore((s) => s.currentProject?.name ?? "");
   const messages = useChatStore((s) => s.messages);
   const pending = useChatStore((s) => s.pending);
   const loadChat = useChatStore((s) => s.loadChat);

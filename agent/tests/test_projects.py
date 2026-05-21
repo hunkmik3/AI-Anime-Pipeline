@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import uuid
 
+from tests.conftest import make_shot
+
 
 def test_create_list_get_project(client):
     r = client.post("/api/projects", json={"name": "Anime 01"})
@@ -120,8 +122,8 @@ def test_delete_project_cascades_full_tree(client):
         Shot,
     )
 
-    # Create via the legacy board shim — gives us Project+Scene+Shot in one shot.
-    b = client.post("/api/boards", json={"name": "doomed"}).json()
+    # Project+Scene+Shot pyramid via the new REST surface.
+    b = make_shot(client, name="doomed")
     shot_uuid = uuid.UUID(b["id"])
     project_uuid = uuid.UUID(b["project_id"])
 
@@ -208,7 +210,7 @@ def test_project_cost_sums_requests_across_shots(client):
     from flowboard.db import get_session
     from flowboard.db.models import Request
 
-    b = client.post("/api/boards", json={"name": "cost"}).json()
+    b = make_shot(client, name="cost")
     project_id = b["project_id"]
     n = client.post("/api/nodes", json={"shot_id": b["id"], "type": "image"}).json()
 
@@ -257,7 +259,7 @@ def test_project_chat_lists_messages(client):
     from flowboard.db import get_session
     from flowboard.db.models import ChatMessage
 
-    b = client.post("/api/boards", json={"name": "chat"}).json()
+    b = make_shot(client, name="chat")
     project_id = b["project_id"]
     with get_session() as s:
         s.add(ChatMessage(project_id=uuid.UUID(project_id), role="user", content="hi"))

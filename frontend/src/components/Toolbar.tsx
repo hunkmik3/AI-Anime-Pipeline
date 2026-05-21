@@ -1,12 +1,17 @@
 import { useState, useRef, type KeyboardEvent } from "react";
-import { useBoardStore } from "../store/board";
+import { useProjectStore } from "../store/project";
 import { ActivityBell } from "./activity/ActivityBell";
 import { AiProviderBadge } from "./AiProviderBadge";
 import { SponsorButton } from "./SponsorDialog";
 
 export function Toolbar() {
-  const boardName = useBoardStore((s) => s.boardName);
-  const renameBoard = useBoardStore((s) => s.renameBoard);
+  const currentProject = useProjectStore((s) => s.currentProject);
+  const renameProject = useProjectStore((s) => s.renameProject);
+  const boardName = currentProject?.name ?? "";
+  const projectId = currentProject?.id ?? null;
+  const renameBoard = (name: string) => {
+    if (projectId) void renameProject(projectId, name);
+  };
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");

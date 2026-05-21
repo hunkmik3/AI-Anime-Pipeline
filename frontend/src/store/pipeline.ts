@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { runPlan as apiRunPlan, getPipelineRun, type PipelineRunDTO } from "../api/client";
-import { useBoardStore } from "./board";
+import { useShotWorkflowStore } from "./shotWorkflow";
 
 interface PipelineState {
   activeRun: PipelineRunDTO | null;
@@ -26,7 +26,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       set({ activeRun: run });
       // Pull the freshly materialised nodes onto the canvas immediately so the
       // user sees the layout before the first generation completes.
-      await useBoardStore.getState().refreshBoardState();
+      await useShotWorkflowStore.getState().refreshWorkflow();
       schedulePoll(get, set, run.id);
     } catch (err) {
       set({ error: err instanceof Error ? err.message : "failed to start plan" });
@@ -55,7 +55,7 @@ function schedulePoll(
       const run = await getPipelineRun(runId);
       // Always refresh board so per-node status (queued/running/done/error)
       // and freshly-arrived mediaId values land on the canvas during the run.
-      await useBoardStore.getState().refreshBoardState();
+      await useShotWorkflowStore.getState().refreshWorkflow();
       if (run.status === "done" || run.status === "failed") {
         set({
           activeRun: null,

@@ -1,5 +1,8 @@
+from tests.conftest import make_shot
+
+
 def _scaffold(client):
-    b = client.post("/api/boards", json={"name": "T"}).json()
+    b = make_shot(client)
     a = client.post("/api/nodes", json={"shot_id": b["id"], "type": "character"}).json()
     c = client.post("/api/nodes", json={"shot_id": b["id"], "type": "image"}).json()
     return b, a, c
@@ -20,12 +23,12 @@ def test_create_and_delete_edge(client):
     # multi-variant where the user hasn't picked).
     assert edge["source_variant_idx"] is None
 
-    detail = client.get(f"/api/boards/{b['id']}").json()
+    detail = client.get(f"/api/shots/{b['id']}/workflow").json()
     assert len(detail["edges"]) == 1
 
     r = client.delete(f"/api/edges/{edge['id']}")
     assert r.status_code == 200
-    detail = client.get(f"/api/boards/{b['id']}").json()
+    detail = client.get(f"/api/shots/{b['id']}/workflow").json()
     assert detail["edges"] == []
 
 
@@ -59,7 +62,7 @@ def test_patch_edge_variant_pin(client):
     assert r.json()["source_variant_idx"] == 3
 
     # Round-trip via GET to confirm persistence.
-    detail = client.get(f"/api/boards/{b['id']}").json()
+    detail = client.get(f"/api/shots/{b['id']}/workflow").json()
     assert detail["edges"][0]["source_variant_idx"] == 3
 
     # Explicit null clears the pin.
@@ -100,7 +103,7 @@ def test_edge_self_loop_rejected(client):
 
 def test_edge_crossing_board_rejected(client):
     b1, a, _ = _scaffold(client)
-    b2 = client.post("/api/boards", json={"name": "other"}).json()
+    b2 = make_shot(client, name="other")
     other = client.post(
         "/api/nodes", json={"shot_id": b2["id"], "type": "image"}
     ).json()
@@ -113,7 +116,7 @@ def test_edge_crossing_board_rejected(client):
 
 
 def test_edge_missing_node_returns_404(client):
-    b = client.post("/api/boards", json={"name": "T"}).json()
+    b = make_shot(client)
     a = client.post("/api/nodes", json={"shot_id": b["id"], "type": "image"}).json()
     r = client.post(
         "/api/edges",

@@ -1,8 +1,6 @@
 from unittest.mock import AsyncMock, patch
 
-
-def _board(client, name="T"):
-    return client.post("/api/boards", json={"name": name}).json()
+from tests.conftest import make_shot as _board  # noqa: F401
 
 
 def test_send_chat_persists_user_and_assistant(client):
@@ -60,7 +58,7 @@ def test_list_chat_returns_history_ordered(client):
             "/api/chat",
             json={"shot_id": b["id"], "message": f"msg{i}", "mentions": []},
         )
-    r = client.get(f"/api/boards/{b['id']}/chat")
+    r = client.get(f"/api/projects/{b['project_id']}/chat")
     assert r.status_code == 200
     history = r.json()
     # 3 user + 3 assistant = 6 rows
@@ -91,9 +89,8 @@ def test_send_chat_unknown_board(client):
     assert r.status_code == 404
 
 
-def test_list_chat_unknown_board(client):
-    # Non-UUID path segment → 404 from the resolver.
-    r = client.get("/api/boards/00000000-0000-0000-0000-000000000000/chat")
+def test_list_chat_unknown_project(client):
+    r = client.get("/api/projects/00000000-0000-0000-0000-000000000000/chat")
     assert r.status_code == 404
 
 

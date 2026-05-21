@@ -1,5 +1,4 @@
-def _make_board(client, name="Test"):
-    return client.post("/api/boards", json={"name": name}).json()
+from tests.conftest import make_shot as _make_board  # noqa: F401
 
 
 def test_create_node_assigns_short_id(client):
@@ -15,6 +14,20 @@ def test_create_node_assigns_short_id(client):
     assert node["x"] == 10 and node["y"] == 20
     assert len(node["short_id"]) == 4
     assert node["status"] == "idle"
+
+
+def test_create_node_accepts_storyboard_type(client):
+    """Phase 0 Q1 — pre-Phase-4, POST /api/nodes with type="Storyboard"
+    failed Pydantic Literal validation while internal callers created
+    Storyboard nodes by inserting Node rows directly. Phase 4 added all
+    canonical types (lowercase) to the Literal; verify the POST path now
+    accepts each.
+    """
+    b = _make_board(client)
+    for t in ("storyboard", "script", "bible_ref", "master_shot", "approval_gate"):
+        r = client.post("/api/nodes", json={"shot_id": b["id"], "type": t})
+        assert r.status_code == 200, f"{t}: {r.status_code} {r.text}"
+        assert r.json()["type"] == t
 
 
 def test_short_ids_unique_within_board(client):
@@ -250,5 +263,5 @@ def test_delete_node_cascades_edges(client):
     assert e["id"] in body["deleted_edges"]
 
     # edge is gone server-side
-    detail = client.get(f"/api/boards/{b['id']}").json()
-    assert detail["edges"] == []
+    wf = client.get(f"/api/shots/{b['id']}/workflow").json()
+    assert wf["edges"] == []

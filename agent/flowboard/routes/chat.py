@@ -1,9 +1,8 @@
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, StringConstraints
-from sqlmodel import select
 from typing_extensions import Annotated
 
 from flowboard.db import get_session
@@ -88,30 +87,6 @@ async def send_chat(body: ChatSendRequest):
         return resp
 
 
-@router.get("/api/boards/{board_id}/chat")
-def list_chat(
-    board_id: str,
-    limit: Optional[int] = Query(default=500, ge=1, le=2000),
-):
-    """List chat messages for the Project that owns this Shot.
-
-    The URL still says "board" for backwards compat with the frontend;
-    `board_id` is a Shot UUID under the Phase 1 shim.
-    """
-    try:
-        shot_uuid = uuid.UUID(board_id)
-    except ValueError:
-        raise HTTPException(404, "board not found")
-
-    with get_session() as s:
-        project_id = _resolve_project_id(s, shot_uuid)
-        if project_id is None:
-            raise HTTPException(404, "board not found")
-        q = (
-            select(ChatMessage)
-            .where(ChatMessage.project_id == project_id)
-            .order_by(ChatMessage.created_at, ChatMessage.id)
-        )
-        if limit:
-            q = q.limit(limit)
-        return list(s.exec(q).all())
+# Phase 4: the legacy `/api/boards/{board_id}/chat` listing was removed
+# alongside the rest of the /api/boards shim. List chat via
+# `/api/projects/{project_id}/chat` (see routes/projects.py).

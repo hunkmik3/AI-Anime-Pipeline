@@ -110,26 +110,23 @@ export function getHealth() {
 
 // ── DTOs ────────────────────────────────────────────────────────────────────
 
-export type NodeType = "character" | "image" | "video" | "prompt" | "note" | "visual_asset" | "Storyboard";
+export type NodeType =
+  | "character"
+  | "image"
+  | "video"
+  | "prompt"
+  | "note"
+  | "visual_asset"
+  | "storyboard"
+  | "script"
+  | "bible_ref"
+  | "master_shot"
+  | "approval_gate";
 export type NodeStatus = "idle" | "queued" | "running" | "done" | "error" | "partial";
-
-// Phase 3: legacy `Board` is now the Shot UUID wrapped by `/api/boards/*`
-// shim (see agent/flowboard/routes/boards.py). `id` is a UUID string at
-// runtime; left typed `unknown` here so callers don't accidentally
-// `parseInt()` it. Frontend should prefer Project/Scene/Shot types below.
-export interface Board {
-  id: string;
-  name: string;
-  created_at: string;
-  project_id: string;
-}
 
 export interface NodeDTO {
   id: number;
-  // Phase 3: column rename board_id → shot_id (UUID string). Legacy
-  // `board_id` left for shim consumers; new code should prefer shot_id.
-  board_id?: string;
-  shot_id?: string;
+  shot_id: string;
   short_id: string;
   type: NodeType;
   x: number;
@@ -143,8 +140,7 @@ export interface NodeDTO {
 
 export interface EdgeDTO {
   id: number;
-  board_id?: string;
-  shot_id?: string;
+  shot_id: string;
   source_id: number;
   target_id: number;
   kind: string;
@@ -155,58 +151,18 @@ export interface EdgeDTO {
   source_variant_idx: number | null;
 }
 
-export interface BoardDetail {
-  board: Board;
-  nodes: NodeDTO[];
-  edges: EdgeDTO[];
-}
-
 // ── API methods ──────────────────────────────────────────────────────────────
-// Legacy `/api/boards/*` helpers — kept for the chat sidebar (currently
-// dead code in App.tsx) and any tooling that still pokes the shim. New
-// code should use the Project/Scene/Shot helpers further down.
 
-export function listBoards(): Promise<Board[]> {
-  return api<Board[]>("/api/boards");
-}
-
-export function createBoard(name: string): Promise<Board> {
-  return api<Board>("/api/boards", {
-    method: "POST",
-    body: JSON.stringify({ name }),
-  });
-}
-
-export function getBoard(id: string): Promise<BoardDetail> {
-  return api<BoardDetail>(`/api/boards/${id}`);
-}
-
-export function patchBoard(id: string, name: string): Promise<Board> {
-  return api<Board>(`/api/boards/${id}`, {
-    method: "PATCH",
-    body: JSON.stringify({ name }),
-  });
-}
-
-export function deleteBoard(id: string): Promise<{ deleted: string }> {
-  return api<{ deleted: string }>(`/api/boards/${id}`, { method: "DELETE" });
-}
-
-// Phase 3: /api/nodes + /api/edges take `shot_id` (UUID string). Older
-// callers may still pass `board_id` — translated here for compat.
 export function createNode(input: {
-  shot_id?: string;
-  board_id?: string;
+  shot_id: string;
   type: NodeType;
   x: number;
   y: number;
   data?: object;
 }): Promise<NodeDTO> {
-  const { shot_id, board_id, ...rest } = input;
-  const sid = shot_id ?? board_id;
   return api<NodeDTO>("/api/nodes", {
     method: "POST",
-    body: JSON.stringify({ shot_id: sid, ...rest }),
+    body: JSON.stringify(input),
   });
 }
 
@@ -255,18 +211,15 @@ export function deleteNode(id: number): Promise<{ ok: true; deleted_edges: numbe
 }
 
 export function createEdge(input: {
-  shot_id?: string;
-  board_id?: string;
+  shot_id: string;
   source_id: number;
   target_id: number;
   kind?: string;
   source_variant_idx?: number | null;
 }): Promise<EdgeDTO> {
-  const { shot_id, board_id, ...rest } = input;
-  const sid = shot_id ?? board_id;
   return api<EdgeDTO>("/api/edges", {
     method: "POST",
-    body: JSON.stringify({ shot_id: sid, ...rest }),
+    body: JSON.stringify(input),
   });
 }
 
@@ -298,10 +251,7 @@ export type ChatRole = "user" | "assistant" | "system";
 
 export interface ChatMessageDTO {
   id: number;
-  // Wire field is `project_id` now (Phase 1 schema rename); kept here for
-  // the dead ChatSidebar code path.
-  project_id?: string;
-  board_id?: string;
+  project_id: string;
   role: ChatRole;
   content: string;
   mentions: string[];
@@ -310,8 +260,7 @@ export interface ChatMessageDTO {
 
 export interface PlanDTO {
   id: number;
-  shot_id?: string;
-  board_id?: string;
+  shot_id: string;
   spec: {
     nodes: Array<{ tmp_id?: string; type: string; params?: Record<string, unknown> }>;
     edges: Array<{ from: string; to: string; kind?: string }>;
@@ -365,19 +314,6 @@ export interface RequestDTO {
   error: string | null;
   created_at: string;
   finished_at: string | null;
-}
-
-// Phase 3: the legacy /api/boards/{shotId}/project shim still routes
-// through to project_service.ensure_flow_project(), but the canonical
-// route is /api/projects/{projectId}/flow-project. Keep both signatures
-// — generation store passes the shot UUID via the shim while it's still
-// the simplest call site to thread context through.
-export function ensureBoardProject(shotId: string) {
-  return api<BoardProject>(`/api/boards/${shotId}/project`, { method: "POST" });
-}
-
-export function getBoardProject(shotId: string) {
-  return api<BoardProject>(`/api/boards/${shotId}/project`).catch(() => null);
 }
 
 export function ensureProjectFlowProject(projectId: string) {
@@ -813,10 +749,6 @@ export interface ReferenceCreateInput {
   ai_brief?: string | null;
   aspect_ratio?: string | null;
   url?: string | null;
-  // Phase 3: callers may still pass `source_board_id` (legacy name carrying
-  // the Shot UUID under the /api/boards shim). Both fields accepted and
-  // mapped to backend's `source_shot_id` in createReference().
-  source_board_id?: string | null;
   source_shot_id?: string | null;
   source_node_short_id?: string | null;
   tags?: string[];
@@ -898,16 +830,9 @@ export async function listReferences(params?: {
 export async function createReference(
   input: ReferenceCreateInput,
 ): Promise<ReferenceItem> {
-  // Backend column is `source_shot_id`; the legacy `source_board_id` field
-  // (still emitted by NodeCard pre-Phase-4) carries the same Shot UUID.
-  // Collapse to one field on the wire so the backend binds it.
-  const { source_board_id, source_shot_id, ...rest } = input;
-  const wire: Record<string, unknown> = { ...rest };
-  const shotId = source_shot_id ?? source_board_id ?? null;
-  if (shotId !== null) wire.source_shot_id = shotId;
   const row = await api<ReferenceRowWire>("/api/references", {
     method: "POST",
-    body: JSON.stringify(wire),
+    body: JSON.stringify(input),
   });
   return mapReferenceRow(row);
 }

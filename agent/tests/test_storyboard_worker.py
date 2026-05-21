@@ -40,7 +40,7 @@ def _seed_storyboard_node() -> int:
         shot = Shot(scene_id=scene.id)
         s.add(shot); s.commit(); s.refresh(shot)
         target = Node(
-            shot_id=shot.id, short_id="sbtg", type="Storyboard",
+            shot_id=shot.id, short_id="sbtg", type="storyboard",
             x=0, y=0, w=240, h=180,
             data={"title": "Story"},
             status="idle",
@@ -332,7 +332,7 @@ def _seed_storyboard_with_shots(shots: list[dict]) -> int:
         shot = Shot(scene_id=scene.id)
         s.add(shot); s.commit(); s.refresh(shot)
         n = Node(
-            shot_id=shot.id, short_id="sbrt", type="Storyboard",
+            shot_id=shot.id, short_id="sbrt", type="storyboard",
             x=0, y=0, w=240, h=180,
             data={
                 "shots": shots,

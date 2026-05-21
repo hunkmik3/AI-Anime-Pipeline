@@ -11,8 +11,25 @@ from flowboard.short_id import generate_unique_short_id
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 
-NodeType = Literal["character", "image", "video", "prompt", "note", "visual_asset"]
-NodeStatus = Literal["idle", "queued", "running", "done", "error"]
+NodeType = Literal[
+    "character",
+    "image",
+    "video",
+    "prompt",
+    "note",
+    "visual_asset",
+    # Phase 4: storyboard renamed to lowercase to match the other type names.
+    # Pre-Phase-4 the frontend sent "Storyboard" and the Pydantic Literal
+    # here didn't include it (silent Q1 bug — POST would 422); fixed by
+    # adding it to the canonical set with consistent casing.
+    "storyboard",
+    # Phase 4 anime nodes — see docs/flowboard_modification_plan.md §4.3.
+    "script",
+    "bible_ref",
+    "master_shot",
+    "approval_gate",
+]
+NodeStatus = Literal["idle", "queued", "running", "done", "error", "partial"]
 
 _COORD_MIN = -1_000_000.0
 _COORD_MAX = 1_000_000.0

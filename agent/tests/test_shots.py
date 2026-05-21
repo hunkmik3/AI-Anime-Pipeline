@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import uuid
 
+from tests.conftest import make_shot as _make_shot  # noqa: F401
+
 
 def _project(client, name: str = "P") -> str:
     return client.post("/api/projects", json={"name": name}).json()["id"]
@@ -111,7 +113,7 @@ def test_delete_shot_cascades_nodes_edges(client):
     from flowboard.db import get_session
     from flowboard.db.models import Edge, Node, Shot
 
-    b = client.post("/api/boards", json={"name": "shot-cascade"}).json()
+    b = _make_shot(client, name="shot-cascade")
     shot_id = b["id"]
     n1 = client.post("/api/nodes", json={"shot_id": shot_id, "type": "image"}).json()
     n2 = client.post("/api/nodes", json={"shot_id": shot_id, "type": "video"}).json()
@@ -138,7 +140,7 @@ def test_delete_missing_shot_404(client):
 def test_workflow_get_returns_existing_graph(client):
     """The legacy board shim seeds a shot; we attach nodes via /api/nodes
     and observe them through the new workflow GET."""
-    b = client.post("/api/boards", json={"name": "graph"}).json()
+    b = _make_shot(client, name="graph")
     n1 = client.post("/api/nodes", json={"shot_id": b["id"], "type": "image"}).json()
     n2 = client.post("/api/nodes", json={"shot_id": b["id"], "type": "video"}).json()
     client.post(
@@ -160,7 +162,7 @@ def test_workflow_get_missing_shot_404(client):
 def test_workflow_put_snapshot_replaces_graph(client):
     """PUT /workflow wipes the old graph and recreates from payload.
     Edges resolve by short_id between the new nodes."""
-    b = client.post("/api/boards", json={"name": "snapshot"}).json()
+    b = _make_shot(client, name="snapshot")
     # Seed an existing node so we can confirm it gets wiped.
     pre = client.post("/api/nodes", json={"shot_id": b["id"], "type": "note"}).json()
 
@@ -189,7 +191,7 @@ def test_workflow_put_snapshot_replaces_graph(client):
 
 
 def test_workflow_put_rejects_node_without_type(client):
-    b = client.post("/api/boards", json={"name": "bad"}).json()
+    b = _make_shot(client, name="bad")
     r = client.put(
         f"/api/shots/{b['id']}/workflow",
         json={"nodes": [{"short_id": "xx99"}], "edges": []},
@@ -226,7 +228,7 @@ def test_cancel_shot_resets_status_and_marks_requests(client):
     from flowboard.db import get_session
     from flowboard.db.models import Request
 
-    b = client.post("/api/boards", json={"name": "cancel"}).json()
+    b = _make_shot(client, name="cancel")
     n = client.post("/api/nodes", json={"shot_id": b["id"], "type": "image"}).json()
     with get_session() as s:
         s.add(Request(node_id=n["id"], type="gen_image", params={}, status="queued"))
@@ -271,7 +273,7 @@ def test_jobs_returns_request_rows_for_shot(client):
     from flowboard.db import get_session
     from flowboard.db.models import Request
 
-    b = client.post("/api/boards", json={"name": "jobs"}).json()
+    b = _make_shot(client, name="jobs")
     n = client.post("/api/nodes", json={"shot_id": b["id"], "type": "image"}).json()
     with get_session() as s:
         s.add(Request(node_id=n["id"], type="gen_image", params={"a": 1}, status="done"))

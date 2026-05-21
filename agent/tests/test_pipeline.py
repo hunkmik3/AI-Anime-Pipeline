@@ -18,8 +18,7 @@ from flowboard.services import pipeline_executor
 # ── helpers ───────────────────────────────────────────────────────────────
 
 
-def _make_board(client, name="P") -> dict:
-    return client.post("/api/boards", json={"name": name}).json()
+from tests.conftest import make_shot as _make_board  # noqa: F401, E402
 
 
 def _shot_uuid(b: dict) -> uuid.UUID:

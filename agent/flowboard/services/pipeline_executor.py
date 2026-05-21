@@ -134,7 +134,19 @@ def _normalise_endpoint(raw: Any) -> Optional[str]:
 # ── Materialisation ────────────────────────────────────────────────────────
 
 
-_VALID_NODE_TYPES = {"character", "image", "video", "prompt", "note", "Storyboard"}
+_VALID_NODE_TYPES = {
+    "character",
+    "image",
+    "video",
+    "prompt",
+    "note",
+    "visual_asset",
+    "storyboard",
+    "script",
+    "bible_ref",
+    "master_shot",
+    "approval_gate",
+}
 
 
 def materialize_plan(session, plan_id: int) -> dict:

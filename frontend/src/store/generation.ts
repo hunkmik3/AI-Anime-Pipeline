@@ -1,6 +1,7 @@
 import { create } from "zustand";
-import { ensureBoardProject, createRequest, getRequest, patchNode } from "../api/client";
-import { useBoardStore, type NodeStatus } from "./board";
+import { ensureProjectFlowProject, createRequest, getRequest, patchNode } from "../api/client";
+import { useShotWorkflowStore, type NodeStatus } from "./shotWorkflow";
+import { useProjectStore } from "./project";
 import { useSettingsStore } from "./settings";
 
 type PollEntry = { requestId: number; timerId: ReturnType<typeof setTimeout> | null };
@@ -88,7 +89,7 @@ interface GenerationState {
 const REF_SOURCE_TYPES = new Set(["character", "image", "visual_asset", "Storyboard"]);
 
 function collectUpstreamRefMediaIds(targetRfId: string): string[] {
-  const { nodes, edges } = useBoardStore.getState();
+  const { nodes, edges } = useShotWorkflowStore.getState();
   const ids: string[] = [];
   for (const e of edges) {
     if (e.target !== targetRfId) continue;
@@ -145,13 +146,15 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
   async ensureProjectId() {
     const cached = get().projectId;
     if (cached !== null) return cached;
-    const boardId = useBoardStore.getState().boardId;
-    if (boardId === null) {
-      set({ error: "no board loaded" });
+    // Resolve the active project (Flow-project binding lives at the
+    // project level since Phase 4 — POST /api/projects/{id}/flow-project).
+    const realProjectId = useProjectStore.getState().currentProjectId;
+    if (!realProjectId) {
+      set({ error: "no project loaded" });
       return null;
     }
     try {
-      const proj = await ensureBoardProject(boardId);
+      const proj = await ensureProjectFlowProject(realProjectId);
       set({ projectId: proj.flow_project_id });
       return proj.flow_project_id;
     } catch (err) {
@@ -185,7 +188,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
       set({
         error: "Open Flow once so the extension can detect your plan, then retry. (See the Tier-unknown banner in the bottom-left.)",
       });
-      useBoardStore.getState().updateNodeData(rfId, {
+      useShotWorkflowStore.getState().updateNodeData(rfId, {
         status: "error",
         error: "paygate_tier_unknown",
       });
@@ -201,7 +204,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
     // Optimistically update node — record variantCount so the placeholder
     // grid matches the eventual variant count even before generation finishes.
     const variantCount = Math.max(1, Math.min(opts.variantCount ?? 1, 4));
-    useBoardStore.getState().updateNodeData(rfId, {
+    useShotWorkflowStore.getState().updateNodeData(rfId, {
       status: "queued",
       prompt: opts.prompt,
       error: undefined,
@@ -219,7 +222,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         const hasMulti =
           Array.isArray(opts.sourceMediaIds) && opts.sourceMediaIds.length > 0;
         if (!hasMulti && !opts.sourceMediaId) {
-          useBoardStore.getState().updateNodeData(rfId, { status: "error", error: "no source media" });
+          useShotWorkflowStore.getState().updateNodeData(rfId, { status: "error", error: "no source media" });
           set({ error: "Video generation requires a source image (connect an upstream image node)" });
           return;
         }
@@ -273,7 +276,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         });
       }
     } catch (err) {
-      useBoardStore.getState().updateNodeData(rfId, { status: "error", error: err instanceof Error ? err.message : "request failed" });
+      useShotWorkflowStore.getState().updateNodeData(rfId, { status: "error", error: err instanceof Error ? err.message : "request failed" });
       set({ error: err instanceof Error ? err.message : "Generation failed" });
       return;
     }
@@ -297,7 +300,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
           networkRetries = 0;
 
           if (req.status === "running") {
-            useBoardStore.getState().updateNodeData(rfId, { status: "running" });
+            useShotWorkflowStore.getState().updateNodeData(rfId, { status: "running" });
             // Reschedule
             set((s) => ({
               active: {
@@ -340,7 +343,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
               req.type === "gen_video"
                 ? (req.params["video_quality"] as string | undefined)
                 : undefined;
-            useBoardStore.getState().updateNodeData(rfId, {
+            useShotWorkflowStore.getState().updateNodeData(rfId, {
               status: "done",
               mediaId,
               mediaIds,
@@ -355,7 +358,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
             // Persist to backend so the node survives page reload.
             const dbId = parseInt(rfId, 10);
             if (!isNaN(dbId) && mediaId) {
-              const n = useBoardStore.getState().nodes.find((x) => x.id === rfId);
+              const n = useShotWorkflowStore.getState().nodes.find((x) => x.id === rfId);
               const d = n?.data;
               // Backend merges `data`, so only deltas need to ship.
               // `aiBrief: null` is the explicit "clear" sentinel —
@@ -403,7 +406,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
             });
           } else if (req.status === "failed") {
             const errMsg = req.error ?? "unknown";
-            useBoardStore.getState().updateNodeData(rfId, { status: "error", error: errMsg });
+            useShotWorkflowStore.getState().updateNodeData(rfId, { status: "error", error: errMsg });
             set((s) => {
               const next = { ...s.active };
               delete next[rfId];
@@ -423,7 +426,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
           networkRetries += 1;
           if (networkRetries >= MAX_NETWORK_RETRIES) {
             const msg = err instanceof Error ? err.message : "network error";
-            useBoardStore.getState().updateNodeData(rfId, { status: "error", error: msg });
+            useShotWorkflowStore.getState().updateNodeData(rfId, { status: "error", error: msg });
             set((s) => {
               const next = { ...s.active };
               delete next[rfId];
@@ -457,7 +460,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
     const projectId = await get().ensureProjectId();
     if (projectId === null) return;
 
-    const node = useBoardStore.getState().nodes.find((n) => n.id === rfId);
+    const node = useShotWorkflowStore.getState().nodes.find((n) => n.id === rfId);
     const sourceMediaId = node?.data.mediaId;
     if (!sourceMediaId) {
       set({ error: "no source image to refine" });
@@ -467,7 +470,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
     const existing = get().active[rfId];
     if (existing && existing.timerId !== null) clearTimeout(existing.timerId);
 
-    useBoardStore.getState().updateNodeData(rfId, {
+    useShotWorkflowStore.getState().updateNodeData(rfId, {
       status: "queued",
       prompt: opts.prompt,
       error: undefined,
@@ -492,7 +495,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         },
       });
     } catch (err) {
-      useBoardStore.getState().updateNodeData(rfId, {
+      useShotWorkflowStore.getState().updateNodeData(rfId, {
         status: "error",
         error: err instanceof Error ? err.message : "refine failed",
       });
@@ -511,7 +514,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
       try {
         const req = await getRequest(requestId);
         if (req.status === "running" || req.status === "queued") {
-          useBoardStore.getState().updateNodeData(rfId, { status: req.status });
+          useShotWorkflowStore.getState().updateNodeData(rfId, { status: req.status });
           const t = setTimeout(poll, 1500);
           set((s) => ({
             active: { ...s.active, [rfId]: { requestId, timerId: t } },
@@ -523,7 +526,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
           const mediaId = mediaIds[0];
           // edit_image still routes through the user's image model setting.
           const stampedImageModel = req.params["image_model"] as string | undefined;
-          useBoardStore.getState().updateNodeData(rfId, {
+          useShotWorkflowStore.getState().updateNodeData(rfId, {
             status: "done",
             mediaId,
             mediaIds,
@@ -559,7 +562,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         }
         // failed
         const errMsg = req.error ?? "refine failed";
-        useBoardStore.getState().updateNodeData(rfId, {
+        useShotWorkflowStore.getState().updateNodeData(rfId, {
           status: "error",
           error: errMsg,
         });
@@ -589,7 +592,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         error:
           "Open Flow once so the extension can detect your plan, then retry.",
       });
-      useBoardStore.getState().updateNodeData(rfId, {
+      useShotWorkflowStore.getState().updateNodeData(rfId, {
         status: "error",
         error: "paygate_tier_unknown",
       });
@@ -612,7 +615,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
       parentShotIdx: null as number | null,
       status: "queued" as const,
     }));
-    useBoardStore.getState().updateNodeData(rfId, {
+    useShotWorkflowStore.getState().updateNodeData(rfId, {
       status: "queued",
       shots: placeholderShots,
       shotCount,
@@ -641,7 +644,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         },
       });
     } catch (err) {
-      useBoardStore.getState().updateNodeData(rfId, {
+      useShotWorkflowStore.getState().updateNodeData(rfId, {
         status: "error",
         error: err instanceof Error ? err.message : "request failed",
       });
@@ -659,7 +662,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         const req = await getRequest(requestId);
         networkRetries = 0;
         if (req.status === "running" || req.status === "queued") {
-          useBoardStore.getState().updateNodeData(rfId, { status: req.status });
+          useShotWorkflowStore.getState().updateNodeData(rfId, { status: req.status });
           const t = setTimeout(poll, 1500);
           set((s) => ({
             active: { ...s.active, [rfId]: { requestId, timerId: t } },
@@ -695,7 +698,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
           const firstMid = mediaIds.find(
             (m): m is string => typeof m === "string" && m.length > 0,
           );
-          useBoardStore.getState().updateNodeData(rfId, {
+          useShotWorkflowStore.getState().updateNodeData(rfId, {
             status: nodeStatus,
             shots,
             shotCount: shots.length,
@@ -728,7 +731,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         }
         // failed
         const errMsg = req.error ?? "storyboard generation failed";
-        useBoardStore.getState().updateNodeData(rfId, {
+        useShotWorkflowStore.getState().updateNodeData(rfId, {
           status: "error",
           error: errMsg,
         });
@@ -741,7 +744,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         networkRetries += 1;
         if (networkRetries >= MAX_NETWORK_RETRIES) {
           const msg = err instanceof Error ? err.message : "network error";
-          useBoardStore.getState().updateNodeData(rfId, {
+          useShotWorkflowStore.getState().updateNodeData(rfId, {
             status: "error",
             error: msg,
           });
@@ -766,7 +769,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
   },
 
   async retryStoryboardShot(rfId, shotIdx) {
-    const node = useBoardStore.getState().nodes.find((n) => n.id === rfId);
+    const node = useShotWorkflowStore.getState().nodes.find((n) => n.id === rfId);
     if (!node || !Array.isArray(node.data.shots)) {
       set({ error: "node has no shots" });
       return;
@@ -786,7 +789,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         ? { ...s, status: "queued" as const, error: undefined }
         : s,
     );
-    useBoardStore.getState().updateNodeData(rfId, { shots: newShots });
+    useShotWorkflowStore.getState().updateNodeData(rfId, { shots: newShots });
 
     let reqDto;
     try {
@@ -811,7 +814,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "retry failed";
-      useBoardStore.getState().updateNodeData(rfId, {
+      useShotWorkflowStore.getState().updateNodeData(rfId, {
         shots: node.data.shots.map((s) =>
           s.idx === shotIdx ? { ...s, status: "error", error: msg } : s,
         ),
@@ -841,7 +844,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         }
         if (req.status === "done") {
           const newMid = (req.result["media_id"] as string | null | undefined) ?? null;
-          const current = useBoardStore
+          const current = useShotWorkflowStore
             .getState()
             .nodes.find((n) => n.id === rfId);
           const baseShots = (current?.data.shots ?? []) as typeof newShots;
@@ -871,7 +874,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
                 : updated.some((s) => s.status === "done")
                   ? "partial"
                   : "error";
-          useBoardStore.getState().updateNodeData(rfId, {
+          useShotWorkflowStore.getState().updateNodeData(rfId, {
             shots: updated,
             mediaIds: updated.map((s) => s.mediaId ?? null),
             status: aggregate,
@@ -895,10 +898,10 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         }
         // failed
         const errMsg = req.error ?? "retry failed";
-        const current = useBoardStore
+        const current = useShotWorkflowStore
           .getState()
           .nodes.find((n) => n.id === rfId);
-        useBoardStore.getState().updateNodeData(rfId, {
+        useShotWorkflowStore.getState().updateNodeData(rfId, {
           shots: (current?.data.shots ?? []).map((s) =>
             s.idx === shotIdx ? { ...s, status: "error", error: errMsg } : s,
           ),

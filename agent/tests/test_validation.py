@@ -1,8 +1,5 @@
 """Tests for Run 2 polish: enum constraints, coord bounds, FK enforcement."""
-
-
-def _board(client):
-    return client.post("/api/boards", json={"name": "T"}).json()
+from tests.conftest import make_shot as _board  # noqa: F401
 
 
 def test_node_type_enum_rejects_unknown(client):

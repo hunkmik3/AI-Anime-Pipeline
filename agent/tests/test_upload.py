@@ -509,7 +509,8 @@ def test_edit_image_uses_base_image_input_type():
 
 
 def test_create_visual_asset_node(client):
-    b = client.post("/api/boards", json={"name": "vt"}).json()
+    from tests.conftest import make_shot
+    b = make_shot(client, name="vt")
     r = client.post(
         "/api/nodes",
         json={"shot_id": b["id"], "type": "visual_asset", "data": {"title": "Hero"}},

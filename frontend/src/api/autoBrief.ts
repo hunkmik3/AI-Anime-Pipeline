@@ -1,5 +1,5 @@
 import { describeMedia, patchNode } from "./client";
-import { useBoardStore } from "../store/board";
+import { useShotWorkflowStore } from "../store/shotWorkflow";
 
 // Best-effort background vision call. Updates `data.aiBrief` on success;
 // silently no-ops on failure (vision is a quality-of-life feature, not a
@@ -12,7 +12,7 @@ import { useBoardStore } from "../store/board";
 // and would just burn an LLM call. We skip and leave aiBrief unset.
 // Vision only runs for upload-only nodes that never receive a prompt.
 export async function requestAutoBrief(rfId: string, mediaId: string): Promise<void> {
-  const { nodes } = useBoardStore.getState();
+  const { nodes } = useShotWorkflowStore.getState();
   const node = nodes.find((n) => n.id === rfId);
   if (!node) return;
   if (
@@ -32,11 +32,11 @@ export async function requestAutoBrief(rfId: string, mediaId: string): Promise<v
     return;
   }
 
-  useBoardStore.getState().updateNodeData(rfId, { aiBriefStatus: "pending" });
+  useShotWorkflowStore.getState().updateNodeData(rfId, { aiBriefStatus: "pending" });
 
   try {
     const res = await describeMedia(mediaId);
-    useBoardStore.getState().updateNodeData(rfId, {
+    useShotWorkflowStore.getState().updateNodeData(rfId, {
       aiBrief: res.description,
       aiBriefStatus: "done",
     });
@@ -52,6 +52,6 @@ export async function requestAutoBrief(rfId: string, mediaId: string): Promise<v
       });
     }
   } catch {
-    useBoardStore.getState().updateNodeData(rfId, { aiBriefStatus: "failed" });
+    useShotWorkflowStore.getState().updateNodeData(rfId, { aiBriefStatus: "failed" });
   }
 }

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import uuid
 
+from tests.conftest import make_shot
+
 
 def _make_project(client, name: str = "T") -> str:
     return client.post("/api/projects", json={"name": name}).json()["id"]
@@ -68,11 +70,9 @@ def test_create_scene_under_missing_project_404(client):
 
 
 def test_get_scene_includes_shot_count(client):
-    """The legacy board shim creates Project+Scene+Shot together; we can
-    use it to seed a scene-with-shots situation. Then add another shot
-    via the new shots endpoint when implemented; for now, the seeded
-    one is enough to assert shot_count > 0."""
-    b = client.post("/api/boards", json={"name": "board"}).json()
+    """make_shot creates Project+Scene+Shot together; reuse it to seed a
+    scene-with-shots situation and assert shot_count > 0."""
+    b = make_shot(client, name="board")
     # Pull the project + first scene back.
     project_id = b["project_id"]
     scenes = client.get(f"/api/projects/{project_id}/scenes").json()
@@ -82,7 +82,7 @@ def test_get_scene_includes_shot_count(client):
     assert r.status_code == 200
     detail = r.json()
     assert detail["id"] == sid
-    assert detail["shot_count"] == 1  # legacy shim seeds 1 shot per board
+    assert detail["shot_count"] == 1  # make_shot seeds 1 shot per project
 
 
 def test_get_missing_scene_404(client):
@@ -117,7 +117,7 @@ def test_delete_scene_cascades_shots_and_nodes(client):
     from flowboard.db import get_session
     from flowboard.db.models import Edge, Node, Scene, Shot
 
-    b = client.post("/api/boards", json={"name": "tree"}).json()
+    b = make_shot(client, name="tree")
     project_id = b["project_id"]
     scene_id = client.get(f"/api/projects/{project_id}/scenes").json()[0]["id"]
     n1 = client.post("/api/nodes", json={"shot_id": b["id"], "type": "image"}).json()

@@ -134,3 +134,29 @@ def _seed_default_paygate_tier():
 @pytest.fixture
 def client():
     return TestClient(app)
+
+
+def make_shot(client, name: str = "Test") -> dict:
+    """Test helper: create Project → Scene → Shot via the new REST surface
+    and return a dict shaped like the old `/api/boards` response.
+
+    Pre-Phase-4 tests called `client.post("/api/boards", ...)` to spin up
+    a board (= shot under the shim). Phase 4 removed `/api/boards/*`, so
+    every legacy test creates the same Project + Scene + Shot pyramid
+    explicitly. The returned dict carries the same `id` (shot UUID),
+    `project_id`, `name` and `created_at` keys so call sites that read
+    those fields keep working unchanged.
+    """
+    proj = client.post("/api/projects", json={"name": name}).json()
+    scene = client.post(
+        f"/api/projects/{proj['id']}/scenes",
+        json={"name": "Scene 1"},
+    ).json()
+    shot = client.post(f"/api/scenes/{scene['id']}/shots", json={}).json()
+    return {
+        "id": shot["id"],
+        "project_id": proj["id"],
+        "name": proj["name"],
+        "created_at": shot.get("created_at"),
+        "scene_id": scene["id"],
+    }
