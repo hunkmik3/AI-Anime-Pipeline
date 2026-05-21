@@ -1135,3 +1135,32 @@ export function runShot(id: string): Promise<ShotDTO> {
 export function cancelShot(id: string): Promise<ShotDTO> {
   return api<ShotDTO>(`/api/shots/${id}/cancel`, { method: "POST" });
 }
+
+// ── Video model registry (Phase 5) ─────────────────────────────────────
+
+export interface VideoModelCapability {
+  supports_multi_ref: boolean;
+  supports_last_frame: boolean;
+  supports_audio_toggle: boolean;
+  max_refs: number;
+  aspect_ratios: string[];
+  resolutions: string[];
+  durations: number[];
+}
+
+export interface VideoModelDTO {
+  model_id: string;
+  provider: string;
+  display_name: string;
+  upstream_model_id: string | null;
+  capabilities: VideoModelCapability;
+}
+
+export interface VideoModelsResponse {
+  default_model_id: string;
+  models: VideoModelDTO[];
+}
+
+export function listVideoModels(): Promise<VideoModelsResponse> {
+  return api<VideoModelsResponse>("/api/video/models");
+}

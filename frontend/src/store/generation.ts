@@ -226,6 +226,19 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
           set({ error: "Video generation requires a source image (connect an upstream image node)" });
           return;
         }
+        // Model resolution: node.data.videoModelId override (Phase 5
+        // per-node setting) > project.settings.default_video_model
+        // (Phase 5 per-project) > backend default (currently flow-default).
+        // Worker honors `model_id` and rejects unknown ids with a 422.
+        const nodeForModel = useShotWorkflowStore.getState().nodes.find((n) => n.id === rfId);
+        const projectSettings = useProjectStore.getState().currentProject?.settings;
+        const nodeOverride = (nodeForModel?.data as { videoModelId?: string } | undefined)?.videoModelId;
+        const projectDefault =
+          typeof projectSettings === "object" && projectSettings !== null
+            ? ((projectSettings as Record<string, unknown>).default_video_model as string | undefined)
+            : undefined;
+        const resolvedModelId = nodeOverride ?? projectDefault;
+
         const videoParams: Record<string, unknown> = {
           prompt: opts.prompt,
           project_id: projectId,
@@ -237,6 +250,23 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
           // Backend resolves [tier][quality][aspect] → Flow model key.
           video_quality: useSettingsStore.getState().videoQuality,
         };
+        if (resolvedModelId) videoParams.model_id = resolvedModelId;
+
+        // Dreamina-specific settings — only forwarded when the user has
+        // selected a non-Flow model. The backend ignores them on Flow
+        // path; surface them unconditionally so the UI doesn't need to
+        // know the provider mapping.
+        const videoSettings = (nodeForModel?.data as Record<string, unknown> | undefined) ?? {};
+        if (videoSettings.duration_seconds) videoParams.duration_seconds = videoSettings.duration_seconds;
+        if (videoSettings.resolution) videoParams.resolution = videoSettings.resolution;
+        if (videoSettings.generate_audio !== undefined) videoParams.generate_audio = videoSettings.generate_audio;
+        if (Array.isArray(videoSettings.reference_image_ids) && videoSettings.reference_image_ids.length > 0) {
+          videoParams.reference_images = videoSettings.reference_image_ids;
+        }
+        if (typeof videoSettings.last_frame_asset_id === "string" && videoSettings.last_frame_asset_id) {
+          videoParams.last_frame_url = videoSettings.last_frame_asset_id;
+        }
+
         if (hasMulti) {
           videoParams.start_media_ids = opts.sourceMediaIds;
         } else {

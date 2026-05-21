@@ -142,213 +142,223 @@ async def _handle_gen_image(params: dict) -> tuple[dict, Optional[str]]:
     return resp, None
 
 
-# Video polling knobs — overridable in tests. flowkit uses 420s/10s; Flow's
-# video gen routinely takes 4-6 minutes, so 5 minutes is too tight and times
-# out legitimately-finishing operations.
+# Video polling knobs — overridable in tests via ``monkeypatch.setattr(proc, …)``.
+# Flow's gen_video routinely takes 4-6 min; 42 cycles × 10s = 7 min wall ceiling.
+# The provider layer (services/video/flow.py) reads these knobs through a
+# module lookup so tests can keep patching them without touching the new file.
 VIDEO_POLL_INTERVAL_S = 10.0
 VIDEO_POLL_MAX_CYCLES = 42
 
 
 async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
-    from flowboard.services.flow_sdk import is_valid_project_id
+    """Thin dispatcher: resolve model → run provider → translate result.
 
-    prompt = params.get("prompt")
-    project_id = params.get("project_id")
-    start_media_id = params.get("start_media_id") or params.get("startMediaId")
-    raw_starts = params.get("start_media_ids")
-    start_media_ids: Optional[list[str]] = None
-    if isinstance(raw_starts, list):
-        cleaned = [m for m in raw_starts if isinstance(m, str) and m.strip()]
-        start_media_ids = [m.strip() for m in cleaned] or None
+    Phase 5 refactor — the heavy lifting moved into
+    ``services/video/{flow,dreamina}.py``. The handler:
 
-    if not isinstance(prompt, str) or not prompt.strip():
+    1. Picks a model from ``params["model_id"]``, falling back to the
+       process-wide default (``flow-default``). Per-project + per-node
+       overrides are resolved upstream when the dispatcher stamps
+       ``params`` from the Node row + Project.settings.
+    2. Builds ``VideoGenSubmitParams`` from the wire payload — backward
+       compatible names (``start_media_id``, ``prompt``, ``project_id``)
+       are kept so existing callers (Flow path) don't need to change.
+    3. Calls ``provider.run_to_completion(params)``.
+    4. Flattens the provider's two-step return (submit_result, poll_result)
+       into a ``(dict, Optional[str])`` shape so the worker loop's status
+       transition logic stays unchanged.
+
+    The Flow shape (``media_ids`` / ``slot_errors`` / ``partial_error``)
+    is preserved verbatim on the Flow path so the existing test suite
+    and frontend continue to work.
+    """
+    from flowboard.services.video import (
+        VideoError,
+        get_default_model_id,
+        get_video_model,
+    )
+    from flowboard.services.video import registry as _video_registry
+    from flowboard.services.video.dreamina import media_id_to_public_url
+
+    _video_registry.register_defaults()
+
+    model_id = params.get("model_id") or get_default_model_id()
+    try:
+        entry = get_video_model(model_id)
+    except KeyError:
+        return {"model_id": model_id}, f"unknown_video_model:{model_id}"
+
+    provider = _video_registry.get_video_provider(model_id)
+
+    # Translate legacy + new keys onto VideoGenSubmitParams. Flow keeps
+    # its existing param names; Dreamina expects motion_prompt/first_frame_url/
+    # reference_images. The mapping below accepts both.
+    motion_prompt = params.get("motion_prompt") or params.get("prompt") or ""
+    if not isinstance(motion_prompt, str) or not motion_prompt.strip():
         return {}, "missing_prompt"
-    if not isinstance(project_id, str) or not project_id.strip():
-        return {}, "missing_project_id"
-    project_id = project_id.strip()
-    if not is_valid_project_id(project_id):
-        return {}, "invalid_project_id"
-    # Either a single start_media_id OR a non-empty start_media_ids list.
-    if start_media_ids is None and (
-        not isinstance(start_media_id, str) or not start_media_id.strip()
-    ):
-        return {}, "missing_start_media_id"
-    aspect = params.get("aspect_ratio") or "VIDEO_ASPECT_RATIO_LANDSCAPE"
-    # Tier resolution — see the matching block in _handle_gen_image for
-    # the rationale. No silent default; missing tier is a hard error so
-    # we never dispatch an Ultra user's video at the Pro checkpoint.
-    tier = params.get("paygate_tier") or flow_client.paygate_tier
-    if tier is None:
-        return {}, "paygate_tier_unknown"
-    video_quality = params.get("video_quality")
-    if not isinstance(video_quality, str) or not video_quality.strip():
-        video_quality = None
 
-    sdk = get_flow_sdk()
-    dispatch = await sdk.gen_video(
-        prompt=prompt.strip(),
-        project_id=project_id,
-        start_media_id=start_media_id.strip()
-        if isinstance(start_media_id, str) and start_media_id.strip()
-        else None,
-        start_media_ids=start_media_ids,
-        aspect_ratio=aspect,
-        paygate_tier=tier,
-        video_quality=video_quality,
-    )
-    if dispatch.get("error"):
-        return dispatch, str(dispatch["error"])[:200]
+    # first_frame_url:
+    # - Flow path: a Flow media_id (Flow's "URL" namespace = its own ID system).
+    # - Dreamina path: a public HTTPS URL. We hoist Flowboard media_ids
+    #   through R2 when the caller pre-resolved nothing but a media_id.
+    first_frame = params.get("first_frame_url") or params.get("start_media_id") or params.get("startMediaId")
+    if isinstance(first_frame, str):
+        first_frame = first_frame.strip()
 
-    op_names = dispatch.get("operation_names") or []
-    if not op_names:
-        return dispatch, "no_operations_returned"
-    # NEW low-priority models return workflows (`{name, primary_media_id}`)
-    # instead of operations; the SDK surfaces them on `dispatch["workflows"]`
-    # so we can route the poll to /v1/media/<id> instead of batchCheckAsync.
-    workflows = dispatch.get("workflows") or None
+    provider_params: dict = {
+        "motion_prompt": motion_prompt.strip(),
+    }
 
-    poll_attempts = 0
-    last_poll: dict = {}
-    done_by_name: dict[str, bool] = {name: False for name in op_names}
-    entry_by_name: dict[str, dict] = {}
-    op_errors: dict[str, str] = {}
-
-    # Per-op resolution: each operation in the batch resolves
-    # independently (success, content-filter rejection, or timeout). We
-    # used to break the whole loop on the first per-op error, which
-    # collapsed a 4-variant gen into a hard failure even when 3/4 clips
-    # had already rendered. Now we let every op terminate on its own
-    # and aggregate the outcome at the end so partial batches still
-    # surface the variants that did succeed.
-    while (
-        poll_attempts < VIDEO_POLL_MAX_CYCLES
-        and not all(done_by_name.values())
-    ):
-        await asyncio.sleep(VIDEO_POLL_INTERVAL_S)
-        poll_attempts += 1
-        last_poll = await sdk.check_async(op_names, workflows=workflows)
-        if last_poll.get("error"):
-            continue
-        for op in last_poll.get("operations") or []:
-            if not isinstance(op, dict):
-                continue
-            name = op.get("name")
-            if not isinstance(name, str) or done_by_name.get(name, False):
-                continue
-            # Per-op terminal failure (e.g. content filter
-            # PUBLIC_ERROR_UNSAFE_GENERATION / PUBLIC_ERROR_AUDIO_FILTERED).
-            # Mark this op resolved-with-error and keep polling the rest.
-            err = op.get("error")
-            if isinstance(err, str) and err:
-                done_by_name[name] = True
-                op_errors[name] = err
-                continue
-            if op.get("done"):
-                done_by_name[name] = True
-                # Each op is expected to yield exactly one media entry
-                # on success; capture the first valid one.
-                for e in op.get("media_entries") or []:
-                    if isinstance(e, dict) and e.get("media_id"):
-                        entry_by_name[name] = e
-                        break
-
-    # Slots still unresolved after the max cycles — record as timeout
-    # so the partial summary names them alongside any filter failures.
-    for name in op_names:
-        if not done_by_name.get(name) and name not in op_errors:
-            op_errors[name] = "timeout_waiting_video"
-
-    # Build positional outcome aligned to dispatch order. Slot i in
-    # `media_ids` corresponds to slot i in the original
-    # `start_media_ids` array, so the frontend can keep upstream-image
-    # variant ↔ video-variant alignment even when middle slots fail.
-    # `slot_errors` mirrors the same indexing — `None` for succeeded
-    # slots, error code for blocked ones — so the detail viewer can
-    # render the exact filter reason on the blocked tile without
-    # having to know the internal Flow op-name keys.
-    positional_ids: list[Optional[str]] = []
-    slot_errors: list[Optional[str]] = []
-    succeeded_entries: list[dict] = []
-    for name in op_names:
-        e = entry_by_name.get(name)
-        if isinstance(e, dict) and isinstance(e.get("media_id"), str):
-            positional_ids.append(e["media_id"])
-            succeeded_entries.append(e)
-            slot_errors.append(None)
-        else:
-            positional_ids.append(None)
-            slot_errors.append(op_errors.get(name))
-
-    success_count = sum(1 for x in positional_ids if x)
-    total = len(op_names)
-
-    if success_count == 0:
-        # No op produced a clip — surface the first error verbatim.
-        # When all errors are "timeout_waiting_video" this matches the
-        # legacy single-op timeout contract; tests rely on it.
-        first_err = next(iter(op_errors.values()), "timeout_waiting_video")
-        return (
-            {
-                "raw_dispatch": dispatch,
-                "last_poll": last_poll,
-                "operation_names": op_names,
-                "done": done_by_name,
-                "op_errors": op_errors,
-            },
-            first_err,
-        )
-
-    # ≥1 op succeeded — ingest only the bytes we actually have.
-    entries_with_urls = [
-        e for e in succeeded_entries if isinstance(e, dict) and e.get("url")
-    ]
-    if entries_with_urls:
+    if entry.provider_name == "flow":
+        # Flow keeps the broader legacy param surface. start_media_ids
+        # (batch) is forwarded through a private knob so the provider
+        # can split it back out for sdk.gen_video.
+        raw_starts = params.get("start_media_ids")
+        start_media_ids: Optional[list[str]] = None
+        if isinstance(raw_starts, list):
+            cleaned = [m for m in raw_starts if isinstance(m, str) and m.strip()]
+            start_media_ids = [m.strip() for m in cleaned] or None
+        if start_media_ids is None and (not first_frame):
+            return {}, "missing_start_media_id"
+        provider_params.update({
+            "first_frame_url": first_frame or "",
+            "_flow_start_media_ids": start_media_ids or [],
+            "project_id": params.get("project_id") or "",
+            "paygate_tier": params.get("paygate_tier") or flow_client.paygate_tier,
+            "video_quality": params.get("video_quality"),
+            "aspect_ratio": params.get("aspect_ratio") or "16:9",
+            "duration_seconds": 8,
+            "resolution": "720p",
+        })
+    else:
+        # Dreamina (and any other public-URL provider): hoist media_id
+        # → R2 presigned URL when the caller passes a bare media_id.
         try:
-            media_service.ingest_urls(entries_with_urls)
-        except Exception:  # noqa: BLE001
-            logger.exception("auto-ingest from gen_video response failed")
-    # Workflow-mode (Low Priority) deliveries arrive inline as base64 MP4
-    # bytes on the `/v1/media/<id>` poll — there is no GCS URL to chase.
-    # Plant the bytes in the local cache directly so the `/media/<id>` route
-    # serves them like any URL-backed asset.
-    for entry in succeeded_entries:
-        if not isinstance(entry, dict):
-            continue
-        encoded = entry.get("encoded_video")
-        mid = entry.get("media_id")
-        if not isinstance(encoded, str) or not isinstance(mid, str):
-            continue
+            if first_frame and not first_frame.startswith(("http://", "https://", "data:")):
+                first_frame = media_id_to_public_url(
+                    first_frame,
+                    project_id=params.get("project_id"),
+                )
+        except VideoError as exc:
+            return {"error": str(exc)}, f"{exc.code}:{exc}"
+        if not first_frame:
+            return {}, "missing_first_frame_url"
+
+        ref_inputs = params.get("reference_images") or []
+        resolved_refs: list[str] = []
+        for r in ref_inputs:
+            if not isinstance(r, str) or not r:
+                continue
+            if r.startswith(("http://", "https://", "data:")):
+                resolved_refs.append(r)
+                continue
+            try:
+                resolved_refs.append(
+                    media_id_to_public_url(r, project_id=params.get("project_id"))
+                )
+            except VideoError as exc:
+                logger.warning("dreamina: skipped unreachable ref %s: %s", r, exc)
+
+        last_frame = params.get("last_frame_url")
+        if isinstance(last_frame, str) and last_frame and not last_frame.startswith(("http://", "https://", "data:")):
+            try:
+                last_frame = media_id_to_public_url(
+                    last_frame, project_id=params.get("project_id")
+                )
+            except VideoError as exc:
+                logger.warning("dreamina: skipped unreachable last_frame: %s", exc)
+                last_frame = None
+
+        provider_params.update({
+            "first_frame_url": first_frame,
+            "reference_images": resolved_refs,
+            "last_frame_url": last_frame if isinstance(last_frame, str) else None,
+            "duration_seconds": int(params.get("duration_seconds") or 5),
+            "aspect_ratio": params.get("aspect_ratio") or "1:1",
+            "resolution": params.get("resolution") or "720p",
+        })
+        if "generate_audio" in params:
+            provider_params["generate_audio"] = bool(params["generate_audio"])
+
+    try:
+        submit_result, poll_result = await provider.run_to_completion(provider_params)
+    except VideoError as exc:
+        # Flow callers (and the legacy test suite) expect the raw error
+        # string, not a code-prefixed wrapper. Other providers surface
+        # the uniform code so the UI can map consistently.
+        msg = str(exc)
+        if entry.provider_name == "flow":
+            return {"error": msg, "raw": exc.raw}, msg[:200]
+        return {"error": msg, "code": exc.code, "raw": exc.raw}, f"{exc.code}:{msg}"
+
+    raw = dict(poll_result.get("raw") or {})
+    raw.setdefault("external_job_id", submit_result.get("external_job_id"))
+    raw.setdefault("model_id", model_id)
+    raw.setdefault("provider", entry.provider_name)
+    warnings = list(submit_result.get("warnings") or [])
+    if warnings:
+        raw["warnings"] = warnings
+    if poll_result.get("cost_usd") is not None:
+        raw["cost_usd"] = poll_result["cost_usd"]
+    if poll_result.get("cost_tokens") is not None:
+        raw["cost_tokens"] = poll_result["cost_tokens"]
+    if poll_result.get("media_metadata"):
+        raw["media_metadata"] = poll_result["media_metadata"]
+
+    # Eager-persist Dreamina bytes locally so the existing /media/<id>
+    # route can serve them like any other asset. We mint a fresh
+    # media_id from the external_job_id so each provider's output gets
+    # a stable Flowboard-side ID even when the upstream uses a
+    # different identifier shape.
+    if poll_result.get("status") == "succeeded" and poll_result.get("video_bytes"):
+        synthetic_mid = _synthesize_media_id(submit_result["external_job_id"])
         try:
-            import base64 as _b64
             media_service.ingest_inline_bytes(
-                mid, _b64.b64decode(encoded, validate=False),
-                kind="video", mime="video/mp4",
+                synthetic_mid,
+                poll_result["video_bytes"],
+                kind="video",
+                mime="video/mp4",
             )
+            raw["media_ids"] = [synthetic_mid]
         except Exception:  # noqa: BLE001
-            logger.exception("inline ingest from workflow-mode poll failed for %s", mid)
+            logger.exception(
+                "failed to persist provider=%s video bytes for job=%s",
+                entry.provider_name, submit_result["external_job_id"],
+            )
 
-    partial_error: Optional[str] = None
-    if op_errors:
-        # De-dup distinct error codes for a compact one-line summary
-        # (e.g. "1/4 variants blocked: PUBLIC_ERROR_UNSAFE_GENERATION").
-        unique_errs = sorted({err for err in op_errors.values()})
-        partial_error = (
-            f"{len(op_errors)}/{total} variants blocked: {', '.join(unique_errs)}"
-        )
+    status = poll_result.get("status")
+    if status == "succeeded":
+        return raw, None
+    if status in {"failed", "cancelled"}:
+        # Tie back to the legacy contract: tests assert
+        # error == "timeout_waiting_video" for the timeout path. Flow
+        # provider's partial-success branch surfaces that string in
+        # raw.op_errors values; for the Dreamina path we use the
+        # uniform code prefix.
+        err_msg = poll_result.get("error_message") or poll_result.get("error") or "failed"
+        if entry.provider_name == "flow":
+            # Preserve the legacy single-token error for the "all ops
+            # timed out" case — test_worker_gen_video_times_out asserts
+            # exact equality.
+            op_errors = (raw.get("op_errors") or {}).values()
+            if op_errors and all(v == "timeout_waiting_video" for v in op_errors):
+                return raw, "timeout_waiting_video"
+            first_err = next(iter(op_errors), None)
+            return raw, first_err or err_msg
+        return raw, err_msg
+    # Non-terminal status returned from run_to_completion is a provider bug.
+    return raw, f"non_terminal_status:{status}"
 
-    return (
-        {
-            "raw_dispatch": dispatch,
-            "last_poll": last_poll,
-            "operation_names": op_names,
-            "media_ids": positional_ids,
-            "media_entries": succeeded_entries,
-            "op_errors": op_errors,
-            "slot_errors": slot_errors,
-            "partial_error": partial_error,
-        },
-        None,
-    )
+
+def _synthesize_media_id(external_job_id: str) -> str:
+    """Map an external job id to a Flowboard media_id.
+
+    media_id_validation only allows hex-with-dashes; the simplest stable
+    transformation is a SHA1 hex digest of the job id. Collisions are a
+    non-issue at single-user scale.
+    """
+    import hashlib
+    return hashlib.sha1(external_job_id.encode("utf-8")).hexdigest()
 
 
 async def _handle_edit_image(params: dict) -> tuple[dict, Optional[str]]:

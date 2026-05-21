@@ -26,8 +26,10 @@ dist-ssr/
 .env.local
 .env.*.local
 
-# Data
-storage/
+# Data — anchor to repo root so it only matches the runtime media
+# cache, not the agent/flowboard/services/storage/ Python package
+# (R2 client lives there).
+/storage/
 *.db
 *.db-journal
 *.sqlite

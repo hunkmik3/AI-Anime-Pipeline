@@ -4,14 +4,25 @@ Schema of ``~/.flowboard/secrets.json``:
 
 ```json
 {
-  "apiKeys": {"openai": "sk-..."},
+  "apiKeys": {"openai": "sk-...", "dreamina": "ark-..."},
   "activeProviders": {
     "auto_prompt": "claude",
     "vision": "gemini",
     "planner": "claude"
+  },
+  "r2": {
+    "endpoint_url": "https://<account>.r2.cloudflarestorage.com",
+    "access_key_id": "...",
+    "secret_access_key": "...",
+    "bucket": "flowboard-media",
+    "public_base_url": "https://media.example.com"  // optional CDN passthrough
   }
 }
 ```
+
+Phase 5 additions (video providers + R2 image hosting) reuse this same
+file rather than introducing a second secrets store — single-user local
+app, single file is easier to back up and rotate.
 
 Stored as plain JSON with file mode ``0o600`` (owner read/write only).
 Single-user local app — OS-level file permissions are sufficient. We
@@ -144,4 +155,44 @@ def set_feature_provider(feature: str, provider: str) -> None:
     saved = dict(doc.get("activeProviders") or {})
     saved[feature] = provider
     doc["activeProviders"] = saved
+    write(doc)
+
+
+# ── R2 helpers ─────────────────────────────────────────────────────────
+
+def read_r2_config() -> dict:
+    """Return the R2 sub-document (empty dict when unset).
+
+    Shape: ``{endpoint_url, access_key_id, secret_access_key, bucket, public_base_url?}``.
+    Callers must validate completeness — partial config (e.g. missing
+    bucket) is the same as no config and should surface a clear setup
+    prompt rather than a runtime boto3 traceback.
+    """
+    doc = read()
+    cfg = doc.get("r2") or {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def is_r2_configured() -> bool:
+    cfg = read_r2_config()
+    required = ("endpoint_url", "access_key_id", "secret_access_key", "bucket")
+    return all(isinstance(cfg.get(k), str) and cfg.get(k) for k in required)
+
+
+def set_r2_config(
+    *,
+    endpoint_url: str,
+    access_key_id: str,
+    secret_access_key: str,
+    bucket: str,
+    public_base_url: Optional[str] = None,
+) -> None:
+    doc = read()
+    doc["r2"] = {
+        "endpoint_url": endpoint_url,
+        "access_key_id": access_key_id,
+        "secret_access_key": secret_access_key,
+        "bucket": bucket,
+        **({"public_base_url": public_base_url} if public_base_url else {}),
+    }
     write(doc)

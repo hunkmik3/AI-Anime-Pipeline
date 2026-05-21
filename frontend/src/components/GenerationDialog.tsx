@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useGenerationStore } from "../store/generation";
 import { useShotWorkflowStore } from "../store/shotWorkflow";
 import { useProjectStore } from "../store/project";
+import { VideoNodeSettings } from "./VideoNodeSettings";
 import {
   autoPrompt as autoPromptApi,
   autoPromptBatch as autoPromptBatchApi,
@@ -1055,6 +1056,16 @@ export function GenerationDialog() {
                 </button>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Provider / model + Dreamina-specific knobs (video only).
+            Lives BEFORE the camera/aspect fields so the user picks a
+            model first — capability gates downstream controls. */}
+        {isVideo && rfId !== null && (
+          <div className="gen-dialog__field">
+            <span className="gen-dialog__label">Video model</span>
+            <VideoNodeSettings rfId={rfId} />
           </div>
         )}
 
