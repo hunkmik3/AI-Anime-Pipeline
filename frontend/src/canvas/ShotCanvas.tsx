@@ -15,7 +15,11 @@ import {
   type OnNodeDrag,
 } from "@xyflow/react";
 
-import { useBoardStore, type FlowNode, type NodeType } from "../store/board";
+import {
+  useShotWorkflowStore,
+  type FlowNode,
+  type NodeType,
+} from "../store/shotWorkflow";
 import { NodeCard } from "./NodeCard";
 import { VariantEdge } from "./VariantEdge";
 import { useGenerationStore } from "../store/generation";
@@ -104,16 +108,16 @@ function DropAddPopover({
   );
 }
 
-export function Board() {
-  const nodes = useBoardStore((s) => s.nodes);
-  const edges = useBoardStore((s) => s.edges);
-  const setNodes = useBoardStore((s) => s.setNodes);
-  const setEdges = useBoardStore((s) => s.setEdges);
-  const persistNodePosition = useBoardStore((s) => s.persistNodePosition);
-  const addEdgeFromConnection = useBoardStore((s) => s.addEdgeFromConnection);
-  const addNodeOfType = useBoardStore((s) => s.addNodeOfType);
-  const deleteNodeByRfId = useBoardStore((s) => s.deleteNodeByRfId);
-  const deleteEdgeByRfId = useBoardStore((s) => s.deleteEdgeByRfId);
+export function ShotCanvas() {
+  const nodes = useShotWorkflowStore((s) => s.nodes);
+  const edges = useShotWorkflowStore((s) => s.edges);
+  const setNodes = useShotWorkflowStore((s) => s.setNodes);
+  const setEdges = useShotWorkflowStore((s) => s.setEdges);
+  const persistNodePosition = useShotWorkflowStore((s) => s.persistNodePosition);
+  const addEdgeFromConnection = useShotWorkflowStore((s) => s.addEdgeFromConnection);
+  const addNodeOfType = useShotWorkflowStore((s) => s.addNodeOfType);
+  const deleteNodeByRfId = useShotWorkflowStore((s) => s.deleteNodeByRfId);
+  const deleteEdgeByRfId = useShotWorkflowStore((s) => s.deleteEdgeByRfId);
   const { screenToFlowPosition } = useReactFlow();
   const wrapperRef = useRef<HTMLDivElement>(null);
 
@@ -156,7 +160,7 @@ export function Board() {
           label: string;
         };
         const flowPos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
-        void useBoardStore.getState().addReferenceNode(ref, flowPos);
+        void useShotWorkflowStore.getState().addReferenceNode(ref, flowPos);
       } catch (err) {
         console.warn("Failed to parse reference drop payload", err);
       }
@@ -166,14 +170,14 @@ export function Board() {
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
-      setNodes(applyNodeChanges(changes, useBoardStore.getState().nodes) as FlowNode[]);
+      setNodes(applyNodeChanges(changes, useShotWorkflowStore.getState().nodes) as FlowNode[]);
     },
     [setNodes],
   );
 
   const onEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
-      setEdges(applyEdgeChanges(changes, useBoardStore.getState().edges));
+      setEdges(applyEdgeChanges(changes, useShotWorkflowStore.getState().edges));
     },
     [setEdges],
   );
@@ -287,7 +291,7 @@ export function Board() {
       const key = e.key.toLowerCase();
       if (key !== "g") return;
 
-      const selectedNodes = useBoardStore
+      const selectedNodes = useShotWorkflowStore
         .getState()
         .nodes.filter(
           (n) =>

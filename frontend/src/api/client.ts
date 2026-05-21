@@ -113,15 +113,23 @@ export function getHealth() {
 export type NodeType = "character" | "image" | "video" | "prompt" | "note" | "visual_asset" | "Storyboard";
 export type NodeStatus = "idle" | "queued" | "running" | "done" | "error" | "partial";
 
+// Phase 3: legacy `Board` is now the Shot UUID wrapped by `/api/boards/*`
+// shim (see agent/flowboard/routes/boards.py). `id` is a UUID string at
+// runtime; left typed `unknown` here so callers don't accidentally
+// `parseInt()` it. Frontend should prefer Project/Scene/Shot types below.
 export interface Board {
-  id: number;
+  id: string;
   name: string;
   created_at: string;
+  project_id: string;
 }
 
 export interface NodeDTO {
   id: number;
-  board_id: number;
+  // Phase 3: column rename board_id → shot_id (UUID string). Legacy
+  // `board_id` left for shim consumers; new code should prefer shot_id.
+  board_id?: string;
+  shot_id?: string;
   short_id: string;
   type: NodeType;
   x: number;
@@ -135,7 +143,8 @@ export interface NodeDTO {
 
 export interface EdgeDTO {
   id: number;
-  board_id: number;
+  board_id?: string;
+  shot_id?: string;
   source_id: number;
   target_id: number;
   kind: string;
@@ -153,6 +162,9 @@ export interface BoardDetail {
 }
 
 // ── API methods ──────────────────────────────────────────────────────────────
+// Legacy `/api/boards/*` helpers — kept for the chat sidebar (currently
+// dead code in App.tsx) and any tooling that still pokes the shim. New
+// code should use the Project/Scene/Shot helpers further down.
 
 export function listBoards(): Promise<Board[]> {
   return api<Board[]>("/api/boards");
@@ -165,31 +177,36 @@ export function createBoard(name: string): Promise<Board> {
   });
 }
 
-export function getBoard(id: number): Promise<BoardDetail> {
+export function getBoard(id: string): Promise<BoardDetail> {
   return api<BoardDetail>(`/api/boards/${id}`);
 }
 
-export function patchBoard(id: number, name: string): Promise<Board> {
+export function patchBoard(id: string, name: string): Promise<Board> {
   return api<Board>(`/api/boards/${id}`, {
     method: "PATCH",
     body: JSON.stringify({ name }),
   });
 }
 
-export function deleteBoard(id: number): Promise<{ deleted: number }> {
-  return api<{ deleted: number }>(`/api/boards/${id}`, { method: "DELETE" });
+export function deleteBoard(id: string): Promise<{ deleted: string }> {
+  return api<{ deleted: string }>(`/api/boards/${id}`, { method: "DELETE" });
 }
 
+// Phase 3: /api/nodes + /api/edges take `shot_id` (UUID string). Older
+// callers may still pass `board_id` — translated here for compat.
 export function createNode(input: {
-  board_id: number;
+  shot_id?: string;
+  board_id?: string;
   type: NodeType;
   x: number;
   y: number;
   data?: object;
 }): Promise<NodeDTO> {
+  const { shot_id, board_id, ...rest } = input;
+  const sid = shot_id ?? board_id;
   return api<NodeDTO>("/api/nodes", {
     method: "POST",
-    body: JSON.stringify(input),
+    body: JSON.stringify({ shot_id: sid, ...rest }),
   });
 }
 
@@ -238,15 +255,18 @@ export function deleteNode(id: number): Promise<{ ok: true; deleted_edges: numbe
 }
 
 export function createEdge(input: {
-  board_id: number;
+  shot_id?: string;
+  board_id?: string;
   source_id: number;
   target_id: number;
   kind?: string;
   source_variant_idx?: number | null;
 }): Promise<EdgeDTO> {
+  const { shot_id, board_id, ...rest } = input;
+  const sid = shot_id ?? board_id;
   return api<EdgeDTO>("/api/edges", {
     method: "POST",
-    body: JSON.stringify(input),
+    body: JSON.stringify({ shot_id: sid, ...rest }),
   });
 }
 
@@ -278,7 +298,10 @@ export type ChatRole = "user" | "assistant" | "system";
 
 export interface ChatMessageDTO {
   id: number;
-  board_id: number;
+  // Wire field is `project_id` now (Phase 1 schema rename); kept here for
+  // the dead ChatSidebar code path.
+  project_id?: string;
+  board_id?: string;
   role: ChatRole;
   content: string;
   mentions: string[];
@@ -287,7 +310,8 @@ export interface ChatMessageDTO {
 
 export interface PlanDTO {
   id: number;
-  board_id: number;
+  shot_id?: string;
+  board_id?: string;
   spec: {
     nodes: Array<{ tmp_id?: string; type: string; params?: Record<string, unknown> }>;
     edges: Array<{ from: string; to: string; kind?: string }>;
@@ -303,18 +327,21 @@ export interface ChatSendResponse {
   plan?: PlanDTO;
 }
 
-export function listChatMessages(boardId: number) {
-  return api<ChatMessageDTO[]>(`/api/boards/${boardId}/chat`);
+// Phase 3: chat is dead code (App.tsx hides ChatSidebar). Signatures
+// updated to UUID strings to match the post-Phase-2 backend so this file
+// type-checks; a real chat rebuild ships in a later phase.
+export function listChatMessages(projectId: string) {
+  return api<ChatMessageDTO[]>(`/api/projects/${projectId}/chat`);
 }
 
 export function sendChatMessage(
-  boardId: number,
+  projectId: string,
   message: string,
   mentions: string[],
 ) {
   return api<ChatSendResponse>("/api/chat", {
     method: "POST",
-    body: JSON.stringify({ board_id: boardId, message, mentions }),
+    body: JSON.stringify({ project_id: projectId, message, mentions }),
   });
 }
 
@@ -340,12 +367,29 @@ export interface RequestDTO {
   finished_at: string | null;
 }
 
-export function ensureBoardProject(boardId: number) {
-  return api<BoardProject>(`/api/boards/${boardId}/project`, { method: "POST" });
+// Phase 3: the legacy /api/boards/{shotId}/project shim still routes
+// through to project_service.ensure_flow_project(), but the canonical
+// route is /api/projects/{projectId}/flow-project. Keep both signatures
+// — generation store passes the shot UUID via the shim while it's still
+// the simplest call site to thread context through.
+export function ensureBoardProject(shotId: string) {
+  return api<BoardProject>(`/api/boards/${shotId}/project`, { method: "POST" });
 }
 
-export function getBoardProject(boardId: number) {
-  return api<BoardProject>(`/api/boards/${boardId}/project`).catch(() => null);
+export function getBoardProject(shotId: string) {
+  return api<BoardProject>(`/api/boards/${shotId}/project`).catch(() => null);
+}
+
+export function ensureProjectFlowProject(projectId: string) {
+  return api<BoardProject>(`/api/projects/${projectId}/flow-project`, {
+    method: "POST",
+  });
+}
+
+export function getProjectFlowProject(projectId: string) {
+  return api<BoardProject>(`/api/projects/${projectId}/flow-project`).catch(
+    () => null,
+  );
 }
 
 // ── Auth / profile ───────────────────────────────────────────────────────
@@ -756,7 +800,7 @@ export interface ReferenceItem {
   tags: string[];
   pinned: boolean;
   position: number;
-  sourceBoardId: number | null;
+  sourceShotId: string | null;
   sourceNodeShortId: string | null;
   createdAt: string;
 }
@@ -769,7 +813,11 @@ export interface ReferenceCreateInput {
   ai_brief?: string | null;
   aspect_ratio?: string | null;
   url?: string | null;
-  source_board_id?: number | null;
+  // Phase 3: callers may still pass `source_board_id` (legacy name carrying
+  // the Shot UUID under the /api/boards shim). Both fields accepted and
+  // mapped to backend's `source_shot_id` in createReference().
+  source_board_id?: string | null;
+  source_shot_id?: string | null;
   source_node_short_id?: string | null;
   tags?: string[];
 }
@@ -793,7 +841,7 @@ interface ReferenceRowWire {
   tags: string[] | null;
   pinned: boolean;
   position: number;
-  source_board_id: number | null;
+  source_shot_id: string | null;
   source_node_short_id: string | null;
   created_at: string;
 }
@@ -823,7 +871,7 @@ function mapReferenceRow(row: ReferenceRowWire): ReferenceItem {
     tags: Array.isArray(row.tags) ? row.tags : [],
     pinned: row.pinned,
     position: row.position,
-    sourceBoardId: row.source_board_id,
+    sourceShotId: row.source_shot_id,
     sourceNodeShortId: row.source_node_short_id,
     createdAt: row.created_at,
   };
@@ -850,9 +898,16 @@ export async function listReferences(params?: {
 export async function createReference(
   input: ReferenceCreateInput,
 ): Promise<ReferenceItem> {
+  // Backend column is `source_shot_id`; the legacy `source_board_id` field
+  // (still emitted by NodeCard pre-Phase-4) carries the same Shot UUID.
+  // Collapse to one field on the wire so the backend binds it.
+  const { source_board_id, source_shot_id, ...rest } = input;
+  const wire: Record<string, unknown> = { ...rest };
+  const shotId = source_shot_id ?? source_board_id ?? null;
+  if (shotId !== null) wire.source_shot_id = shotId;
   const row = await api<ReferenceRowWire>("/api/references", {
     method: "POST",
-    body: JSON.stringify(input),
+    body: JSON.stringify(wire),
   });
   return mapReferenceRow(row);
 }
@@ -875,4 +930,283 @@ export async function deleteReference(id: number): Promise<void> {
   if (!res.ok) {
     throw new Error(`deleteReference: ${res.status} ${res.statusText}`);
   }
+}
+
+
+// ── Phase 3: Project / Scene / Shot / Bible ──────────────────────────────
+// Mirrors the new REST surface in agent/flowboard/routes/projects.py,
+// scenes.py, shots.py, bibles.py. UUIDs travel as strings end-to-end;
+// numeric ids only exist on Asset/Node/Edge/Reference (those still use
+// SQLModel int PKs).
+
+export interface ProjectBible {
+  art_style: string;
+  color_palette: string[];
+  line_style: string;
+  lighting_conventions: string;
+  negative_prompts: string[];
+  style_anchor_asset_ids: number[];
+}
+
+export const EMPTY_PROJECT_BIBLE: ProjectBible = {
+  art_style: "",
+  color_palette: [],
+  line_style: "",
+  lighting_conventions: "",
+  negative_prompts: [],
+  style_anchor_asset_ids: [],
+};
+
+export interface ProjectDTO {
+  id: string;
+  name: string;
+  project_bible: Partial<ProjectBible>;
+  settings: Record<string, unknown>;
+  created_at: string | null;
+}
+
+export interface ProjectDetailDTO extends ProjectDTO {
+  scene_count: number;
+  asset_count: number;
+}
+
+export interface SceneDTO {
+  id: string;
+  project_id: string;
+  name: string;
+  order_index: number;
+  scene_bible_text: string;
+  master_establishing_asset_id: number | null;
+  created_at: string | null;
+}
+
+export interface SceneDetailDTO extends SceneDTO {
+  shot_count: number;
+}
+
+export type ShotStatus =
+  | "idle"
+  | "running"
+  | "awaiting_approval"
+  | "done"
+  | "error";
+
+export interface ShotDTO {
+  id: string;
+  scene_id: string;
+  order_index: number;
+  script_text: string;
+  status: ShotStatus | string;
+  current_node_id: number | null;
+  final_video_asset_id: number | null;
+  workflow_metadata: Record<string, unknown>;
+  created_at: string | null;
+}
+
+export interface SceneBible {
+  scene_bible_text: string;
+  master_establishing_asset_id: number | null;
+}
+
+// ── Projects ─────────────────────────────────────────────────────────────
+
+export function listProjects(): Promise<ProjectDTO[]> {
+  return api<ProjectDTO[]>("/api/projects");
+}
+
+export function createProject(input: {
+  name: string;
+  project_bible?: Partial<ProjectBible>;
+  settings?: Record<string, unknown>;
+}): Promise<ProjectDTO> {
+  return api<ProjectDTO>("/api/projects", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function getProject(id: string): Promise<ProjectDetailDTO> {
+  return api<ProjectDetailDTO>(`/api/projects/${id}`);
+}
+
+export function patchProject(
+  id: string,
+  patch: { name?: string; settings?: Record<string, unknown> },
+): Promise<ProjectDTO> {
+  return api<ProjectDTO>(`/api/projects/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+export function deleteProject(id: string): Promise<{ deleted: string }> {
+  return api<{ deleted: string }>(`/api/projects/${id}`, { method: "DELETE" });
+}
+
+export function getProjectCost(id: string): Promise<{ cost_usd: number }> {
+  return api<{ cost_usd: number }>(`/api/projects/${id}/cost`);
+}
+
+export function getProjectBible(id: string): Promise<Partial<ProjectBible>> {
+  return api<Partial<ProjectBible>>(`/api/projects/${id}/bible`);
+}
+
+export function putProjectBible(
+  id: string,
+  bible: ProjectBible,
+): Promise<Partial<ProjectBible>> {
+  return api<Partial<ProjectBible>>(`/api/projects/${id}/bible`, {
+    method: "PUT",
+    body: JSON.stringify(bible),
+  });
+}
+
+// ── Scenes ───────────────────────────────────────────────────────────────
+
+export function listScenes(projectId: string): Promise<SceneDTO[]> {
+  return api<SceneDTO[]>(`/api/projects/${projectId}/scenes`);
+}
+
+export function createScene(
+  projectId: string,
+  input: { name: string; order_index?: number; scene_bible_text?: string },
+): Promise<SceneDTO> {
+  return api<SceneDTO>(`/api/projects/${projectId}/scenes`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function getScene(id: string): Promise<SceneDetailDTO> {
+  return api<SceneDetailDTO>(`/api/scenes/${id}`);
+}
+
+export function patchScene(
+  id: string,
+  patch: {
+    name?: string;
+    order_index?: number;
+    scene_bible_text?: string;
+  },
+): Promise<SceneDTO> {
+  return api<SceneDTO>(`/api/scenes/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+export function deleteScene(id: string): Promise<{ deleted: string }> {
+  return api<{ deleted: string }>(`/api/scenes/${id}`, { method: "DELETE" });
+}
+
+export function getSceneBible(id: string): Promise<SceneBible> {
+  return api<SceneBible>(`/api/scenes/${id}/bible`);
+}
+
+export function putSceneBible(
+  id: string,
+  bible: SceneBible,
+): Promise<SceneBible> {
+  return api<SceneBible>(`/api/scenes/${id}/bible`, {
+    method: "PUT",
+    body: JSON.stringify(bible),
+  });
+}
+
+// Phase 7 stub — returns 501 until composition lands.
+export async function composeScene(id: string): Promise<{ ok: true } | { error: string }> {
+  const res = await fetch(`/api/scenes/${id}/compose`, { method: "POST" });
+  if (res.status === 501) {
+    const body = (await res.json().catch(() => ({}))) as { detail?: string };
+    return { error: body.detail ?? "scene composition not implemented yet (Phase 7)" };
+  }
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return { ok: true };
+}
+
+// ── Shots ────────────────────────────────────────────────────────────────
+
+export function listShots(sceneId: string): Promise<ShotDTO[]> {
+  return api<ShotDTO[]>(`/api/scenes/${sceneId}/shots`);
+}
+
+export function createShot(
+  sceneId: string,
+  input: { order_index?: number; script_text?: string } = {},
+): Promise<ShotDTO> {
+  return api<ShotDTO>(`/api/scenes/${sceneId}/shots`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function getShot(id: string): Promise<ShotDTO> {
+  return api<ShotDTO>(`/api/shots/${id}`);
+}
+
+export function patchShot(
+  id: string,
+  patch: {
+    order_index?: number;
+    script_text?: string;
+    status?: ShotStatus;
+    workflow_metadata?: Record<string, unknown>;
+  },
+): Promise<ShotDTO> {
+  return api<ShotDTO>(`/api/shots/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+export function deleteShot(id: string): Promise<{ deleted: string }> {
+  return api<{ deleted: string }>(`/api/shots/${id}`, { method: "DELETE" });
+}
+
+export interface ShotWorkflowResponse {
+  nodes: Array<{
+    id: number;
+    shot_id: string;
+    short_id: string;
+    type: NodeType;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    data: Record<string, unknown>;
+    status: NodeStatus;
+    created_at?: string;
+  }>;
+  edges: Array<{
+    id: number;
+    shot_id: string;
+    source_id: number;
+    target_id: number;
+    kind: string;
+    source_variant_idx: number | null;
+  }>;
+}
+
+export function getShotWorkflow(id: string): Promise<ShotWorkflowResponse> {
+  return api<ShotWorkflowResponse>(`/api/shots/${id}/workflow`);
+}
+
+export function putShotWorkflow(
+  id: string,
+  body: { nodes: unknown[]; edges: unknown[] },
+): Promise<ShotWorkflowResponse> {
+  return api<ShotWorkflowResponse>(`/api/shots/${id}/workflow`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function runShot(id: string): Promise<ShotDTO> {
+  return api<ShotDTO>(`/api/shots/${id}/run`, { method: "POST" });
+}
+
+export function cancelShot(id: string): Promise<ShotDTO> {
+  return api<ShotDTO>(`/api/shots/${id}/cancel`, { method: "POST" });
 }

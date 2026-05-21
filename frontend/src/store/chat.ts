@@ -7,18 +7,17 @@ import {
 } from "../api/client";
 
 interface ChatState {
-  boardId: number | null;
+  // Phase 3: chat module is dead code (ChatSidebar disabled in App.tsx).
+  // ``boardId`` renamed semantically to the project UUID for the new chat
+  // route, but the surface is preserved to avoid downstream churn.
+  boardId: string | null;
   messages: ChatMessageDTO[];
-  // Sidecar map: assistant message id → plan.
-  // NOTE: Historical messages loaded via GET /api/boards/:id/chat do not carry
-  // plan data. Plans are only attached on new messages from POST /api/chat.
-  // This is a known Run 7 limitation; Run 8 may join plans on list.
   plans: Record<number, PlanDTO>;
   loading: boolean;
   pending: boolean;
   error: string | null;
 
-  loadChat(boardId: number): Promise<void>;
+  loadChat(projectId: string): Promise<void>;
   sendMessage(message: string, mentions: string[]): Promise<void>;
   clearError(): void;
 }
@@ -35,10 +34,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pending: false,
   error: null,
 
-  async loadChat(boardId: number) {
-    set({ boardId, loading: true, error: null });
+  async loadChat(projectId: string) {
+    set({ boardId: projectId, loading: true, error: null });
     try {
-      const messages = await listChatMessages(boardId);
+      const messages = await listChatMessages(projectId);
       set({ messages, loading: false });
     } catch (err) {
       set({
@@ -55,7 +54,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const tempId = -(++_tempSeq);
     const optimisticMsg: ChatMessageDTO = {
       id: tempId,
-      board_id: boardId,
+      project_id: boardId,
       role: "user",
       content: message,
       mentions,

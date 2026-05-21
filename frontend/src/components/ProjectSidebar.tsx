@@ -1,31 +1,34 @@
 import { useEffect, useRef, useState } from "react";
-import { useBoardStore } from "../store/board";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+
+import { useProjectStore } from "../store/project";
 import { AccountPanel } from "./AccountPanel";
 
 /**
- * Left sidebar listing every local "project" (Board). Click an item to
- * switch the active board; the canvas re-loads its nodes/edges. Provides
- * inline create / rename / delete (with confirm) — all backed by the
- * /api/boards CRUD that already cascades to children on delete.
+ * Phase 3 project-aware sidebar. Reads from ``useProjectStore`` (post-
+ * board era) and uses React Router links so clicks deep-link into
+ * ``/projects/:id`` without going through any store imperative.
  */
 export function ProjectSidebar() {
-  const boards = useBoardStore((s) => s.boards);
-  const activeId = useBoardStore((s) => s.boardId);
-  const switchBoard = useBoardStore((s) => s.switchBoard);
-  const createNewBoard = useBoardStore((s) => s.createNewBoard);
-  const deleteBoardById = useBoardStore((s) => s.deleteBoardById);
-  const renameBoard = useBoardStore((s) => s.renameBoard);
+  const projects = useProjectStore((s) => s.projects);
+  const activeId = useProjectStore((s) => s.currentProjectId);
+  const createProject = useProjectStore((s) => s.createProject);
+  const deleteProject = useProjectStore((s) => s.deleteProject);
+  const renameProject = useProjectStore((s) => s.renameProject);
+
+  const location = useLocation();
+  const navigate = useNavigate();
 
   const [collapsed, setCollapsed] = useState(false);
-  const [renamingId, setRenamingId] = useState<number | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
-  const [openMenuId, setOpenMenuId] = useState<number | null>(null);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const [newDialogOpen, setNewDialogOpen] = useState(false);
   const [newDialogName, setNewDialogName] = useState("");
   const [newDialogBusy, setNewDialogBusy] = useState(false);
   const newDialogInputRef = useRef<HTMLInputElement>(null);
-  const [deleteTarget, setDeleteTarget] = useState<{ id: number; name: string } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
 
   useEffect(() => {
@@ -34,12 +37,15 @@ export function ProjectSidebar() {
     }
   }, [renamingId]);
 
-  // Click-outside closes the kebab menu.
   useEffect(() => {
     if (openMenuId === null) return;
     const onClick = (e: MouseEvent) => {
       const t = e.target as HTMLElement | null;
-      if (t && !t.closest(".project-sidebar__menu") && !t.closest(".project-sidebar__kebab")) {
+      if (
+        t
+        && !t.closest(".project-sidebar__menu")
+        && !t.closest(".project-sidebar__kebab")
+      ) {
         setOpenMenuId(null);
       }
     };
@@ -64,7 +70,8 @@ export function ProjectSidebar() {
     const name = newDialogName.trim() || "Untitled";
     setNewDialogBusy(true);
     try {
-      await createNewBoard(name);
+      const project = await createProject(name);
+      if (project) navigate(`/projects/${project.id}`);
     } finally {
       setNewDialogBusy(false);
       setNewDialogOpen(false);
@@ -72,7 +79,6 @@ export function ProjectSidebar() {
     }
   }
 
-  // Esc closes the new-project dialog.
   useEffect(() => {
     if (!newDialogOpen) return;
     const onKey = (e: KeyboardEvent) => {
@@ -83,7 +89,7 @@ export function ProjectSidebar() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [newDialogOpen, newDialogBusy]);
 
-  function startRename(id: number, currentName: string) {
+  function startRename(id: string, currentName: string) {
     setRenamingId(id);
     setRenameDraft(currentName);
     setOpenMenuId(null);
@@ -96,17 +102,11 @@ export function ProjectSidebar() {
       setRenamingId(null);
       return;
     }
-    // Only the active board can be renamed via the existing renameBoard
-    // action; for other boards, switch first then rename. Keeps the
-    // backend round-trip simple.
-    if (renamingId !== activeId) {
-      await switchBoard(renamingId);
-    }
-    await renameBoard(name);
+    await renameProject(renamingId, name);
     setRenamingId(null);
   }
 
-  function openDeleteConfirm(id: number, name: string) {
+  function openDeleteConfirm(id: string, name: string) {
     setOpenMenuId(null);
     setDeleteTarget({ id, name });
   }
@@ -115,7 +115,11 @@ export function ProjectSidebar() {
     if (!deleteTarget || deleteBusy) return;
     setDeleteBusy(true);
     try {
-      await deleteBoardById(deleteTarget.id);
+      await deleteProject(deleteTarget.id);
+      // If the deleted one was active, bounce to /projects.
+      if (location.pathname.includes(deleteTarget.id)) {
+        navigate("/projects");
+      }
     } finally {
       setDeleteBusy(false);
       setDeleteTarget(null);
@@ -127,7 +131,6 @@ export function ProjectSidebar() {
     setDeleteTarget(null);
   }
 
-  // Esc closes the delete-confirm dialog.
   useEffect(() => {
     if (!deleteTarget) return;
     const onKey = (e: KeyboardEvent) => {
@@ -141,7 +144,11 @@ export function ProjectSidebar() {
   return (
     <aside className={`project-sidebar${collapsed ? " project-sidebar--collapsed" : ""}`}>
       <div className="project-sidebar__header">
-        {!collapsed && <span className="project-sidebar__title">Projects</span>}
+        {!collapsed && (
+          <Link to="/projects" className="project-sidebar__title">
+            Projects
+          </Link>
+        )}
         <button
           type="button"
           className="project-sidebar__icon-btn"
@@ -162,12 +169,12 @@ export function ProjectSidebar() {
             <span aria-hidden="true">+</span> New project
           </button>
           <ul className="project-sidebar__list">
-            {boards.map((b) => {
-              const isActive = b.id === activeId;
-              const isRenaming = b.id === renamingId;
+            {projects.map((p) => {
+              const isActive = p.id === activeId;
+              const isRenaming = p.id === renamingId;
               return (
                 <li
-                  key={b.id}
+                  key={p.id}
                   className={`project-sidebar__item${isActive ? " project-sidebar__item--active" : ""}`}
                 >
                   {isRenaming ? (
@@ -184,36 +191,35 @@ export function ProjectSidebar() {
                     />
                   ) : (
                     <>
-                      <button
-                        type="button"
+                      <Link
+                        to={`/projects/${p.id}`}
                         className="project-sidebar__name"
-                        onClick={() => switchBoard(b.id)}
-                        title={b.name}
+                        title={p.name}
                       >
-                        {b.name || "Untitled"}
-                      </button>
+                        {p.name || "Untitled"}
+                      </Link>
                       <button
                         type="button"
                         className="project-sidebar__kebab"
                         onClick={() =>
-                          setOpenMenuId((cur) => (cur === b.id ? null : b.id))
+                          setOpenMenuId((cur) => (cur === p.id ? null : p.id))
                         }
                         aria-label="Project actions"
                       >
                         ⋯
                       </button>
-                      {openMenuId === b.id && (
+                      {openMenuId === p.id && (
                         <div className="project-sidebar__menu" role="menu">
                           <button
                             type="button"
-                            onClick={() => startRename(b.id, b.name)}
+                            onClick={() => startRename(p.id, p.name)}
                           >
                             Rename
                           </button>
                           <button
                             type="button"
                             className="project-sidebar__menu-danger"
-                            onClick={() => openDeleteConfirm(b.id, b.name)}
+                            onClick={() => openDeleteConfirm(p.id, p.name)}
                           >
                             Delete
                           </button>
@@ -224,16 +230,13 @@ export function ProjectSidebar() {
                 </li>
               );
             })}
-            {boards.length === 0 && (
+            {projects.length === 0 && (
               <li className="project-sidebar__empty">No projects yet</li>
             )}
           </ul>
         </>
       )}
 
-      {/* Pinned-bottom account chip — sits below the project list because
-          the list above has flex: 1 and pushes everything that follows
-          to the bottom of the column. */}
       <AccountPanel collapsed={collapsed} />
 
       {deleteTarget && (
@@ -255,8 +258,8 @@ export function ProjectSidebar() {
             </h2>
             <p className="project-modal__hint">
               <strong>"{deleteTarget.name}"</strong> sẽ bị xoá vĩnh viễn cùng
-              với tất cả nodes, edges, generations, và assets bên trong. Không
-              thể khôi phục.
+              với tất cả scenes, shots, nodes, edges và assets bên trong.
+              Không thể khôi phục.
             </p>
             <div className="project-modal__actions">
               <button
@@ -305,7 +308,7 @@ export function ProjectSidebar() {
               ref={newDialogInputRef}
               className="project-modal__input"
               type="text"
-              maxLength={80}
+              maxLength={120}
               value={newDialogName}
               onChange={(e) => setNewDialogName(e.target.value)}
               onKeyDown={(e) => {

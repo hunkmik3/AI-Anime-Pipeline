@@ -348,7 +348,7 @@ export function ChatSidebar() {
   const loadChat = useChatStore((s) => s.loadChat);
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const loadedRef = useRef<number | null>(null);
+  const loadedRef = useRef<string | null>(null);
 
   // Load chat when boardId becomes available
   useEffect(() => {
