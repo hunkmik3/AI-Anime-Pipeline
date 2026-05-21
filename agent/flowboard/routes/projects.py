@@ -1,70 +1,151 @@
-"""Bootstrap a Google Flow project for a local Board (= Shot under the shim).
+"""Phase 2: top-level Project REST surface.
 
-One-to-one: each Board's parent Project gets exactly one
-``flow_project_id``. The bootstrap is idempotent — calling POST multiple
-times returns the same project id without creating a new one on
-labs.google.
+Replaces the legacy ``/api/boards/*`` shim (see ``routes/boards.py``) and
+the Flow-project binding sub-resource that lived under
+``/api/boards/{id}/project`` (see ``routes/flow_binding_legacy.py``).
 
-Phase 1: URL still says "board" but ``board_id`` is now a Shot UUID; the
-mapping lives keyed by the parent Project's UUID.
+Sub-resources:
+- ``/bible``     — strict-validated ProjectBible JSONB (see ``routes/bibles.py``)
+- ``/flow-project`` — 1:1 Google Flow project_id binding
+- ``/chat``      — chat messages now naturally scope by project
+- ``/cost``      — cost rollup across all shots' Request rows
 """
 from __future__ import annotations
 
 import logging
 import uuid
-from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from flowboard.db import get_session
-from flowboard.db.models import Project, ProjectFlowMapping, Scene, Shot
+from flowboard.schemas import ProjectCreate, ProjectUpdate
+from flowboard.services import project_service as ps
 from flowboard.services.flow_sdk import get_flow_sdk, is_valid_project_id
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/boards", tags=["board-projects"])
+router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 
-def _project_for_board(session, board_id: str) -> Optional[Project]:
-    try:
-        shot_uuid = uuid.UUID(board_id)
-    except ValueError:
-        return None
-    shot = session.get(Shot, shot_uuid)
-    if shot is None:
-        return None
-    scene = session.get(Scene, shot.scene_id)
-    if scene is None:
-        return None
-    return session.get(Project, scene.project_id)
+def _project_dict(project) -> dict:
+    return {
+        "id": str(project.id),
+        "name": project.name,
+        "project_bible": dict(project.project_bible or {}),
+        "settings": dict(project.settings or {}),
+        "created_at": project.created_at.isoformat() if project.created_at else None,
+    }
 
 
-@router.get("/{board_id}/project")
-def get_board_project(board_id: str):
+@router.get("")
+def list_projects():
     with get_session() as s:
-        project = _project_for_board(s, board_id)
-        if project is None:
-            raise HTTPException(404, "board not found")
-        row = s.get(ProjectFlowMapping, project.id)
-        if row is None:
-            raise HTTPException(404, "no project bound to this board")
+        return [_project_dict(p) for p in ps.list_projects(s)]
+
+
+@router.post("")
+def create_project(body: ProjectCreate):
+    with get_session() as s:
+        project = ps.create_project(
+            s,
+            name=body.name,
+            project_bible=body.project_bible.model_dump() if body.project_bible else None,
+            settings=body.settings,
+        )
+        return _project_dict(project)
+
+
+@router.get("/{project_id}")
+def get_project(project_id: uuid.UUID):
+    with get_session() as s:
+        try:
+            project = ps.get_project(s, project_id)
+        except ps.ProjectNotFound:
+            raise HTTPException(404, "project not found")
+        base = _project_dict(project)
+        base["scene_count"] = ps.project_scene_count(s, project_id)
+        base["asset_count"] = ps.project_asset_count(s, project_id)
+        return base
+
+
+@router.patch("/{project_id}")
+def update_project(project_id: uuid.UUID, body: ProjectUpdate):
+    with get_session() as s:
+        try:
+            project = ps.update_project(
+                s,
+                project_id,
+                name=body.name,
+                settings=body.settings,
+            )
+        except ps.ProjectNotFound:
+            raise HTTPException(404, "project not found")
+        return _project_dict(project)
+
+
+@router.delete("/{project_id}")
+def delete_project(project_id: uuid.UUID):
+    with get_session() as s:
+        try:
+            ps.delete_project(s, project_id)
+        except ps.ProjectNotFound:
+            raise HTTPException(404, "project not found")
+        return {"deleted": str(project_id)}
+
+
+@router.get("/{project_id}/cost")
+def get_project_cost(project_id: uuid.UUID):
+    with get_session() as s:
+        try:
+            ps.get_project(s, project_id)
+        except ps.ProjectNotFound:
+            raise HTTPException(404, "project not found")
+        return {"cost_usd": ps.project_cost_usd(s, project_id)}
+
+
+@router.get("/{project_id}/chat")
+def list_project_chat(
+    project_id: uuid.UUID,
+    limit: int = Query(default=500, ge=1, le=2000),
+):
+    with get_session() as s:
+        try:
+            return ps.list_project_chat(s, project_id, limit=limit)
+        except ps.ProjectNotFound:
+            raise HTTPException(404, "project not found")
+
+
+# ── Flow project binding ──────────────────────────────────────────────────
+
+
+@router.get("/{project_id}/flow-project")
+def get_flow_project(project_id: uuid.UUID):
+    with get_session() as s:
+        try:
+            row = ps.get_flow_project(s, project_id)
+        except ps.ProjectNotFound:
+            raise HTTPException(404, "project not found")
+        except ps.FlowProjectNotBound:
+            raise HTTPException(404, "no flow project bound to this project")
         return {"flow_project_id": row.flow_project_id, "created": False}
 
 
-@router.post("/{board_id}/project")
-async def ensure_board_project(board_id: str):
-    # Cheap path: DB hit only.
+@router.post("/{project_id}/flow-project")
+async def ensure_flow_project(project_id: uuid.UUID):
+    # Cheap path: existing binding short-circuits before the extension hop.
     with get_session() as s:
-        project = _project_for_board(s, board_id)
-        if project is None:
-            raise HTTPException(404, "board not found")
-        row = s.get(ProjectFlowMapping, project.id)
-        if row is not None:
-            return {"flow_project_id": row.flow_project_id, "created": False}
+        try:
+            project = ps.get_project(s, project_id)
+        except ps.ProjectNotFound:
+            raise HTTPException(404, "project not found")
+        try:
+            existing = ps.get_flow_project(s, project_id)
+            return {"flow_project_id": existing.flow_project_id, "created": False}
+        except ps.FlowProjectNotBound:
+            pass
         project_name = project.name
-        project_id = project.id
 
-    # Release the session before the extension round-trip.
+    # Round-trip to the extension is OUTSIDE the DB session.
     resp = await get_flow_sdk().create_project(title=project_name or "Untitled")
     if resp.get("error"):
         raise HTTPException(
@@ -87,12 +168,12 @@ async def ensure_board_project(board_id: str):
         )
 
     with get_session() as s:
-        existing = s.get(ProjectFlowMapping, project_id)
-        if existing is not None:
+        # Race: another caller could have bound it during the hop.
+        try:
+            existing = ps.get_flow_project(s, project_id)
             return {"flow_project_id": existing.flow_project_id, "created": False}
-        row = ProjectFlowMapping(project_id=project_id, flow_project_id=flow_project_id)
-        s.add(row)
-        s.commit()
-        s.refresh(row)
+        except ps.FlowProjectNotBound:
+            pass
+        row = ps.bind_flow_project(s, project_id, flow_project_id)
         logger.info("bound project %s → flow_project %s", project_id, flow_project_id)
         return {"flow_project_id": row.flow_project_id, "created": True}

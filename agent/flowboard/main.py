@@ -9,7 +9,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from flowboard.config import WS_HOST
 from flowboard.db import get_session
 from flowboard.db.models import Request
-from flowboard.routes import activity, auth, boards, chat, edges, llm, media, nodes, plans, projects, prompt, upload, vision
+from flowboard.routes import (
+    activity,
+    auth,
+    bibles,
+    boards,
+    chat,
+    edges,
+    flow_binding_legacy,
+    llm,
+    media,
+    nodes,
+    plans,
+    projects,
+    prompt,
+    scenes,
+    shots,
+    upload,
+    vision,
+)
 from flowboard.routes import references as references_route
 from flowboard.routes import requests as requests_route
 from flowboard.services.flow_client import flow_client
@@ -86,11 +104,41 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+_LEGACY_DEPRECATION_SUNSET = "Phase 4"
+
+
+@app.middleware("http")
+async def _legacy_boards_deprecation(request: FastAPIRequest, call_next):
+    """Tag every ``/api/boards/*`` response with RFC 8594 deprecation
+    metadata + a one-shot WARNING log so devs hitting the legacy shim see
+    the cutover signal during Phase 2/3. Removed when ``/api/boards/*``
+    itself is removed in Phase 4.
+    """
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/api/boards" or path.startswith("/api/boards/"):
+        response.headers["Deprecation"] = "true"
+        response.headers["Sunset"] = _LEGACY_DEPRECATION_SUNSET
+        response.headers["Link"] = (
+            '</api/projects>; rel="successor-version"'
+        )
+        logger.warning(
+            "deprecated legacy endpoint %s %s — migrate to /api/projects/*",
+            request.method,
+            path,
+        )
+    return response
+
 app.include_router(boards.router)
 app.include_router(nodes.router)
 app.include_router(edges.router)
 app.include_router(chat.router)
 app.include_router(projects.router)
+app.include_router(scenes.router)
+app.include_router(shots.router)
+app.include_router(bibles.router)
+app.include_router(flow_binding_legacy.router)
 app.include_router(references_route.router)
 app.include_router(requests_route.router)
 app.include_router(media.bytes_router)
