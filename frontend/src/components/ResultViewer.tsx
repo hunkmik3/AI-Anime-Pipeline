@@ -33,11 +33,14 @@ function formatAspectRatio(value: string | undefined): string {
   switch (value) {
     case "IMAGE_ASPECT_RATIO_LANDSCAPE":
     case "VIDEO_ASPECT_RATIO_LANDSCAPE":
+    case "16:9":
       return "16:9";
     case "IMAGE_ASPECT_RATIO_PORTRAIT":
     case "VIDEO_ASPECT_RATIO_PORTRAIT":
+    case "9:16":
       return "9:16";
     case "IMAGE_ASPECT_RATIO_SQUARE":
+    case "1:1":
       return "1:1";
     default:
       return "—";

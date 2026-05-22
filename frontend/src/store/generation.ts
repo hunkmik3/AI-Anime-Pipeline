@@ -253,7 +253,10 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         const videoParams: Record<string, unknown> = {
           prompt: opts.prompt,
           project_id: projectId,
-          aspect_ratio: opts.aspectRatio ?? "VIDEO_ASPECT_RATIO_LANDSCAPE",
+          // Canonical aspect_ratio literal per services/video/base.py.
+          // Flow maps to its internal enum; Dreamina accepts only the
+          // literal "16:9" / "9:16" / "1:1".
+          aspect_ratio: opts.aspectRatio ?? "16:9",
           // Tier precedence: explicit caller arg > auto-detected from
           // Flow > TIER_ONE fallback. The dialog no longer asks the user.
           paygate_tier:

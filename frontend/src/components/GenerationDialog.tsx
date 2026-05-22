@@ -58,9 +58,13 @@ const IMAGE_ASPECT_RATIOS = [
   { key: "IMAGE_ASPECT_RATIO_LANDSCAPE", label: "16:9" },
 ] as const;
 
+// Canonical aspect_ratio literals per the backend protocol contract
+// (services/video/base.py). Flow's provider maps these to its internal
+// VIDEO_ASPECT_RATIO_* enum; Dreamina rejects anything that isn't one
+// of the literal strings.
 const VIDEO_ASPECT_RATIOS = [
-  { key: "VIDEO_ASPECT_RATIO_LANDSCAPE", label: "16:9 landscape" },
-  { key: "VIDEO_ASPECT_RATIO_PORTRAIT", label: "9:16 portrait" },
+  { key: "16:9", label: "16:9 landscape" },
+  { key: "9:16", label: "9:16 portrait" },
 ] as const;
 
 // Camera movement presets for video.
@@ -102,9 +106,9 @@ type AspectKey = ImageAspectKey | VideoAspectKey;
 // no direct video equivalent — fall back to portrait per the
 // "default-to-9:16 on mismatch" rule.
 function imageAspectToVideo(img: string | undefined): VideoAspectKey | null {
-  if (img === "IMAGE_ASPECT_RATIO_LANDSCAPE") return "VIDEO_ASPECT_RATIO_LANDSCAPE";
-  if (img === "IMAGE_ASPECT_RATIO_PORTRAIT") return "VIDEO_ASPECT_RATIO_PORTRAIT";
-  if (img === "IMAGE_ASPECT_RATIO_SQUARE") return "VIDEO_ASPECT_RATIO_PORTRAIT";
+  if (img === "IMAGE_ASPECT_RATIO_LANDSCAPE") return "16:9";
+  if (img === "IMAGE_ASPECT_RATIO_PORTRAIT") return "9:16";
+  if (img === "IMAGE_ASPECT_RATIO_SQUARE") return "9:16";
   return null;
 }
 
@@ -136,7 +140,7 @@ function pickDefaultAspect(
     if (mapped.length === 0) return null;
     const unique = new Set(mapped);
     if (unique.size === 1) return mapped[0];
-    return "VIDEO_ASPECT_RATIO_PORTRAIT";
+    return "9:16";
   }
   // Image (and character — though character has its own opinionated
   // default; the caller short-circuits before reaching here).
@@ -311,7 +315,7 @@ export function GenerationDialog() {
         if (inherited !== null) {
           nextAspect = inherited;
         } else if (openNodeType === "video") {
-          nextAspect = "VIDEO_ASPECT_RATIO_LANDSCAPE";
+          nextAspect = "16:9";
         } else {
           nextAspect = "IMAGE_ASPECT_RATIO_LANDSCAPE";
         }
