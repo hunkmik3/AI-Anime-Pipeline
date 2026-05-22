@@ -1,17 +1,19 @@
-"""AI-vision brief generation for cached media.
+"""AI-vision brief generation for cached media (anime pipeline, Phase 6).
 
 Asks the configured Vision provider (Claude / Gemini / OpenAI Codex)
 to summarise an image into a short factual description ("aiBrief").
 Used by:
-- Visual asset / character nodes — annotate uploaded or generated images
-- Auto-prompt synthesizer — feed those briefs into a downstream prompt
+- Character / visual_asset / image nodes — annotate uploaded or
+  generated images
+- Auto-prompt synthesizer — feed those briefs into the downstream
+  anime prompt
 
-Provider routing goes through ``run_llm("vision", ...)``. The user picks
-which one in Settings → AI Providers — there is no default; the forced
-setup gate ensures one is chosen before the app is usable. All three
-shipped providers support vision, so the registry's vision-capability
-gate is currently a defensive no-op — it kicks in if a future text-only
-provider is added.
+Provider routing goes through ``run_llm("vision", ...)``. The user
+picks which one in Settings → AI Providers — there is no default; the
+forced setup gate ensures one is chosen before the app is usable. All
+three shipped providers support vision, so the registry's vision-
+capability gate is currently a defensive no-op — it kicks in if a
+future text-only provider is added.
 
 We always pass an ABSOLUTE path so the underlying transport (CLI flag
 or HTTP base64) doesn't get tripped up by the agent's cwd.
@@ -29,17 +31,32 @@ from flowboard.services.llm.base import LLMError
 
 logger = logging.getLogger(__name__)
 
-# Keep briefs short — they get spliced into downstream prompts. 200 chars
-# is enough for "white cotton crewneck t-shirt with small heart logo" or
-# "young Korean woman, neutral expression, dark hair tied back, dark top".
-_VISION_SYSTEM = (
-    "You are a visual asset annotator for a fashion / e-commerce media "
-    "pipeline. Output one short factual sentence (max 200 characters) that "
-    "describes the image. Focus on attributes useful for image generation: "
-    "for a product → colour, material, design, fit, style; for a person → "
-    "gender, apparent ethnicity, age range, expression, hair, outfit. No "
-    "marketing language, no opinions, no preamble — just the description."
+# Anime asset annotator. Briefs get spliced into downstream prompts —
+# keep them short and technical. 220 chars is enough for "young woman
+# w/ short black hair, twin braids, cel-shaded school uniform, neutral
+# expression" or "rainy alley at night, neon reflections, low-key
+# directional lighting from a vending machine".
+_VISION_SYSTEM_ANIME = (
+    "You are an anime visual asset annotator. Output one short factual "
+    "sentence (max 220 characters) describing the image for downstream "
+    "anime prompt synthesis. Focus on:\n"
+    "  • For a character: apparent age range, hair color/style, eye "
+    "color, distinctive features, expression, outfit silhouette, art "
+    "style (rough sketch / cel-shaded / painted / 3D).\n"
+    "  • For an environment / location: setting type, time of day, "
+    "weather, dominant color palette, lighting direction, mood.\n"
+    "  • For a prop / object: shape, material, color, scale relative to "
+    "a human, condition (new / weathered / damaged).\n\n"
+    "If the asset is an anime character with a name labeled in the "
+    "image, preserve the name verbatim. Otherwise output English "
+    "description.\n\n"
+    "Stay technical — no marketing language, no narrative speculation, "
+    "no opinions, no preamble. Output the description sentence only."
 )
+
+# Backwards-compatible alias — existing call sites referenced
+# ``_VISION_SYSTEM``. Anime version is canonical going forward.
+_VISION_SYSTEM = _VISION_SYSTEM_ANIME
 
 _VISION_USER_PROMPT = "Describe this image."
 

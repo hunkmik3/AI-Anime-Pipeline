@@ -163,9 +163,18 @@ def reorder_shots(
 
 def get_scene_bible(session: Session, scene_id: uuid.UUID) -> dict[str, Any]:
     scene = get_scene(session, scene_id)
+    media_id: Optional[str] = None
+    if scene.master_establishing_asset_id is not None:
+        asset = session.get(Asset, scene.master_establishing_asset_id)
+        if asset is not None:
+            media_id = asset.uuid_media_id
     return {
         "scene_bible_text": scene.scene_bible_text,
         "master_establishing_asset_id": scene.master_establishing_asset_id,
+        # Read-only convenience: lets the frontend MasterShotNode populate
+        # ``data.mediaId`` without a second roundtrip. PUT body still
+        # accepts only ``master_establishing_asset_id``.
+        "master_establishing_media_id": media_id,
     }
 
 
@@ -195,7 +204,4 @@ def put_scene_bible(
     session.add(scene)
     session.commit()
     session.refresh(scene)
-    return {
-        "scene_bible_text": scene.scene_bible_text,
-        "master_establishing_asset_id": scene.master_establishing_asset_id,
-    }
+    return get_scene_bible(session, scene.id)

@@ -1,13 +1,20 @@
-"""Auto-prompt route.
+"""Auto-prompt routes.
 
-`POST /api/prompt/auto { node_id }` returns a Claude-composed prompt built
-from the immediate-upstream context (character / visual_asset / image
-nodes' aiBriefs). Frontend calls this when the user clicks Generate
-without typing a prompt.
+`POST /api/prompt/auto { node_id }` — Claude-composed prompt built
+from the immediate-upstream context + the project/scene bible auto-
+injection (Phase 6).
+
+`POST /api/prompt/auto-batch { node_id, count }` — N variant-distinct
+prompts in one LLM call.
+
+`POST /api/prompt/parse-script { scene_id, script_text }` — break a
+Vietnamese-or-any-language scene script into structured shot
+breakdowns (Phase 6.4). Used by the SceneView ScriptInputDialog.
 """
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -66,3 +73,45 @@ async def auto_prompt_batch(body: AutoPromptBatchBody) -> AutoPromptBatchRespons
     except prompt_synth.PromptSynthError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     return AutoPromptBatchResponse(node_id=body.node_id, prompts=prompts)
+
+
+class ParseScriptBody(BaseModel):
+    scene_id: uuid.UUID
+    script_text: str
+
+
+class ParseScriptShot(BaseModel):
+    order: int
+    script_text: str
+    camera_angle: str
+    characters_in_frame: list[str]
+    environment: str
+    dialogue: Optional[str] = None
+    beat_notes: str
+
+
+class ParseScriptResponse(BaseModel):
+    scene_id: uuid.UUID
+    shots: list[ParseScriptShot]
+
+
+@router.post("/parse-script", response_model=ParseScriptResponse)
+async def parse_script(body: ParseScriptBody) -> ParseScriptResponse:
+    """Break a (Vietnamese-or-any-language) scene script into discrete
+    cinematic shots.
+
+    The LLM is instructed to preserve ``script_text`` verbatim in the
+    source language while emitting English meta fields. Used by the
+    SceneView ScriptInputDialog to bulk-create shots with parsed
+    camera / character / environment hints already populated.
+    """
+    if not body.script_text.strip():
+        raise HTTPException(status_code=400, detail="script_text is empty")
+    try:
+        shots = await prompt_synth.parse_script(body.scene_id, body.script_text)
+    except prompt_synth.PromptSynthError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return ParseScriptResponse(
+        scene_id=body.scene_id,
+        shots=[ParseScriptShot(**s) for s in shots],
+    )

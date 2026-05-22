@@ -41,16 +41,22 @@ function MasterShotBody({ rfId, data }: { rfId: string; data: FlowboardNodeData 
         });
         return;
       }
-      // The Asset's uuid_media_id is what mediaUrl() consumes — but the
-      // Scene Bible response only returns the numeric asset_id. We persist
-      // the asset id locally; full media resolution lands when the prompt
-      // synthesis pipeline reads it server-side (Phase 6).
+      // Phase 6: the GET response now includes
+      // ``master_establishing_media_id`` so we can populate
+      // ``data.mediaId`` here — that drives both the node thumbnail
+      // (via mediaUrl) and the wire-side ref payload
+      // (``collectUpstreamRefMediaIds`` picks it up automatically once
+      // ``master_shot`` joined REF_SOURCE_TYPES).
+      const resolvedMediaId = bible.master_establishing_media_id ?? undefined;
       useShotWorkflowStore.getState().updateNodeData(rfId, {
         masterShotAssetId: assetId,
+        mediaId: resolvedMediaId,
       });
       const dbId = parseInt(rfId, 10);
       if (!isNaN(dbId)) {
-        patchNode(dbId, { data: { masterShotAssetId: assetId } }).catch(() => {});
+        patchNode(dbId, {
+          data: { masterShotAssetId: assetId, mediaId: resolvedMediaId },
+        }).catch(() => {});
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "load failed");

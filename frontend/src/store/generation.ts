@@ -86,7 +86,18 @@ interface GenerationState {
 // One ref per edge means one Flow API call regardless of how many
 // variants the upstream has — the user picks which variant feeds
 // which downstream by clicking the variant tile (Stage 2 UX).
-const REF_SOURCE_TYPES = new Set(["character", "image", "visual_asset", "Storyboard"]);
+// ``master_shot`` (Phase 6) carries the scene's establishing-shot mediaId
+// as ``data.mediaId`` once the MasterShotNode resolves it from the Scene
+// Bible (see ``MasterShotNode.tsx``). Treated as a normal ref source so
+// it ends up positionally in the wire payload; the backend's prompt
+// synth labels it ``establishing_shot_ref`` at slot 1.
+const REF_SOURCE_TYPES = new Set([
+  "character",
+  "image",
+  "visual_asset",
+  "Storyboard",
+  "master_shot",
+]);
 
 function collectUpstreamRefMediaIds(targetRfId: string): string[] {
   const { nodes, edges } = useShotWorkflowStore.getState();

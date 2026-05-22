@@ -1,32 +1,62 @@
-"""Tests for prompt_synth service + /api/prompt/auto route.
+"""Tests for prompt_synth service + /api/prompt/* routes (Phase 6 anime).
 
-After the multi-LLM provider migration the service routes all dispatches
-through `run_llm("auto_prompt", ...)`. Tests patch `run_llm` at the
-import boundary in `prompt_synth` so the registry / provider stack is
-fully bypassed; coverage for routing lives in `test_llm_registry.py`.
+Coverage focuses on STRUCTURAL guarantees, not exact prompt wording:
+  - Multi-subject detection (character + image-sibling cases)
+  - Prompt-vs-aiBrief precedence
+  - Bible auto-injection (Project + Scene)
+  - Master-shot `establishing_shot_ref` slot ordering
+  - Script / BibleRef passthrough node text surfacing
+  - Bilingual mock (VN input → English-output instruction present)
+  - Script parse endpoint shape
+
+Provider routing is bypassed by patching ``run_llm`` at the import
+boundary in ``prompt_synth``. Real provider tests live in
+``test_llm_registry.py``.
+
+Fashion-era prompts are preserved verbatim in
+``services/prompt_synth_legacy.py`` for reference; tests for the
+fashion behaviour were removed when the anime rewrite landed
+(Phase 6).
 """
 from __future__ import annotations
+
+import json as _json
+import uuid
 
 import pytest
 
 from flowboard.db import get_session
-from flowboard.db.models import Edge, Node, Project, Scene, Shot
+from flowboard.db.models import Asset, Edge, Node, Project, Scene, Shot
 from flowboard.services import prompt_synth
-from flowboard.services.llm.base import LLMError
 
 
-def _make_shot(session, name: str = "t") -> Shot:
-    """Build a Project → Scene → Shot pyramid and return the Shot.
+# ── Shot pyramid helpers ────────────────────────────────────────────────
 
-    Used by tests that previously created `Board(name=...)` rows directly.
-    Each Shot is now the analogue of a legacy Board; project_id stays
-    auto-created so chat/asset/reference rows scoped to that project
-    work unchanged.
+
+def _make_shot(
+    session,
+    *,
+    name: str = "t",
+    project_bible: dict | None = None,
+    scene_bible_text: str = "",
+    master_establishing_asset_id: int | None = None,
+) -> Shot:
+    """Build Project → Scene → Shot and return the Shot.
+
+    Bible fields are optional so tests that don't care about
+    injection still get clean defaults (empty bible → no prepend
+    block).
     """
-    project = Project(name=name)
+    project = Project(name=name, project_bible=project_bible or {})
     session.add(project)
     session.flush()
-    scene = Scene(project_id=project.id, name="Scene 1", order_index=0)
+    scene = Scene(
+        project_id=project.id,
+        name="Scene 1",
+        order_index=0,
+        scene_bible_text=scene_bible_text,
+        master_establishing_asset_id=master_establishing_asset_id,
+    )
     session.add(scene)
     session.flush()
     shot = Shot(scene_id=scene.id, order_index=0)
@@ -36,32 +66,22 @@ def _make_shot(session, name: str = "t") -> Shot:
     return shot
 
 
-def _seed_board_with_chain(monkeypatch=None) -> dict:
-    """Create a Board + 3 nodes (character, visual_asset, image) + edges
-    char→image, asset→image. Return their ids."""
+def _seed_simple_char_chain() -> dict:
+    """Project → Scene → Shot with character → image target chain.
+
+    Returns ids of the target image + the character. No bible.
+    """
     with get_session() as s:
-        b = _make_shot(s, name="t")
+        b = _make_shot(s, name="basic")
         char = Node(
             shot_id=b.id,
             short_id="char",
             type="character",
             x=0, y=0, w=240, h=180,
             data={
-                "title": "Character",
-                "aiBrief": "young Korean woman, neutral expression, dark hair tied back",
+                "title": "Hero",
+                "aiBrief": "young woman, short black hair, twin braids, cel-shaded",
                 "mediaId": "uuuuuuuu-1111-2222-3333-444444444444",
-            },
-            status="done",
-        )
-        asset = Node(
-            shot_id=b.id,
-            short_id="asse",
-            type="visual_asset",
-            x=0, y=0, w=240, h=180,
-            data={
-                "title": "Visual asset",
-                "aiBrief": "white cotton crewneck t-shirt with small heart logo on chest",
-                "mediaId": "uuuuuuuu-2222-2222-3333-444444444444",
             },
             status="done",
         )
@@ -70,505 +90,77 @@ def _seed_board_with_chain(monkeypatch=None) -> dict:
             short_id="targ",
             type="image",
             x=0, y=0, w=240, h=180,
-            data={"title": "Composed image"},
+            data={"title": "Cinematic shot"},
             status="idle",
         )
-        s.add_all([char, asset, target])
+        s.add_all([char, target])
         s.commit()
-        s.refresh(char); s.refresh(asset); s.refresh(target)
+        s.refresh(char); s.refresh(target)
         s.add(Edge(shot_id=b.id, source_id=char.id, target_id=target.id))
-        s.add(Edge(shot_id=b.id, source_id=asset.id, target_id=target.id))
         s.commit()
-        return {"target_id": target.id, "char_id": char.id, "asset_id": asset.id}
+        return {"target_id": target.id, "char_id": char.id, "shot_id": b.id}
+
+
+# ── Anime style floor (system prompt structure) ─────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_auto_prompt_multi_variant_node_still_gets_ref_image_label(
-    client, monkeypatch
-):
-    """When an upstream image node has 4 variants stored as `mediaIds`
-    (and `mediaId` may even be unset), the synthesiser must still treat
-    it as a ref source and emit a `ref_image_N` label. The frontend
-    expands the variants flat into `ref_media_ids`; this test guards
-    the backend's matching `has_media` check that drives `ref_index`
-    assignment in `_collect_upstream`."""
-    with get_session() as s:
-        b = _make_shot(s, name="multi-variant")
-        # Multi-variant source: only `mediaIds` populated (4 entries).
-        # `mediaId` intentionally omitted to prove the fallback path.
-        outfit = Node(
-            shot_id=b.id, short_id="ofit", type="image",
-            x=0, y=0, w=240, h=180,
-            data={
-                "title": "Beige outfit (4 variants)",
-                "aiBrief": "young East Asian woman in beige oversized blazer, neutral expression",
-                "mediaIds": [
-                    "uuuuuuuu-ofit-0001-0001-000000000001",
-                    "uuuuuuuu-ofit-0002-0002-000000000002",
-                    "uuuuuuuu-ofit-0003-0003-000000000003",
-                    "uuuuuuuu-ofit-0004-0004-000000000004",
-                ],
-            },
-            status="done",
-        )
-        target = Node(
-            shot_id=b.id, short_id="trgt", type="image",
-            x=0, y=0, w=240, h=180, data={"title": "Output"},
-            status="idle",
-        )
-        s.add_all([outfit, target]); s.commit()
-        for n in (outfit, target):
-            s.refresh(n)
-        s.add(Edge(shot_id=b.id, source_id=outfit.id, target_id=target.id))
-        s.commit()
-        tgt_id = target.id
-
+async def test_anime_image_system_prompt_carries_style_floor(client, monkeypatch):
+    """System prompt for an image target must declare the anime style
+    floor: cel-shaded, 2D, anti-photoreal, anti-3D, anti-text overlays,
+    English output, bilingual VN input.
+    """
+    ids = _seed_simple_char_chain()
     captured: dict = {}
 
     async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
+        captured["system_prompt"] = system_prompt or ""
         captured["prompt"] = prompt
-        return "Editorial photo of model in beige blazer"
-
-    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    await prompt_synth.auto_prompt(tgt_id)
-
-    user = captured["prompt"] or ""
-    # Multi-variant node still earns its `ref_image_N` slot — without
-    # this the synthesiser would silently drop nodes that only have
-    # `mediaIds` (no `mediaId`), leaving the LLM with no reference
-    # label to bind to even though the wire payload includes 4 inputs.
-    assert "ref_image_1:" in user
-    assert "beige" in user.lower()
-
-
-@pytest.mark.asyncio
-async def test_auto_prompt_calls_provider_with_upstream_briefs(client, monkeypatch):
-    ids = _seed_board_with_chain()
-    captured: dict = {}
-
-    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        captured["prompt"] = prompt
-        captured["system_prompt"] = system_prompt
-        return "Photoreal studio shot of a Korean woman wearing a white heart-logo t-shirt"
-
-    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-
-    out = await prompt_synth.auto_prompt(ids["target_id"])
-    assert "Korean woman" in out
-    # Both upstream briefs must surface in the prompt sent to Claude.
-    assert "Korean woman" in captured["prompt"]
-    assert "white cotton crewneck" in captured["prompt"]
-    # System prompt must set photo-realistic style + fashion-editorial pose
-    # guidance with the load-bearing anchors:
-    #   - gaze must engage the camera (no profile / back / looking-away)
-    #   - stance pool for variety (so successive gens aren't identical)
-    #   - product-hero framing
-    sp = (captured["system_prompt"] or "").lower()
-    assert "photoreal" in sp
-    assert "engage the camera" in sp or "engage the lens" in sp
-    assert "no profile" in sp or "no looking-away" in sp
-    assert "stance" in sp
-    assert "three-quarter" in sp or "three quarter" in sp
-    assert "hero" in sp
-    # No-smile anchor — open-mouth smiles destabilise downstream i2v.
-    assert "no smiling" in sp
-    assert "closed-mouth" in sp
-    assert "no teeth" in sp
-    # Stance pool must list multiple options so the LLM has variety to
-    # rotate through — assert at least 4 distinct gestures present.
-    pool_options = [
-        "hands in pockets",
-        "brushing the collar",
-        "hand-on-hip",
-        "arms casually crossed",
-        "hand running through hair",
-        "walking towards camera",
-        "leaning weight on one hip",
-    ]
-    matches = sum(1 for opt in pool_options if opt in sp)
-    assert matches >= 4, f"only matched {matches} pose options in pool"
-
-
-def _seed_couple_via_image_siblings() -> dict:
-    """Seed a board where the target image has 2 image upstream siblings,
-    each wrapping a different character grandparent. Mirrors the real-world
-    couple-shot graph: char_male → img_male, char_female → img_female,
-    img_male + img_female → target."""
-    with get_session() as s:
-        b = _make_shot(s, name="couple")
-        char_m = Node(
-            shot_id=b.id, short_id="cmal", type="character",
-            x=0, y=0, w=240, h=180,
-            data={"title": "Male", "aiBrief": "young Vietnamese man",
-                  "mediaId": "uuuuuuuu-aaaa-1111-1111-111111111111"},
-            status="done",
-        )
-        char_f = Node(
-            shot_id=b.id, short_id="cfem", type="character",
-            x=0, y=0, w=240, h=180,
-            data={"title": "Female", "aiBrief": "young Vietnamese woman",
-                  "mediaId": "uuuuuuuu-bbbb-1111-1111-111111111111"},
-            status="done",
-        )
-        img_m = Node(
-            shot_id=b.id, short_id="imgm", type="image",
-            x=0, y=0, w=240, h=180,
-            data={"title": "M shot", "mediaId": "uuuuuuuu-mmmm-1111-1111-111111111111"},
-            status="done",
-        )
-        img_f = Node(
-            shot_id=b.id, short_id="imgf", type="image",
-            x=0, y=0, w=240, h=180,
-            data={"title": "F shot", "mediaId": "uuuuuuuu-ffff-1111-1111-111111111111"},
-            status="done",
-        )
-        target = Node(
-            shot_id=b.id, short_id="ctgt", type="image",
-            x=0, y=0, w=240, h=180,
-            data={"title": "Couple shot"},
-            status="idle",
-        )
-        s.add_all([char_m, char_f, img_m, img_f, target])
-        s.commit()
-        for n in (char_m, char_f, img_m, img_f, target):
-            s.refresh(n)
-        s.add(Edge(shot_id=b.id, source_id=char_m.id, target_id=img_m.id))
-        s.add(Edge(shot_id=b.id, source_id=char_f.id, target_id=img_f.id))
-        s.add(Edge(shot_id=b.id, source_id=img_m.id, target_id=target.id))
-        s.add(Edge(shot_id=b.id, source_id=img_f.id, target_id=target.id))
-        s.commit()
-        return {
-            "target_id": target.id,
-            "char_m_short": char_m.short_id,
-            "char_f_short": char_f.short_id,
-        }
-
-
-@pytest.mark.asyncio
-async def test_auto_prompt_multi_subject_detects_couple_via_image_siblings(
-    client, monkeypatch
-):
-    """When target has 2 image upstream each wrapping a different character
-    grandparent, synth must switch to multi-subject mode: the user message
-    surfaces both subjects (by `ref_image_N` position) and the system
-    prompt enforces couple framing.
-
-    Note: shortIds (`#abcd`) used to be embedded in the user message and
-    the system prompt told Claude to bind subjects "by `#shortId`". Flow
-    doesn't parse those — refs bind via the positional `imageInputs`
-    array, and the @-handle-looking tokens correlated with false-positive
-    `PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED` from Google's content
-    classifier. The synth now uses `ref_image_N` labels matching the
-    `ref_media_ids` slot order on the wire."""
-    ids = _seed_couple_via_image_siblings()
-    captured: dict = {}
-
-    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        captured["prompt"] = prompt
-        captured["system_prompt"] = system_prompt
-        return "Editorial couple shot of ref_image_1 and ref_image_2"
-
-    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    out = await prompt_synth.auto_prompt(ids["target_id"])
-    assert "ref_image_1" in out and "ref_image_2" in out
-
-    # User message must declare 2 distinct subjects and address the two
-    # image refs by their positional ref_image_N labels.
-    user = captured["prompt"]
-    assert "DISTINCT SUBJECTS DETECTED: 2 people" in user
-    assert "ref_image_1:" in user
-    assert "ref_image_2:" in user
-    # No upstream-node shortIds should leak into the LLM prompt body.
-    assert f"#{ids['char_m_short']}" not in user
-    assert f"#{ids['char_f_short']}" not in user
-
-    # System prompt must include the multi-subject clause.
-    sp = captured["system_prompt"] or ""
-    assert "MULTI-SUBJECT MODE" in sp
-    assert "REFERENCE BY POSITION" in sp
-    assert "ref_image_N" in sp
-    assert "couple/group" in sp.lower() or "couple / group" in sp.lower()
-    assert "complementary stance" in sp.lower()
-
-
-@pytest.mark.asyncio
-async def test_auto_prompt_single_subject_skips_multi_clause(client, monkeypatch):
-    """A normal 1-character + 1-asset graph must NOT carry the multi-subject
-    clause — only the single-subject base prompt."""
-    ids = _seed_board_with_chain()
-    captured: dict = {}
-
-    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        captured["system_prompt"] = system_prompt
-        captured["prompt"] = prompt
-        return "single subject prompt"
+        return "Wide establishing cel anime shot."
 
     monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
     await prompt_synth.auto_prompt(ids["target_id"])
-    sp = captured["system_prompt"] or ""
+
+    sp = captured["system_prompt"]
+    assert "cel-shaded" in sp.lower()
+    assert "2D anime" in sp or "2d anime" in sp.lower()
+    # Anti-patterns required so providers don't drift toward photoreal.
+    assert "No photoreal" in sp or "no photoreal" in sp.lower()
+    assert "no 3D" in sp.lower() or "not 3d-rendered" in sp.lower()
+    assert "no text overlays" in sp.lower()
+    # Camera vocabulary explicit so the LLM picks an angle.
+    assert "wide establishing" in sp.lower()
+    assert "over-the-shoulder" in sp.lower()
+    # Bilingual hand-off: source may be VN, output EN.
+    assert "vietnamese" in sp.lower()
+    assert "english" in sp.lower()
+    # Single-subject base — no multi-subject clause.
     assert "MULTI-SUBJECT MODE" not in sp
-    assert "DISTINCT SUBJECTS DETECTED" not in (captured["prompt"] or "")
 
 
 @pytest.mark.asyncio
-async def test_auto_prompt_multi_subject_via_two_character_upstream(
+async def test_anime_video_system_prompt_anime_cadence_and_anti_freeze(
     client, monkeypatch
 ):
-    """Two character nodes connected directly to the target also count as
-    multi-subject (no image-siblings indirection needed)."""
+    """Video target → motion prompt with anime cadence rule (twos /
+    threes / sakuga ones), anti-freeze safety floor, camera vocabulary,
+    silent-by-default audio, bilingual EN output."""
     with get_session() as s:
-        b = _make_shot(s, name="couple-direct")
-        c1 = Node(
-            shot_id=b.id, short_id="cd01", type="character",
-            x=0, y=0, w=240, h=180,
-            data={"title": "P1", "aiBrief": "man",
-                  "mediaId": "uuuuuuuu-cccc-1111-1111-111111111111"},
-            status="done",
-        )
-        c2 = Node(
-            shot_id=b.id, short_id="cd02", type="character",
-            x=0, y=0, w=240, h=180,
-            data={"title": "P2", "aiBrief": "woman",
-                  "mediaId": "uuuuuuuu-dddd-1111-1111-111111111111"},
-            status="done",
-        )
-        tgt = Node(
-            shot_id=b.id, short_id="cdtg", type="image",
-            x=0, y=0, w=240, h=180,
-            data={"title": "Couple"},
-            status="idle",
-        )
-        s.add_all([c1, c2, tgt]); s.commit()
-        for n in (c1, c2, tgt):
-            s.refresh(n)
-        s.add(Edge(shot_id=b.id, source_id=c1.id, target_id=tgt.id))
-        s.add(Edge(shot_id=b.id, source_id=c2.id, target_id=tgt.id))
-        s.commit()
-        tgt_id = tgt.id
-
-    captured: dict = {}
-
-    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        captured["system_prompt"] = system_prompt
-        captured["prompt"] = prompt
-        return "ok"
-
-    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    await prompt_synth.auto_prompt(tgt_id)
-    assert "MULTI-SUBJECT MODE" in (captured["system_prompt"] or "")
-    assert "DISTINCT SUBJECTS DETECTED: 2 people" in (captured["prompt"] or "")
-
-
-@pytest.mark.asyncio
-async def test_auto_prompt_image_with_location_reference_keeps_setting(
-    client, monkeypatch
-):
-    """Regression: when target has 2 image upstream — one a garment/subject
-    reference, the other a location/scene reference (no character grandparent
-    on either) — the synthesiser must surface the ROLE INFERENCE hint and
-    drop the hardcoded "studio default" so Claude places the subject INTO
-    the location instead of silently dropping it.
-
-    Scenario (the bug we're fixing): user attaches a pink-t-shirt photo +
-    a jogging-path photo to a target image. Output came back as a plain
-    studio shot of the t-shirt with the park completely missing — Claude
-    was honouring the system prompt's 'neutral indoor or studio background'
-    default rather than using the location upstream as the setting."""
-    with get_session() as s:
-        b = _make_shot(s, name="loc-ref")
-        garment = Node(
-            shot_id=b.id, short_id="zy6g", type="image",
-            x=0, y=0, w=240, h=180,
-            data={
-                "title": "T-shirt",
-                "aiBrief": "pink crewneck cotton t-shirt worn by a model, "
-                           "plain white background, product reference",
-                "mediaId": "uuuuuuuu-zy6g-1111-1111-111111111111",
-            },
-            status="done",
-        )
-        location = Node(
-            shot_id=b.id, short_id="vx3x", type="image",
-            x=0, y=0, w=240, h=180,
-            data={
-                "title": "Jogging path",
-                "aiBrief": "outdoor jogging path in a public park, trees, "
-                           "people running, bright daylight, urban park scene",
-                "mediaId": "uuuuuuuu-vx3x-1111-1111-111111111111",
-            },
-            status="done",
-        )
-        target = Node(
-            shot_id=b.id, short_id="cgx0", type="image",
-            x=0, y=0, w=240, h=180,
-            data={"title": "Composed shot"},
-            status="idle",
-        )
-        s.add_all([garment, location, target]); s.commit()
-        for n in (garment, location, target):
-            s.refresh(n)
-        s.add(Edge(shot_id=b.id, source_id=garment.id, target_id=target.id))
-        s.add(Edge(shot_id=b.id, source_id=location.id, target_id=target.id))
-        s.commit()
-        tgt_id = target.id
-
-    captured: dict = {}
-
-    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        captured["prompt"] = prompt
-        captured["system_prompt"] = system_prompt
-        return "Editorial photo of a model wearing a pink crewneck on a "\
-               "sunlit jogging path in a public park"
-
-    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    await prompt_synth.auto_prompt(tgt_id)
-
-    user = captured["prompt"] or ""
-    sp = captured["system_prompt"] or ""
-
-    # Both briefs surface in the user message — context is intact.
-    assert "pink crewneck" in user
-    assert "jogging path" in user
-    # Refs are addressed by positional `ref_image_N` labels (matches the
-    # ref_media_ids slot Flow sees on the wire). Internal node shortIds
-    # MUST NOT leak into the LLM prompt body — they look like @-handles
-    # to Google's content classifier.
-    assert "ref_image_1:" in user and "ref_image_2:" in user
-    assert "#zy6g" not in user and "#vx3x" not in user
-
-    # ROLE INFERENCE hint must be present whenever 2+ image refs feed in,
-    # so Claude classifies which is subject vs setting from the briefs
-    # rather than guessing.
-    assert "ROLE INFERENCE" in user
-    assert "SETTING reference" in user
-    assert "places the subject INTO" in user
-
-    # System prompt must include the new BACKGROUND PRIORITY rule directing
-    # Claude to use any location reference as the shot's environment.
-    assert "BACKGROUND PRIORITY" in sp
-    assert "USE that environment" in sp
-    # The old hardcoded "studio default unless notes override" wording must
-    # be gone — that bias was the root cause of the location getting dropped.
-    assert "studio background unless the notes override" not in sp.lower()
-    # Studio is still the fallback when NO location ref exists.
-    assert "fall back to a neutral indoor/studio background" in sp.lower() or \
-           "fall back to studio" in sp.lower()
-
-
-@pytest.mark.asyncio
-async def test_auto_prompt_image_role_hint_skipped_when_single_image_ref(
-    client, monkeypatch
-):
-    """The ROLE INFERENCE hint only kicks in when 2+ image refs are
-    present. A single image upstream is unambiguous — no need to ask
-    Claude to classify roles."""
-    ids = _seed_board_with_chain()
-
-    captured: dict = {}
-
-    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        captured["prompt"] = prompt
-        return "ok"
-
-    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    await prompt_synth.auto_prompt(ids["target_id"])
-    # _seed_board_with_chain has 1 character + 1 visual_asset, no image
-    # upstream → ROLE INFERENCE block must not appear.
-    assert "ROLE INFERENCE" not in (captured["prompt"] or "")
-
-
-@pytest.mark.asyncio
-async def test_auto_prompt_surfaces_prompt_nodes_as_direction(
-    client, monkeypatch
-):
-    """Prompt nodes carry reusable style/scene direction. Connecting one
-    upstream of an image must inject its text into the user message under
-    the 'Direction / style notes' group so Claude weaves it into the
-    output. Note nodes by contrast stay decorative and must NOT surface."""
-    with get_session() as s:
-        b = _make_shot(s, name="prompt-feed")
-        ch = Node(
-            shot_id=b.id, short_id="pfch", type="character",
-            x=0, y=0, w=240, h=180,
-            data={"title": "P", "aiBrief": "young Vietnamese woman",
-                  "mediaId": "uuuuuuuu-pfch-1111-1111-111111111111"},
-            status="done",
-        )
-        direction = Node(
-            shot_id=b.id, short_id="pfdr", type="prompt",
-            x=0, y=0, w=240, h=180,
-            data={"title": "Brand tone",
-                  "prompt": "magazine editorial mood, cinematic warm tone, "
-                            "Old Money palette"},
-            status="idle",
-        )
-        sticky = Node(
-            shot_id=b.id, short_id="pfnt", type="note",
-            x=0, y=0, w=240, h=180,
-            data={"title": "TODO",
-                  "prompt": "remember to ask Tuan about the deadline"},
-            status="idle",
-        )
-        tgt = Node(
-            shot_id=b.id, short_id="pftg", type="image",
-            x=0, y=0, w=240, h=180,
-            data={"title": "Hero shot"},
-            status="idle",
-        )
-        s.add_all([ch, direction, sticky, tgt]); s.commit()
-        for n in (ch, direction, sticky, tgt):
-            s.refresh(n)
-        s.add(Edge(shot_id=b.id, source_id=ch.id, target_id=tgt.id))
-        s.add(Edge(shot_id=b.id, source_id=direction.id, target_id=tgt.id))
-        s.add(Edge(shot_id=b.id, source_id=sticky.id, target_id=tgt.id))
-        s.commit()
-        tgt_id = tgt.id
-
-    captured: dict = {}
-
-    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        captured["prompt"] = prompt
-        return "Editorial portrait with Old Money mood and warm tone"
-
-    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    await prompt_synth.auto_prompt(tgt_id)
-    user = captured["prompt"] or ""
-
-    # Prompt node text must surface under the styling-direction group.
-    assert "Direction / style notes" in user
-    assert "magazine editorial mood" in user
-    assert "Old Money palette" in user
-    # Prompt nodes carry no image, so they get NO `ref_image_N` label —
-    # the LLM doesn't need to bind them positionally, just weave them in.
-    assert "#pfdr" not in user
-
-    # Note node text must NOT leak into the synth context — the sticky is
-    # human-only commentary and would just dilute the prompt.
-    assert "remember to ask Tuan" not in user
-    assert "#pfnt" not in user
-
-
-@pytest.mark.asyncio
-async def test_auto_prompt_video_uses_motion_system_prompt(client, monkeypatch):
-    """Video targets get a *motion* system prompt (camera moves, micro-
-    expressions) — distinct from the composition prompt for image targets.
-    The user message still surfaces the source image's brief."""
-    with get_session() as s:
-        b = _make_shot(s, name="t")
+        b = _make_shot(s, name="vid")
         src = Node(
             shot_id=b.id, short_id="src", type="image",
             x=0, y=0, w=240, h=180,
             data={
                 "title": "Source",
-                "aiBrief": "young Korean woman wearing a white t-shirt in a closet",
-                "mediaId": "uuuuuuuu-3333-3333-3333-444444444444",
+                "aiBrief": "young woman standing in alley at night, cel-shaded",
+                "mediaId": "uuuuuuuu-vid1-1111-2222-333333333333",
             },
             status="done",
         )
         vid = Node(
             shot_id=b.id, short_id="vid", type="video",
             x=0, y=0, w=240, h=180,
-            data={"title": "Vid"},
+            data={"title": "Clip"},
             status="idle",
         )
         s.add_all([src, vid]); s.commit(); s.refresh(src); s.refresh(vid)
@@ -579,44 +171,41 @@ async def test_auto_prompt_video_uses_motion_system_prompt(client, monkeypatch):
     captured: dict = {}
 
     async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        captured["prompt"] = prompt
-        captured["system_prompt"] = system_prompt
-        return "Slow camera dolly-in, gentle smile, fabric softly catching the light."
+        captured["system_prompt"] = system_prompt or ""
+        return "slow push-in, rain catches the streetlight"
 
     monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    out = await prompt_synth.auto_prompt(vid_id)
-    assert "dolly-in" in out
-    assert "motion" in (captured["system_prompt"] or "").lower()
-    assert "Korean woman" in captured["prompt"]
-    # Audio guard — must direct silent / no-dialogue by default.
-    # Veo's audio path triggers PUBLIC_MIRROR_AUDIO_FILTER on portraits
-    # the moment speech is generated, killing the entire request, so
-    # the synth has to instruct silent unless the user explicitly
-    # asked for dialogue.
-    sp = captured["system_prompt"] or ""
-    assert "AUDIO" in sp
-    assert "SILENT BY DEFAULT" in sp
-    assert "PUBLIC_MIRROR_AUDIO_FILTER" in sp
-    # SFX + music guidance present so the user's clip isn't completely
-    # bare when default-silent fires.
-    assert "SFX" in sp
-    assert "MUSIC" in sp
+    await prompt_synth.auto_prompt(vid_id)
+
+    sp = captured["system_prompt"].lower()
+    # Anime cadence rule with modern sakuga allowance.
+    assert "twos or threes" in sp or "on twos" in sp or "animate on twos" in sp
+    assert "sakuga" in sp
+    assert "ones" in sp
+    # Anti-freeze safety floor.
+    assert "anti-freeze" in sp
+    # Anime camera vocabulary.
+    assert "push-in" in sp
+    assert "pan" in sp
+    # Audio: silent by default (no synthetic dialogue).
+    assert "silent by default" in sp
+    # Bilingual: VN input ok, EN output.
+    assert "english" in sp
 
 
 @pytest.mark.asyncio
-async def test_auto_prompt_video_static_camera_locks_system_prompt(client, monkeypatch):
-    """When camera='static' the synthesiser must use the locked-camera
-    system variant and NOT propose dolly/pan/zoom (which crops the product
-    out of frame in e-commerce shots)."""
+async def test_anime_video_static_camera_locks(client, monkeypatch):
+    """When camera='static' the synth appends a lock clause that forbids
+    push-in / pull-out / pan / zoom / handheld."""
     with get_session() as s:
-        b = _make_shot(s, name="t")
+        b = _make_shot(s, name="stat")
         src = Node(
             shot_id=b.id, short_id="src2", type="image",
             x=0, y=0, w=240, h=180,
             data={
                 "title": "Source",
-                "aiBrief": "model wearing a white t-shirt with a heart logo",
-                "mediaId": "uuuuuuuu-9999-3333-3333-444444444444",
+                "aiBrief": "school classroom, golden hour",
+                "mediaId": "uuuuuuuu-stat-1111-2222-333333333333",
             },
             status="done",
         )
@@ -634,151 +223,579 @@ async def test_auto_prompt_video_static_camera_locks_system_prompt(client, monke
     captured: dict = {}
 
     async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        captured["system_prompt"] = system_prompt
-        return "blink, faint smile, fabric breathing softly"
+        captured["system_prompt"] = system_prompt or ""
+        return "blink, breath rise, dust drifting in beam"
 
     monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    out = await prompt_synth.auto_prompt(vid_id, camera="static")
-    assert "fabric" in out
-    sp = (captured["system_prompt"] or "").lower()
-    # Camera lock — strict
+    await prompt_synth.auto_prompt(vid_id, camera="static")
+
+    sp = captured["system_prompt"].lower()
     assert "static" in sp
-    assert "no zoom" in sp or "no zoom / pan" in sp
-    # Anti-freeze stays as a safety floor — Veo locks frame 0 without it.
-    assert "anti-freeze" in sp
-    # Intent-first philosophy must replace the old prescriptive vocab:
-    # the synth should be told to read the source and let intent drive
-    # motion, not pick gestures from a pre-canned scene→action menu.
-    assert "intent first" in sp
-    assert "interiority" in sp or "person with" in sp
-    # Stillness must be allowed — older versions forced 2-3 pose changes
-    # which made every clip feel theatrical.
-    assert "stillness is valid" in sp
-    # Beat structure remains as an OPTION, not a requirement.
-    assert "structure is free" in sp
+    assert "locked-off" in sp
+    # The lock must forbid pan/zoom variants
+    assert "no push-in" in sp or "no pan" in sp
+
+
+# ── Bible auto-injection ─────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_auto_prompt_video_default_drops_canned_scene_vocab(client, monkeypatch):
-    """Older system prompt prescribed a scene→action menu (studio = "hand
-    on hip", café = "sip from a cup", etc.) which made every same-scene
-    clip identical. Verify those canned mappings are gone — Claude is
-    trusted to pick natural motion from the source brief instead."""
+async def test_bible_injection_project_bible_prepends(client, monkeypatch):
+    """When Project Bible has style fields, they prepend the user message
+    as a labeled PROJECT BIBLE block.
+    """
     with get_session() as s:
-        b = _make_shot(s, name="t")
-        src = Node(
-            shot_id=b.id, short_id="srcd", type="image",
+        b = _make_shot(
+            s,
+            name="bible-proj",
+            project_bible={
+                "art_style": "warm noir office drama, painterly backgrounds",
+                "color_palette": ["amber", "navy", "ember red"],
+                "line_style": "thin uneven ink line",
+                "lighting_conventions": "low-key, single warm key from desk lamp",
+                "negative_prompts": ["3D", "photoreal", "western cartoon"],
+            },
+        )
+        char = Node(
+            shot_id=b.id, short_id="bch", type="character",
             x=0, y=0, w=240, h=180,
-            data={"title": "x", "aiBrief": "scene", "mediaId": "uuuuuuuu-bbbb-3333-3333-444444444444"},
+            data={
+                "title": "Detective",
+                "aiBrief": "man in his 40s, rumpled coat, tired eyes",
+                "mediaId": "uuuuuuuu-bch1-1111-2222-333333333333",
+            },
             status="done",
         )
-        vid = Node(
-            shot_id=b.id, short_id="vidd", type="video",
+        tgt = Node(
+            shot_id=b.id, short_id="btg", type="image",
             x=0, y=0, w=240, h=180,
-            data={"title": "v"},
+            data={"title": "Cold open"},
             status="idle",
         )
-        s.add_all([src, vid]); s.commit(); s.refresh(src); s.refresh(vid)
-        s.add(Edge(shot_id=b.id, source_id=src.id, target_id=vid.id))
+        s.add_all([char, tgt]); s.commit()
+        for n in (char, tgt):
+            s.refresh(n)
+        s.add(Edge(shot_id=b.id, source_id=char.id, target_id=tgt.id))
         s.commit()
-        vid_id = vid.id
+        tgt_id = tgt.id
 
     captured: dict = {}
 
     async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        captured["system_prompt"] = system_prompt
-        return "out"
+        captured["prompt"] = prompt
+        return "Warm-noir close-up of the detective."
 
     monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    await prompt_synth.auto_prompt(vid_id)  # Dynamic
-    sp = (captured["system_prompt"] or "").lower()
-    # Anti-freeze + intent-first guidance still present.
-    assert "anti-freeze" in sp
-    assert "intent first" in sp
-    # Dynamic camera clause allows subtle movement.
-    assert "subtle dolly" in sp or "pan is allowed" in sp
-    # Static-only constraint must NOT be in the dynamic variant.
-    assert "no zoom / pan / dolly" not in sp
-    # Old canned scene→action mappings must be gone — those forced every
-    # café shot to "sip from a cup", every studio shot to "hand-on-hip",
-    # which is exactly the over-prescription this refactor removes.
-    assert "sip from a cup" not in sp
-    assert "hair tuck behind ear" not in sp
-    assert "hand slides to hip" not in sp
+    await prompt_synth.auto_prompt(tgt_id)
+
+    user = captured["prompt"]
+    assert "PROJECT BIBLE" in user
+    assert "warm noir office drama" in user
+    assert "amber, navy, ember red" in user
+    assert "thin uneven ink line" in user
+    assert "low-key" in user
+    assert "3D, photoreal, western cartoon" in user
+    # Bible block prepends (sits above upstream nodes section).
+    bible_pos = user.find("PROJECT BIBLE")
+    subj_pos = user.find("Subject(s)")
+    assert bible_pos != -1 and subj_pos != -1
+    assert bible_pos < subj_pos
 
 
 @pytest.mark.asyncio
-async def test_auto_prompt_video_default_camera_allows_movement(client, monkeypatch):
-    """No camera arg → default video system prompt; doesn't include the
-    static-only constraint."""
+async def test_bible_injection_scene_bible_prepends(client, monkeypatch):
+    """Scene Bible text prepends as a labeled SCENE BIBLE block."""
     with get_session() as s:
-        b = _make_shot(s, name="t")
-        src = Node(
-            shot_id=b.id, short_id="src3", type="image",
+        b = _make_shot(
+            s,
+            name="bible-scene",
+            scene_bible_text="rainy alley at night, neon reflections, low camera",
+        )
+        char = Node(
+            shot_id=b.id, short_id="sbc", type="character",
             x=0, y=0, w=240, h=180,
-            data={"title": "x", "aiBrief": "scene", "mediaId": "uuuuuuuu-aaaa-3333-3333-444444444444"},
+            data={
+                "title": "Hero",
+                "aiBrief": "young woman, twin braids",
+                "mediaId": "uuuuuuuu-sbc1-1111-2222-333333333333",
+            },
             status="done",
         )
-        vid = Node(
-            shot_id=b.id, short_id="vid3", type="video",
-            x=0, y=0, w=240, h=180,
-            data={"title": "v"},
+        tgt = Node(
+            shot_id=b.id, short_id="sbg", type="image",
+            x=0, y=0, w=240, h=180, data={"title": "shot"},
             status="idle",
         )
-        s.add_all([src, vid]); s.commit(); s.refresh(src); s.refresh(vid)
-        s.add(Edge(shot_id=b.id, source_id=src.id, target_id=vid.id))
+        s.add_all([char, tgt]); s.commit()
+        for n in (char, tgt):
+            s.refresh(n)
+        s.add(Edge(shot_id=b.id, source_id=char.id, target_id=tgt.id))
         s.commit()
-        vid_id = vid.id
+        tgt_id = tgt.id
 
     captured: dict = {}
 
     async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        captured["system_prompt"] = system_prompt
-        return "subtle motion"
+        captured["prompt"] = prompt
+        return "Cel anime medium close-up in rainy alley."
 
     monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    await prompt_synth.auto_prompt(vid_id)  # no camera arg
-    sp = captured["system_prompt"] or ""
-    # default variant should NOT enforce no-zoom/no-pan rule
-    assert "no zoom, no pan" not in sp.lower()
+    await prompt_synth.auto_prompt(tgt_id)
+
+    user = captured["prompt"]
+    assert "SCENE BIBLE" in user
+    assert "rainy alley at night, neon reflections" in user
 
 
 @pytest.mark.asyncio
-async def test_auto_prompt_video_multi_subject_when_source_has_two_chars(
+async def test_bible_injection_empty_bible_skips_block(client, monkeypatch):
+    """A project/scene with no bible filled in must NOT inject a noisy
+    empty block — the user message goes straight to upstream context."""
+    ids = _seed_simple_char_chain()
+    captured: dict = {}
+
+    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
+        captured["prompt"] = prompt
+        return "ok"
+
+    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
+    await prompt_synth.auto_prompt(ids["target_id"])
+
+    user = captured["prompt"]
+    assert "PROJECT BIBLE" not in user
+    assert "SCENE BIBLE" not in user
+
+
+@pytest.mark.asyncio
+async def test_bible_injection_partial_fields_only_present_ones(
     client, monkeypatch
 ):
-    """Video targets must switch to multi-subject mode when the source
-    image was generated from 2+ character upstream (couple shot). Without
-    this, Veo gets a singular 'the model' direction and typically freezes
-    one person while animating the other."""
+    """When only some bible fields are filled, only those lines render —
+    no empty placeholder rows."""
     with get_session() as s:
-        b = _make_shot(s, name="couple-vid")
-        cm = Node(
-            shot_id=b.id, short_id="cvm1", type="character",
+        b = _make_shot(
+            s,
+            name="bible-partial",
+            project_bible={
+                "art_style": "soft watercolor",
+                # palette, line, lighting, negative intentionally empty
+            },
+        )
+        char = Node(
+            shot_id=b.id, short_id="par", type="character",
             x=0, y=0, w=240, h=180,
-            data={"title": "M", "aiBrief": "man",
-                  "mediaId": "uuuuuuuu-mmm1-1111-1111-111111111111"},
+            data={"title": "x", "aiBrief": "girl in field",
+                  "mediaId": "uuuuuuuu-par1-1111-2222-333333333333"},
+            status="done",
+        )
+        tgt = Node(
+            shot_id=b.id, short_id="ptg", type="image",
+            x=0, y=0, w=240, h=180, data={"title": "x"},
+            status="idle",
+        )
+        s.add_all([char, tgt]); s.commit()
+        for n in (char, tgt):
+            s.refresh(n)
+        s.add(Edge(shot_id=b.id, source_id=char.id, target_id=tgt.id))
+        s.commit()
+        tgt_id = tgt.id
+
+    captured: dict = {}
+
+    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
+        captured["prompt"] = prompt
+        return "ok"
+
+    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
+    await prompt_synth.auto_prompt(tgt_id)
+    user = captured["prompt"]
+    assert "Art style: soft watercolor" in user
+    assert "Palette:" not in user
+    assert "Line style:" not in user
+    assert "Lighting:" not in user
+    assert "Negative:" not in user
+
+
+# ── Master shot establishing_shot_ref ───────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_master_shot_takes_establishing_shot_ref_label(
+    client, monkeypatch
+):
+    """A ``master_shot`` upstream node with a media binding earns the
+    ``establishing_shot_ref`` label, not a numbered ``ref_image_N``.
+    Other ref-source siblings start numbering at 1."""
+    with get_session() as s:
+        b = _make_shot(s, name="master")
+        master = Node(
+            shot_id=b.id, short_id="mst", type="master_shot",
+            x=0, y=0, w=240, h=180,
+            data={
+                "title": "Scene master",
+                "aiBrief": "rooftop establishing wide, dusk neon, hero centered",
+                "mediaId": "uuuuuuuu-mst1-1111-2222-333333333333",
+            },
+            status="done",
+        )
+        char = Node(
+            shot_id=b.id, short_id="mch", type="character",
+            x=0, y=0, w=240, h=180,
+            data={
+                "title": "Hero",
+                "aiBrief": "young Vietnamese woman, twin braids",
+                "mediaId": "uuuuuuuu-mch1-1111-2222-333333333333",
+            },
+            status="done",
+        )
+        tgt = Node(
+            shot_id=b.id, short_id="mtg", type="image",
+            x=0, y=0, w=240, h=180, data={"title": "Hero closeup"},
+            status="idle",
+        )
+        s.add_all([master, char, tgt]); s.commit()
+        for n in (master, char, tgt):
+            s.refresh(n)
+        s.add(Edge(shot_id=b.id, source_id=master.id, target_id=tgt.id))
+        s.add(Edge(shot_id=b.id, source_id=char.id, target_id=tgt.id))
+        s.commit()
+        tgt_id = tgt.id
+
+    captured: dict = {}
+
+    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
+        captured["prompt"] = prompt
+        captured["system_prompt"] = system_prompt or ""
+        return "Close-up matched to establishing_shot_ref lighting."
+
+    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
+    await prompt_synth.auto_prompt(tgt_id)
+
+    user = captured["prompt"]
+    sp = captured["system_prompt"]
+    # Master shot earns the dedicated label.
+    assert "establishing_shot_ref:" in user
+    # Character ref starts at ref_image_1 (not bumped by master shot).
+    assert "ref_image_1:" in user
+    # The user message surfaces the master under its own labeled section.
+    assert "Establishing shot" in user
+    # System prompt knows about the establishing reference.
+    assert "establishing_shot_ref" in sp
+
+
+@pytest.mark.asyncio
+async def test_master_shot_without_media_does_not_get_label(client, monkeypatch):
+    """A bare master_shot node (no mediaId / no masterShotAssetId) has
+    nothing to bind — no establishing_shot_ref label is assigned."""
+    with get_session() as s:
+        b = _make_shot(s, name="master-empty")
+        master = Node(
+            shot_id=b.id, short_id="mbe", type="master_shot",
+            x=0, y=0, w=240, h=180,
+            data={"title": "Master (unset)"},
+            status="idle",
+        )
+        tgt = Node(
+            shot_id=b.id, short_id="mbt", type="image",
+            x=0, y=0, w=240, h=180, data={"title": "shot"},
+            status="idle",
+        )
+        s.add_all([master, tgt]); s.commit()
+        for n in (master, tgt):
+            s.refresh(n)
+        s.add(Edge(shot_id=b.id, source_id=master.id, target_id=tgt.id))
+        s.commit()
+        tgt_id = tgt.id
+
+    captured: dict = {}
+
+    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
+        captured["prompt"] = prompt
+        return "ok"
+
+    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
+    await prompt_synth.auto_prompt(tgt_id)
+    assert "establishing_shot_ref:" not in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_master_shot_resolves_media_id_via_asset_id(client, monkeypatch):
+    """When MasterShotNode stored only ``masterShotAssetId`` (no
+    ``mediaId``), the backend looks up Asset.uuid_media_id and still
+    assigns the establishing_shot_ref label."""
+    with get_session() as s:
+        proj = Project(name="master-asset-lookup")
+        s.add(proj); s.flush()
+        asset = Asset(
+            project_id=proj.id,
+            kind="image",
+            uuid_media_id="uuuuuuuu-aaaa-1111-2222-333333333333",
+            local_path="/tmp/x.png",
+        )
+        s.add(asset); s.commit(); s.refresh(asset)
+        scene = Scene(project_id=proj.id, name="Scene", order_index=0)
+        s.add(scene); s.flush()
+        shot = Shot(scene_id=scene.id, order_index=0)
+        s.add(shot); s.commit(); s.refresh(shot)
+        master = Node(
+            shot_id=shot.id, short_id="mal", type="master_shot",
+            x=0, y=0, w=240, h=180,
+            data={"masterShotAssetId": asset.id, "title": "Master"},
+            status="done",
+        )
+        tgt = Node(
+            shot_id=shot.id, short_id="mal2", type="image",
+            x=0, y=0, w=240, h=180, data={"title": "shot"},
+            status="idle",
+        )
+        s.add_all([master, tgt]); s.commit()
+        for n in (master, tgt):
+            s.refresh(n)
+        s.add(Edge(shot_id=shot.id, source_id=master.id, target_id=tgt.id))
+        s.commit()
+        tgt_id = tgt.id
+
+    captured: dict = {}
+
+    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
+        captured["prompt"] = prompt
+        return "ok"
+
+    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
+    await prompt_synth.auto_prompt(tgt_id)
+    assert "establishing_shot_ref:" in captured["prompt"]
+
+
+# ── Script + BibleRef passthrough ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_script_node_text_surfaces_in_user_message(client, monkeypatch):
+    """ScriptNode (Phase 4) carries ``data.scriptText``. The upstream
+    walk must surface it under a Script section so the LLM has the
+    dramatic context driving this shot."""
+    with get_session() as s:
+        b = _make_shot(s, name="script-pass")
+        script_node = Node(
+            shot_id=b.id, short_id="scp", type="script",
+            x=0, y=0, w=240, h=180,
+            data={
+                "title": "Shot 3 script",
+                "scriptText": "An quay đầu lại, đôi mắt mở to. Mưa đột nhiên rơi nặng hơn.",
+            },
+            status="idle",
+        )
+        char = Node(
+            shot_id=b.id, short_id="sc2", type="character",
+            x=0, y=0, w=240, h=180,
+            data={"title": "An", "aiBrief": "young man, dark hair",
+                  "mediaId": "uuuuuuuu-sc21-1111-2222-333333333333"},
+            status="done",
+        )
+        tgt = Node(
+            shot_id=b.id, short_id="sct", type="image",
+            x=0, y=0, w=240, h=180, data={"title": "Reaction"},
+            status="idle",
+        )
+        s.add_all([script_node, char, tgt]); s.commit()
+        for n in (script_node, char, tgt):
+            s.refresh(n)
+        s.add(Edge(shot_id=b.id, source_id=script_node.id, target_id=tgt.id))
+        s.add(Edge(shot_id=b.id, source_id=char.id, target_id=tgt.id))
+        s.commit()
+        tgt_id = tgt.id
+
+    captured: dict = {}
+
+    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
+        captured["prompt"] = prompt
+        return "Medium close-up of An, eyes wide, rain intensifies."
+
+    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
+    await prompt_synth.auto_prompt(tgt_id)
+    user = captured["prompt"]
+    assert "Script (this shot" in user
+    # Verbatim VN text preserved.
+    assert "An quay đầu lại, đôi mắt mở to" in user
+    # No ref_image_N for the script node (it has no media).
+    assert "#scp" not in user
+
+
+@pytest.mark.asyncio
+async def test_bible_ref_node_text_surfaces_in_user_message(client, monkeypatch):
+    """BibleRefNode carries ``data.bibleText`` — a snapshot of the bible
+    loaded from the API at edit time. Surfaces under its own Bible
+    reference section (distinct from the auto-injected Project/Scene
+    bible block, which sources from DB at synth time)."""
+    with get_session() as s:
+        b = _make_shot(s, name="bibleref-pass")
+        bref = Node(
+            shot_id=b.id, short_id="bre", type="bible_ref",
+            x=0, y=0, w=240, h=180,
+            data={
+                "title": "Scene atmosphere",
+                "bibleType": "scene",
+                "bibleText": "Late evening, lone streetlight reflects on wet asphalt.",
+            },
+            status="idle",
+        )
+        char = Node(
+            shot_id=b.id, short_id="brc", type="character",
+            x=0, y=0, w=240, h=180,
+            data={"title": "x", "aiBrief": "girl",
+                  "mediaId": "uuuuuuuu-brc1-1111-2222-333333333333"},
+            status="done",
+        )
+        tgt = Node(
+            shot_id=b.id, short_id="brt", type="image",
+            x=0, y=0, w=240, h=180, data={"title": "x"},
+            status="idle",
+        )
+        s.add_all([bref, char, tgt]); s.commit()
+        for n in (bref, char, tgt):
+            s.refresh(n)
+        s.add(Edge(shot_id=b.id, source_id=bref.id, target_id=tgt.id))
+        s.add(Edge(shot_id=b.id, source_id=char.id, target_id=tgt.id))
+        s.commit()
+        tgt_id = tgt.id
+
+    captured: dict = {}
+
+    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
+        captured["prompt"] = prompt
+        return "Cel anime medium shot, streetlight reflection on asphalt."
+
+    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
+    await prompt_synth.auto_prompt(tgt_id)
+    user = captured["prompt"]
+    assert "Bible reference" in user
+    assert "lone streetlight" in user
+
+
+# ── Multi-subject detection ─────────────────────────────────────────────
+
+
+def _seed_couple_via_image_siblings() -> dict:
+    with get_session() as s:
+        b = _make_shot(s, name="couple-img")
+        cm = Node(
+            shot_id=b.id, short_id="cm1", type="character",
+            x=0, y=0, w=240, h=180,
+            data={"title": "M", "aiBrief": "young man, short hair",
+                  "mediaId": "uuuuuuuu-cm11-1111-2222-333333333333"},
             status="done",
         )
         cf = Node(
-            shot_id=b.id, short_id="cvf1", type="character",
+            shot_id=b.id, short_id="cf1", type="character",
+            x=0, y=0, w=240, h=180,
+            data={"title": "F", "aiBrief": "young woman, twin braids",
+                  "mediaId": "uuuuuuuu-cf11-1111-2222-333333333333"},
+            status="done",
+        )
+        img_m = Node(
+            shot_id=b.id, short_id="im1", type="image",
+            x=0, y=0, w=240, h=180,
+            data={"title": "M shot",
+                  "mediaId": "uuuuuuuu-im11-1111-2222-333333333333"},
+            status="done",
+        )
+        img_f = Node(
+            shot_id=b.id, short_id="if1", type="image",
+            x=0, y=0, w=240, h=180,
+            data={"title": "F shot",
+                  "mediaId": "uuuuuuuu-if11-1111-2222-333333333333"},
+            status="done",
+        )
+        tgt = Node(
+            shot_id=b.id, short_id="ct1", type="image",
+            x=0, y=0, w=240, h=180,
+            data={"title": "Two-shot"},
+            status="idle",
+        )
+        s.add_all([cm, cf, img_m, img_f, tgt]); s.commit()
+        for n in (cm, cf, img_m, img_f, tgt):
+            s.refresh(n)
+        s.add(Edge(shot_id=b.id, source_id=cm.id, target_id=img_m.id))
+        s.add(Edge(shot_id=b.id, source_id=cf.id, target_id=img_f.id))
+        s.add(Edge(shot_id=b.id, source_id=img_m.id, target_id=tgt.id))
+        s.add(Edge(shot_id=b.id, source_id=img_f.id, target_id=tgt.id))
+        s.commit()
+        return {"target_id": tgt.id, "cm_short": cm.short_id, "cf_short": cf.short_id}
+
+
+@pytest.mark.asyncio
+async def test_multi_subject_detected_via_image_siblings(client, monkeypatch):
+    ids = _seed_couple_via_image_siblings()
+    captured: dict = {}
+
+    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
+        captured["system_prompt"] = system_prompt or ""
+        captured["prompt"] = prompt
+        return "Two-shot of ref_image_1 and ref_image_2."
+
+    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
+    await prompt_synth.auto_prompt(ids["target_id"])
+    sp = captured["system_prompt"]
+    user = captured["prompt"]
+    assert "MULTI-SUBJECT MODE" in sp
+    assert "DISTINCT SUBJECTS DETECTED: 2 characters" in user
+    assert "ref_image_1:" in user and "ref_image_2:" in user
+    # Internal shortIds never leak (Google content classifier false-positive).
+    assert f"#{ids['cm_short']}" not in user
+    assert f"#{ids['cf_short']}" not in user
+
+
+@pytest.mark.asyncio
+async def test_single_subject_skips_multi_clause(client, monkeypatch):
+    ids = _seed_simple_char_chain()
+    captured: dict = {}
+
+    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
+        captured["system_prompt"] = system_prompt or ""
+        captured["prompt"] = prompt
+        return "ok"
+
+    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
+    await prompt_synth.auto_prompt(ids["target_id"])
+    assert "MULTI-SUBJECT MODE" not in captured["system_prompt"]
+    assert "DISTINCT SUBJECTS DETECTED" not in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_multi_subject_video_clause_when_two_chars_in_source(
+    client, monkeypatch
+):
+    """Video target whose source frame was composed from 2+ chars must
+    fire the multi-subject video clause (per-subject anti-freeze,
+    asymmetric motion)."""
+    with get_session() as s:
+        b = _make_shot(s, name="vid-couple")
+        cm = Node(
+            shot_id=b.id, short_id="vcm", type="character",
+            x=0, y=0, w=240, h=180,
+            data={"title": "M", "aiBrief": "man",
+                  "mediaId": "uuuuuuuu-vcm1-1111-2222-333333333333"},
+            status="done",
+        )
+        cf = Node(
+            shot_id=b.id, short_id="vcf", type="character",
             x=0, y=0, w=240, h=180,
             data={"title": "F", "aiBrief": "woman",
-                  "mediaId": "uuuuuuuu-fff1-1111-1111-111111111111"},
+                  "mediaId": "uuuuuuuu-vcf1-1111-2222-333333333333"},
             status="done",
         )
         couple_img = Node(
-            shot_id=b.id, short_id="cvi1", type="image",
+            shot_id=b.id, short_id="vci", type="image",
             x=0, y=0, w=240, h=180,
-            data={"title": "Couple still",
-                  "aiBrief": "two people side-by-side in studio",
-                  "mediaId": "uuuuuuuu-cci1-1111-1111-111111111111"},
+            data={"title": "Two-shot still",
+                  "aiBrief": "two characters side-by-side at night",
+                  "mediaId": "uuuuuuuu-vci1-1111-2222-333333333333"},
             status="done",
         )
         vid = Node(
-            shot_id=b.id, short_id="cvv1", type="video",
+            shot_id=b.id, short_id="vcv", type="video",
             x=0, y=0, w=240, h=180,
-            data={"title": "Couple clip"},
+            data={"title": "Clip"},
             status="idle",
         )
         s.add_all([cm, cf, couple_img, vid]); s.commit()
@@ -793,103 +810,192 @@ async def test_auto_prompt_video_multi_subject_when_source_has_two_chars(
     captured: dict = {}
 
     async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        captured["system_prompt"] = system_prompt
-        captured["prompt"] = prompt
+        captured["system_prompt"] = system_prompt or ""
         return "ok"
 
     monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
     await prompt_synth.auto_prompt(vid_id)
-    sp = captured["system_prompt"] or ""
-    user = captured["prompt"] or ""
-    # Multi-subject video clause must be active: per-subject anti-freeze,
-    # natural co-presence over synchronized choreography.
+    sp = captured["system_prompt"]
     assert "MULTI-SUBJECT MODE" in sp
-    assert "PER SUBJECT" in sp
-    assert "synchronized choreography" in sp
-    # Subjects are addressed positionally now (`ref_image_N`), not by
-    # internal shortId.
-    assert "REFERENCE BY POSITION" in sp
-    assert "ref_image_N" in sp
-    # User message reports the count detected; the `ref_image_N` labels
-    # already on the records above carry the binding.
-    assert "DISTINCT SUBJECTS DETECTED: 2 people" in user
-    # Internal shortIds must NOT leak — they look like @-handles to
-    # Google's content classifier.
-    assert "#cvm1" not in user and "#cvf1" not in user
+    assert "PER character" in sp
+
+
+# ── Prompt vs aiBrief precedence ────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_auto_prompt_video_solo_skips_multi_subject_clause(
-    client, monkeypatch
-):
-    """Regression: a solo source (1 character → image → video) must NOT
-    pick up the multi-subject clause."""
+async def test_prompt_wins_over_aibrief(client, monkeypatch):
+    """When an upstream node carries both ``prompt`` and ``aiBrief``,
+    the synthesiser must use ``prompt`` — that's the authoritative
+    user-stamped text."""
     with get_session() as s:
-        b = _make_shot(s, name="solo-vid")
-        ch = Node(
-            shot_id=b.id, short_id="svch", type="character",
+        b = _make_shot(s, name="prompt-wins")
+        upstream = Node(
+            shot_id=b.id, short_id="pw", type="image",
             x=0, y=0, w=240, h=180,
-            data={"title": "P", "aiBrief": "person",
-                  "mediaId": "uuuuuuuu-svch-1111-1111-111111111111"},
+            data={
+                "title": "Hero",
+                "prompt": "AUTHORITATIVE-PROMPT-TEXT young woman walking through Tokyo street, cel anime",
+                "aiBrief": "STALE-VISION-DESCRIPTION studio backdrop",
+                "mediaId": "uuuuuuuu-pw11-1111-2222-333333333333",
+            },
             status="done",
         )
-        img = Node(
-            shot_id=b.id, short_id="svim", type="image",
-            x=0, y=0, w=240, h=180,
-            data={"title": "Shot", "aiBrief": "studio portrait",
-                  "mediaId": "uuuuuuuu-svim-1111-1111-111111111111"},
-            status="done",
-        )
-        vid = Node(
-            shot_id=b.id, short_id="svvi", type="video",
-            x=0, y=0, w=240, h=180,
-            data={"title": "Clip"},
+        target = Node(
+            shot_id=b.id, short_id="pwg", type="video",
+            x=0, y=0, w=240, h=180, data={"title": "Motion"},
             status="idle",
         )
-        s.add_all([ch, img, vid]); s.commit()
-        for n in (ch, img, vid):
-            s.refresh(n)
-        s.add(Edge(shot_id=b.id, source_id=ch.id, target_id=img.id))
-        s.add(Edge(shot_id=b.id, source_id=img.id, target_id=vid.id))
+        s.add_all([upstream, target]); s.commit()
+        s.refresh(upstream); s.refresh(target)
+        s.add(Edge(shot_id=b.id, source_id=upstream.id, target_id=target.id))
         s.commit()
-        vid_id = vid.id
+        tgt_id = target.id
 
     captured: dict = {}
 
     async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        captured["system_prompt"] = system_prompt
         captured["prompt"] = prompt
         return "ok"
 
     monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    await prompt_synth.auto_prompt(vid_id)
-    sp = captured["system_prompt"] or ""
-    assert "MULTI-SUBJECT MODE" not in sp
-    assert "DISTINCT SUBJECTS DETECTED" not in (captured["prompt"] or "")
+    await prompt_synth.auto_prompt(tgt_id)
+    user = captured["prompt"]
+    assert "AUTHORITATIVE-PROMPT-TEXT" in user
+    assert "STALE-VISION-DESCRIPTION" not in user
 
 
 @pytest.mark.asyncio
-async def test_auto_prompt_with_no_upstream_falls_back_to_title(client, monkeypatch):
-    """A bare image node with no edges still gets a sensible prompt."""
+async def test_aibrief_fallback_when_no_prompt(client, monkeypatch):
+    """Upload-only node (aiBrief present, prompt absent) still surfaces
+    aiBrief — without this the LLM has no description for the upload."""
     with get_session() as s:
-        b = _make_shot(s, name="t")
-        n = Node(
-            shot_id=b.id, short_id="bare", type="image",
+        b = _make_shot(s, name="brief-fallback")
+        upstream = Node(
+            shot_id=b.id, short_id="bf", type="visual_asset",
             x=0, y=0, w=240, h=180,
-            data={"title": "A red sneaker on white"},
+            data={
+                "title": "Uploaded prop",
+                "aiBrief": "BRIEF-FALLBACK weathered leather satchel with brass buckle",
+                "mediaId": "uuuuuuuu-bf11-1111-2222-333333333333",
+            },
+            status="done",
+        )
+        target = Node(
+            shot_id=b.id, short_id="bft", type="image",
+            x=0, y=0, w=240, h=180, data={"title": "Pickup"},
+            status="idle",
+        )
+        s.add_all([upstream, target]); s.commit()
+        s.refresh(upstream); s.refresh(target)
+        s.add(Edge(shot_id=b.id, source_id=upstream.id, target_id=target.id))
+        s.commit()
+        tgt_id = target.id
+
+    captured: dict = {}
+
+    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
+        captured["prompt"] = prompt
+        return "ok"
+
+    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
+    await prompt_synth.auto_prompt(tgt_id)
+    assert "BRIEF-FALLBACK" in captured["prompt"]
+
+
+# ── Bilingual VN → EN mock ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_bilingual_vn_input_passes_through_to_llm(client, monkeypatch):
+    """Vietnamese script_text upstream → user message preserves VN
+    verbatim, system prompt explicitly instructs LLM to read VN
+    natively and output English."""
+    with get_session() as s:
+        b = _make_shot(s, name="bilingual")
+        script_node = Node(
+            shot_id=b.id, short_id="bln", type="script",
+            x=0, y=0, w=240, h=180,
+            data={
+                "title": "VN script",
+                "scriptText": (
+                    "Cảnh hoàng hôn trên sân thượng. An đứng cô đơn, "
+                    "gió thổi mạnh, tóc bay về phía sau."
+                ),
+            },
+            status="idle",
+        )
+        char = Node(
+            shot_id=b.id, short_id="blc", type="character",
+            x=0, y=0, w=240, h=180,
+            data={"title": "An", "aiBrief": "young man, mid-20s",
+                  "mediaId": "uuuuuuuu-blc1-1111-2222-333333333333"},
+            status="done",
+        )
+        tgt = Node(
+            shot_id=b.id, short_id="blt", type="image",
+            x=0, y=0, w=240, h=180, data={"title": "Rooftop sunset"},
+            status="idle",
+        )
+        s.add_all([script_node, char, tgt]); s.commit()
+        for n in (script_node, char, tgt):
+            s.refresh(n)
+        s.add(Edge(shot_id=b.id, source_id=script_node.id, target_id=tgt.id))
+        s.add(Edge(shot_id=b.id, source_id=char.id, target_id=tgt.id))
+        s.commit()
+        tgt_id = tgt.id
+
+    captured: dict = {}
+
+    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
+        captured["prompt"] = prompt
+        captured["system_prompt"] = system_prompt or ""
+        # Simulate provider obeying instruction: English output.
+        return (
+            "Wide establishing cel anime rooftop sunset, An standing alone, "
+            "wind whips his hair back, golden hour rim light."
+        )
+
+    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
+    out = await prompt_synth.auto_prompt(tgt_id)
+
+    user = captured["prompt"]
+    sp = captured["system_prompt"]
+    # VN preserved verbatim in user message.
+    assert "Cảnh hoàng hôn" in user
+    # System prompt commits to bilingual contract.
+    assert "vietnamese" in sp.lower()
+    assert "english" in sp.lower()
+    # Returned output is English.
+    assert "rooftop sunset" in out.lower() or "wide establishing" in out.lower()
+    assert "Cảnh" not in out  # no VN leakage in EN output
+
+
+# ── Generic edge cases ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_auto_prompt_no_upstream_falls_back_to_title(client, monkeypatch):
+    """Bare image with no edges still gets a sensible prompt (title +
+    anime style floor)."""
+    with get_session() as s:
+        b = _make_shot(s, name="bare")
+        n = Node(
+            shot_id=b.id, short_id="brr", type="image",
+            x=0, y=0, w=240, h=180,
+            data={"title": "Lone bicycle in rain"},
             status="idle",
         )
         s.add(n); s.commit(); s.refresh(n)
         nid = n.id
 
     async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        # Verify the prompt mentions the title even with no upstream.
-        assert "red sneaker" in prompt.lower()
-        return "studio photo of a red sneaker on white background"
+        assert "lone bicycle" in prompt.lower() or "bicycle" in prompt.lower()
+        return "Cel anime still of a lone bicycle in the rain."
 
     monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
     out = await prompt_synth.auto_prompt(nid)
-    assert "sneaker" in out
+    assert "bicycle" in out.lower()
 
 
 @pytest.mark.asyncio
@@ -900,7 +1006,7 @@ async def test_auto_prompt_raises_for_unknown_node(client):
 
 @pytest.mark.asyncio
 async def test_auto_prompt_caps_long_responses(client, monkeypatch):
-    ids = _seed_board_with_chain()
+    ids = _seed_simple_char_chain()
     long_text = "a" * 900
 
     async def stub_run(*a, **k):
@@ -908,27 +1014,31 @@ async def test_auto_prompt_caps_long_responses(client, monkeypatch):
 
     monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
     out = await prompt_synth.auto_prompt(ids["target_id"])
-    assert len(out) <= 501
+    # Cap raised to 600 (anime prompts run denser than fashion).
+    assert len(out) <= 601
     assert out.endswith("…")
 
 
-def test_route_happy_path(client, monkeypatch):
-    ids = _seed_board_with_chain()
+# ── /api/prompt/auto routes ─────────────────────────────────────────────
+
+
+def test_route_auto_happy_path(client, monkeypatch):
+    ids = _seed_simple_char_chain()
 
     async def stub(node_id, *, camera=None):
         assert node_id == ids["target_id"]
-        return "synthesized prompt"
+        return "synthesized cel anime prompt"
 
     monkeypatch.setattr(prompt_synth, "auto_prompt", stub)
     r = client.post("/api/prompt/auto", json={"node_id": ids["target_id"]})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["prompt"] == "synthesized prompt"
+    assert body["prompt"] == "synthesized cel anime prompt"
     assert body["node_id"] == ids["target_id"]
 
 
-def test_route_passes_camera_arg_through(client, monkeypatch):
-    ids = _seed_board_with_chain()
+def test_route_auto_passes_camera_arg_through(client, monkeypatch):
+    ids = _seed_simple_char_chain()
     captured: dict = {}
 
     async def stub(node_id, *, camera=None):
@@ -944,56 +1054,58 @@ def test_route_passes_camera_arg_through(client, monkeypatch):
     assert captured["camera"] == "static"
 
 
+def test_route_auto_502_on_synth_failure(client, monkeypatch):
+    async def stub(node_id, *, camera=None):
+        raise prompt_synth.PromptSynthError("provider timeout")
+
+    monkeypatch.setattr(prompt_synth, "auto_prompt", stub)
+    r = client.post("/api/prompt/auto", json={"node_id": 1})
+    assert r.status_code == 502
+
+
+# ── /api/prompt/auto-batch ──────────────────────────────────────────────
+
+
 @pytest.mark.asyncio
 async def test_auto_prompt_batch_returns_distinct_prompts(client, monkeypatch):
-    """Batch mode asks Claude for a JSON array of N pose-distinct prompts
-    so each variant renders a different stance instead of N seeds of one."""
-    ids = _seed_board_with_chain()
+    """Batch mode asks the provider for a JSON array of N variants."""
+    ids = _seed_simple_char_chain()
     captured: dict = {}
 
     async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        captured["system_prompt"] = system_prompt
-        return (
-            '[\n'
-            '  "Editorial photo, Korean woman, both hands in pockets, hip pop",\n'
-            '  "Editorial photo, Korean woman, hand-on-hip three-quarter angle",\n'
-            '  "Editorial photo, Korean woman, arms casually crossed, head tilt",\n'
-            '  "Editorial photo, Korean woman, walking towards camera mid-stride"\n'
-            ']'
-        )
+        captured["system_prompt"] = system_prompt or ""
+        return _json.dumps([
+            "Wide establishing cel anime, character at center",
+            "Medium close-up, low-angle hero composition",
+            "Over-the-shoulder reverse, rain on glass",
+            "Extreme close-up, eye reflecting neon",
+        ])
 
     monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
     out = await prompt_synth.auto_prompt_batch(ids["target_id"], 4)
-    assert isinstance(out, list)
     assert len(out) == 4
-    assert all("Korean woman" in p for p in out)
-    # All four poses must be distinct.
     assert len(set(out)) == 4
-    # System prompt should mention batch + JSON array
-    sp = (captured["system_prompt"] or "").lower()
-    assert "json array" in sp
+    sp = captured["system_prompt"].lower()
     assert "batch mode" in sp
     assert "exactly 4" in sp
+    assert "json array" in sp
 
 
 @pytest.mark.asyncio
-async def test_auto_prompt_batch_count_1_falls_through_to_single(client, monkeypatch):
-    """count=1 should reuse the single-prompt path for efficiency."""
-    ids = _seed_board_with_chain()
+async def test_auto_prompt_batch_count_1_falls_through(client, monkeypatch):
+    ids = _seed_simple_char_chain()
 
     async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        # Single auto_prompt path returns a plain string, not JSON
-        return "single prompt result"
+        return "single prompt"
 
     monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
     out = await prompt_synth.auto_prompt_batch(ids["target_id"], 1)
-    assert out == ["single prompt result"]
+    assert out == ["single prompt"]
 
 
 @pytest.mark.asyncio
 async def test_auto_prompt_batch_strips_markdown_fences(client, monkeypatch):
-    """Claude sometimes wraps JSON in ```json fences despite instructions."""
-    ids = _seed_board_with_chain()
+    ids = _seed_simple_char_chain()
 
     async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
         return '```json\n["a", "b"]\n```'
@@ -1005,9 +1117,7 @@ async def test_auto_prompt_batch_strips_markdown_fences(client, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_auto_prompt_batch_pads_short_response(client, monkeypatch):
-    """If Claude returns fewer prompts than requested, pad by repeating
-    the last so the dispatch still has count items."""
-    ids = _seed_board_with_chain()
+    ids = _seed_simple_char_chain()
 
     async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
         return '["only-one"]'
@@ -1018,8 +1128,7 @@ async def test_auto_prompt_batch_pads_short_response(client, monkeypatch):
 
 
 def test_route_auto_batch_passes_through(client, monkeypatch):
-    """POST /api/prompt/auto-batch returns the array unchanged."""
-    ids = _seed_board_with_chain()
+    ids = _seed_simple_char_chain()
     captured: dict = {}
 
     async def stub(node_id, count, *, camera=None):
@@ -1032,8 +1141,7 @@ def test_route_auto_batch_passes_through(client, monkeypatch):
         json={"node_id": ids["target_id"], "count": 4},
     )
     assert r.status_code == 200, r.text
-    body = r.json()
-    assert len(body["prompts"]) == 4
+    assert len(r.json()["prompts"]) == 4
     assert captured["count"] == 4
 
 
@@ -1045,132 +1153,26 @@ def test_route_auto_batch_rejects_bad_count(client):
     assert r.status_code == 400
 
 
-def test_route_502_on_synth_failure(client, monkeypatch):
-    async def stub(node_id, *, camera=None):
-        raise prompt_synth.PromptSynthError("auto-prompt provider failed: timeout")
-
-    monkeypatch.setattr(prompt_synth, "auto_prompt", stub)
-    r = client.post("/api/prompt/auto", json={"node_id": 1})
-    assert r.status_code == 502
-
-
-@pytest.mark.asyncio
-async def test_prompt_wins_over_aibrief(client, monkeypatch):
-    """Prompt-first rule: when an upstream node carries BOTH a typed
-    `prompt` and a vision-derived `aiBrief`, the synthesiser must use
-    `prompt`. Vision becomes redundant once the user (or auto-prompt)
-    has stamped a prompt onto the node — that text is the source of
-    truth for downstream synth, regardless of what vision wrote."""
-    with get_session() as s:
-        b = _make_shot(s, name="prompt-wins")
-        upstream = Node(
-            shot_id=b.id, short_id="pwup", type="image",
-            x=0, y=0, w=240, h=180,
-            data={
-                "title": "Hero",
-                "prompt": "AUTHORITATIVE-PROMPT-TEXT detail walking on Tokyo street",
-                "aiBrief": "STALE-VISION-DESCRIPTION studio backdrop with cardboard",
-                "mediaId": "uuuuuuuu-pwup-1111-1111-111111111111",
-            },
-            status="done",
-        )
-        target = Node(
-            shot_id=b.id, short_id="pwtg", type="video",
-            x=0, y=0, w=240, h=180, data={"title": "Motion"},
-            status="idle",
-        )
-        s.add_all([upstream, target]); s.commit()
-        s.refresh(upstream); s.refresh(target)
-        s.add(Edge(shot_id=b.id, source_id=upstream.id, target_id=target.id))
-        s.commit()
-        tgt_id = target.id
-
-    captured: dict = {}
-
-    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        captured["prompt"] = prompt
-        return "Hold the gaze, slight weight shift"
-
-    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    await prompt_synth.auto_prompt(tgt_id)
-    user = captured["prompt"] or ""
-
-    assert "AUTHORITATIVE-PROMPT-TEXT" in user
-    assert "STALE-VISION-DESCRIPTION" not in user
-
-
-@pytest.mark.asyncio
-async def test_aibrief_used_when_no_prompt(client, monkeypatch):
-    """Upload-only fallback: a node that has media + aiBrief but NO
-    prompt (e.g. raw uploaded photo with vision auto-described it) must
-    still surface aiBrief into the synth context. Otherwise upload-only
-    nodes contribute nothing and downstream prompts go generic."""
-    with get_session() as s:
-        b = _make_shot(s, name="brief-fallback")
-        upstream = Node(
-            shot_id=b.id, short_id="bfup", type="visual_asset",
-            x=0, y=0, w=240, h=180,
-            data={
-                "title": "Uploaded jacket",
-                "aiBrief": "BRIEF-FALLBACK navy tweed double-breasted blazer",
-                "mediaId": "uuuuuuuu-bfup-1111-1111-111111111111",
-            },
-            status="done",
-        )
-        target = Node(
-            shot_id=b.id, short_id="bftg", type="image",
-            x=0, y=0, w=240, h=180, data={"title": "Hero shot"},
-            status="idle",
-        )
-        s.add_all([upstream, target]); s.commit()
-        s.refresh(upstream); s.refresh(target)
-        s.add(Edge(shot_id=b.id, source_id=upstream.id, target_id=target.id))
-        s.commit()
-        tgt_id = target.id
-
-    captured: dict = {}
-
-    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        captured["prompt"] = prompt
-        return "Editorial portrait in navy blazer"
-
-    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    await prompt_synth.auto_prompt(tgt_id)
-    user = captured["prompt"] or ""
-
-    assert "BRIEF-FALLBACK" in user
-
-
-# ── Storyboard planner ────────────────────────────────────────────────────
-# Plan: .omc/plans/storyboard-image-node.md §6.2.
-# auto_prompt_storyboard() composes a continuity tree in ONE LLM call,
-# returning {"prompts": [str * count], "parents": [int|None * count]}.
-
-import json as _json  # noqa: E402  (local alias to avoid clashing with module-scope)
+# ── Storyboard (anime narrative beats) ──────────────────────────────────
 
 
 def _seed_storyboard_target(narrative_seed: str = "") -> int:
-    """Create a Board with one upstream character + one Storyboard target.
-    Returns the storyboard target node id."""
     with get_session() as s:
         b = _make_shot(s, name="sb")
         char = Node(
-            shot_id=b.id, short_id="sbch", type="character",
+            shot_id=b.id, short_id="sbc", type="character",
             x=0, y=0, w=240, h=180,
             data={
-                "title": "Model",
-                "aiBrief": "young Vietnamese woman, neutral expression, dark hair",
-                "mediaId": "uuuuuuuu-sbch-1111-2222-333333333333",
+                "title": "Hero",
+                "aiBrief": "young woman, twin braids, cel-shaded",
+                "mediaId": "uuuuuuuu-sbc1-1111-2222-333333333333",
             },
             status="done",
         )
         target = Node(
-            shot_id=b.id, short_id="sbtg", type="storyboard",
+            shot_id=b.id, short_id="sbt", type="storyboard",
             x=0, y=0, w=240, h=180,
-            data={
-                "title": "Story",
-                "narrativeSeed": narrative_seed,
-            },
+            data={"title": "Beats", "narrativeSeed": narrative_seed},
             status="idle",
         )
         s.add_all([char, target]); s.commit()
@@ -1182,17 +1184,17 @@ def _seed_storyboard_target(narrative_seed: str = "") -> int:
 
 
 @pytest.mark.asyncio
-async def test_storyboard_addendum_present_batch_suffix_absent(
+async def test_storyboard_suffix_carries_anime_narrative_language(
     client, monkeypatch
 ):
-    """The storyboard call must use _STORYBOARD_SUFFIX, NOT _BATCH_SUFFIX
-    — the variant pose-distinct addendum is the wrong objective for a
-    narrative sequence."""
-    tgt = _seed_storyboard_target(narrative_seed="unbox + try-on at home")
+    """The anime rewrite drops fashion-era unbox/try-on vocab and pivots
+    to character-reaction / cut-to-next-angle / environmental-detail
+    beats."""
+    tgt = _seed_storyboard_target(narrative_seed="character meets a stranger")
     captured: dict = {}
 
     async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        captured["system"] = system_prompt or ""
+        captured["system_prompt"] = system_prompt or ""
         return _json.dumps({
             "prompts": ["a", "b", "c", "d"],
             "parents": [None, 0, 1, 2],
@@ -1200,14 +1202,20 @@ async def test_storyboard_addendum_present_batch_suffix_absent(
 
     monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
     await prompt_synth.auto_prompt_storyboard(
-        tgt, count=4, narrative_seed="unbox + try-on at home"
+        tgt, count=4, narrative_seed="character meets a stranger"
     )
-
-    sysp = captured["system"]
-    assert "STORYBOARD MODE" in sysp
-    assert "BATCH MODE" not in sysp
-    # Narrative seed gets injected into the suffix as a hint.
-    assert "unbox + try-on at home" in sysp
+    sp = captured["system_prompt"]
+    assert "STORYBOARD MODE" in sp
+    # Anime narrative vocabulary.
+    assert "character reaction" in sp.lower() or "reaction shot" in sp.lower() \
+        or "character reaction" in sp.lower()
+    assert "anime cel-shaded" in sp.lower() or "cel-shaded" in sp.lower()
+    # Narrative seed injected.
+    assert "character meets a stranger" in sp
+    # Fashion-era vocab is gone.
+    assert "unbox" not in sp.lower()
+    assert "try-on" not in sp.lower()
+    assert "selfie" not in sp.lower()
 
 
 @pytest.mark.asyncio
@@ -1216,34 +1224,21 @@ async def test_storyboard_returns_object_with_prompts_and_parents(
 ):
     tgt = _seed_storyboard_target()
     payload = {
-        "prompts": [
-            "Beat 1 — establishing shot",
-            "Beat 2 — package appears",
-            "Beat 3 — opens package",
-            "Beat 4 — tries on jacket",
-            "Beat 5 — selfie",
-            "Beat 6 — exterior wide",
-            "Beat 7 — café window",
-            "Beat 8 — crosswalk",
-        ],
-        "parents": [None, 0, 1, 2, 3, None, 5, 6],
+        "prompts": [f"Beat {i}" for i in range(1, 6)],
+        "parents": [None, 0, 1, 2, 3],
     }
 
     async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
         return _json.dumps(payload)
 
     monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    out = await prompt_synth.auto_prompt_storyboard(tgt, count=8)
-
-    assert isinstance(out, dict)
+    out = await prompt_synth.auto_prompt_storyboard(tgt, count=5)
     assert out["prompts"] == payload["prompts"]
     assert out["parents"] == payload["parents"]
 
 
 @pytest.mark.asyncio
 async def test_storyboard_strips_markdown_fences(client, monkeypatch):
-    """Some providers wrap JSON in ```json fences despite the instruction
-    to skip preamble — the parser must strip them like auto_prompt_batch."""
     tgt = _seed_storyboard_target()
 
     async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
@@ -1275,7 +1270,6 @@ async def test_storyboard_rejects_parent_out_of_range(client, monkeypatch):
     tgt = _seed_storyboard_target()
 
     async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        # parents[2] = 5 violates parents[k] < k
         return _json.dumps({"prompts": ["a", "b", "c"], "parents": [None, 0, 5]})
 
     monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
@@ -1288,7 +1282,6 @@ async def test_storyboard_rejects_length_mismatch(client, monkeypatch):
     tgt = _seed_storyboard_target()
 
     async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        # len(prompts)=4 but len(parents)=3 — mismatch
         return _json.dumps({
             "prompts": ["a", "b", "c", "d"],
             "parents": [None, 0, 1],
@@ -1302,21 +1295,174 @@ async def test_storyboard_rejects_length_mismatch(client, monkeypatch):
 @pytest.mark.asyncio
 async def test_storyboard_rejects_count_out_of_range(client, monkeypatch):
     tgt = _seed_storyboard_target()
-    # No need to stub — count check fires before any LLM call
     with pytest.raises(prompt_synth.PromptSynthError, match="1\\.\\.8"):
         await prompt_synth.auto_prompt_storyboard(tgt, count=0)
     with pytest.raises(prompt_synth.PromptSynthError, match="1\\.\\.8"):
         await prompt_synth.auto_prompt_storyboard(tgt, count=9)
 
 
+# ── /api/prompt/parse-script ─────────────────────────────────────────────
+
+
 @pytest.mark.asyncio
-async def test_storyboard_rejects_non_object_response(client, monkeypatch):
-    tgt = _seed_storyboard_target()
+async def test_parse_script_returns_structured_shots(client, monkeypatch):
+    """LLM is mocked to return the strict-JSON output the system prompt
+    requests. parse_script normalises the result + validates required
+    fields per shot."""
+    scene_id = uuid.uuid4()
+
+    captured: dict = {}
 
     async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        # Returns an array (the BATCH shape) instead of an object.
-        return _json.dumps(["a", "b"])
+        captured["system_prompt"] = system_prompt or ""
+        captured["prompt"] = prompt
+        return _json.dumps({
+            "shots": [
+                {
+                    "order": 1,
+                    "script_text": "An đứng giữa quảng trường.",
+                    "camera_angle": "wide establishing",
+                    "characters_in_frame": ["An"],
+                    "environment": "city square at dusk",
+                    "dialogue": None,
+                    "beat_notes": "establish the scene's main location",
+                },
+                {
+                    "order": 2,
+                    "script_text": "An: \"Tôi vẫn còn đứng đây.\"",
+                    "camera_angle": "close-up",
+                    "characters_in_frame": ["An"],
+                    "environment": "city square at dusk",
+                    "dialogue": "An: \"Tôi vẫn còn đứng đây.\"",
+                    "beat_notes": "dialogue beat — establishing resolve",
+                },
+            ]
+        })
+
+    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
+    out = await prompt_synth.parse_script(
+        scene_id, "An đứng giữa quảng trường. An nói: 'Tôi vẫn còn đứng đây.'"
+    )
+    assert len(out) == 2
+    # System prompt is the script-parse one.
+    sp = captured["system_prompt"]
+    assert "storyboard supervisor" in sp.lower()
+    assert "strict json" in sp.lower() or "strict JSON" in sp
+    # VN input passed through verbatim.
+    assert "An đứng giữa quảng trường" in captured["prompt"]
+    # Output shape.
+    assert out[0]["order"] == 1
+    assert out[0]["script_text"] == "An đứng giữa quảng trường."
+    assert out[0]["camera_angle"] == "wide establishing"
+    assert out[0]["characters_in_frame"] == ["An"]
+    assert out[0]["dialogue"] is None
+    assert out[1]["dialogue"] == 'An: "Tôi vẫn còn đứng đây."'
+
+
+@pytest.mark.asyncio
+async def test_parse_script_strips_markdown_fences(client, monkeypatch):
+    scene_id = uuid.uuid4()
+
+    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
+        return (
+            "```json\n"
+            + _json.dumps({
+                "shots": [
+                    {
+                        "order": 1,
+                        "script_text": "x",
+                        "camera_angle": "medium",
+                        "characters_in_frame": [],
+                        "environment": "interior",
+                        "dialogue": None,
+                        "beat_notes": "",
+                    }
+                ]
+            })
+            + "\n```"
+        )
+
+    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
+    out = await prompt_synth.parse_script(scene_id, "x")
+    assert len(out) == 1
+
+
+@pytest.mark.asyncio
+async def test_parse_script_rejects_empty_input(client):
+    with pytest.raises(prompt_synth.PromptSynthError, match="empty"):
+        await prompt_synth.parse_script(uuid.uuid4(), "   ")
+
+
+@pytest.mark.asyncio
+async def test_parse_script_rejects_non_object_response(client, monkeypatch):
+    scene_id = uuid.uuid4()
+
+    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
+        return _json.dumps([])
 
     monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
     with pytest.raises(prompt_synth.PromptSynthError, match="not a JSON object"):
-        await prompt_synth.auto_prompt_storyboard(tgt, count=2)
+        await prompt_synth.parse_script(scene_id, "x")
+
+
+@pytest.mark.asyncio
+async def test_parse_script_rejects_missing_shots(client, monkeypatch):
+    scene_id = uuid.uuid4()
+
+    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
+        return _json.dumps({"foo": "bar"})
+
+    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
+    with pytest.raises(prompt_synth.PromptSynthError, match="shots"):
+        await prompt_synth.parse_script(scene_id, "x")
+
+
+def test_route_parse_script_happy_path(client, monkeypatch):
+    scene_id = uuid.uuid4()
+
+    async def stub(sid, script_text):
+        assert sid == scene_id
+        return [
+            {
+                "order": 1,
+                "script_text": "An đứng giữa quảng trường.",
+                "camera_angle": "wide establishing",
+                "characters_in_frame": ["An"],
+                "environment": "city square at dusk",
+                "dialogue": None,
+                "beat_notes": "establish",
+            }
+        ]
+
+    monkeypatch.setattr(prompt_synth, "parse_script", stub)
+    r = client.post(
+        "/api/prompt/parse-script",
+        json={"scene_id": str(scene_id), "script_text": "An đứng..."},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["scene_id"] == str(scene_id)
+    assert len(body["shots"]) == 1
+    assert body["shots"][0]["camera_angle"] == "wide establishing"
+
+
+def test_route_parse_script_rejects_empty(client):
+    r = client.post(
+        "/api/prompt/parse-script",
+        json={"scene_id": str(uuid.uuid4()), "script_text": "   "},
+    )
+    assert r.status_code == 400
+
+
+def test_route_parse_script_502_on_synth_failure(client, monkeypatch):
+    scene_id = uuid.uuid4()
+
+    async def stub(sid, script_text):
+        raise prompt_synth.PromptSynthError("provider failed")
+
+    monkeypatch.setattr(prompt_synth, "parse_script", stub)
+    r = client.post(
+        "/api/prompt/parse-script",
+        json={"scene_id": str(scene_id), "script_text": "some script"},
+    )
+    assert r.status_code == 502

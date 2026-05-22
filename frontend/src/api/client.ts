@@ -522,6 +522,42 @@ export async function autoPrompt(
   return res.json() as Promise<AutoPromptResponse>;
 }
 
+export interface ParsedShot {
+  order: number;
+  script_text: string;
+  camera_angle: string;
+  characters_in_frame: string[];
+  environment: string;
+  dialogue: string | null;
+  beat_notes: string;
+}
+
+export interface ParseScriptResponse {
+  scene_id: string;
+  shots: ParsedShot[];
+}
+
+/**
+ * Phase 6.4. Break a (Vietnamese-or-any-language) scene script into
+ * structured shot breakdowns via the configured Auto-Prompt provider.
+ * The LLM preserves `script_text` verbatim in the source language and
+ * emits meta fields (camera, environment, beat notes) in English.
+ */
+export async function parseScript(
+  sceneId: string,
+  scriptText: string,
+): Promise<ParseScriptResponse> {
+  const res = await fetch("/api/prompt/parse-script", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scene_id: sceneId, script_text: scriptText }),
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json() as Promise<ParseScriptResponse>;
+}
+
 export async function describeMedia(mediaId: string): Promise<VisionDescribeResponse> {
   const res = await fetch("/api/vision/describe", {
     method: "POST",
@@ -931,6 +967,10 @@ export interface ShotDTO {
 export interface SceneBible {
   scene_bible_text: string;
   master_establishing_asset_id: number | null;
+  // Read-only convenience populated by GET — the Asset's uuid_media_id
+  // (so the MasterShotNode can show the actual image without a second
+  // roundtrip). PUT requests ignore this field.
+  master_establishing_media_id?: string | null;
 }
 
 // ── Projects ─────────────────────────────────────────────────────────────

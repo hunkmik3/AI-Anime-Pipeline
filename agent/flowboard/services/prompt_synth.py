@@ -1,24 +1,36 @@
-"""Auto-prompt synthesizer.
+"""Auto-prompt synthesizer — anime narrative pipeline (Phase 6).
 
 Given a target node, walks the immediate-upstream graph, collects
-``aiBrief`` text from each parent node, and asks the configured
-Auto-Prompt provider to compose a single image-generation prompt that
-combines them. Used when the user clicks Generate without typing a
-prompt.
+upstream brief / script / bible / master-shot context, looks up the
+Project Bible + Scene Bible from the shot's parent hierarchy, and
+asks the configured Auto-Prompt provider to compose a single image-
+or motion-generation prompt that combines them.
 
-Provider routing goes through ``run_llm("auto_prompt", ...)``. User picks
-which one in Settings → AI Providers; default is Claude.
+Provider routing goes through ``run_llm("auto_prompt", ...)``. User
+picks which one in Settings → AI Providers; default is Claude.
+
+Bilingual: upstream context may be Vietnamese. The system prompts
+instruct the LLM to read source-language natively and emit the
+generation prompt in English (image / video providers expect EN).
+The script-parse endpoint preserves ``script_text`` verbatim in the
+source language while emitting meta fields (camera, environment,
+beat notes) in English.
+
+The legacy fashion-editorial system prompts are preserved verbatim
+in ``prompt_synth_legacy.py`` for reference; nothing in this module
+imports from there.
 """
 from __future__ import annotations
 
 import json
 import logging
-from typing import Optional
+import uuid
+from typing import Any, Optional
 
 from sqlmodel import select
 
 from flowboard.db import get_session
-from flowboard.db.models import Edge, Node
+from flowboard.db.models import Asset, Edge, Node, Project, Scene, Shot
 from flowboard.services.activity import record_activity
 from flowboard.services.llm import run_llm
 from flowboard.services.llm.base import LLMError
@@ -26,253 +38,353 @@ from flowboard.services.llm.base import LLMError
 logger = logging.getLogger(__name__)
 
 
-_SYNTH_SYSTEM_IMAGE = (
-    "You are an image-generation prompt builder for a fashion / e-commerce "
-    "media pipeline. Output ONE concise sentence (max 280 chars) for a "
-    "photoreal shot combining the input briefs.\n\n"
-    "POSE — every shot must look like a real editorial / lookbook photo:\n"
-    "  • GAZE: the model's eyes MUST ENGAGE THE CAMERA — direct eye "
-    "contact with the lens. No looking-away, no eyes-closed, no "
-    "over-the-shoulder backshots, no profile-only poses. The face is "
-    "always turned to camera.\n"
-    "  • EXPRESSION — CRITICAL: NEUTRAL CLOSED-MOUTH expression at all "
-    "times. NO smiling, NO teeth visible, NO laughing, NO open mouth. A "
-    "very soft, almost-imperceptible curl of the lips is the maximum. "
-    "This is non-negotiable — open-mouth smiles get warped by Veo i2v "
-    "downstream and cause face-identity drift across the clip. Use "
-    "phrases like 'composed neutral expression', 'closed-mouth confident "
-    "look', 'lips together'.\n"
-    "  • STANCE — pick ONE from this pool (rotate so generations stay "
-    "diverse, do not repeat the same stance):\n"
-    "    · both hands in pockets, weight on one leg, slight hip pop\n"
-    "    · one hand brushing the collar / sleeve / hem of the garment\n"
-    "    · hand-on-hip, body angled three-quarters to camera\n"
-    "    · arms casually crossed at the chest, head tilted slightly\n"
-    "    · hand running through hair, head turned slightly to the side\n"
-    "    · one hand resting at the side of the face, playful or pensive\n"
-    "    · walking towards camera mid-stride, casual confidence\n"
-    "    · leaning weight on one hip with thumbs hooked into pockets\n"
-    "  • BODY ANGLE: pick straight-on, three-quarter, or slight side — "
-    "as long as the face stays toward camera.\n"
-    "  • ATTITUDE: confident, charismatic, distinctive personality and "
-    "presence (model 'aura'). Never stiff or generic.\n\n"
-    "When a product / wardrobe asset is in the inputs AND no location "
-    "reference is present, the chosen pose must make the GARMENT the "
-    "visual hero — knees-up or full upper-body framing. When a location "
-    "reference IS present, balance the framing: the garment stays "
-    "readable but the environment must be visible in frame (wider shot, "
-    "knees-up to full-body so the setting reads).\n\n"
-    "Style: photoreal editorial fashion photography, sharp focus, soft "
-    "even key light. BACKGROUND PRIORITY — if any reference image's "
-    "brief describes an environment, location, or scene (e.g. 'park', "
-    "'street', 'café', 'jogging path', 'interior room', 'beach'), USE "
-    "that environment as the background of the shot: place the subject "
-    "INTO that scene with matching natural light, perspective, and depth "
-    "of field. Do NOT default to studio when a location reference exists "
-    "in the inputs. Only fall back to a neutral indoor/studio background "
-    "when zero location/scene references exist upstream. No marketing "
-    "language, no preamble — output the prompt only."
-)
+# ── System prompts: still image (anime cel) ──────────────────────────────
 
-# Appended to the image system prompt when the upstream graph contains
-# 2+ distinct people (multiple character nodes, or image siblings each
-# wrapping a different character grandparent — e.g. couple shots, group
-# look-books). Without this clause the synthesiser writes a single-subject
-# prompt and Flow can only honour one of the N reference images.
-_MULTI_SUBJECT_CLAUSE = (
-    "\n\nMULTI-SUBJECT MODE — CRITICAL: This shot contains MULTIPLE "
-    "distinct people. The upstream context lists every reference image "
-    "with a `ref_image_N` label. Compose ALL subjects into a single "
-    "couple/group scene where every person appears in frame:\n"
-    "  • REFERENCE BY POSITION: name each subject by their `ref_image_N` "
-    "label (e.g. 'ref_image_1 standing on the left, ref_image_2 on the "
-    "right') so Flow can bind each person to the correct input image. "
-    "NEVER replace `ref_image_N` with generic descriptors like 'an East "
-    "Asian man'.\n"
-    "  • ARRANGEMENT: side-by-side, slightly turned toward each other, or "
-    "natural couple/group composition. Every subject must be fully "
-    "visible — no one cropped or hidden behind another.\n"
-    "  • POSE & GAZE rules apply to EACH subject — every face engages the "
-    "camera; every expression neutral closed-mouth.\n"
-    "  • COMPLEMENTARY STANCES: each subject picks a DIFFERENT gesture "
-    "from the stance pool — never repeat the same stance across subjects.\n"
-    "  • CONTACT: light natural couple-style contact is allowed (a hand "
-    "on the other's shoulder, leaning slightly toward each other) but "
-    "never invasive.\n"
-    "  • FRAMING: full upper-body or knees-up framing — wider than a "
-    "single-subject shot — so all faces and any product stay in frame.\n"
-    "  • CHAR LIMIT: up to 400 chars for multi-subject scenes (overrides "
-    "the 280 cap) since each subject needs description."
-)
 
-# Intent-first motion direction. The earlier version prescribed scene→
-# action vocab + mandatory 3-beat structure + action-verb-only language,
-# which made every clip feel theatrical and "model executing a pose pool".
-# This rewrite gives Claude the safety floor (Veo's anti-freeze need) and
-# trusts it to pick natural, character-driven motion that fits the scene
-# instead of rotating through canned gestures.
-_SYNTH_VIDEO_CORE = (
-    "You are a video-motion prompt builder for an i2v pipeline (8-second "
-    "clip, Veo-style). The source still is the first frame — describe "
-    "what unfolds across the next 8 seconds.\n\n"
-    "INTENT FIRST. Look at the source: who is this person, what are "
-    "they feeling, what would they naturally do in this moment? Let "
-    "that drive the motion. The subject is a person with interiority, "
-    "not a fashion model executing a pose pool.\n\n"
-    "ANTI-FREEZE (safety floor only): Veo locks onto frame 0 if the "
-    "prompt is too passive. SOMETHING visible must change between "
-    "frame 0 and frame 8 — but it can be as small as a half-blink, a "
-    "weight shift, a gaze drifting to the lens and back, or fabric "
-    "catching a breeze. What fails is adjective-only direction "
-    "without a concrete change attached: 'gentle softness' alone "
-    "freezes; 'a slight weight shift, eyes settling on the lens' "
-    "doesn't.\n\n"
-    "PERFORMANCE notes — apply when they fit, ignore when they don't:\n"
-    "  • Match the energy of the source. A poised studio portrait "
-    "wants a held gaze with a tiny weight shift, not a runway pose "
-    "change. A walking street shot wants forward momentum.\n"
-    "  • Stillness is valid. A 6-second held moment with one small "
-    "shift at the end can read more powerful than three beats of "
-    "action stacked.\n"
-    "  • Don't pile gestures. One real motion that carries weight "
-    "beats three checklist gestures.\n"
-    "  • Body language must read as in-character. The choice 'what "
-    "does this person do next' should feel like THEIR choice, not the "
-    "prompt-writer's.\n\n"
-    "STRUCTURE is free. Use time-coded beats (e.g. 0-3s / 3-6s / 6-8s) "
-    "when the scene calls for sequenced action. Use a single continuous "
-    "direction when the scene calls for sustained presence. Pick what "
-    "fits — don't default to either.\n\n"
-    "ALWAYS include: natural blinks throughout, soft fabric and hair "
-    "drift. These ground the clip without adding theatrical motion.\n\n"
-    "AUDIO — Veo generates sound, and that audio passes a content "
-    "filter (`PUBLIC_MIRROR_AUDIO_FILTER`) that REJECTS the entire "
-    "request when speech is generated over faces resembling real "
-    "people. Most Flowboard scenes are portraits, so default hard to "
-    "silent:\n"
-    "  • SILENT BY DEFAULT: no spoken dialogue, no voice-over, no "
-    "lip-sync, no singing, no humming, no whispering. Mouths stay "
-    "neutral closed-mouth.\n"
-    "  • SFX: only generic low-volume ambient cues that match the "
-    "setting (room tone, fabric rustle, light footsteps, soft "
-    "breeze). Keep it minimal — no effects-heavy soundscape.\n"
-    "  • MUSIC: optional soft restrained background — lo-fi, ambient "
-    "pad, gentle piano — at low volume. Never lyrical, never a "
-    "recognisable melody, never high-energy.\n"
-    "  • EXCEPTION: only when the user prompt EXPLICITLY asks for "
-    "dialogue or singing should the clip include speech, and even "
-    "then keep the audio direction generic (no specific accent / "
-    "voice characteristic / impersonation) to keep filter risk low.\n\n"
-    "No scene cuts, no text overlays. Max 400 chars. Output the "
-    "motion prompt only — no preamble."
-)
-
-# Appended to the video system prompt when the source frame contains
-# 2+ distinct people (couple/group shots). Without this, the synth
-# directs "the subject" singular and Veo typically freezes one person
-# while animating the other.
-_MULTI_SUBJECT_VIDEO_CLAUSE = (
-    "\n\nMULTI-SUBJECT MODE: The source frame contains MULTIPLE distinct "
-    "people. Direct each subject independently — natural co-presence "
-    "beats synchronized choreography:\n"
-    "  • Each subject performs their own motion. Don't force both/all "
-    "to lean / turn / glance at the same time — that reads staged.\n"
-    "  • Subjects may acknowledge each other: a glance, a soft micro-"
-    "smile (still closed-mouth), light contact (a hand drifting toward "
-    "the other's shoulder, a slight lean toward each other). Or they "
-    "may simply co-exist, each in their own moment. Both are valid.\n"
-    "  • ANTI-FREEZE applies PER SUBJECT: at minimum a blink or subtle "
-    "shift for every person between frame 0 and frame 8. No one frozen "
-    "while another moves.\n"
-    "  • REFERENCE BY POSITION: when directing actions, name each "
-    "subject by their `ref_image_N` label (e.g. 'ref_image_1 turns "
-    "slightly toward ref_image_2; ref_image_2 holds her gaze on the "
-    "lens'). Never replace `ref_image_N` with generic descriptors.\n"
-    "  • Char limit bumps to 540 for multi-subject — each person needs "
-    "their own direction."
-)
-
-_SYNTH_SYSTEM_VIDEO_DEFAULT = (
-    _SYNTH_VIDEO_CORE
-    + "\n\nCamera: subtle dolly or pan is allowed if it fits the scene, "
-    "but subject motion is the main story."
-)
-
-# Camera-aware variant. When the user picked `static` (e.g. for e-commerce
-# product shots) the synthesiser MUST NOT propose dolly/zoom/pan moves —
-# only subject-side motion. The model is still expected to perform a
-# multi-beat pose sequence; static refers to the CAMERA only, not the
-# subject.
-_SYNTH_SYSTEM_VIDEO_STATIC = (
-    _SYNTH_VIDEO_CORE
-    + "\n\nCamera: STATIC, locked-off, no zoom / pan / dolly. Keep the "
-    "entire subject and product framed for the full clip."
+_ANIME_IMAGE_SYSTEM = (
+    "You are an image-generation prompt builder for an anime narrative "
+    "production pipeline. Output ONE concise prompt (max 380 chars) for "
+    "a single cinematic anime frame combining the upstream context.\n\n"
+    "STYLE FLOOR (always apply unless Project Bible overrides):\n"
+    "  • 2D anime, cel-shaded, hand-drawn aesthetic — clean line art "
+    "with deliberate weight variation, flat color fills with selective "
+    "rim/key shading. NOT 3D-rendered, NOT photoreal, NOT AI-smooth "
+    "plastic-skin look.\n"
+    "  • Cinematic framing — pick ONE explicit camera angle from the "
+    "vocabulary: wide establishing, medium two-shot, medium close-up, "
+    "close-up, extreme close-up, low-angle hero, high-angle bird's eye, "
+    "over-the-shoulder, Dutch tilt. Match the angle to the dramatic "
+    "beat described in the script.\n"
+    "  • Rule of thirds composition, intentional negative space, "
+    "layered depth (foreground / midground / background plates).\n"
+    "  • Anime lighting language — directional key light with crisp "
+    "cel shadows, ambient bounce, optional rim light when the beat "
+    "calls for it. No global illumination softness — cel anime has "
+    "hard shadow boundaries.\n\n"
+    "IDENTITY PRESERVATION (when character refs are upstream):\n"
+    "  • A character ref carries the canonical face, hair, eye color, "
+    "and silhouette. Reproduce these faithfully across shots — wardrobe "
+    "and expression may change, but identity markers must NOT drift.\n"
+    "  • Reference each character by its `ref_image_N` label so "
+    "downstream bind-by-position works.\n\n"
+    "ESTABLISHING SHOT (when `establishing_shot_ref` is upstream):\n"
+    "  • The `establishing_shot_ref` is the scene's master shot — it "
+    "fixes the spatial layout, lighting, and color palette for every "
+    "shot in this scene. Match composition language, lighting "
+    "direction, and palette to it. The new frame may zoom in, change "
+    "angle, or reframe — but the world must read as the SAME location "
+    "at the SAME moment.\n\n"
+    "ANTI-PATTERNS (negative direction — always include):\n"
+    "  • No photoreal skin texture, no 3D-rendered look, no plastic "
+    "shine.\n"
+    "  • No motion blur (this is a still — sharp lineart only).\n"
+    "  • No text overlays, no logos, no signage in any language.\n"
+    "  • No off-model proportions — match canonical anime body ratios.\n\n"
+    "BILINGUAL: upstream context may be Vietnamese. Read it natively, "
+    "but OUTPUT the final prompt in English (downstream image providers "
+    "expect English). Do not translate the user's intent; carry "
+    "semantic meaning.\n\n"
+    "Output the prompt only — no preamble, no explanation."
 )
 
 
-def _video_system_prompt(camera: Optional[str], subject_count: int = 1) -> str:
-    base = (
-        _SYNTH_SYSTEM_VIDEO_STATIC if camera == "static"
-        else _SYNTH_SYSTEM_VIDEO_DEFAULT
-    )
-    if subject_count >= 2:
-        return base + _MULTI_SUBJECT_VIDEO_CLAUSE
-    return base
+_ANIME_IMAGE_MULTI_SUBJECT_CLAUSE = (
+    "\n\nMULTI-SUBJECT MODE: This frame contains 2+ characters. Compose "
+    "as a single anime group composition where every character is "
+    "visible and on-model:\n"
+    "  • Reference each character by their `ref_image_N` label so the "
+    "downstream provider binds each one to the correct ref.\n"
+    "  • Block the characters with intentional spatial logic — who is "
+    "foreground, who is background, who is the focal subject. Anime "
+    "blocking favors clear separation over photoreal candid clustering.\n"
+    "  • Each character keeps their canonical identity (face, hair, "
+    "silhouette). NEVER substitute a generic descriptor for a "
+    "`ref_image_N` label.\n"
+    "  • Char limit bumps to 450 for multi-subject — each character "
+    "needs a position + expression note."
+)
+
+
+# ── System prompts: video (i2v anime cadence) ────────────────────────────
+
+
+_ANIME_VIDEO_SYSTEM = (
+    "You are a motion prompt builder for an i2v anime pipeline (4-8s "
+    "clip). The source still is the first frame — describe the "
+    "animation that unfolds across the clip.\n\n"
+    "ANIME CADENCE — match cadence to dramatic intent:\n"
+    "  • Characters animate on twos or threes (cel-anime convention — "
+    "preserves character readability without smooth-mo plasticity). "
+    "Some sakuga action beats may run on ones for impact. Locked-off "
+    "slow scenes lean on threes; dynamic action allows ones.\n"
+    "  • Backgrounds animate on ones (foliage drift, water, dust "
+    "motes, light flicker, fabric in wind) — these can be continuous.\n"
+    "  • Avoid uniform 24fps character motion unless the moment is a "
+    "sakuga action beat — that reads as 3DCG or rotoscope, not 2D "
+    "anime.\n\n"
+    "TIME-CODED BEATS for 4-8s clips:\n"
+    "  • Choose a beat structure that fits the dramatic moment. "
+    "Examples: 0-2s hold + 2-4s reaction + 4-6s gesture + 6-8s settle. "
+    "Or sustained held expression with one micro-beat at the end. "
+    "Match the script's emotional arc, not a checklist.\n"
+    "  • Free choice — sequence beats only when the moment calls for "
+    "it.\n\n"
+    "ANTI-FREEZE (safety floor): SOMETHING visible must change between "
+    "frame 0 and the clip end. Acceptable minimums: blink, breath "
+    "rise, hair drift, fabric catch, eye-light shift. Adjective-only "
+    "direction ('gentle softness') freezes the model — always pair "
+    "feeling with a concrete observable change.\n\n"
+    "CAMERA: anime camera vocabulary — slow push-in, slow pull-out, "
+    "horizontal pan, vertical pan, rack focus, sakuga handheld for "
+    "action beats, locked-off for dialogue. Pick the move that fits "
+    "the beat; locked-off is a valid choice.\n\n"
+    "ALWAYS INCLUDE (per character on screen): natural blinks at 2-4 "
+    "second intervals, breath rise on the chest, hair edge drift. "
+    "Background plates: subtle parallax or atmospheric motion (dust, "
+    "steam, light shimmer) when present.\n\n"
+    "AUDIO: silent by default. Anime production layers dialogue, ADR, "
+    "foley, and music in post — i2v providers should NOT generate "
+    "synthetic dialogue. If ambient SFX direction is appropriate, "
+    "keep it diegetic and generic (room tone, wind, distant traffic). "
+    "No lip-sync, no synth voice, no recognizable melody.\n\n"
+    "BILINGUAL: upstream may be Vietnamese; output the motion prompt "
+    "in English. Max 450 chars (600 multi-subject).\n\n"
+    "Output the motion prompt only — no preamble."
+)
+
+
+_ANIME_VIDEO_MULTI_SUBJECT_CLAUSE = (
+    "\n\nMULTI-SUBJECT MODE: Source frame has 2+ characters. Direct "
+    "each character independently:\n"
+    "  • Each character gets their own beat — no synchronized "
+    "choreography unless the script explicitly calls for it. "
+    "Asymmetric motion reads natural; mirrored motion reads staged.\n"
+    "  • Anti-freeze applies PER character: every person in frame "
+    "must show at least one observable change (blink, breath, "
+    "micro-expression) over the clip.\n"
+    "  • Reference each character by `ref_image_N` label (e.g. "
+    "\"ref_image_1 turns slightly toward ref_image_2\"). Never "
+    "substitute generic descriptors.\n"
+    "  • Char limit bumps to 600 for multi-subject — each character "
+    "needs their own direction."
+)
+
+
+# Static-camera variant — locks the camera, subject motion only.
+_ANIME_VIDEO_STATIC_CLAUSE = (
+    "\n\nCAMERA OVERRIDE: STATIC, locked-off. No push-in / pull-out / "
+    "pan / zoom / rack focus / handheld. Subject + background plate "
+    "motion only — the frame edges never move."
+)
+
+
+# ── System prompt: VN script → shot breakdown ────────────────────────────
+
+
+_ANIME_SCRIPT_PARSE_SYSTEM = (
+    "You are a storyboard supervisor for an anime production. The user "
+    "will paste a Vietnamese (or any-language) scene script. Break it "
+    "down into discrete cinematic shots.\n\n"
+    "OUTPUT FORMAT — strict JSON object, no markdown fences, no "
+    "preamble:\n"
+    "{\n"
+    "  \"shots\": [\n"
+    "    {\n"
+    "      \"order\": 1,\n"
+    "      \"script_text\": \"<the original-language line(s) for this "
+    "shot, verbatim from the user's input — do NOT translate>\",\n"
+    "      \"camera_angle\": \"<one of: wide establishing | medium "
+    "two-shot | medium | medium close-up | close-up | extreme "
+    "close-up | low-angle | high-angle | over-the-shoulder | dutch "
+    "tilt>\",\n"
+    "      \"characters_in_frame\": [\"<character name as written in "
+    "script>\"],\n"
+    "      \"environment\": \"<short EN phrase summarizing the location "
+    "/ time-of-day / atmosphere, e.g. 'rainy alley at night, neon "
+    "reflections'>\",\n"
+    "      \"dialogue\": \"<character_name>: <line>\" or null,\n"
+    "      \"beat_notes\": \"<short EN note on dramatic intent — what "
+    "the shot accomplishes narratively>\"\n"
+    "    }\n"
+    "  ]\n"
+    "}\n\n"
+    "RULES:\n"
+    "  • Split aggressively — every camera change, every reaction "
+    "shot, every cut is its own shot. A 4-line scene typically becomes "
+    "6-12 shots, not 4.\n"
+    "  • Preserve script_text verbatim in the source language. NO "
+    "translation of dialogue or action lines.\n"
+    "  • camera_angle, environment, beat_notes — ALWAYS in English "
+    "(these feed downstream English-only prompt synthesis).\n"
+    "  • characters_in_frame — use the character names exactly as "
+    "written in the script (do not invent or romanize).\n"
+    "  • dialogue — if the shot contains a spoken line, format as "
+    "\"<character_name>: <line>\" with the line VERBATIM in the source "
+    "language; otherwise null. Used by Phase 7+ lip-sync / subtitle "
+    "work.\n"
+    "  • Order shots in narrative sequence starting at 1.\n"
+    "  • If the script is ambiguous about who is in frame for a beat, "
+    "infer conservatively from context — prefer fewer characters over "
+    "over-populating the frame.\n\n"
+    "Output the JSON object only."
+)
+
+
+# Public re-exports of the prompt constants — tests import them.
+ANIME_IMAGE_SYSTEM = _ANIME_IMAGE_SYSTEM
+ANIME_VIDEO_SYSTEM = _ANIME_VIDEO_SYSTEM
+ANIME_SCRIPT_PARSE_SYSTEM = _ANIME_SCRIPT_PARSE_SYSTEM
 
 
 class PromptSynthError(RuntimeError):
     pass
 
 
-# Ref-source node types — the ones whose mediaId becomes a position
-# entry in the request's ``imageInputs`` array. MUST match the
-# frontend's ``REF_SOURCE_TYPES`` set in ``store/generation.ts`` so the
+# ── Ref-source node types ────────────────────────────────────────────────
+# Mirror frontend ``REF_SOURCE_TYPES`` in ``store/generation.ts`` so the
 # ``ref_image_N`` numbering we hand the LLM aligns with the actual
-# positional slot Flow sees on the wire.
-_REF_SOURCE_TYPES = {"character", "image", "visual_asset", "storyboard"}
+# positional slot Flow / Dreamina see on the wire. ``master_shot`` is
+# Phase 6 new — it earns a dedicated ``establishing_shot_ref`` label
+# instead of a numbered slot (it's always slot 1; character refs
+# follow at 2+).
+_REF_SOURCE_TYPES = {
+    "character",
+    "image",
+    "visual_asset",
+    "storyboard",
+    "master_shot",
+}
 
 
-def _collect_upstream(node_id: int) -> tuple[list[dict], Optional[Node]]:
-    """Return (upstream_brief_records, target_node).
+# ── Bible hierarchy lookup ───────────────────────────────────────────────
+
+
+def _load_bibles_for_shot(session, shot_id: uuid.UUID) -> tuple[dict[str, Any], str]:
+    """Walk Shot → Scene → Project and return (project_bible, scene_bible_text).
+
+    Missing rows fall back to empty values — bare-bones projects without a
+    bible filled in MUST NOT break ``auto_prompt``.
+    """
+    shot = session.get(Shot, shot_id) if shot_id else None
+    if shot is None:
+        return {}, ""
+    scene = session.get(Scene, shot.scene_id)
+    if scene is None:
+        return {}, ""
+    project = session.get(Project, scene.project_id)
+    project_bible = dict(project.project_bible or {}) if project else {}
+    return project_bible, scene.scene_bible_text or ""
+
+
+def _format_bible_block(
+    project_bible: dict[str, Any], scene_bible_text: str
+) -> str:
+    """Render the Project + Scene Bible as a prepend block.
+
+    Empty fields are dropped silently so a half-filled bible still
+    surfaces what it has without injecting noisy "(none)" lines.
+    Returns "" when both bibles are entirely empty — caller can then
+    skip prepending altogether.
+    """
+    proj_lines: list[str] = []
+    art_style = project_bible.get("art_style")
+    if isinstance(art_style, str) and art_style.strip():
+        proj_lines.append(f"  Art style: {art_style.strip()}")
+    palette = project_bible.get("color_palette")
+    if isinstance(palette, list) and palette:
+        proj_lines.append(
+            "  Palette: "
+            + ", ".join(str(p) for p in palette if isinstance(p, str) and p)
+        )
+    line_style = project_bible.get("line_style")
+    if isinstance(line_style, str) and line_style.strip():
+        proj_lines.append(f"  Line style: {line_style.strip()}")
+    lighting = project_bible.get("lighting_conventions")
+    if isinstance(lighting, str) and lighting.strip():
+        proj_lines.append(f"  Lighting: {lighting.strip()}")
+    negative = project_bible.get("negative_prompts")
+    if isinstance(negative, list) and negative:
+        proj_lines.append(
+            "  Negative: "
+            + ", ".join(str(p) for p in negative if isinstance(p, str) and p)
+        )
+
+    parts: list[str] = []
+    if proj_lines:
+        parts.append(
+            "PROJECT BIBLE (style anchor — apply to every visual "
+            "decision):\n" + "\n".join(proj_lines)
+        )
+    if scene_bible_text and scene_bible_text.strip():
+        parts.append(
+            "SCENE BIBLE (spatial / atmospheric anchor for this "
+            "scene):\n  " + scene_bible_text.strip()
+        )
+    return "\n\n".join(parts)
+
+
+# ── Upstream graph walk ──────────────────────────────────────────────────
+
+
+def _resolve_master_shot_media(session, data: dict) -> Optional[str]:
+    """Resolve a MasterShotNode's media_id.
+
+    Frontend stores ``masterShotAssetId`` (numeric Asset PK) and
+    sometimes ``mediaId`` (Asset.uuid_media_id) if previously
+    cached. Prefer ``mediaId`` when present; otherwise look up the
+    asset.
+    """
+    direct = data.get("mediaId")
+    if isinstance(direct, str) and direct:
+        return direct
+    asset_id = data.get("masterShotAssetId")
+    if isinstance(asset_id, int) and asset_id > 0:
+        asset = session.get(Asset, asset_id)
+        if asset is not None and asset.uuid_media_id:
+            return asset.uuid_media_id
+    return None
+
+
+def _collect_upstream(
+    node_id: int,
+) -> tuple[list[dict], Optional[Node], dict[str, Any], str]:
+    """Return ``(upstream_records, target_node, project_bible, scene_bible_text)``.
 
     Each record carries:
-      - ``type``         — node type (character / image / visual_asset / prompt / …)
-      - ``shortId``      — internal node identifier (used by multi-subject
-        detection; never surfaced to the LLM in the prompt body)
-      - ``ref_index``    — 1-based position in the dispatched
-        ``ref_media_ids`` array, or ``None`` when this record isn't a
-        ref-source (prompt / note nodes) or has no media. Drives the
-        ``ref_image_N`` labels in ``_format_user_message`` so the LLM
-        binds subjects to the correct input image positionally.
-      - ``brief / prompt / title / has_media`` — display fields
-      - ``subject_chars`` — shortIds of any character one hop further up
-        an ``image`` chain. Used to detect when two image siblings wrap
-        different people (couple/group scenes); translated to
-        ref_image labels at format time.
+      - ``type``         — node type
+      - ``shortId``      — internal node identifier (multi-subject
+        detection only; never surfaced to the LLM in the prompt body)
+      - ``ref_label``    — ``"establishing_shot_ref"``, ``"ref_image_N"``
+        (1-based), or ``None`` for non-ref records (prompt / note /
+        script / bible_ref nodes).
+      - ``brief``        — the description text (prompt > aiBrief > title)
+      - ``prompt``       — user-typed prompt (also surfaces under the
+        Direction section for ``prompt`` nodes)
+      - ``title``
+      - ``has_media``    — whether the node carries a binding mediaId/mediaIds
+      - ``subject_chars``— shortIds of character grandparents (for
+        multi-subject detection through image siblings)
+      - ``script_text``  — set for ``script`` nodes (passthrough text)
+      - ``bible_text``   — set for ``bible_ref`` nodes (passthrough text)
 
-    Ordering: records are produced in the same edge-iteration order the
-    frontend uses to build ``ref_media_ids``, so ``ref_index = 1``
-    points at the first item in that array.
+    Slot ordering for ref records: a single ``master_shot`` upstream
+    takes ``establishing_shot_ref`` (priority slot). Other ref-source
+    types get ``ref_image_1, ref_image_2, ...`` in edge-insertion order.
     """
-    # Source-of-truth rule: a node's `prompt` (typed by the user OR
-    # auto-generated by Claude) ALWAYS wins over its vision-derived
-    # `aiBrief`. Vision is only the fallback for upload-only nodes
-    # that have no prompt at all (e.g. user dropped a raw photo onto a
-    # visual_asset node and never typed anything).
-
     with get_session() as s:
         target = s.get(Node, node_id)
         if target is None:
-            return [], None
-        # Order by Edge.id to match the frontend's natural insertion-
-        # order walk — without this the SQLite query plan could shuffle
-        # rows and break ref_index alignment with ref_media_ids.
+            return [], None, {}, ""
+
+        project_bible, scene_bible_text = _load_bibles_for_shot(s, target.shot_id)
+
         edges = s.exec(
             select(Edge).where(Edge.target_id == node_id).order_by(Edge.id)
         ).all()
         upstream_ids = [e.source_id for e in edges]
+
         records: list[dict] = []
-        next_ref_index = 1  # 1-based to match user-facing "ref_image_1"
+        next_ref_index = 1
         for uid in upstream_ids:
             n = s.get(Node, uid)
             if n is None:
@@ -280,11 +392,14 @@ def _collect_upstream(node_id: int) -> tuple[list[dict], Optional[Node]]:
             data = n.data or {}
             ai_brief = data.get("aiBrief") if isinstance(data.get("aiBrief"), str) else None
             user_prompt = data.get("prompt") if isinstance(data.get("prompt"), str) else None
-            # Prompt-first resolution. If the node carries a prompt, that
-            # prompt is the description; aiBrief is ignored even when
-            # present. Only fall back to aiBrief for upload-only nodes
-            # that never received a prompt.
             brief = user_prompt or ai_brief
+
+            # Passthrough text on the new anime node types.
+            script_text = data.get("scriptText") if isinstance(data.get("scriptText"), str) else None
+            bible_text = data.get("bibleText") if isinstance(data.get("bibleText"), str) else None
+
+            # Multi-subject detection through image siblings (couple shot
+            # with char_m → img_m, char_f → img_f, both feeding target).
             subject_chars: list[str] = []
             if n.type == "image":
                 gp_edges = s.exec(
@@ -294,42 +409,46 @@ def _collect_upstream(node_id: int) -> tuple[list[dict], Optional[Node]]:
                     gp = s.get(Node, ge.source_id)
                     if gp is not None and gp.type == "character":
                         subject_chars.append(gp.short_id)
-            # Accept either the singular `mediaId` (single-variant node)
-            # or the variant list `mediaIds` (multi-variant). The
-            # frontend's `collectUpstreamRefMediaIds` already expands
-            # `mediaIds` into the wire payload — we mirror the same
-            # acceptance here so multi-variant nodes still get a
-            # `ref_image_N` label even if `mediaId` happens to be unset.
+
+            # Resolve has_media: accept singular `mediaId` or variant list.
+            # MasterShot also accepts indirect resolution from masterShotAssetId.
             mids = data.get("mediaIds")
-            has_media = bool(
+            base_has_media = bool(
                 (isinstance(data.get("mediaId"), str) and data.get("mediaId"))
                 or (isinstance(mids, list) and any(isinstance(m, str) and m for m in mids))
             )
-            ref_index: Optional[int] = None
-            if n.type in _REF_SOURCE_TYPES and has_media:
-                ref_index = next_ref_index
+            if not base_has_media and n.type == "master_shot":
+                base_has_media = _resolve_master_shot_media(s, data) is not None
+
+            ref_label: Optional[str] = None
+            if n.type == "master_shot" and base_has_media:
+                ref_label = "establishing_shot_ref"
+            elif n.type in _REF_SOURCE_TYPES and base_has_media:
+                ref_label = f"ref_image_{next_ref_index}"
                 next_ref_index += 1
+
             records.append(
                 {
                     "type": n.type,
                     "shortId": n.short_id,
-                    "ref_index": ref_index,
+                    "ref_label": ref_label,
                     "brief": brief if isinstance(brief, str) else None,
                     "prompt": user_prompt,
                     "title": data.get("title") if isinstance(data.get("title"), str) else None,
-                    "has_media": has_media,
+                    "has_media": base_has_media,
                     "subject_chars": subject_chars,
+                    "script_text": script_text,
+                    "bible_text": bible_text,
                 }
             )
-        return records, target
+        return records, target, project_bible, scene_bible_text
 
 
 def _distinct_subjects(records: list[dict]) -> list[str]:
     """Ordered list of distinct character shortIds across upstream.
 
     Counts ``character`` nodes by their own shortId, and ``image`` nodes
-    by the shortIds of their character grandparents. Order is preserved
-    for deterministic prompts.
+    by the shortIds of their character grandparents.
     """
     seen_set: set[str] = set()
     ordered: list[str] = []
@@ -347,52 +466,72 @@ def _distinct_subjects(records: list[dict]) -> list[str]:
 
 
 def _image_system_prompt(subject_count: int) -> str:
-    """Branch the image system prompt on subject count.
-
-    1 subject → standard editorial single-model prompt.
-    2+ subjects → append the multi-subject clause so Claude composes a
-    couple/group shot referencing every subject by their positional
-    `ref_image_N` label.
-    """
     if subject_count >= 2:
-        return _SYNTH_SYSTEM_IMAGE + _MULTI_SUBJECT_CLAUSE
-    return _SYNTH_SYSTEM_IMAGE
+        return _ANIME_IMAGE_SYSTEM + _ANIME_IMAGE_MULTI_SUBJECT_CLAUSE
+    return _ANIME_IMAGE_SYSTEM
 
 
-def _format_user_message(records: list[dict], target: Node) -> str:
-    """Render the upstream context into a compact prompt for the LLM.
+def _video_system_prompt(camera: Optional[str], subject_count: int = 1) -> str:
+    base = _ANIME_VIDEO_SYSTEM
+    if subject_count >= 2:
+        base = base + _ANIME_VIDEO_MULTI_SUBJECT_CLAUSE
+    if camera == "static":
+        base = base + _ANIME_VIDEO_STATIC_CLAUSE
+    return base
 
-    Reference images are labeled by their POSITIONAL slot
-    (``ref_image_1``, ``ref_image_2``, …) instead of by internal node
-    shortIds. The labels match the order of ``ref_media_ids`` Flow
-    receives on the wire, so when the LLM writes "ref_image_1 stands
-    on the left, ref_image_2 on the right" the model resolves each to
-    the correct input image. Earlier versions emitted ``#shortId``
-    tokens directly into the prompt — Flow doesn't parse them, and
-    they correlated with false-positive
-    ``PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED`` rejections from
-    Google's content classifier (the tokens look like @-handles).
+
+# ── User-message assembly ────────────────────────────────────────────────
+
+
+def _format_user_message(
+    records: list[dict],
+    target: Node,
+    project_bible: dict[str, Any],
+    scene_bible_text: str,
+) -> str:
+    """Render the upstream context + bibles into a compact prompt.
+
+    Bible block prepends (silently empty when bible isn't filled in).
+    Reference images are labeled positionally: ``establishing_shot_ref``
+    for the scene's master shot, ``ref_image_N`` for other ref sources.
+    ``script`` and ``bible_ref`` passthrough nodes surface their text
+    under dedicated sections so the LLM has the dramatic / style
+    context driving this shot.
     """
-    # Translation map: shortId → "ref_image_N" label, for any node that
-    # has been assigned a ref position. Used to rewrite the
-    # `subject_chars` annotation on image records ("same subject as
-    # ref_image_1" instead of "embodies character: #abcd").
+    parts: list[str] = []
+
+    bible_block = _format_bible_block(project_bible, scene_bible_text)
+    if bible_block:
+        parts.append(bible_block)
+
+    # Build the label-translation map for image-sibling multi-subject
+    # detection (so an `image` record's `subject_chars` entries can be
+    # rendered as "same subject as ref_image_2" instead of #shortId).
     label_for_short_id: dict[str, str] = {}
     for r in records:
-        if r.get("ref_index"):
-            label_for_short_id[r["shortId"]] = f"ref_image_{r['ref_index']}"
+        if r.get("ref_label"):
+            label_for_short_id[r["shortId"]] = r["ref_label"]
 
-    by_type: dict[str, list[str]] = {}
+    by_section: dict[str, list[str]] = {}
     for r in records:
-        # Prefer the AI-generated brief; fall back to the user-typed prompt
-        # or title so a node with no brief still contributes something.
+        # Passthrough text on the new anime node types lives under
+        # dedicated sections — never gets a ref label.
+        if r["type"] == "script":
+            txt = r.get("script_text") or r.get("brief") or r.get("title")
+            if txt:
+                by_section.setdefault("script", []).append(f"- {txt}")
+            continue
+        if r["type"] == "bible_ref":
+            txt = r.get("bible_text") or r.get("brief") or r.get("title")
+            if txt:
+                by_section.setdefault("bible_ref", []).append(f"- {txt}")
+            continue
+        if r["type"] == "note":
+            # Notes stay decorative — never surface.
+            continue
+
         text = r["brief"] or r["prompt"] or r["title"] or "(no description)"
 
-        # Cross-reference an image record to the character it embodies,
-        # if that character is also upstream as a ref. Translates each
-        # grandparent shortId to its ref_image label; characters not in
-        # the current ref set are silently dropped (they're context-only,
-        # not bindable).
         suffix = ""
         if r["type"] == "image" and r.get("subject_chars"):
             translated = [
@@ -403,62 +542,69 @@ def _format_user_message(records: list[dict], target: Node) -> str:
             if translated:
                 suffix = f"  [same subject as {', '.join(translated)}]"
 
-        ref_index = r.get("ref_index")
-        if ref_index is not None:
-            line = f"ref_image_{ref_index}: {text}{suffix}"
+        label = r.get("ref_label")
+        if label:
+            line = f"{label}: {text}{suffix}"
         else:
-            # Non-ref records (prompt / note nodes — no media to bind).
-            # Render without a label since there's no positional slot
-            # for the LLM to reference.
             line = f"- {text}"
-        by_type.setdefault(r["type"], []).append(line)
+        by_section.setdefault(r["type"], []).append(line)
 
-    parts: list[str] = []
-    if by_type.get("character"):
-        parts.append("Subject(s) (character):\n  - " + "\n  - ".join(by_type["character"]))
-    if by_type.get("visual_asset"):
+    if by_section.get("master_shot"):
         parts.append(
-            "Product / wardrobe / object (visual_asset):\n  - "
-            + "\n  - ".join(by_type["visual_asset"])
+            "Establishing shot (scene master — match composition / "
+            "lighting / palette):\n  - " + "\n  - ".join(by_section["master_shot"])
         )
-    if by_type.get("image"):
-        parts.append("Reference image(s):\n  - " + "\n  - ".join(by_type["image"]))
-        # Without this hint, the synthesiser defaults to "studio" even when
-        # one of the upstream images is clearly a location/scene reference
-        # (e.g. user attaches an outdoor jogging-path photo as the setting).
-        # Telling Claude to infer the role from the brief lets it place the
-        # subject INTO the scene instead of dropping the location entirely.
-        if len(by_type["image"]) >= 2:
+    if by_section.get("character"):
+        parts.append(
+            "Subject(s) (character):\n  - "
+            + "\n  - ".join(by_section["character"])
+        )
+    if by_section.get("visual_asset"):
+        parts.append(
+            "Prop / wardrobe / object (visual_asset):\n  - "
+            + "\n  - ".join(by_section["visual_asset"])
+        )
+    if by_section.get("image"):
+        parts.append(
+            "Reference image(s):\n  - "
+            + "\n  - ".join(by_section["image"])
+        )
+        # When 2+ image refs feed in, the LLM needs to classify each by
+        # role (subject / wardrobe / setting / environment) so a location
+        # ref doesn't get silently dropped as "just another reference".
+        if len(by_section["image"]) >= 2:
             parts.append(
-                "ROLE INFERENCE: For each reference image above, infer its "
-                "role from the brief. Briefs describing people / garments / "
-                "products → subject or wardrobe reference. Briefs describing "
-                "places / environments / outdoor or indoor scenes → SETTING "
-                "reference (use as the shot's background). Compose a single "
-                "scene that places the subject INTO any setting reference "
-                "present — never silently drop a location reference."
+                "ROLE INFERENCE: For each reference image above, infer "
+                "its role from the brief. Briefs describing characters "
+                "or props → subject / wardrobe reference. Briefs "
+                "describing places / environments → SETTING reference "
+                "(use as the shot's background). Compose a single anime "
+                "frame that places the characters INTO any setting "
+                "reference present — never silently drop a location ref."
             )
-    if by_type.get("prompt"):
-        # Prompt nodes carry reusable style/scene direction (e.g. brand
-        # tone, mood reference). Treat as authoritative styling guidance —
-        # weave the direction into the output prompt rather than treating
-        # it as just "more context". Note nodes stay decorative and are
-        # intentionally NOT surfaced here.
+    if by_section.get("script"):
+        parts.append(
+            "Script (this shot — drives camera angle + character "
+            "action; may be Vietnamese):\n  " + "\n  ".join(by_section["script"])
+        )
+    if by_section.get("bible_ref"):
+        parts.append(
+            "Bible reference (additional style / spatial context from a "
+            "BibleRef node):\n  " + "\n  ".join(by_section["bible_ref"])
+        )
+    if by_section.get("prompt"):
         parts.append(
             "Direction / style notes (prompt nodes — apply as styling "
-            "guidance):\n  - " + "\n  - ".join(by_type["prompt"])
+            "guidance):\n  - " + "\n  - ".join(by_section["prompt"])
         )
 
-    # Surface multi-subject scenes (couple, group) so Claude switches to
-    # the multi-subject system clause and composes a shared frame. The
-    # count matters; the LLM uses the `ref_image_N` labels already on
-    # the records above to bind each subject to its positional slot.
+    # Multi-subject detector.
     subjects = _distinct_subjects(records)
     if len(subjects) >= 2:
         parts.append(
-            f"DISTINCT SUBJECTS DETECTED: {len(subjects)} people. Treat "
-            "as a single multi-subject scene; describe each subject's "
-            "placement using the `ref_image_N` labels above."
+            f"DISTINCT SUBJECTS DETECTED: {len(subjects)} characters. "
+            "Treat as a single multi-subject anime frame; describe each "
+            "character's placement using the `ref_image_N` labels above."
         )
 
     target_data = target.data or {}
@@ -467,66 +613,78 @@ def _format_user_message(records: list[dict], target: Node) -> str:
         parts.append(f"Target node title (hint): {target_title}")
 
     if not parts:
-        # No upstream context — fall back to the node title alone.
-        return f"Target: {target_title or 'image'}\n\nWrite a generic photoreal product or scene prompt."
+        return (
+            f"Target: {target_title or 'anime frame'}\n\n"
+            "Write a generic cinematic 2D anime cel-shaded frame prompt."
+        )
     return "\n\n".join(parts) + "\n\nReturn only the prompt sentence."
+
+
+# ── Batch (variant) addendum ─────────────────────────────────────────────
 
 
 _BATCH_SUFFIX = (
     "\n\nBATCH MODE: Output a JSON ARRAY of EXACTLY {count} distinct "
-    "prompts. Each prompt MUST pick a DIFFERENT stance from the pool — "
-    "no two variants may share the same gesture. Output ONLY the JSON "
+    "prompts. Each prompt MUST vary on a different visual axis (camera "
+    "angle, character expression, blocking, lighting accent) — no two "
+    "variants may resolve to the same composition. Output ONLY the JSON "
     "array, no preamble, no markdown fences. Each prompt still respects "
-    "the GAZE rule (face engages camera) and the char cap. Example:\n"
+    "the anime style floor + char cap. Example:\n"
     "[\n"
-    "  \"Editorial photo, …, both hands in pockets, …\",\n"
-    "  \"Editorial photo, …, hand-on-hip three-quarter, …\",\n"
+    "  \"Wide establishing anime cel shot, …\",\n"
+    "  \"Medium close-up, low-angle hero, …\",\n"
     "  …\n"
     "]"
 )
 
 
-# Storyboard mode — see .omc/plans/storyboard-image-node.md §6.2.
-# Distinct from BATCH MODE: storyboard emits an OBJECT with prompts[] AND
-# parents[]. parents[k] = null → root (will be gen_image'd); parents[k] = j
-# (j<k) → continuation (will be edit_image'd from shots[j].mediaId), so the
-# k-th prompt should describe ONLY the delta from beat j.
+# ── Storyboard addendum (anime narrative beats) ──────────────────────────
+
+
 _STORYBOARD_SUFFIX = (
-    "\n\nSTORYBOARD MODE: Output ONE JSON OBJECT with exactly these keys:\n"
-    "  \"prompts\": array of EXACTLY {count} strings (≤280 chars each),\n"
+    "\n\nSTORYBOARD MODE: Output ONE JSON OBJECT with exactly these "
+    "keys:\n"
+    "  \"prompts\": array of EXACTLY {count} strings (≤380 chars each),\n"
     "                each describing one beat of a continuous narrative —\n"
     "                index 0 is the first beat, index {count}-1 the last.\n"
     "  \"parents\": array of EXACTLY {count} entries, each null OR an integer.\n"
     "                parents[k] = null  → beat k is a NEW SCENE/ROOT (will be\n"
-    "                  generated fresh — use ONLY when location/subject/visual\n"
-    "                  context legitimately changes from the prior beat).\n"
+    "                  generated fresh — use ONLY when location/character/\n"
+    "                  visual context legitimately changes from the prior beat).\n"
     "                parents[k] = j (0 ≤ j < k) → beat k VISUALLY CONTINUES\n"
-    "                  from beat j — same room, same wardrobe, same framing\n"
-    "                  carry-over. The image will be EDITED from beat j's\n"
-    "                  output, so beat k's prompt MUST describe ONLY THE DELTA\n"
-    "                  (e.g. \"now opens the package\", \"now wearing the shirt\")\n"
-    "                  — DO NOT re-describe identity, room, lighting.\n"
+    "                  from beat j — same location, same characters on-model,\n"
+    "                  same lighting carry-over. The image will be EDITED\n"
+    "                  from beat j's output, so beat k's prompt MUST describe\n"
+    "                  ONLY THE DELTA (e.g. \"now turns toward the door\",\n"
+    "                  \"now the rain starts\") — DO NOT re-describe identity,\n"
+    "                  location, or lighting.\n"
     "                Constraints: parents[0] MUST be null; parents[k] < k.\n"
     "Coherence rules (every beat):\n"
-    "  • SAME subject identity across the whole sequence — anchor on\n"
-    "    `ref_image_1` if a person reference exists.\n"
-    "  • SAME products/wardrobe wherever the narrative places them.\n"
-    "  • Consistent lighting + colour palette within a continuity chain.\n"
+    "  • SAME character identity across the sequence — anchor on\n"
+    "    `ref_image_1` (or `establishing_shot_ref` if present) when a\n"
+    "    person reference exists.\n"
+    "  • SAME location + lighting within a continuity chain.\n"
+    "  • Each beat is a discrete cinematic shot — character reaction,\n"
+    "    line of dialogue beat, cut to next angle, environmental detail.\n"
     "Per-beat:\n"
-    "  • photoreal editorial shot, GAZE engages camera, neutral closed-mouth.\n"
+    "  • 2D anime cel-shaded frame, explicit camera angle, on-model\n"
+    "    character identity.\n"
     "  • each beat advances the story; no two beats interchangeable.\n"
     "{narrative_seed_block}"
     "Output ONLY the JSON object — no preamble, no markdown fences. Example:\n"
     "{\n"
     "  \"prompts\": [\n"
-    "    \"Editorial photo, woman in living room, hands empty, neutral pose, …\",\n"
-    "    \"Same scene, woman now holds sealed brown package on lap…\",\n"
-    "    \"Same scene, woman opens package, blue jacket emerging from tissue…\",\n"
-    "    \"Same scene, woman tries on the blue jacket…\"\n"
+    "    \"Wide establishing cel anime shot, rainy alley at night, …\",\n"
+    "    \"Cut to medium close-up of ref_image_1, eyes narrowing, …\",\n"
+    "    \"Over-the-shoulder reverse, ref_image_2 steps into frame, …\",\n"
+    "    \"Close-up, ref_image_1 reaches for the door handle, …\"\n"
     "  ],\n"
     "  \"parents\": [null, 0, 1, 2]\n"
     "}"
 )
+
+
+# ── Public API ───────────────────────────────────────────────────────────
 
 
 async def auto_prompt_storyboard(
@@ -535,17 +693,14 @@ async def auto_prompt_storyboard(
     *,
     narrative_seed: str = "",
 ) -> dict:
-    """Compose N narrative beats with a continuity tree in one LLM call.
+    """Compose N anime narrative beats with a continuity tree in one LLM call.
 
     Returns ``{"prompts": [str * count], "parents": [int|None * count]}``.
-    The planner LLM decides which beats are roots (fresh scene → gen_image)
-    and which are continuations (edit_image from a parent beat). See
-    `.omc/plans/storyboard-image-node.md` §4 + §6.2 for the full contract.
     """
     if not 1 <= count <= 8:
         raise PromptSynthError(f"storyboard count must be 1..8, got {count}")
 
-    records, target = _collect_upstream(node_id)
+    records, target, project_bible, scene_bible_text = _collect_upstream(node_id)
     if target is None:
         raise PromptSynthError(f"node {node_id} not found")
 
@@ -558,15 +713,13 @@ async def auto_prompt_storyboard(
         if seed
         else ""
     )
-    # Use .replace() rather than .format() because the suffix contains a
-    # literal JSON example with `{` and `}` that .format() would mis-parse.
     suffix = (
         _STORYBOARD_SUFFIX
         .replace("{count}", str(count))
         .replace("{narrative_seed_block}", seed_block)
     )
     system_prompt = base_system + suffix
-    user_msg = _format_user_message(records, target)
+    user_msg = _format_user_message(records, target, project_bible, scene_bible_text)
 
     async with record_activity(
         "auto_prompt_storyboard",
@@ -586,12 +739,7 @@ async def auto_prompt_storyboard(
                 f"auto-prompt provider failed: {exc}"
             ) from exc
 
-        text = (text or "").strip()
-        if text.startswith("```"):
-            text = text.lstrip("`")
-            if text.lower().startswith("json"):
-                text = text[4:]
-            text = text.rsplit("```", 1)[0].strip()
+        text = _strip_fences(text)
 
         try:
             obj = json.loads(text)
@@ -600,9 +748,7 @@ async def auto_prompt_storyboard(
                 f"storyboard provider returned non-JSON: {text[:200]!r}"
             ) from exc
         if not isinstance(obj, dict):
-            raise PromptSynthError(
-                "storyboard response is not a JSON object"
-            )
+            raise PromptSynthError("storyboard response is not a JSON object")
 
         raw_prompts = obj.get("prompts")
         raw_parents = obj.get("parents")
@@ -648,20 +794,14 @@ async def auto_prompt_storyboard(
 async def auto_prompt_batch(
     node_id: int, count: int, *, camera: Optional[str] = None
 ) -> list[str]:
-    """Compose N pose-distinct prompts in a single Claude call.
-
-    Used when the user wants multiple variants of an image — a single
-    prompt × N seeds produces near-identical poses. Each item in the
-    returned list picks a different stance from the pool so the variants
-    actually look like different shots.
-    """
+    """Compose N variant-distinct anime prompts in a single LLM call."""
     if count < 1:
         raise PromptSynthError("count must be >= 1")
     if count == 1:
         single = await auto_prompt(node_id, camera=camera)
         return [single]
 
-    records, target = _collect_upstream(node_id)
+    records, target, project_bible, scene_bible_text = _collect_upstream(node_id)
     if target is None:
         raise PromptSynthError(f"node {node_id} not found")
 
@@ -672,7 +812,7 @@ async def auto_prompt_batch(
     else:
         base_system = _image_system_prompt(subject_count)
     system_prompt = base_system + _BATCH_SUFFIX.format(count=count)
-    user_msg = _format_user_message(records, target)
+    user_msg = _format_user_message(records, target, project_bible, scene_bible_text)
 
     async with record_activity(
         "auto_prompt_batch",
@@ -680,27 +820,13 @@ async def auto_prompt_batch(
         node_id=node_id,
     ) as activity:
         try:
-            # 120s for the batch path — Gemini CLI's `-p` invocation
-            # pays ~15s of subprocess + auth cold-start, then a heavy
-            # multi-variant batch composition can run another 60-90s of
-            # inference. The single-variant path (auto_prompt below) is
-            # lighter and uses a tighter 90s ceiling. Claude Code
-            # finishes the same call in 5-15s; we err on Gemini's side
-            # so feature parity holds across providers.
             text = await run_llm(
                 "auto_prompt", user_msg, system_prompt=system_prompt, timeout=120.0
             )
         except LLMError as exc:
             raise PromptSynthError(f"auto-prompt provider failed: {exc}") from exc
 
-        text = (text or "").strip()
-        # Strip markdown fences if the provider added them despite instructions.
-        if text.startswith("```"):
-            text = text.lstrip("`")
-            # "json\n[...]\n```" → "[...]\n"
-            if text.lower().startswith("json"):
-                text = text[4:]
-            text = text.rsplit("```", 1)[0].strip()
+        text = _strip_fences(text)
 
         try:
             arr = json.loads(text)
@@ -713,8 +839,6 @@ async def auto_prompt_batch(
         prompts = [str(p).strip() for p in arr if isinstance(p, str) and p.strip()]
         if not prompts:
             raise PromptSynthError("auto-prompt batch returned no valid prompts")
-        # Pad / trim to requested count. If the provider returned fewer, repeat
-        # the last one — better to have N items than fail the dispatch.
         while len(prompts) < count:
             prompts.append(prompts[-1])
         prompts = prompts[:count]
@@ -723,18 +847,13 @@ async def auto_prompt_batch(
 
 
 async def auto_prompt(node_id: int, *, camera: Optional[str] = None) -> str:
-    """Compose a generation prompt by walking upstream + asking the
-    configured Auto-Prompt provider.
+    """Compose a single generation prompt by walking upstream + bibles.
 
-    Branch by target type:
-    - ``image`` (or anything else default) → photorealistic composition prompt
-      that combines all upstream briefs.
-    - ``video`` → motion/camera prompt for the single source image brief
-      (i2v has exactly one upstream image — multi-ref isn't a thing). The
-      ``camera`` arg (e.g. ``"static"``) selects a system-prompt variant so
-      the synthesiser respects the user's framing constraint.
+    Branches by target type:
+    - ``image`` (default) → anime composition prompt
+    - ``video`` → motion prompt (with optional ``camera="static"`` lock)
     """
-    records, target = _collect_upstream(node_id)
+    records, target, project_bible, scene_bible_text = _collect_upstream(node_id)
     if target is None:
         raise PromptSynthError(f"node {node_id} not found")
 
@@ -744,7 +863,7 @@ async def auto_prompt(node_id: int, *, camera: Optional[str] = None) -> str:
         system_prompt = _video_system_prompt(camera, subject_count)
     else:
         system_prompt = _image_system_prompt(subject_count)
-    user_msg = _format_user_message(records, target)
+    user_msg = _format_user_message(records, target, project_bible, scene_bible_text)
 
     async with record_activity(
         "auto_prompt",
@@ -752,10 +871,6 @@ async def auto_prompt(node_id: int, *, camera: Optional[str] = None) -> str:
         node_id=node_id,
     ) as activity:
         try:
-            # 90s — same Gemini cold-start rationale as the batch path
-            # (~15s spawn + 30-60s inference for a complex composition).
-            # Single-variant is lighter than batch so a slightly tighter
-            # ceiling is fine, but 30s was too aggressive.
             text = await run_llm(
                 "auto_prompt",
                 user_msg,
@@ -768,7 +883,108 @@ async def auto_prompt(node_id: int, *, camera: Optional[str] = None) -> str:
         text = (text or "").strip().strip('"').strip("'")
         if not text:
             raise PromptSynthError("empty response from auto-prompt provider")
-        if len(text) > 500:
-            text = text[:500].rstrip() + "…"
+        if len(text) > 600:
+            text = text[:600].rstrip() + "…"
         activity.set_result({"prompt": text})
         return text
+
+
+# ── Script → shot breakdown (Phase 6.4) ──────────────────────────────────
+
+
+async def parse_script(scene_id: uuid.UUID, script_text: str) -> list[dict]:
+    """Parse a VN (or any-language) scene script into structured shot
+    breakdowns via the configured Auto-Prompt provider.
+
+    Returns a list of shot dicts with keys ``order``, ``script_text``,
+    ``camera_angle``, ``characters_in_frame``, ``environment``,
+    ``dialogue``, ``beat_notes``. Used by ``/api/prompt/parse-script``
+    and surfaced in the frontend ScriptInputDialog.
+
+    The ``scene_id`` is currently used only as a logging breadcrumb +
+    activity-feed correlation. Bible injection on parse is deferred —
+    the LLM has enough context from the script alone to produce a clean
+    breakdown; project/scene style notes apply when the resulting shots
+    are later rendered.
+    """
+    text = (script_text or "").strip()
+    if not text:
+        raise PromptSynthError("script_text is empty")
+
+    async with record_activity(
+        "parse_script",
+        params={"scene_id": str(scene_id), "len": len(text)},
+    ) as activity:
+        try:
+            raw = await run_llm(
+                "auto_prompt",
+                text,
+                system_prompt=_ANIME_SCRIPT_PARSE_SYSTEM,
+                timeout=120.0,
+            )
+        except LLMError as exc:
+            raise PromptSynthError(f"parse-script provider failed: {exc}") from exc
+
+        raw = _strip_fences(raw)
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise PromptSynthError(
+                f"parse-script returned non-JSON: {raw[:200]!r}"
+            ) from exc
+        if not isinstance(obj, dict):
+            raise PromptSynthError("parse-script response is not a JSON object")
+        shots = obj.get("shots")
+        if not isinstance(shots, list):
+            raise PromptSynthError("parse-script response missing shots[]")
+
+        cleaned: list[dict] = []
+        for i, sh in enumerate(shots):
+            if not isinstance(sh, dict):
+                raise PromptSynthError(f"shots[{i}] is not an object")
+            script_text_field = sh.get("script_text")
+            if not isinstance(script_text_field, str) or not script_text_field.strip():
+                raise PromptSynthError(f"shots[{i}].script_text empty / non-str")
+            order_raw = sh.get("order")
+            order_val = order_raw if isinstance(order_raw, int) and order_raw > 0 else i + 1
+            chars = sh.get("characters_in_frame") or []
+            if not isinstance(chars, list):
+                chars = []
+            cleaned.append(
+                {
+                    "order": order_val,
+                    "script_text": script_text_field.strip(),
+                    "camera_angle": str(sh.get("camera_angle") or "").strip(),
+                    "characters_in_frame": [
+                        str(c).strip()
+                        for c in chars
+                        if isinstance(c, str) and c.strip()
+                    ],
+                    "environment": str(sh.get("environment") or "").strip(),
+                    "dialogue": (
+                        sh.get("dialogue")
+                        if isinstance(sh.get("dialogue"), str) and sh.get("dialogue").strip()
+                        else None
+                    ),
+                    "beat_notes": str(sh.get("beat_notes") or "").strip(),
+                }
+            )
+        cleaned.sort(key=lambda s: s["order"])
+        activity.set_result({"count": len(cleaned)})
+        return cleaned
+
+
+# ── helpers ──────────────────────────────────────────────────────────────
+
+
+def _strip_fences(text: Optional[str]) -> str:
+    """Strip Markdown code fences a provider may have added despite the
+    'no preamble, no fences' instruction. Used by all JSON-output paths.
+    """
+    text = (text or "").strip()
+    if text.startswith("```"):
+        text = text.lstrip("`")
+        if text.lower().startswith("json"):
+            text = text[4:]
+        text = text.rsplit("```", 1)[0].strip()
+    return text

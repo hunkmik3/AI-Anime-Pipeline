@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { parseScript, type ParsedShot } from "../api/client";
 import { useShotStore } from "../store/shot";
 
 interface Props {
@@ -7,47 +8,80 @@ interface Props {
   onClose(): void;
 }
 
+type Stage = "input" | "review";
+
 /**
- * Phase 3 stub. The full UX (paste VN script → LLM parses into shots
- * with camera / characters / environment hints → user reviews → bulk
- * create) waits for the ``/api/prompt/parse-script`` endpoint that ships
- * in Phase 6.
+ * Phase 6.4. Paste VN-or-any-language script → LLM parses into shot
+ * breakdowns (camera angle, characters, environment, beat notes,
+ * dialogue) → user reviews → bulk-creates shots with parsed metadata
+ * pre-populated on ``script_text``.
  *
- * Today, the dialog accepts plain script text and offers a manual
- * fallback: each paragraph (split by blank line) becomes one shot whose
- * ``script_text`` is the paragraph contents. That keeps the workflow
- * useful in the meantime without faking an LLM call.
+ * The endpoint preserves ``script_text`` verbatim in the source
+ * language; meta fields come back in English so downstream prompt
+ * synthesis stays consistent.
  */
 export function ScriptInputDialog({ sceneId, onClose }: Props) {
   const createShot = useShotStore((s) => s.createShot);
   const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [parsing, setParsing] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [stage, setStage] = useState<Stage>("input");
+  const [shots, setShots] = useState<ParsedShot[]>([]);
 
-  const paragraphs = text
-    .split(/\n\s*\n/)
-    .map((p) => p.trim())
-    .filter(Boolean);
+  async function handleParse() {
+    if (parsing || !text.trim()) return;
+    setError(null);
+    setParsing(true);
+    try {
+      const res = await parseScript(sceneId, text);
+      if (res.shots.length === 0) {
+        setError("Parser returned no shots — try a longer script.");
+        return;
+      }
+      setShots(res.shots);
+      setStage("review");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setParsing(false);
+    }
+  }
+
+  function buildShotScript(shot: ParsedShot): string {
+    // Persist the parsed breakdown alongside the verbatim script line
+    // so the ShotEditor surfaces camera / character / environment
+    // hints without a second API round trip.
+    const lines = [shot.script_text];
+    const meta: string[] = [];
+    if (shot.camera_angle) meta.push(`Camera: ${shot.camera_angle}`);
+    if (shot.characters_in_frame.length > 0) {
+      meta.push(`In frame: ${shot.characters_in_frame.join(", ")}`);
+    }
+    if (shot.environment) meta.push(`Setting: ${shot.environment}`);
+    if (shot.dialogue) meta.push(`Dialogue: ${shot.dialogue}`);
+    if (shot.beat_notes) meta.push(`Beat: ${shot.beat_notes}`);
+    if (meta.length > 0) lines.push("", ...meta);
+    return lines.join("\n");
+  }
 
   async function handleBulkCreate() {
-    if (busy) return;
-    if (paragraphs.length === 0) {
-      setError("Paste a script first — paragraphs separated by blank lines.");
-      return;
-    }
+    if (creating) return;
     setError(null);
-    setBusy(true);
+    setCreating(true);
     try {
-      for (const p of paragraphs) {
-        await createShot(sceneId, p);
+      for (const shot of shots) {
+        await createShot(sceneId, buildShotScript(shot));
       }
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      setCreating(false);
     }
   }
+
+  const busy = parsing || creating;
 
   return (
     <div
@@ -66,45 +100,144 @@ export function ScriptInputDialog({ sceneId, onClose }: Props) {
         <h2 id="script-dialog-title" className="project-modal__title">
           Script → shots
         </h2>
-        <p className="project-modal__hint">
-          Paste your Vietnamese (or any-language) script. Each blank-line
-          paragraph becomes one shot whose <code>script_text</code> is the
-          paragraph. The LLM auto-parser (camera, characters, environment
-          breakdown) lands in <strong>Phase 6</strong>; until then this is
-          a manual splitter.
-        </p>
-        <textarea
-          className="form-field__textarea"
-          rows={14}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder={"Cảnh 1: An đứng giữa quảng trường, máy quay ngang vai…\n\nCảnh 2: Mây đi tới. Camera dolly-in lên mặt cô."}
-          disabled={busy}
-        />
-        <p className="project-modal__hint" aria-live="polite">
-          {paragraphs.length > 0
-            ? `Will create ${paragraphs.length} shot(s).`
-            : "Detected 0 paragraphs."}
-        </p>
-        {error && <div className="page-error" role="alert">{error}</div>}
-        <div className="project-modal__actions">
-          <button
-            type="button"
-            className="project-modal__btn"
-            onClick={onClose}
-            disabled={busy}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="project-modal__btn project-modal__btn--primary"
-            onClick={() => void handleBulkCreate()}
-            disabled={busy || paragraphs.length === 0}
-          >
-            {busy ? "Creating…" : `Create ${paragraphs.length || ""} shot${paragraphs.length === 1 ? "" : "s"}`}
-          </button>
-        </div>
+
+        {stage === "input" && (
+          <>
+            <p className="project-modal__hint">
+              Paste your Vietnamese (or any-language) scene script. The
+              LLM parser breaks it into discrete cinematic shots with
+              camera angle, characters in frame, environment, and beat
+              notes — review before creating.
+            </p>
+            <textarea
+              className="form-field__textarea"
+              rows={14}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder={
+                "Cảnh 1: An đứng giữa quảng trường, máy quay ngang vai…\n\nMây đi tới, An quay lại…"
+              }
+              disabled={parsing}
+            />
+            {error && (
+              <div className="page-error" role="alert">
+                {error}
+              </div>
+            )}
+            <div className="project-modal__actions">
+              <button
+                type="button"
+                className="project-modal__btn"
+                onClick={onClose}
+                disabled={parsing}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="project-modal__btn project-modal__btn--primary"
+                onClick={() => void handleParse()}
+                disabled={parsing || !text.trim()}
+              >
+                {parsing ? "Parsing…" : "Parse script"}
+              </button>
+            </div>
+          </>
+        )}
+
+        {stage === "review" && (
+          <>
+            <p className="project-modal__hint">
+              {shots.length} shot{shots.length === 1 ? "" : "s"} parsed.
+              Review and create — each shot's ``script_text`` will
+              include the verbatim line plus the camera / character /
+              environment hints below it.
+            </p>
+            <div
+              className="project-modal__scrolllist"
+              style={{
+                maxHeight: 360,
+                overflow: "auto",
+                border: "1px solid var(--border, #444)",
+                borderRadius: 4,
+                padding: 8,
+              }}
+            >
+              {shots.map((shot, idx) => (
+                <div
+                  key={idx}
+                  style={{
+                    padding: "8px 0",
+                    borderBottom:
+                      idx < shots.length - 1
+                        ? "1px solid var(--border-subtle, #333)"
+                        : "none",
+                  }}
+                >
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                    Shot {shot.order} · {shot.camera_angle || "(no angle)"}
+                  </div>
+                  <pre
+                    style={{
+                      whiteSpace: "pre-wrap",
+                      margin: 0,
+                      fontSize: "0.9em",
+                    }}
+                  >
+                    {shot.script_text}
+                  </pre>
+                  <div
+                    style={{
+                      fontSize: "0.8em",
+                      opacity: 0.7,
+                      marginTop: 4,
+                    }}
+                  >
+                    {shot.characters_in_frame.length > 0 && (
+                      <span>In frame: {shot.characters_in_frame.join(", ")} · </span>
+                    )}
+                    {shot.environment && <span>Setting: {shot.environment}</span>}
+                  </div>
+                  {shot.dialogue && (
+                    <div style={{ fontSize: "0.8em", opacity: 0.7 }}>
+                      Dialogue: {shot.dialogue}
+                    </div>
+                  )}
+                  {shot.beat_notes && (
+                    <div style={{ fontSize: "0.8em", opacity: 0.6, fontStyle: "italic" }}>
+                      {shot.beat_notes}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            {error && (
+              <div className="page-error" role="alert">
+                {error}
+              </div>
+            )}
+            <div className="project-modal__actions">
+              <button
+                type="button"
+                className="project-modal__btn"
+                onClick={() => setStage("input")}
+                disabled={busy}
+              >
+                Back
+              </button>
+              <button
+                type="button"
+                className="project-modal__btn project-modal__btn--primary"
+                onClick={() => void handleBulkCreate()}
+                disabled={busy || shots.length === 0}
+              >
+                {creating
+                  ? "Creating…"
+                  : `Create ${shots.length} shot${shots.length === 1 ? "" : "s"}`}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
