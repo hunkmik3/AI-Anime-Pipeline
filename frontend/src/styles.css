@@ -346,6 +346,9 @@ button:disabled {
   position: relative;
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
   overflow: hidden;
 }
 
@@ -365,16 +368,70 @@ button:disabled {
 .statusbar {
   position: absolute;
   top: 60px;
-  left: 12px;
+  left: 16px;
   z-index: 10;
   display: flex;
   align-items: center;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 6px 10px;
-  font-size: 12px;
+  border-radius: 10px;
+  padding: 6px 12px;
+  font-size: 11.5px;
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.statusbar__group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.statusbar__group-label {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.statusbar__dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  flex-shrink: 0;
+}
+
+.statusbar__dot--ok {
+  background: var(--success);
+  box-shadow: 0 0 0 2px rgba(110, 231, 183, 0.12);
+}
+
+.statusbar__dot--err {
+  background: var(--error);
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.12);
+}
+
+.statusbar__dot--unknown {
+  background: var(--muted);
+}
+
+.statusbar__divider {
+  width: 1px;
+  height: 12px;
+  background: var(--border);
+  margin: 0 10px;
+}
+
+.statusbar__metric {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.statusbar__metric--ok {
+  color: var(--success);
+}
+
+.statusbar__metric--err {
+  color: var(--error);
 }
 
 /* ── Account panel (pinned bottom of project sidebar) ───────────────────── */
@@ -1101,44 +1158,124 @@ button:disabled {
 .add-node-palette {
   position: absolute;
   top: 60px;
-  left: 50%;
-  transform: translateX(-50%);
+  right: 16px;
   z-index: 10;
+  width: 220px;
   display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  background: var(--panel-higher);
+  flex-direction: column;
+  background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 9999px;
+  border-radius: 10px;
+  overflow: hidden;
 }
 
-.add-node-plus {
-  font-size: 14px;
+.add-node-palette--collapsed {
+  width: auto;
+}
+
+.add-node-palette__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.add-node-palette--collapsed .add-node-palette__header {
+  border-bottom: none;
+}
+
+.add-node-palette__title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
   color: var(--muted);
-  padding: 0 4px;
-  user-select: none;
+}
+
+.add-node-palette__toggle {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 6px;
+  font-size: 11px;
+  line-height: 1;
+  border-radius: 4px;
+}
+
+.add-node-palette__toggle:hover {
+  color: var(--text);
+  background: var(--panel-high);
+}
+
+.add-node-palette__sections {
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  gap: 6px;
+}
+
+.add-node-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.add-node-group + .add-node-group {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.add-node-group-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  padding: 0 2px;
+}
+
+.add-node-group__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
 }
 
 .add-node-chip {
   display: flex;
   align-items: center;
-  gap: 5px;
-  width: 80px;
-  height: 32px;
-  justify-content: center;
-  font-size: 12px;
-  color: var(--muted);
-  background: none;
-  border: none;
-  border-radius: 9999px;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  justify-content: flex-start;
+  font-size: 11.5px;
+  color: var(--text);
+  background: var(--panel-high);
+  border: 1px solid var(--border);
+  border-radius: 6px;
   cursor: pointer;
   white-space: nowrap;
+  overflow: hidden;
 }
 
 .add-node-chip:hover {
-  background: var(--panel-high);
-  color: var(--text);
+  background: var(--panel-higher);
+  border-color: var(--accent);
+}
+
+.add-node-chip__icon {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--muted);
+  width: 12px;
+  text-align: center;
+}
+
+.add-node-chip__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
 }
 
 /* ── Node Card ───────────────────────────────────────────────────────────── */

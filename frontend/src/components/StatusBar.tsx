@@ -10,6 +10,16 @@ function formatAge(sec: number | null | undefined): string | null {
   return `${h}h${m % 60}m`;
 }
 
+/**
+ * Floating top-left chip showing agent / extension / token / request
+ * counters. Chrome (panel bg + border + radius) matches the
+ * AddNodePalette so the two overlays read as a family. Dot semantics:
+ *   • ok      → --success (green)
+ *   • err     → --error  (red)
+ *   • unknown → --muted  (grey)
+ * Yellow / --warn isn't used yet — reserved for a future "degraded"
+ * state (e.g. rate-limit hit, partial WS reconnect).
+ */
 export function StatusBar() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [agentOk, setAgentOk] = useState(false);
@@ -43,27 +53,44 @@ export function StatusBar() {
   const okCount = stats?.success_count ?? 0;
   const failCount = stats?.failed_count ?? 0;
 
-  const agentLabel = agentOk ? "● agent" : "○ agent";
-  const extLabel =
-    extConnected === null ? "? extension" : extConnected ? "● extension" : "○ extension";
+  const agentDotClass = agentOk ? "statusbar__dot--ok" : "statusbar__dot--err";
+  const extDotClass =
+    extConnected === null
+      ? "statusbar__dot--unknown"
+      : extConnected
+        ? "statusbar__dot--ok"
+        : "statusbar__dot--err";
 
   return (
-    <div className="statusbar">
-      <span style={{ color: agentOk ? "#6ee7b7" : "#ef4444" }}>{agentLabel}</span>
-      <span style={{ margin: "0 8px", opacity: 0.4 }}>|</span>
-      <span style={{ color: extConnected ? "#6ee7b7" : "#8a8f99" }}>{extLabel}</span>
+    <div className="statusbar" role="status" aria-live="polite">
+      <span className="statusbar__group">
+        <span className={`statusbar__dot ${agentDotClass}`} aria-hidden="true" />
+        <span className="statusbar__group-label">agent</span>
+      </span>
+
+      <span className="statusbar__divider" aria-hidden="true" />
+
+      <span className="statusbar__group">
+        <span className={`statusbar__dot ${extDotClass}`} aria-hidden="true" />
+        <span className="statusbar__group-label">extension</span>
+      </span>
+
       {extConnected && stats?.flow_key_present && tokenAge && (
         <>
-          <span style={{ margin: "0 8px", opacity: 0.4 }}>|</span>
-          <span style={{ color: "#8a8f99" }}>token {tokenAge}</span>
+          <span className="statusbar__divider" aria-hidden="true" />
+          <span className="statusbar__metric">token {tokenAge}</span>
         </>
       )}
+
       {extConnected && reqCount > 0 && (
         <>
-          <span style={{ margin: "0 8px", opacity: 0.4 }}>|</span>
-          <span style={{ color: "#8a8f99" }}>
-            req {reqCount} · <span style={{ color: "#6ee7b7" }}>✓{okCount}</span>
-            {failCount > 0 && <> · <span style={{ color: "#ef4444" }}>✗{failCount}</span></>}
+          <span className="statusbar__divider" aria-hidden="true" />
+          <span className="statusbar__metric">
+            req {reqCount}
+            <span className="statusbar__metric--ok"> · ✓{okCount}</span>
+            {failCount > 0 && (
+              <span className="statusbar__metric--err"> · ✗{failCount}</span>
+            )}
           </span>
         </>
       )}

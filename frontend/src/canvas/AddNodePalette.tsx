@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useReactFlow } from "@xyflow/react";
 
 import { useShotWorkflowStore, type NodeType } from "../store/shotWorkflow";
@@ -13,13 +14,16 @@ interface Group {
   chips: Chip[];
 }
 
+// Icon set kept inline (existing convention — no icon-font dependency).
+// The bible_ref / script glyphs are the existing emoji set from Phase 4;
+// the rest are box-drawing / unicode symbols already shipped.
 const GROUPS: Group[] = [
   {
     label: "Refs",
     chips: [
       { type: "character", icon: "◎", label: "Character" },
-      { type: "visual_asset", icon: "◇", label: "Visual asset" },
-      { type: "master_shot", icon: "★", label: "Master shot" },
+      { type: "visual_asset", icon: "◇", label: "Visual" },
+      { type: "master_shot", icon: "★", label: "Master" },
       { type: "bible_ref", icon: "📖", label: "Bible" },
     ],
   },
@@ -35,7 +39,7 @@ const GROUPS: Group[] = [
     chips: [
       { type: "script", icon: "📝", label: "Script" },
       { type: "prompt", icon: "✦", label: "Prompt" },
-      { type: "approval_gate", icon: "⏸", label: "Approval gate" },
+      { type: "approval_gate", icon: "⏸", label: "Approval" },
     ],
   },
   {
@@ -50,6 +54,7 @@ const GROUPS: Group[] = [
 export function AddNodePalette() {
   const { screenToFlowPosition } = useReactFlow();
   const addNodeOfType = useShotWorkflowStore((s) => s.addNodeOfType);
+  const [collapsed, setCollapsed] = useState(false);
 
   function handleAdd(type: NodeType) {
     const position = screenToFlowPosition({
@@ -60,24 +65,54 @@ export function AddNodePalette() {
   }
 
   return (
-    <div className="add-node-palette" aria-label="Add node">
-      <span className="add-node-plus" aria-hidden="true">+</span>
-      {GROUPS.map((group) => (
-        <div key={group.label} className="add-node-group" role="group" aria-label={group.label}>
-          <span className="add-node-group-label">{group.label}</span>
-          {group.chips.map((chip) => (
-            <button
-              key={chip.type}
-              className="add-node-chip"
-              aria-label={`Add ${chip.label} node`}
-              onClick={() => handleAdd(chip.type)}
+    <div
+      className={`add-node-palette${collapsed ? " add-node-palette--collapsed" : ""}`}
+      aria-label="Add node"
+    >
+      <div className="add-node-palette__header">
+        <span className="add-node-palette__title">Add node</span>
+        <button
+          type="button"
+          className="add-node-palette__toggle"
+          aria-label={collapsed ? "Expand palette" : "Collapse palette"}
+          aria-expanded={!collapsed}
+          onClick={() => setCollapsed((c) => !c)}
+          title={collapsed ? "Expand" : "Collapse"}
+        >
+          {collapsed ? "◀" : "▶"}
+        </button>
+      </div>
+
+      {!collapsed && (
+        <div className="add-node-palette__sections">
+          {GROUPS.map((group) => (
+            <div
+              key={group.label}
+              className="add-node-group"
+              role="group"
+              aria-label={group.label}
             >
-              <span aria-hidden="true">{chip.icon}</span>
-              {chip.label}
-            </button>
+              <span className="add-node-group-label">{group.label}</span>
+              <div className="add-node-group__grid">
+                {group.chips.map((chip) => (
+                  <button
+                    key={chip.type}
+                    type="button"
+                    className="add-node-chip"
+                    aria-label={`Add ${chip.label} node`}
+                    onClick={() => handleAdd(chip.type)}
+                  >
+                    <span className="add-node-chip__icon" aria-hidden="true">
+                      {chip.icon}
+                    </span>
+                    <span className="add-node-chip__label">{chip.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
-      ))}
+      )}
     </div>
   );
 }
