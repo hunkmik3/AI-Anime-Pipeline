@@ -1,9 +1,38 @@
-# Cloudflare R2 Setup (Phase 5)
+# Cloudflare R2 Setup (Phase 5, updated Phase 6.5)
 
 Dreamina's video API consumes reference images via `image_url.url` — the
 URL must be **publicly reachable** from BytePlus's servers. Flowboard's
 local `/media/{id}` route only serves to localhost, so we mirror each
 reference image to Cloudflare R2 before submitting to the upstream API.
+
+## TL;DR — where credentials live
+
+`.env` at the repo root is the **canonical source of truth** for
+Flowboard runtime config (Phase 6.5). The agent calls `load_dotenv()`
+at boot and reads env vars first. `~/.flowboard/secrets.json` is a
+**legacy local cache** that still works as a fallback for installs
+that pre-date the migration; it is planned for deprecation in Phase 8.
+
+Env vars (canonical):
+
+```bash
+# .env (gitignored, repo root)
+BYTEPLUS_KEY=ark-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX-XXXXX
+R2_ENDPOINT_URL=https://<account_id>.r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
+R2_BUCKET=flowboard-anime-dev
+# R2_PUBLIC_BASE_URL=https://pub-<hash>.r2.dev  # optional
+```
+
+Resolution order in [`agent/flowboard/services/llm/secrets.py`](../agent/flowboard/services/llm/secrets.py):
+
+1. Process env (populated from `.env` at boot, or shell exports).
+2. Field-by-field fallback to `~/.flowboard/secrets.json`.
+
+This means a partial migration works — you can leave `R2_BUCKET` in
+.env while keeping the rotated secret in secrets.json. The two stores
+merge per-field.
 
 R2 is S3-compatible and ships a free tier that's more than enough for
 single-user prosumer use:
@@ -65,8 +94,41 @@ straight into `~/.flowboard/secrets.json` (next step) immediately.
 
 ## 5. Wire credentials into Flowboard
 
-Edit `~/.flowboard/secrets.json`. If the file doesn't exist, create
-with mode `0600`. Add an `r2` block:
+### Preferred (Phase 6.5): `.env` at the repo root
+
+Create or edit `flowboard/.env`. The file is gitignored — safe for
+secrets:
+
+```bash
+# Dreamina / Seedance API key (Volcengine Ark)
+BYTEPLUS_KEY=ark-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX-XXXXX
+# Alias accepted by the secrets layer — pick one or set both:
+# DREAMINA_API_KEY=ark-...
+
+# Cloudflare R2
+R2_ENDPOINT_URL=https://<account_id>.r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
+R2_BUCKET=flowboard-media
+# Optional public CDN passthrough (see below):
+# R2_PUBLIC_BASE_URL=https://pub-<hash>.r2.dev
+```
+
+`R2_ENDPOINT_URL` is the bucket-agnostic R2 host — the bucket name
+goes into `R2_BUCKET`, NOT the URL. Boto3 builds the final URL as
+`<endpoint>/<bucket>/<key>` internally.
+
+The agent autoloads `.env` at boot via `python-dotenv`; no shell
+sourcing needed. Restart the agent after editing.
+
+`R2_PUBLIC_BASE_URL` enables the Cloudflare R2 public dev URL (publicly
+served without presigning) — Flowboard then skips presigning and
+returns the public URL directly. **Don't use this in production** —
+it disables read-access control.
+
+### Legacy fallback: `~/.flowboard/secrets.json`
+
+Still supported for back-compat. Same shape as before:
 
 ```json
 {
@@ -77,25 +139,18 @@ with mode `0600`. Add an `r2` block:
     "endpoint_url": "https://<account_id>.r2.cloudflarestorage.com",
     "access_key_id": "...",
     "secret_access_key": "...",
-    "bucket": "flowboard-media"
+    "bucket": "flowboard-media",
+    "public_base_url": "https://media.example.com"
   }
 }
 ```
 
-`endpoint_url` is the bucket-agnostic R2 host — the bucket name goes
-into the `bucket` field, NOT the URL. Boto3 builds the final URL as
-`<endpoint>/<bucket>/<key>` internally.
+Resolution: any field set in `.env` overrides the corresponding
+secrets.json field. Fields unset in `.env` fall back to secrets.json.
 
-If you want to use the Cloudflare R2 public dev URL (publicly served
-without presigning), enable Public Access on the bucket in the
-dashboard, then add:
-
-```json
-"public_base_url": "https://pub-<hash>.r2.dev"
-```
-
-Flowboard then skips presigning and returns the public URL directly.
-**Don't use this in production** — it disables read-access control.
+**Planned deprecation**: Phase 8 will remove the secrets.json fallback
+once .env is the only documented path. New installs should skip
+secrets.json entirely.
 
 ## 6. Verify
 

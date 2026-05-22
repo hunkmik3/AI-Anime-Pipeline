@@ -1,3 +1,27 @@
+# Load .env BEFORE any flowboard.* import so config / secrets see the
+# values. .env is the canonical source of truth for runtime config
+# (API keys, R2 credentials, FLOWBOARD_* tunables). Anything not in the
+# file falls back to the shell environment, then to ~/.flowboard/
+# secrets.json (legacy). See docs/r2_setup.md §5 for the contract.
+#
+# find_dotenv(usecwd=True) walks up from the current working directory
+# so the agent picks up .env whether invoked from repo root or from
+# agent/. override=False means the shell env wins over .env, matching
+# twelve-factor conventions and letting CI / docker injection override
+# the dev file.
+#
+# The conftest.py for pytest sets FLOWBOARD_DISABLE_DOTENV=1 so test
+# runs stay hermetic (production credentials in .env never leak into
+# the test process even though tests import flowboard.main).
+import os as _os
+
+from dotenv import find_dotenv as _find_dotenv, load_dotenv as _load_dotenv
+
+if not _os.environ.get("FLOWBOARD_DISABLE_DOTENV"):
+    _dotenv_path = _find_dotenv(usecwd=True)
+    if _dotenv_path:
+        _load_dotenv(_dotenv_path, override=False)
+
 import asyncio
 import hmac
 import logging

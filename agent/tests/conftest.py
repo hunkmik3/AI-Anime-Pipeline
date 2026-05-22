@@ -29,6 +29,27 @@ os.environ["FLOWBOARD_STORAGE"] = _TMPDIR
 # Force the deterministic mock planner in tests — never spawn `claude` subprocess.
 os.environ["FLOWBOARD_PLANNER_BACKEND"] = "mock"
 
+# Hermetic credentials. Phase 6.5 made .env the canonical source for
+# API keys / R2 — the agent calls load_dotenv() at boot, and the new
+# get_api_key / read_r2_config helpers prefer env vars over secrets.json.
+# Without this scrub, a developer running pytest would pick up the real
+# .env credentials and hit live providers during tests.
+#
+# Disable the load_dotenv call inside flowboard.main and strip any
+# credential env vars that may have leaked in from the shell. Tests
+# that need a key monkeypatch it explicitly.
+os.environ["FLOWBOARD_DISABLE_DOTENV"] = "1"
+for _v in (
+    "BYTEPLUS_KEY",
+    "DREAMINA_API_KEY",
+    "R2_ENDPOINT_URL",
+    "R2_ACCESS_KEY_ID",
+    "R2_SECRET_ACCESS_KEY",
+    "R2_BUCKET",
+    "R2_PUBLIC_BASE_URL",
+):
+    os.environ.pop(_v, None)
+
 
 def _ensure_test_database() -> None:
     """Create `flowboard_test` on the dev container if it doesn't exist."""

@@ -188,3 +188,128 @@ def test_write_then_read_preserves_full_document(tmp_secrets_path: Path):
     assert raw["apiKeys"] == {"openai": "sk-1"}
     assert raw["activeProviders"]["auto_prompt"] == "gemini"
     assert raw["activeProviders"]["vision"] == "openai"
+
+
+# ── env-first lookup (Phase 6.5) ────────────────────────────────────────
+
+
+def test_get_api_key_env_var_wins_over_secrets_json(
+    tmp_secrets_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """``BYTEPLUS_KEY`` in the environment takes precedence over a
+    Dreamina entry in secrets.json — .env is now the canonical store."""
+    secrets.set_api_key("dreamina", "ark-from-secrets-json")
+    monkeypatch.setenv("BYTEPLUS_KEY", "ark-from-env")
+    assert secrets.get_api_key("dreamina") == "ark-from-env"
+
+
+def test_get_api_key_falls_back_to_dreamina_api_key_env(
+    tmp_secrets_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The Dreamina mapping accepts both ``BYTEPLUS_KEY`` and
+    ``DREAMINA_API_KEY``. First non-empty wins (BYTEPLUS_KEY listed first)."""
+    monkeypatch.setenv("DREAMINA_API_KEY", "ark-fallback")
+    assert secrets.get_api_key("dreamina") == "ark-fallback"
+
+
+def test_get_api_key_falls_back_to_secrets_json_when_env_unset(
+    tmp_secrets_path: Path
+):
+    """No env vars → secrets.json entry serves the request."""
+    secrets.set_api_key("dreamina", "ark-from-file")
+    assert secrets.get_api_key("dreamina") == "ark-from-file"
+
+
+def test_get_api_key_empty_env_var_falls_through(
+    tmp_secrets_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Empty string env var must be treated as unset so a typo'd
+    ``BYTEPLUS_KEY=`` line in .env doesn't shadow a valid secrets.json
+    entry."""
+    secrets.set_api_key("dreamina", "ark-from-file")
+    monkeypatch.setenv("BYTEPLUS_KEY", "")
+    monkeypatch.setenv("DREAMINA_API_KEY", "")
+    assert secrets.get_api_key("dreamina") == "ark-from-file"
+
+
+def test_get_api_key_unknown_provider_only_reads_secrets_json(
+    tmp_secrets_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Providers without an env-var mapping (currently everything but
+    dreamina) still resolve only via secrets.json — no accidental
+    coupling to arbitrary env vars."""
+    secrets.set_api_key("openai", "sk-from-file")
+    # An env var with a similar name MUST NOT be read for openai.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-from-env")
+    assert secrets.get_api_key("openai") == "sk-from-file"
+
+
+def test_read_r2_config_env_wins_per_field(
+    tmp_secrets_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Each R2 field is resolved independently — env-var first, then
+    secrets.json. Lets a partial .env migration work (e.g. bucket lives
+    in .env, secret rotated in secrets.json)."""
+    secrets.set_r2_config(
+        endpoint_url="https://file.r2.example.com",
+        access_key_id="file-akid",
+        secret_access_key="file-secret",
+        bucket="file-bucket",
+    )
+    monkeypatch.setenv("R2_ENDPOINT_URL", "https://env.r2.example.com")
+    monkeypatch.setenv("R2_BUCKET", "env-bucket")
+    cfg = secrets.read_r2_config()
+    assert cfg["endpoint_url"] == "https://env.r2.example.com"
+    assert cfg["bucket"] == "env-bucket"
+    # Unset env fields fall back to secrets.json.
+    assert cfg["access_key_id"] == "file-akid"
+    assert cfg["secret_access_key"] == "file-secret"
+
+
+def test_read_r2_config_env_only_works_without_secrets_json(
+    tmp_secrets_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Phase 8 trajectory: secrets.json eventually goes away. Env-only
+    config must populate ``read_r2_config()`` fully on its own."""
+    monkeypatch.setenv("R2_ENDPOINT_URL", "https://env.r2.example.com")
+    monkeypatch.setenv("R2_ACCESS_KEY_ID", "env-akid")
+    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "env-secret")
+    monkeypatch.setenv("R2_BUCKET", "env-bucket")
+    assert secrets.is_r2_configured() is True
+    cfg = secrets.read_r2_config()
+    assert cfg == {
+        "endpoint_url": "https://env.r2.example.com",
+        "access_key_id": "env-akid",
+        "secret_access_key": "env-secret",
+        "bucket": "env-bucket",
+    }
+
+
+def test_read_r2_config_public_base_url_env_optional(
+    tmp_secrets_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """``R2_PUBLIC_BASE_URL`` is the only optional field — when unset
+    in BOTH env and secrets.json it's just absent from the result, not
+    an empty string."""
+    monkeypatch.setenv("R2_ENDPOINT_URL", "https://env.r2.example.com")
+    monkeypatch.setenv("R2_ACCESS_KEY_ID", "env-akid")
+    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "env-secret")
+    monkeypatch.setenv("R2_BUCKET", "env-bucket")
+    cfg = secrets.read_r2_config()
+    assert "public_base_url" not in cfg
+
+
+def test_read_r2_config_empty_env_var_falls_through(
+    tmp_secrets_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An empty-string env var (e.g. ``R2_BUCKET=``) must NOT shadow
+    a valid secrets.json entry — same defensive rule as get_api_key."""
+    secrets.set_r2_config(
+        endpoint_url="https://file.r2.example.com",
+        access_key_id="file-akid",
+        secret_access_key="file-secret",
+        bucket="file-bucket",
+    )
+    monkeypatch.setenv("R2_BUCKET", "")
+    cfg = secrets.read_r2_config()
+    assert cfg["bucket"] == "file-bucket"

@@ -1,6 +1,29 @@
 """Local secret storage for the multi-LLM provider layer.
 
-Schema of ``~/.flowboard/secrets.json``:
+Resolution order (env-first since Phase 6.5):
+
+  1. Process environment (``os.environ``). The agent's main.py calls
+     ``load_dotenv()`` at boot so ``.env`` in the repo root populates
+     ``os.environ``. Twelve-factor compliant — CI / docker / shell
+     injection can override the dev file without touching disk.
+  2. ``~/.flowboard/secrets.json`` (legacy local store). Kept for back-
+     compat with installs that pre-date the .env migration; planned
+     deprecation in Phase 8.
+
+Env var mapping:
+
+  - Dreamina / Seedance API key   → ``BYTEPLUS_KEY`` or ``DREAMINA_API_KEY``
+  - R2 endpoint                    → ``R2_ENDPOINT_URL``
+  - R2 access key id               → ``R2_ACCESS_KEY_ID``
+  - R2 secret access key           → ``R2_SECRET_ACCESS_KEY``
+  - R2 bucket                      → ``R2_BUCKET``
+  - R2 public CDN base (optional)  → ``R2_PUBLIC_BASE_URL``
+
+Other API keys (openai, anthropic, ...) currently still read only from
+secrets.json — extend the env mapping below if/when a new provider
+needs it.
+
+Schema of the legacy ``~/.flowboard/secrets.json``:
 
 ```json
 {
@@ -20,19 +43,8 @@ Schema of ``~/.flowboard/secrets.json``:
 }
 ```
 
-Phase 5 additions (video providers + R2 image hosting) reuse this same
-file rather than introducing a second secrets store — single-user local
-app, single file is easier to back up and rotate.
-
 Stored as plain JSON with file mode ``0o600`` (owner read/write only).
-Single-user local app — OS-level file permissions are sufficient. We
-deliberately don't encrypt; encryption adds a key-management surface
-area without real benefit when the only attacker that matters has
-already won (root on this user's box).
-
-Writes are atomic (`tmp + replace`) so a crash mid-write can't corrupt
-the file — readers either see the old contents or the new contents,
-never a half-written file.
+Writes are atomic (``tmp + replace``).
 """
 from __future__ import annotations
 
@@ -46,6 +58,13 @@ logger = logging.getLogger(__name__)
 
 
 _DEFAULT_PATH = Path.home() / ".flowboard" / "secrets.json"
+
+# Provider → list of env var names accepted (first non-empty wins).
+# Extend this map when a provider gets a canonical env var alongside
+# its secrets.json entry.
+_PROVIDER_ENV_VARS: dict[str, tuple[str, ...]] = {
+    "dreamina": ("BYTEPLUS_KEY", "DREAMINA_API_KEY"),
+}
 
 
 def _path() -> Path:
@@ -87,7 +106,16 @@ def write(payload: dict) -> None:
 # ── API key helpers ────────────────────────────────────────────────────
 
 def get_api_key(provider: str) -> Optional[str]:
-    """None if the key is unset OR if the file doesn't exist."""
+    """Resolve a provider API key, env-vars first then secrets.json.
+
+    Returns ``None`` if no source supplies a non-empty value. The
+    env-var mapping is in ``_PROVIDER_ENV_VARS``; providers without a
+    canonical env var fall through to the legacy secrets.json store.
+    """
+    for env_name in _PROVIDER_ENV_VARS.get(provider, ()):
+        val = os.environ.get(env_name)
+        if isinstance(val, str) and val:
+            return val
     doc = read()
     keys = doc.get("apiKeys") or {}
     val = keys.get(provider)
@@ -160,17 +188,42 @@ def set_feature_provider(feature: str, provider: str) -> None:
 
 # ── R2 helpers ─────────────────────────────────────────────────────────
 
-def read_r2_config() -> dict:
-    """Return the R2 sub-document (empty dict when unset).
+_R2_ENV_FIELDS: dict[str, str] = {
+    "endpoint_url": "R2_ENDPOINT_URL",
+    "access_key_id": "R2_ACCESS_KEY_ID",
+    "secret_access_key": "R2_SECRET_ACCESS_KEY",
+    "bucket": "R2_BUCKET",
+    "public_base_url": "R2_PUBLIC_BASE_URL",
+}
 
-    Shape: ``{endpoint_url, access_key_id, secret_access_key, bucket, public_base_url?}``.
-    Callers must validate completeness — partial config (e.g. missing
-    bucket) is the same as no config and should surface a clear setup
-    prompt rather than a runtime boto3 traceback.
+
+def read_r2_config() -> dict:
+    """Return the R2 sub-document, env-vars first then secrets.json.
+
+    Shape: ``{endpoint_url, access_key_id, secret_access_key, bucket,
+    public_base_url?}``. Per-field resolution: each field independently
+    prefers its env var (``R2_ENDPOINT_URL`` etc.) and falls back to
+    secrets.json when unset — this lets a partial migration work (e.g.
+    bucket in .env, secret rotated in secrets.json).
+
+    Callers must validate completeness via ``is_r2_configured()``.
+    Partial config is the same as no config and should surface a clear
+    setup prompt rather than a runtime boto3 traceback.
     """
     doc = read()
-    cfg = doc.get("r2") or {}
-    return cfg if isinstance(cfg, dict) else {}
+    file_cfg = doc.get("r2") or {}
+    if not isinstance(file_cfg, dict):
+        file_cfg = {}
+    merged: dict = {}
+    for key, env_name in _R2_ENV_FIELDS.items():
+        env_val = os.environ.get(env_name)
+        if isinstance(env_val, str) and env_val:
+            merged[key] = env_val
+            continue
+        file_val = file_cfg.get(key)
+        if isinstance(file_val, str) and file_val:
+            merged[key] = file_val
+    return merged
 
 
 def is_r2_configured() -> bool:
