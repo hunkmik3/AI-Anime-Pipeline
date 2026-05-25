@@ -304,3 +304,138 @@ curl -sS -o output.mp4 "$VURL"
   - `poll_running.json`, `poll_succeeded.json`
   - `error_auth.json`, `error_invalid_model.json`, `error_missing_param.json`, `error_invalid_role.json`, `error_multiref_unsupported.json`, `error_bad_image.json`, `error_task_not_found.json`
 - Raw probe output (gitignored): `docs/samples/raw/`
+
+## 11. Seedance 2.0 (r2v + audio)
+
+> **Status**: filled in from live curl probes on 2026-05-25 against
+> `dreamina-seedance-2-0-260128` (ap-southeast-1). Supersedes the
+> "multi-ref NOT SUPPORTED" caveat in §2.5 — that limitation was
+> specific to `seedance-1-5-pro`. Seedance 2.0 adds reference-to-video
+> (r2v) and audio reference. Same submit / poll / download endpoints
+> and auth as §1–§4.
+
+### 11.1 Model ID
+
+| Field | Value |
+|---|---|
+| `model` | `dreamina-seedance-2-0-260128` |
+| Endpoint | unchanged — `POST .../contents/generations/tasks`, poll `GET .../tasks/{id}` |
+| Output | unchanged — signed TOS URL, 24 h expiry. Host: `ark-acg-ap-southeast-1.tos-ap-southeast-1.volces.com` (note: different sub-domain than 1.5-pro's `ark-content-generation-...`; the URL allowlist must cover both) |
+
+### 11.2 Role enum (exact accepted values)
+
+The `role` field on a content block accepts **only** these literals:
+
+| Block type | Accepted `role` | Purpose |
+|---|---|---|
+| `image_url` | `reference_image` | r2v reference (character / object / environment anchor) |
+| `image_url` | `first_frame`, `last_frame` | i2v keyframe interpolation (as on 1.5-pro, §2.6) |
+| `audio_url` | `reference_audio` | voice / audio reference for the clip |
+
+**Rejected** (all surface `InvalidParameter` / `BadRequest` at submit, no tokens billed):
+
+- `role: "character"` → `invalid role specified for image content`
+- `role: "environment"` → `invalid role specified for image content`
+- Any user-defined / semantic role string.
+
+**Semantic binding is done in the TEXT, not the role.** There is no
+"this ref is the character, that ref is the background" role. Instead:
+
+- Tag references in the prompt text with `@image1`, `@image2`, … and
+  describe their part ("@image1 character left, @image2 character
+  right, @image3 environment").
+- `@imageN` maps to the **Nth `reference_image` block in positional
+  order** in the `content` array. Order the blocks deliberately.
+
+### 11.3 Audio mode constraint
+
+Audio reference puts the request into **"reference media mode"**, which
+is mutually exclusive with the i2v first_frame default:
+
+- Audio block shape: `{"type":"audio_url","audio_url":{"url":...},"role":"reference_audio"}`.
+- The accompanying image **must** be `role: "reference_image"`. A
+  default (role-less) image is treated as `first_frame`, and the API
+  rejects mixing it with audio:
+  - role-less image + audio → `first/last frame content cannot be mixed with reference media content`
+  - `reference_image` + audio without audio role → `reference media mode requires audio role to be reference_audio`
+- With the correct shape (`reference_image` image + `reference_audio`
+  audio) the content schema validates; a deliberately bogus audio URL
+  then fails at fetch with `content[N].audio_url ... resource download
+  failed` — proving the field is supported, not the value.
+- Audio must be a public HTTPS URL (same hosting requirement as images
+  — mirror to R2). Full audio-driven generation was **not** run end to
+  end (no real voice sample on hand); only the shape is verified.
+
+### 11.4 Multi-shot per generation
+
+A single generation can encode multiple shots with a hard cut:
+
+- `duration: 8` (8 s confirmed working; longer durations untested on 2.0).
+- Prompt format: `"[SHOT 1] (0-4s) ... [SHOT 2] (4-8s) ... Hard cut at 4 seconds."`
+- Submit succeeds and the task completes. **Whether the output is a
+  genuine instantaneous cut vs. a smooth blend is a visual QA item** —
+  the API does not report shot boundaries in the poll payload.
+
+### 11.5 Long structured prompt
+
+- Tested a 4 483-char structured prompt (7 sections: ART STYLE /
+  ANIMATION CADENCE / REFERENCE MAPPING / STORYBOARD / AUDIO /
+  CONSISTENCY / NEGATIVE) + 2 `reference_image` refs.
+- Submit returned a task id with **no truncation error and no
+  "prompt too long"**; the task reached `succeeded`.
+- A ~5 000-char workflow-template prompt is feasible. (Whether the
+  model *honours* every late section — e.g. NEGATIVE — is visual QA,
+  not an API-contract concern.)
+
+### 11.6 Token cost (Seedance 2.0)
+
+| Duration | Tokens (observed) |
+|---|---|
+| 5 s | ≈ 108 900 |
+| 8 s | ≈ 173 700 |
+
+Cost scales with **duration**, not with r2v vs i2v, multi-shot, ref
+count, or prompt length (identical 173 700 for an 8 s multi-shot job
+and an 8 s long-prompt+2-ref job). Indicative pricing **$4.30–7.00 / M
+tokens** → roughly **$0.47–0.76 per 5 s** / **$0.75–1.22 per 8 s** clip.
+Confirm the exact per-model rate in the BytePlus console before relying
+on these for budgeting.
+
+### 11.7 Provider mode dispatch (for Phase 7+ implementation)
+
+`DreaminaVideoProvider` currently builds only the i2v shape (prompt +
+`--rt/--rs` flags, single `first_frame`). To support Seedance 2.0 it
+needs to branch into three modes, selected from model capability +
+node config:
+
+| Mode | Trigger | Content shape |
+|---|---|---|
+| **i2v** | Seedance 1.5 (always); 2.0 with a single ref and no audio | one `image_url` (role-less → first_frame), optional `last_frame` |
+| **r2v** | Seedance 2.0 with ≥1 reference image (multi-ref) | N × `image_url` `role:"reference_image"`, `@imageN` tags in text |
+| **r2v + audio** | Seedance 2.0 with reference image(s) + a voice ref | r2v image blocks **plus** one `audio_url` `role:"reference_audio"` |
+
+Notes for the refactor:
+- The existing `VideoProviderCapability` already carries
+  `supports_multi_ref` / `max_refs` — extend with an `supports_audio_ref`
+  flag and gate the audio block on it.
+- Keep the `--rt/--rs` inline-flag trick for i2v; r2v aspect/resolution
+  handling on 2.0 is **untested** — probe before assuming the same
+  flags apply.
+- Reference ordering matters (positional `@imageN`); the provider must
+  preserve the caller's ref order when assembling `content[]`.
+
+### 11.8 Probe log (evidence)
+
+| Probe | Request | Result |
+|---|---|---|
+| role=character/environment | 3 image refs w/ semantic roles | `InvalidParameter: invalid role specified for image content` |
+| role=reference_image ×3 | 3 r2v refs | accepted → `succeeded`, 5 s, 108 900 tok |
+| audio, role-less image | image + audio | `first/last frame content cannot be mixed with reference media content` |
+| audio, reference_image, no audio role | image + audio | `reference media mode requires audio role to be reference_audio` |
+| audio, correct shape, bogus URL | reference_image + reference_audio | `content[2].audio_url ... resource download failed` (schema valid) |
+| multi-shot 8 s | 1 image, 2-shot prompt | accepted → `succeeded`, 173 700 tok |
+| long prompt 4 483 chars + 2 refs | structured 7-section prompt | accepted → `succeeded`, 173 700 tok |
+
+Outputs downloaded to `storage/media/seedance2-test{1,3,4}-*.mp4` (local,
+gitignored) for visual QA. No canonical samples committed — these
+probes used real character references, not sanitized fixtures.
