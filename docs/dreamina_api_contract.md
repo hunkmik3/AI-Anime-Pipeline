@@ -22,7 +22,7 @@
 ### Sample auth header
 
 ```
-Authorization: Bearer ark-316d7cca-122d-4b27-82f1-2e75ea439e61-f895c
+Authorization: Bearer ark-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX-XXXXX
 Content-Type: application/json
 ```
 
