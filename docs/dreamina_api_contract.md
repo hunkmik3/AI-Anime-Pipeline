@@ -418,9 +418,13 @@ Notes for the refactor:
 - The existing `VideoProviderCapability` already carries
   `supports_multi_ref` / `max_refs` — extend with an `supports_audio_ref`
   flag and gate the audio block on it.
-- Keep the `--rt/--rs` inline-flag trick for i2v; r2v aspect/resolution
-  handling on 2.0 is **untested** — probe before assuming the same
-  flags apply.
+- `--rt/--rs` inline flags apply in **all** modes, r2v included.
+  **VERIFIED** by the Phase 7.5 live probe (2026-05-25, "Test 5" in
+  §11.8): a r2v submit with `--rt 9:16 --rs 720p` + 2 `reference_image`
+  refs returned `ratio:"9:16"` / `resolution:"720p"` in the poll envelope,
+  and the downloaded file demuxed to **720×1280 H.264 @ 24 fps**. The
+  earlier "untested on r2v" caveat is resolved — the provider keeps
+  emitting the flags in r2v.
 - Reference ordering matters (positional `@imageN`); the provider must
   preserve the caller's ref order when assembling `content[]`.
 
@@ -435,7 +439,16 @@ Notes for the refactor:
 | audio, correct shape, bogus URL | reference_image + reference_audio | `content[2].audio_url ... resource download failed` (schema valid) |
 | multi-shot 8 s | 1 image, 2-shot prompt | accepted → `succeeded`, 173 700 tok |
 | long prompt 4 483 chars + 2 refs | structured 7-section prompt | accepted → `succeeded`, 173 700 tok |
+| **Test 5** — r2v + `--rt 9:16 --rs 720p` (3 tasks) | 2 `reference_image` refs + structured prompt with trailing `--rt 9:16 --rs 720p`, `duration:5` | accepted → `succeeded` ×3; poll returned `ratio:"9:16"`, `resolution:"720p"`, 108 900 tok each; files demuxed **720×1280 H.264 @24 fps** |
 
-Outputs downloaded to `storage/media/seedance2-test{1,3,4}-*.mp4` (local,
-gitignored) for visual QA. No canonical samples committed — these
-probes used real character references, not sanitized fixtures.
+**Note on Test 5 (Phase 7.5, 2026-05-25)**: this is a *new* probe, distinct
+from Tests 1-4 (which deliberately sent no `--rt/--rs`). It exists only to
+settle the §11.7 open question "do aspect flags work on r2v?". Task IDs
+`cgt-20260525170848-l5dtl`, `cgt-20260525170852-72jdg`,
+`cgt-20260525170856-9k8c7` (re-pollable until the 48 h TTL); outputs
+`storage/media/3shot-vert-*.mp4`. Answer: **yes, flags are honored on r2v.**
+
+Outputs downloaded to `storage/media/seedance2-test{1,3,4}-*.mp4` and
+`storage/media/3shot-vert-*.mp4` (local, gitignored) for visual QA. No
+canonical samples committed — these probes used real character references,
+not sanitized fixtures.
