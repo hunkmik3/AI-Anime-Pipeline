@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { useVideoModelsStore } from "../store/videoModels";
 import { useShotWorkflowStore } from "../store/shotWorkflow";
@@ -38,6 +38,10 @@ export function VideoNodeSettings({ rfId }: Props) {
   const updateNodeData = useShotWorkflowStore((s) => s.updateNodeData);
   const projectSettings = useProjectStore((s) => s.currentProject?.settings);
 
+  // Multi-ref editor local state (hooks must precede early returns).
+  const [addValue, setAddValue] = useState("");
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+
   useEffect(() => {
     if (!loaded) void load();
   }, [load, loaded]);
@@ -70,6 +74,9 @@ export function VideoNodeSettings({ rfId }: Props) {
   const refs = Array.isArray(data.reference_image_ids)
     ? (data.reference_image_ids as string[])
     : [];
+  const roleHints = Array.isArray(data.reference_role_hints)
+    ? (data.reference_role_hints as (string | null)[])
+    : [];
   const lastFrame = (data.last_frame_asset_id as string | undefined) ?? "";
   const duration = (data.duration_seconds as number | undefined) ?? caps.durations[0];
   const aspect = (data.aspect_ratio as string | undefined) ?? caps.aspect_ratios[0];
@@ -84,6 +91,57 @@ export function VideoNodeSettings({ rfId }: Props) {
       patchNode(dbId, { data: patch }).catch(() => {});
     }
   }
+
+  // ── multi-ref mutations — reference_image_ids and reference_role_hints
+  //    move in lockstep so @imageN stays aligned with its role hint. ──
+  function persistRefs(nextRefs: string[], nextHints: (string | null)[]) {
+    persist({
+      reference_image_ids: nextRefs,
+      reference_role_hints: nextHints.slice(0, nextRefs.length),
+    });
+  }
+
+  function addRef() {
+    const v = addValue.trim();
+    if (!v) return;
+    if (refs.includes(v)) {
+      setAddValue("");
+      return;
+    }
+    if (refs.length >= caps.max_refs) return;
+    persistRefs([...refs, v], [...roleHints, null]);
+    setAddValue("");
+  }
+
+  function removeRef(i: number) {
+    persistRefs(
+      refs.filter((_, idx) => idx !== i),
+      roleHints.filter((_, idx) => idx !== i),
+    );
+  }
+
+  function setHint(i: number, value: string) {
+    const next = [...roleHints];
+    while (next.length < refs.length) next.push(null);
+    next[i] = value || null;
+    persist({ reference_role_hints: next });
+  }
+
+  function moveRef(from: number, to: number) {
+    if (from === to || from < 0 || to < 0 || from >= refs.length || to >= refs.length) return;
+    const nextRefs = [...refs];
+    const nextHints = [...roleHints];
+    while (nextHints.length < refs.length) nextHints.push(null);
+    const [movedRef] = nextRefs.splice(from, 1);
+    const [movedHint] = nextHints.splice(from, 1);
+    nextRefs.splice(to, 0, movedRef);
+    nextHints.splice(to, 0, movedHint ?? null);
+    persistRefs(nextRefs, nextHints);
+  }
+
+  // media_id → local route; a pasted public URL is used as-is.
+  const thumbSrc = (id: string) => (/^https?:\/\//.test(id) ? id : `/media/${id}`);
+  const ROLE_HINTS = ["", "character", "environment", "spatial", "motion"];
 
   // Persistent warning: user previously attached refs but the current
   // model can't honor them. Don't silent-drop — surface explicitly so
@@ -167,11 +225,11 @@ export function VideoNodeSettings({ rfId }: Props) {
         </select>
       </div>
 
-      <div className="video-settings-row">
+      <div className="video-settings-row video-settings-row--refs">
         <span className="video-settings-label">References (multi-ref)</span>
         {caps.supports_multi_ref ? (
           <span className="video-settings-hint">
-            {refs.length}/{caps.max_refs} attached
+            {refs.length}/{caps.max_refs} attached · order = @image1…N
           </span>
         ) : (
           <span className="video-settings-hint">
@@ -180,13 +238,92 @@ export function VideoNodeSettings({ rfId }: Props) {
         )}
       </div>
 
+      {caps.supports_multi_ref ? (
+        <>
+          <ul className="video-refs-list">
+            {refs.map((ref, i) => (
+              <li
+                key={`${ref}-${i}`}
+                className={`video-refs-item${dragIdx === i ? " video-refs-item--dragging" : ""}`}
+                draggable
+                onDragStart={() => setDragIdx(i)}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (dragIdx !== null) moveRef(dragIdx, i);
+                  setDragIdx(null);
+                }}
+                onDragEnd={() => setDragIdx(null)}
+              >
+                <span className="video-refs-grip" aria-hidden>⋮⋮</span>
+                <span className="video-refs-badge">@image{i + 1}</span>
+                <img className="video-refs-thumb" src={thumbSrc(ref)} alt={`@image${i + 1}`} />
+                <select
+                  className="video-refs-role"
+                  value={roleHints[i] ?? ""}
+                  title="Role hint — UI/synthesis only, not sent to the Dreamina API"
+                  onChange={(e) => setHint(i, e.target.value)}
+                >
+                  {ROLE_HINTS.map((h) => (
+                    <option key={h || "none"} value={h}>
+                      {h ? h : "role hint…"}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="video-refs-remove"
+                  aria-label={`Remove @image${i + 1}`}
+                  onClick={() => removeRef(i)}
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+
+          {refs.length < caps.max_refs ? (
+            <div className="video-settings-row video-refs-add">
+              <input
+                type="text"
+                className="video-settings-input"
+                placeholder="media_id or public image URL"
+                value={addValue}
+                onChange={(e) => setAddValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addRef();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="video-settings-warning-btn"
+                disabled={!addValue.trim()}
+                onClick={addRef}
+              >
+                Add reference
+              </button>
+            </div>
+          ) : (
+            <span className="video-settings-hint">Max references reached for this model.</span>
+          )}
+          <p className="video-settings-hint video-refs-note">
+            Role hints are UI-only — the Dreamina API accepts only
+            <code> reference_image</code>; hints feed prompt synthesis (Phase 6),
+            not the submit. Drag to reorder → changes @imageN binding.
+          </p>
+        </>
+      ) : null}
+
       {refMismatchWarning ? (
         <div role="alert" className="video-settings-warning">
           {refMismatchWarning}
           <button
             type="button"
             className="video-settings-warning-btn"
-            onClick={() => persist({ reference_image_ids: [] })}
+            onClick={() => persist({ reference_image_ids: [], reference_role_hints: [] })}
           >
             Remove all refs
           </button>

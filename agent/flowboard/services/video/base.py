@@ -66,9 +66,10 @@ class VideoProviderCapability:
     submit (drop unsupported fields, never silent-fail).
     """
 
-    supports_multi_ref: bool          # r2v: pass N reference_images alongside first_frame
+    supports_multi_ref: bool          # r2v: pass N reference_images (role="reference_image")
     supports_last_frame: bool         # keyframe interpolation
-    supports_audio_toggle: bool       # can flip generate_audio off
+    supports_audio_toggle: bool       # can flip generate_audio on/off
+    supports_audio_ref: bool          # r2v+audio: accept an audio_url role="reference_audio" block
     max_refs: int                     # 0 when supports_multi_ref is False
     aspect_ratios: tuple[str, ...]    # e.g. ("1:1", "16:9", "9:16")
     resolutions: tuple[str, ...]      # e.g. ("720p", "1080p")
@@ -91,6 +92,13 @@ class VideoGenSubmitParams(TypedDict, total=False):
     first_frame_url: str
     reference_images: list[str]
     last_frame_url: Optional[str]
+    # r2v+audio: a publicly-reachable HTTPS URL to a voice/audio reference
+    # (role="reference_audio"). Only honored on models with
+    # ``capabilities.supports_audio_ref``; dropped-with-warning otherwise.
+    # Contract §11.3: audio puts the request into "reference media mode",
+    # which forbids a first_frame block — the provider drops first_frame
+    # when audio is present.
+    audio_ref_url: Optional[str]
     motion_prompt: str
     duration_seconds: int
     aspect_ratio: str          # "1:1" | "16:9" | "9:16"

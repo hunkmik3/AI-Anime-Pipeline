@@ -121,7 +121,8 @@ export type NodeType =
   | "script"
   | "bible_ref"
   | "master_shot"
-  | "approval_gate";
+  | "approval_gate"
+  | "audio_ref";
 export type NodeStatus = "idle" | "queued" | "running" | "done" | "error" | "partial";
 
 export interface NodeDTO {
@@ -474,6 +475,32 @@ export async function uploadImage(
     throw new Error(await extractErrorMessage(res));
   }
   return res.json() as Promise<UploadResponse>;
+}
+
+export interface AudioUploadResponse {
+  media_id: string;
+  mime: string;
+  size: number;
+}
+
+/**
+ * Upload an audio reference (Phase 7 — Seedance 2.0 reference_audio).
+ * Cached locally and mirrored to R2 on video submit; not pushed to Flow.
+ */
+export async function uploadAudio(
+  file: File,
+  projectId: string,
+  nodeId?: number,
+): Promise<AudioUploadResponse> {
+  const form = new FormData();
+  form.append("project_id", projectId);
+  if (nodeId !== undefined) form.append("node_id", String(nodeId));
+  form.append("file", file);
+  const res = await fetch("/api/upload-audio", { method: "POST", body: form });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json() as Promise<AudioUploadResponse>;
 }
 
 export interface VisionDescribeResponse {

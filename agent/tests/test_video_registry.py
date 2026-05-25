@@ -48,6 +48,7 @@ def test_seedance_2_0_advertises_r2v_and_audio():
     assert entry.capabilities.supports_multi_ref is True
     assert entry.capabilities.max_refs >= 1
     assert entry.capabilities.supports_audio_toggle is True
+    assert entry.capabilities.supports_audio_ref is True
 
 
 def test_flow_capabilities_match_legacy_surface():
@@ -65,6 +66,7 @@ def test_capability_is_frozen_dataclass():
         supports_multi_ref=False,
         supports_last_frame=False,
         supports_audio_toggle=False,
+        supports_audio_ref=False,
         max_refs=0,
         aspect_ratios=("16:9",),
         resolutions=("720p",),

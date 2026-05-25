@@ -241,8 +241,6 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
                 )
         except VideoError as exc:
             return {"error": str(exc)}, f"{exc.code}:{exc}"
-        if not first_frame:
-            return {}, "missing_first_frame_url"
 
         ref_inputs = params.get("reference_images") or []
         resolved_refs: list[str] = []
@@ -259,6 +257,26 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
             except VideoError as exc:
                 logger.warning("dreamina: skipped unreachable ref %s: %s", r, exc)
 
+        # Audio reference (Seedance 2.0 r2v+audio). Same R2 hoist as images.
+        audio_ref = params.get("audio_ref_url") or params.get("audio_ref_media_id")
+        resolved_audio: Optional[str] = None
+        if isinstance(audio_ref, str) and audio_ref:
+            if audio_ref.startswith(("http://", "https://", "data:")):
+                resolved_audio = audio_ref
+            else:
+                try:
+                    resolved_audio = media_id_to_public_url(
+                        audio_ref, project_id=params.get("project_id")
+                    )
+                except VideoError as exc:
+                    logger.warning("dreamina: skipped unreachable audio ref: %s", exc)
+
+        # first_frame is optional in reference-media (r2v / r2v+audio) modes;
+        # the provider derives mode from refs/audio and validates per-mode.
+        # Only hard-fail when there's nothing to generate from at all.
+        if not first_frame and not resolved_refs and not resolved_audio:
+            return {}, "missing_first_frame_url"
+
         last_frame = params.get("last_frame_url")
         if isinstance(last_frame, str) and last_frame and not last_frame.startswith(("http://", "https://", "data:")):
             try:
@@ -270,9 +288,10 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
                 last_frame = None
 
         provider_params.update({
-            "first_frame_url": first_frame,
+            "first_frame_url": first_frame or "",
             "reference_images": resolved_refs,
             "last_frame_url": last_frame if isinstance(last_frame, str) else None,
+            "audio_ref_url": resolved_audio,
             "duration_seconds": int(params.get("duration_seconds") or 5),
             "aspect_ratio": params.get("aspect_ratio") or "1:1",
             "resolution": params.get("resolution") or "720p",

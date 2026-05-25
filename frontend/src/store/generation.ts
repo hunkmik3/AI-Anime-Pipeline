@@ -99,6 +99,23 @@ const REF_SOURCE_TYPES = new Set([
   "master_shot",
 ]);
 
+/**
+ * Phase 7: find the audio reference feeding a VideoNode. Returns the first
+ * connected AudioRefNode's uploaded media_id, or undefined. Only honored by
+ * Seedance 2.0 (r2v+audio) — the worker drops it with a warning otherwise.
+ */
+function collectUpstreamAudioMediaId(targetRfId: string): string | undefined {
+  const { nodes, edges } = useShotWorkflowStore.getState();
+  for (const e of edges) {
+    if (e.target !== targetRfId) continue;
+    const src = nodes.find((n) => n.id === e.source);
+    if (src?.data.type === "audio_ref" && typeof src.data.audioMediaId === "string" && src.data.audioMediaId) {
+      return src.data.audioMediaId;
+    }
+  }
+  return undefined;
+}
+
 function collectUpstreamRefMediaIds(targetRfId: string): string[] {
   const { nodes, edges } = useShotWorkflowStore.getState();
   const ids: string[] = [];
@@ -232,9 +249,18 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
       if (kind === "video") {
         const hasMulti =
           Array.isArray(opts.sourceMediaIds) && opts.sourceMediaIds.length > 0;
-        if (!hasMulti && !opts.sourceMediaId) {
+        // Phase 7: r2v / r2v+audio need no start frame — references (or an
+        // audio ref) are enough. Only block when there's nothing to gen from.
+        const nodeForGuard = useShotWorkflowStore.getState().nodes.find((n) => n.id === rfId);
+        const guardRefs = Array.isArray(nodeForGuard?.data?.reference_image_ids)
+          ? (nodeForGuard!.data.reference_image_ids as string[])
+          : [];
+        const guardAudio =
+          (typeof nodeForGuard?.data?.audio_ref_media_id === "string" && nodeForGuard.data.audio_ref_media_id) ||
+          collectUpstreamAudioMediaId(rfId);
+        if (!hasMulti && !opts.sourceMediaId && guardRefs.length === 0 && !guardAudio) {
           useShotWorkflowStore.getState().updateNodeData(rfId, { status: "error", error: "no source media" });
-          set({ error: "Video generation requires a source image (connect an upstream image node)" });
+          set({ error: "Video needs a source image, references (r2v), or an audio reference" });
           return;
         }
         // Model resolution: node.data.videoModelId override (Phase 5
@@ -279,6 +305,15 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         }
         if (typeof videoSettings.last_frame_asset_id === "string" && videoSettings.last_frame_asset_id) {
           videoParams.last_frame_url = videoSettings.last_frame_asset_id;
+        }
+        // Audio reference (Seedance 2.0 r2v+audio): explicit node setting
+        // wins; else the first connected AudioRefNode. Worker hoists the
+        // media_id → R2 public URL on submit.
+        const audioRef =
+          (typeof videoSettings.audio_ref_media_id === "string" && videoSettings.audio_ref_media_id) ||
+          collectUpstreamAudioMediaId(rfId);
+        if (audioRef) {
+          videoParams.audio_ref_url = audioRef;
         }
 
         if (hasMulti) {

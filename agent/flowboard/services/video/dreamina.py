@@ -10,23 +10,29 @@ Two registered models share this class:
 - ``seedance-1-5-pro`` (upstream ``seedance-1-5-pro-251215``): i2v only.
   Passing ``reference_images`` triggers a capability-drop warning.
 - ``seedance-2-0`` (upstream ``dreamina-seedance-2-0-260128``): r2v +
-  audio refs + last_frame. Not yet activated on the user's BytePlus
-  account; tests mock the multi-ref path, real e2e deferred per Phase 5
-  stop-point notes.
+  audio refs. Verified live on 2026-05-25 (contract §11). ``submit``
+  dispatches three content shapes — see ``_DISPATCH_MODES`` discussion
+  in ``submit``: i2v (legacy), r2v (reference_image multi-ref), and
+  r2v+audio (reference_image + reference_audio).
 
 Key design points:
 
 1. **Inline-flag prompt builder** — ``--rt W:H --rs Np`` get appended to
    the user's motion_prompt before submit (the API consumes them, then
-   echoes the parsed values back in the poll envelope).
-2. **Eager download on success** — the signed TOS URL has a 24h
+   echoes the parsed values back in the poll envelope). r2v aspect/res
+   handling is UNTESTED upstream (§11.7); flags kept pending live QA.
+2. **@imageN injection** — r2v binds reference semantics through the
+   prompt text (§11.2): ``inject_image_labels`` prepends positional
+   ``@imageN`` tags, post-capability-gate so labels match the final
+   reference_image block count.
+3. **Eager download on success** — the signed TOS URL has a 24h
    expiry that aligns with file lifecycle, so ``poll`` GETs the bytes
    before returning ``status: succeeded``.
-3. **Self-cap concurrent submits at 3** — no rate-limit headers are
+4. **Self-cap concurrent submits at 3** — no rate-limit headers are
    exposed; the contract observed 3.5 min latency under 3-job load.
-4. **Image hosting via R2** — Dreamina requires ``image_url.url`` to be
-   publicly reachable; ``prepare_image_url`` mirrors local media to a
-   Cloudflare R2 bucket and returns a presigned URL.
+5. **Image hosting via R2** — Dreamina requires ``image_url.url`` (and
+   ``audio_url.url``) to be publicly reachable; ``media_id_to_public_url``
+   mirrors local media to a Cloudflare R2 bucket and returns a presigned URL.
 """
 from __future__ import annotations
 
@@ -75,21 +81,24 @@ SEEDANCE_1_5_PRO_CAPABILITY = VideoProviderCapability(
     supports_multi_ref=False,
     supports_last_frame=True,
     supports_audio_toggle=False,
+    supports_audio_ref=False,
     max_refs=0,
     aspect_ratios=("1:1", "16:9", "9:16"),
     resolutions=("720p", "1080p"),
     durations=(5, 8, 10),
 )
 
-# Hypothetical r2v capabilities — the user hasn't activated seedance-2-0
-# yet, so these are conservative defaults derived from the contract's
-# §2.5 / §7 notes ("r2v supports role: reference_image array"). Update
-# once we have a real probe.
+# Seedance 2.0 r2v + audio. Verified live on 2026-05-25 (contract §11):
+# role="reference_image" multi-ref accepted (≥3 confirmed), audio via
+# role="reference_audio", 5s/8s durations confirmed. max_refs=9 per the
+# Dreamina UI matrix; aspect/resolution flags for r2v are still UNTESTED
+# (§11.7) — we keep emitting --rt/--rs but flag the risk in the builder.
 SEEDANCE_2_0_CAPABILITY = VideoProviderCapability(
     supports_multi_ref=True,
     supports_last_frame=True,
     supports_audio_toggle=True,
-    max_refs=4,
+    supports_audio_ref=True,
+    max_refs=9,
     aspect_ratios=("1:1", "16:9", "9:16"),
     resolutions=("720p", "1080p"),
     durations=(5, 8, 10),
@@ -150,13 +159,11 @@ class DreaminaVideoProvider:
             raise VideoError("bad_input", "missing motion_prompt")
 
         first_frame_url = (params.get("first_frame_url") or "").strip()
-        if not first_frame_url:
-            raise VideoError(
-                "bad_input",
-                "Dreamina submit requires first_frame_url (publicly-reachable HTTPS or data: URL)",
-            )
+        last_frame_url = params.get("last_frame_url")
+        audio_ref_url = (params.get("audio_ref_url") or "").strip() or None
 
-        reference_images = list(params.get("reference_images") or [])
+        # ── capability gate (drop-with-warning, never silent) ───────────
+        reference_images = [r for r in (params.get("reference_images") or []) if isinstance(r, str) and r]
         if reference_images and not self.capabilities.supports_multi_ref:
             warnings.append(
                 f"Dropped {len(reference_images)} reference images: "
@@ -172,11 +179,75 @@ class DreaminaVideoProvider:
             )
             reference_images = reference_images[:cut]
 
-        last_frame_url = params.get("last_frame_url")
+        if audio_ref_url and not self.capabilities.supports_audio_ref:
+            warnings.append(
+                f"Dropped audio reference: {self.entry.display_name} "
+                f"doesn't support reference_audio. Switch to Seedance 2.0."
+            )
+            audio_ref_url = None
+
+        # ── mode detection (POST-gate so @imageN labels match the final
+        #    reference_image block count — mitigates positional desync) ──
+        #
+        #   i2v       : single image as first_frame (legacy 1.5 path, and
+        #               2.0 with <2 refs + no audio per contract §11.7).
+        #   r2v       : ≥2 reference_image blocks, NO first_frame.
+        #   r2v+audio : reference_image block(s) + one reference_audio. NO
+        #               first_frame (audio = "reference media mode", §11.3).
+        if audio_ref_url:
+            mode = "r2v+audio"
+            # Audio must pair with a reference_image, never a first_frame.
+            if not reference_images and first_frame_url:
+                reference_images = [first_frame_url]
+                warnings.append(
+                    "Audio reference present but no reference images — "
+                    "promoted the start image to @image1 (audio mode forbids first_frame)."
+                )
+            if not reference_images:
+                raise VideoError(
+                    "bad_input",
+                    "audio reference requires at least one reference image",
+                )
+        elif self.capabilities.supports_multi_ref and len(reference_images) > 1:
+            mode = "r2v"
+            if first_frame_url:
+                warnings.append(
+                    "Ignored the upstream start frame in r2v mode — references "
+                    "drive generation; first_frame is not sent with reference media."
+                )
+        else:
+            mode = "i2v"
+            # On a multi-ref model, a lone ref with no start frame becomes
+            # the first_frame; a lone ref alongside a start frame is the
+            # ambiguous case — keep i2v, drop the extra ref with a warning.
+            if reference_images:
+                if not first_frame_url:
+                    first_frame_url = reference_images[0]
+                else:
+                    warnings.append(
+                        f"Ignored {len(reference_images)} reference image(s) in i2v mode "
+                        f"— attach ≥2 refs for r2v, or remove the upstream start frame."
+                    )
+                reference_images = []
+
+        if mode == "i2v" and not first_frame_url:
+            raise VideoError(
+                "bad_input",
+                "Dreamina i2v submit requires first_frame_url (publicly-reachable HTTPS or data: URL)",
+            )
+
+        # last_frame gate: only valid in i2v. Reference-media modes (r2v /
+        # r2v+audio) forbid mixing first/last frame with reference content.
         if last_frame_url and not self.capabilities.supports_last_frame:
             warnings.append(
                 f"Dropped last_frame: {self.entry.display_name} doesn't "
                 f"support keyframe interpolation."
+            )
+            last_frame_url = None
+        elif last_frame_url and mode != "i2v":
+            warnings.append(
+                "Dropped last_frame: cannot mix keyframe interpolation with "
+                "reference-media (r2v) content on this submit."
             )
             last_frame_url = None
 
@@ -210,41 +281,55 @@ class DreaminaVideoProvider:
             )
             generate_audio = None
 
-        # Build the prompt with Dreamina's inline flags. duration is a
-        # top-level field per §2.3; ratio + resolution go inline.
+        # Build the prompt. For reference-media modes we inject positional
+        # @imageN tags (skipped if the caller's prompt already carries them)
+        # so each reference_image block binds to its label. Then Dreamina's
+        # inline flags: duration is a top-level field per §2.3; ratio +
+        # resolution go inline. NOTE: --rt/--rs are UNTESTED on 2.0 r2v
+        # (contract §11.7) — kept on faith, gate on the live shot test.
+        prompt_text = motion_prompt
+        if mode != "i2v":
+            prompt_text = inject_image_labels(prompt_text, len(reference_images))
         final_prompt = build_dreamina_prompt(
-            motion_prompt, aspect_ratio=aspect, resolution=resolution
+            prompt_text, aspect_ratio=aspect, resolution=resolution
         )
 
-        # Assemble content blocks. The first image_url is the first_frame;
-        # additional refs are role=reference_image; optional last_frame
-        # tagged role=last_frame.
+        # Assemble content blocks per mode.
         content: list[dict] = [{"type": "text", "text": final_prompt}]
-        if reference_images or last_frame_url:
-            # When MORE than one image_url is sent, role is required.
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": first_frame_url},
-                "role": "first_frame",
-            })
+        if mode == "i2v":
+            if last_frame_url:
+                # Two-image keyframe interpolation — roles required (§2.6).
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": first_frame_url},
+                    "role": "first_frame",
+                })
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": last_frame_url},
+                    "role": "last_frame",
+                })
+            else:
+                # Single-image submit — role MUST be omitted per §2.6.
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": first_frame_url},
+                })
+        else:
+            # r2v / r2v+audio: ordered reference_image blocks (NO first_frame).
+            # Array order IS the @imageN positional binding.
             for ref in reference_images:
                 content.append({
                     "type": "image_url",
                     "image_url": {"url": ref},
                     "role": "reference_image",
                 })
-            if last_frame_url:
+            if audio_ref_url:
                 content.append({
-                    "type": "image_url",
-                    "image_url": {"url": last_frame_url},
-                    "role": "last_frame",
+                    "type": "audio_url",
+                    "audio_url": {"url": audio_ref_url},
+                    "role": "reference_audio",
                 })
-        else:
-            # Single-image submit — role MUST be omitted per the contract §2.6.
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": first_frame_url},
-            })
 
         body: dict = {
             "model": self.upstream_model_id,
@@ -484,6 +569,35 @@ class DreaminaVideoProvider:
 
 
 _FLAG_RE = re.compile(r"\s+--(?:rt|rs)\s+\S+")
+
+# Detects any pre-existing @imageN token so we don't double-tag a prompt
+# that Phase 6 synthesis already composed with rich '@image1 = Kenji' lines.
+_IMAGE_LABEL_RE = re.compile(r"@image\d+", re.IGNORECASE)
+
+
+def inject_image_labels(motion_prompt: str, n_refs: int) -> str:
+    """Prepend ``@image1 @image2 … @imageN`` positional tags to the prompt.
+
+    Seedance 2.0 binds reference semantics through the TEXT, not the role
+    (contract §11.2): ``@imageN`` maps to the Nth ``reference_image`` block
+    in array order. This helper injects the bare tags so the model knows
+    how many refs to expect and in what order.
+
+    Idempotent / non-destructive:
+
+    - ``n_refs <= 0`` → returned unchanged (no refs to label).
+    - If the prompt already contains any ``@imageN`` token, it's returned
+      unchanged — the caller (e.g. Phase 6 prompt synthesis) is assumed to
+      have authored richer, semantically-described labels and we must not
+      clobber or duplicate them.
+    """
+    if n_refs <= 0:
+        return motion_prompt
+    if _IMAGE_LABEL_RE.search(motion_prompt or ""):
+        return motion_prompt
+    tags = " ".join(f"@image{i}" for i in range(1, n_refs + 1))
+    body = (motion_prompt or "").strip()
+    return f"{tags} {body}".strip()
 
 
 def build_dreamina_prompt(

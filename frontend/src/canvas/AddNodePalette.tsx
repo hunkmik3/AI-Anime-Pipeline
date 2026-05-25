@@ -25,6 +25,7 @@ const GROUPS: Group[] = [
       { type: "visual_asset", icon: "◇", label: "Visual" },
       { type: "master_shot", icon: "★", label: "Master" },
       { type: "bible_ref", icon: "📖", label: "Bible" },
+      { type: "audio_ref", icon: "🔊", label: "Audio" },
     ],
   },
   {

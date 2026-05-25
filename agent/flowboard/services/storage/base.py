@@ -95,6 +95,14 @@ _CONTENT_TYPES = {
     "webp": "image/webp",
     "gif": "image/gif",
     "mp4": "video/mp4",
+    # Audio — for Seedance 2.0 reference_audio hosting (Phase 7). Same
+    # public-URL requirement as images; the bucket serves these alongside
+    # image refs under media/<project>/<asset>.<ext>.
+    "mp3": "audio/mpeg",
+    "wav": "audio/wav",
+    "m4a": "audio/mp4",
+    "aac": "audio/aac",
+    "ogg": "audio/ogg",
 }
 
 

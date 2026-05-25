@@ -19,6 +19,7 @@ import base64
 import ipaddress
 import logging
 import socket
+import uuid
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -268,6 +269,82 @@ async def upload_image(
     out = await _ingest_image_bytes(raw, mime, project_id, file_name, node_id)
     logger.info("upload: media_id=%s size=%d mime=%s", out["media_id"], size, mime)
     return out
+
+
+# ── Audio upload (Phase 7 — Seedance 2.0 reference_audio) ────────────────
+#
+# Unlike images, audio is NOT pushed to Flow (Flow has no audio namespace).
+# We mint a local media_id, cache the bytes, and upsert an Asset(kind=audio).
+# On video submit, the worker hoists the cached file to R2 exactly like an
+# image ref (media_id_to_public_url), so reference_audio gets a public URL.
+
+MAX_AUDIO_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB — voice samples are small
+ALLOWED_AUDIO_MIMES = {
+    "audio/mpeg",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/mp4",
+    "audio/aac",
+    "audio/ogg",
+}
+_AUDIO_EXT_BY_MIME = {
+    "audio/mpeg": ".mp3",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/mp4": ".m4a",
+    "audio/aac": ".aac",
+    "audio/ogg": ".ogg",
+}
+
+
+@router.post("/upload-audio")
+async def upload_audio(
+    project_id: str = Form(...),
+    node_id: Optional[int] = Form(default=None),
+    file: UploadFile = File(...),
+):
+    if not is_valid_project_id(project_id):
+        raise HTTPException(status_code=400, detail="invalid project_id")
+
+    mime = (file.content_type or "").lower().split(";")[0].strip()
+    if mime not in ALLOWED_AUDIO_MIMES:
+        raise HTTPException(
+            status_code=415,
+            detail=f"unsupported audio mime: {mime!r}; allowed: {sorted(ALLOWED_AUDIO_MIMES)}",
+        )
+
+    raw = await file.read(MAX_AUDIO_UPLOAD_BYTES + 1)
+    size = len(raw)
+    if size == 0:
+        raise HTTPException(status_code=400, detail="empty file")
+    if size > MAX_AUDIO_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"file too large: {size} > {MAX_AUDIO_UPLOAD_BYTES}",
+        )
+
+    media_id = str(uuid.uuid4())
+    ext = _AUDIO_EXT_BY_MIME.get(mime, ".bin")
+    cache_path = media_service.MEDIA_CACHE_DIR / f"{media_id}{ext}"
+    try:
+        cache_path.write_bytes(raw)
+    except OSError as exc:
+        logger.error("failed to write audio cache %s: %s", cache_path, exc)
+        raise HTTPException(status_code=500, detail="failed to cache audio upload")
+
+    with get_session() as s:
+        row = Asset(
+            uuid_media_id=media_id,
+            kind="audio",
+            local_path=str(cache_path),
+            mime=mime,
+            node_id=node_id,
+        )
+        s.add(row)
+        s.commit()
+
+    logger.info("upload-audio: media_id=%s size=%d mime=%s", media_id, size, mime)
+    return {"media_id": media_id, "mime": mime, "size": size}
 
 
 class UrlUploadBody(BaseModel):

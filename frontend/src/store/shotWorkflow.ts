@@ -68,6 +68,24 @@ export interface FlowboardNodeData extends Record<string, unknown> {
   masterShotAssetId?: number;
   gateTitle?: string;
   gateNotes?: string;
+
+  // Phase 7 — Seedance 2.0 r2v + audio
+  // AudioRefNode: the uploaded voice/audio reference + a human label.
+  audioMediaId?: string;
+  audioMime?: string;
+  voiceDescription?: string;
+  // VideoNode multi-ref editor: ordered reference image media_ids (the
+  // array order IS the @imageN positional binding) + optional per-ref
+  // role hints (UI-only, NOT sent to the API — reserved for Phase 6
+  // prompt synthesis to compose semantic @imageN descriptions).
+  reference_image_ids?: string[];
+  reference_role_hints?: (string | null)[];
+  last_frame_asset_id?: string;
+  audio_ref_media_id?: string;
+  videoModelId?: string;
+  duration_seconds?: number;
+  resolution?: string;
+  generate_audio?: boolean;
 }
 
 export type FlowNode = Node<FlowboardNodeData>;
@@ -104,6 +122,7 @@ const TYPE_TITLE: Record<NodeType, string> = {
   bible_ref: "Bible",
   master_shot: "Master shot",
   approval_gate: "Approval gate",
+  audio_ref: "Audio ref",
 };
 
 const positionTimers = new Map<string, ReturnType<typeof setTimeout>>();

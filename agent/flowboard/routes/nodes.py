@@ -28,6 +28,8 @@ NodeType = Literal[
     "bible_ref",
     "master_shot",
     "approval_gate",
+    # Phase 7: audio reference for Seedance 2.0 r2v+audio.
+    "audio_ref",
 ]
 NodeStatus = Literal["idle", "queued", "running", "done", "error", "partial"]
 

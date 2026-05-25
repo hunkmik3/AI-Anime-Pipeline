@@ -10,6 +10,7 @@ export const ICON: Record<string, string> = {
   bible_ref: "📖",
   master_shot: "★",
   approval_gate: "⏸",
+  audio_ref: "🔊",
 };
 
 export const STATUS_COLOR: Record<string, string> = {

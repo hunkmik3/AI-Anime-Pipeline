@@ -48,6 +48,13 @@ _EXT_BY_MIME = {
     "image/gif": ".gif",
     "video/mp4": ".mp4",
     "video/webm": ".webm",
+    # Audio — Seedance 2.0 reference_audio uploads (Phase 7).
+    "audio/mpeg": ".mp3",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/mp4": ".m4a",
+    "audio/aac": ".aac",
+    "audio/ogg": ".ogg",
 }
 
 

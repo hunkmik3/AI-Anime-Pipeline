@@ -84,6 +84,7 @@ FLOW_DEFAULT_CAPABILITY = VideoProviderCapability(
     supports_multi_ref=False,
     supports_last_frame=False,
     supports_audio_toggle=False,
+    supports_audio_ref=False,
     max_refs=0,
     # Flow's aspect ratios are enum-based at the SDK boundary; surface
     # the human values so the frontend dropdown stays consistent.

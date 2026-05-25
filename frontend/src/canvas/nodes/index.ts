@@ -1,4 +1,5 @@
 import { ApprovalGateNode } from "./ApprovalGateNode";
+import { AudioRefNode } from "./AudioRefNode";
 import { BibleRefNode } from "./BibleRefNode";
 import { CharacterNode } from "./CharacterNode";
 import { ImageNode } from "./ImageNode";
@@ -22,4 +23,5 @@ export const nodeTypes = {
   bible_ref: BibleRefNode,
   master_shot: MasterShotNode,
   approval_gate: ApprovalGateNode,
+  audio_ref: AudioRefNode,
 };
