@@ -19,8 +19,10 @@ Key design points:
 
 1. **Inline-flag prompt builder** — ``--rt W:H --rs Np`` get appended to
    the user's motion_prompt before submit (the API consumes them, then
-   echoes the parsed values back in the poll envelope). r2v aspect/res
-   handling is UNTESTED upstream (§11.7); flags kept pending live QA.
+   echoes the parsed values back in the poll envelope). r2v honors them
+   too: a live probe on 2026-05-25 (--rt 9:16 + 2 reference_image refs)
+   returned a genuine 720×1280 vertical clip, so the flags apply in ALL
+   modes (this resolved the §11.7 "untested on r2v" open question).
 2. **@imageN injection** — r2v binds reference semantics through the
    prompt text (§11.2): ``inject_image_labels`` prepends positional
    ``@imageN`` tags, post-capability-gate so labels match the final
@@ -91,8 +93,8 @@ SEEDANCE_1_5_PRO_CAPABILITY = VideoProviderCapability(
 # Seedance 2.0 r2v + audio. Verified live on 2026-05-25 (contract §11):
 # role="reference_image" multi-ref accepted (≥3 confirmed), audio via
 # role="reference_audio", 5s/8s durations confirmed. max_refs=9 per the
-# Dreamina UI matrix; aspect/resolution flags for r2v are still UNTESTED
-# (§11.7) — we keep emitting --rt/--rs but flag the risk in the builder.
+# Dreamina UI matrix. --rt/--rs ARE honored on r2v (live probe returned
+# 720×1280 for --rt 9:16), so the inline flags apply in all modes.
 SEEDANCE_2_0_CAPABILITY = VideoProviderCapability(
     supports_multi_ref=True,
     supports_last_frame=True,

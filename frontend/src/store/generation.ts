@@ -3,6 +3,7 @@ import { ensureProjectFlowProject, createRequest, getRequest, patchNode } from "
 import { useShotWorkflowStore, type NodeStatus } from "./shotWorkflow";
 import { useProjectStore } from "./project";
 import { useSettingsStore } from "./settings";
+import { useVideoModelsStore } from "./videoModels";
 
 type PollEntry = { requestId: number; timerId: ReturnType<typeof setTimeout> | null };
 
@@ -114,6 +115,30 @@ function collectUpstreamAudioMediaId(targetRfId: string): string | undefined {
     }
   }
   return undefined;
+}
+
+/**
+ * DRIFT 1 fix: identity-anchor refs feeding a VideoNode in r2v mode.
+ * Collects mediaIds from connected Character / VisualAsset / MasterShot
+ * nodes in edge order (deduped). Used only when the model supports
+ * multi-ref AND the VideoNode's manual reference list is empty — so a
+ * canvas wired with character nodes feeds Seedance 2.0 r2v instead of
+ * silently falling back to i2v. Excludes "image"/"storyboard" nodes:
+ * those are generated stills (first_frame material), not identity anchors.
+ */
+const R2V_REF_TYPES = new Set(["character", "visual_asset", "master_shot"]);
+
+function collectUpstreamR2vRefs(targetRfId: string): string[] {
+  const { nodes, edges } = useShotWorkflowStore.getState();
+  const ids: string[] = [];
+  for (const e of edges) {
+    if (e.target !== targetRfId) continue;
+    const src = nodes.find((n) => n.id === e.source);
+    if (!src || !R2V_REF_TYPES.has(src.data.type)) continue;
+    const mid = src.data.mediaId;
+    if (typeof mid === "string" && mid && !ids.includes(mid)) ids.push(mid);
+  }
+  return ids;
 }
 
 function collectUpstreamRefMediaIds(targetRfId: string): string[] {
@@ -258,7 +283,16 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         const guardAudio =
           (typeof nodeForGuard?.data?.audio_ref_media_id === "string" && nodeForGuard.data.audio_ref_media_id) ||
           collectUpstreamAudioMediaId(rfId);
-        if (!hasMulti && !opts.sourceMediaId && guardRefs.length === 0 && !guardAudio) {
+        // Canvas identity-anchor nodes also count as "something to gen from"
+        // (DRIFT 1): a Character->Video graph with no still is valid r2v.
+        const guardCanvasRefs = collectUpstreamR2vRefs(rfId);
+        if (
+          !hasMulti &&
+          !opts.sourceMediaId &&
+          guardRefs.length === 0 &&
+          guardCanvasRefs.length === 0 &&
+          !guardAudio
+        ) {
           useShotWorkflowStore.getState().updateNodeData(rfId, { status: "error", error: "no source media" });
           set({ error: "Video needs a source image, references (r2v), or an audio reference" });
           return;
@@ -300,8 +334,24 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         if (videoSettings.duration_seconds) videoParams.duration_seconds = videoSettings.duration_seconds;
         if (videoSettings.resolution) videoParams.resolution = videoSettings.resolution;
         if (videoSettings.generate_audio !== undefined) videoParams.generate_audio = videoSettings.generate_audio;
-        if (Array.isArray(videoSettings.reference_image_ids) && videoSettings.reference_image_ids.length > 0) {
-          videoParams.reference_images = videoSettings.reference_image_ids;
+        // References for r2v. Manual multi-ref list (VideoNodeSettings) is
+        // authoritative; if it's empty AND the model supports multi-ref,
+        // fall back to identity-anchor nodes wired on the canvas so a
+        // Character->Video graph still drives r2v (DRIFT 1 fix) instead of
+        // silently dropping to i2v.
+        const manualRefs =
+          Array.isArray(videoSettings.reference_image_ids) && videoSettings.reference_image_ids.length > 0
+            ? (videoSettings.reference_image_ids as string[])
+            : [];
+        const resolvedCaps = useVideoModelsStore
+          .getState()
+          .models.find((m) => m.model_id === resolvedModelId)?.capabilities;
+        let r2vRefs = manualRefs;
+        if (manualRefs.length === 0 && resolvedCaps?.supports_multi_ref) {
+          r2vRefs = collectUpstreamR2vRefs(rfId);
+        }
+        if (r2vRefs.length > 0) {
+          videoParams.reference_images = r2vRefs;
         }
         if (typeof videoSettings.last_frame_asset_id === "string" && videoSettings.last_frame_asset_id) {
           videoParams.last_frame_url = videoSettings.last_frame_asset_id;
