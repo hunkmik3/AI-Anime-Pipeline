@@ -210,6 +210,18 @@ export function GenerationDialog() {
   // node.data.prompt. No image dispatch, no aspect/variants.
   const isPrompt = targetType === "prompt";
 
+  // Phase 8.1: per-VideoNode prompt mode. Manual (default) = paste the full
+  // structured prompt, no LLM synth, no Bible inject, no camera-preset
+  // append. Automation = current Phase 6/7 behavior (motion-prompt synth +
+  // camera presets). Only meaningful for video nodes.
+  const videoPromptMode: "manual" | "automation" =
+    (node?.data.prompt_mode as "manual" | "automation" | undefined) ?? "manual";
+  const isManualVideo = isVideo && videoPromptMode === "manual";
+  // Manual mode lets the user paste a full SGS-template prompt (refs +
+  // visual style + shot beats + dialogue + SFX), which runs ~4.5k chars in
+  // production (contract §11.5). Match the character custom-prompt cap.
+  const promptMaxLen = isManualVideo ? 8000 : 500;
+
   // Find upstream source image for video nodes. When the upstream has
   // multiple variants, we batch-i2v one video per variant — `sourceMediaIds`
   // captures the full set; `sourceMediaId` is the active variant for the
@@ -330,6 +342,16 @@ export function GenerationDialog() {
       setCharPromptMode("builder");
       setAutoBuilding(false);
       setAutoPromptUsed(false);
+      // Phase 8.1: ensure a video node carries an explicit prompt_mode so
+      // the backend synth guard has a real value (default = manual). Only
+      // stamps when the field is absent — never overrides a user choice.
+      if (openNodeType === "video" && openNode?.data.prompt_mode === undefined) {
+        useShotWorkflowStore.getState().updateNodeData(rfId, { prompt_mode: "manual" });
+        const dbId = parseInt(rfId, 10);
+        if (!isNaN(dbId)) {
+          patchNode(dbId, { data: { prompt_mode: "manual" } }).catch(() => {});
+        }
+      }
       // Default-select every upstream source variant for video targets so
       // the user just hits Generate when they want all videos.
       const upstreamEdge = useShotWorkflowStore
@@ -449,6 +471,18 @@ export function GenerationDialog() {
     }
   }
 
+  /** Phase 8.1: persist the VideoNode's prompt mode. Stamped explicitly
+   * (not left to a default) so the backend auto_prompt guard sees a real
+   * "manual" value and refuses synth for manual nodes. */
+  function persistVideoPromptMode(mode: "manual" | "automation") {
+    if (!rfId) return;
+    useShotWorkflowStore.getState().updateNodeData(rfId, { prompt_mode: mode });
+    const dbId = parseInt(rfId, 10);
+    if (!isNaN(dbId)) {
+      patchNode(dbId, { data: { prompt_mode: mode } }).catch(() => {});
+    }
+  }
+
   async function handleSubmit() {
     if (!rfId) return;
     // Defense in depth — block submit if the LLM layer is still composing
@@ -529,6 +563,25 @@ export function GenerationDialog() {
       closeGenerationDialog();
       return;
     }
+    // Phase 8.1 — Manual video mode: paste the full prompt, send verbatim.
+    // No Phase 6 auto-synth, no camera-preset append, no Bible. The Generate
+    // button is disabled when the prompt is empty (canGenerate), so we never
+    // reach a synth fallback here.
+    if (isManualVideo) {
+      const picked = sourceMediaIds.filter((_, i) => selectedSourceIdx.has(i));
+      const useMulti = picked.length > 1;
+      dispatchGeneration(rfId, {
+        prompt,
+        aspectRatio,
+        kind: "video",
+        sourceMediaId: useMulti ? undefined : picked[0],
+        sourceMediaIds: useMulti ? picked : undefined,
+        variantCount: Math.max(1, picked.length),
+      });
+      closeGenerationDialog();
+      return;
+    }
+
     // Image / video branch — if user left the prompt blank, synthesise
     // from upstream briefs (composition prompt for image, motion prompt
     // for video) before dispatching. For image with variants > 1 use the
@@ -620,12 +673,17 @@ export function GenerationDialog() {
     || node?.data.aiBriefStatus === "pending";
   const isWorking = autoBuilding || nodeLLMBusy;
 
-  // Both image and video allow empty prompt — we'll auto-synth on submit.
-  // Video needs at least one selected source variant.
+  // Both image and automation-video allow an empty prompt — we'll auto-synth
+  // on submit. Automation video also needs a selected source variant (i2v).
+  // Manual video (Phase 8.1) sends the pasted prompt verbatim with no synth,
+  // so it requires a non-empty prompt instead; ref/audio/source presence is
+  // validated at dispatch (r2v shots legitimately have no source frame).
   const canGenerate = isCharacter
     ? charPromptMode === "custom"
       ? prompt.trim().length > 0
       : charGender !== null || charCountry !== null || charExtras.trim().length > 0
+    : isManualVideo
+    ? prompt.trim().length > 0 && !isWorking
     : isVideo
     ? selectedSourceIdx.size > 0 && !isWorking
     : !isWorking;
@@ -672,33 +730,65 @@ export function GenerationDialog() {
           </button>
         </div>
 
+        {/* Prompt-mode toggle (video only) — Manual paste vs Automation
+            synth. Persisted per-node; default Manual. */}
+        {isVideo && (
+          <div className="gen-dialog__field">
+            <span className="gen-dialog__label">Prompt mode</span>
+            <div className="aspect-chip-row">
+              <button
+                type="button"
+                className={`aspect-chip${videoPromptMode === "manual" ? " aspect-chip--active" : ""}`}
+                onClick={() => persistVideoPromptMode("manual")}
+              >
+                Manual
+              </button>
+              <button
+                type="button"
+                className={`aspect-chip${videoPromptMode === "automation" ? " aspect-chip--active" : ""}`}
+                onClick={() => persistVideoPromptMode("automation")}
+              >
+                Automation
+              </button>
+            </div>
+            <p className="gen-dialog__hint">
+              <strong>Manual</strong> = paste full prompt (refs · visual style ·
+              shot beats · dialogue · SFX) gửi nguyên văn, không LLM synth,
+              không Bible inject. <strong>Automation</strong> = auto-synth
+              motion prompt + Bible (Phase 6).
+            </p>
+          </div>
+        )}
+
         {/* Prompt — hidden when character mode shows the builder instead */}
         {!isCharacter && (
           <div className="gen-dialog__field">
             <div className="gen-dialog__label-row">
               <label className="gen-dialog__label" htmlFor="gen-prompt">
-                {isVideo ? "Motion prompt" : "Prompt"}
-                {autoPromptUsed && (
+                {isManualVideo ? "Full prompt (paste manual)" : isVideo ? "Motion prompt" : "Prompt"}
+                {autoPromptUsed && !isManualVideo && (
                   <span className="gen-dialog__auto-badge" title="Auto-generated from upstream nodes">
                     ✨ auto
                   </span>
                 )}
               </label>
-              <span className="gen-dialog__char-count">{prompt.length}/500</span>
+              <span className="gen-dialog__char-count">{prompt.length}/{promptMaxLen}</span>
             </div>
             <textarea
               id="gen-prompt"
               ref={firstFocusRef}
               className="gen-dialog__textarea"
-              rows={5}
-              maxLength={500}
+              rows={isManualVideo ? 12 : 5}
+              maxLength={promptMaxLen}
               value={prompt}
               onChange={(e) => {
                 setPrompt(e.target.value);
                 if (autoPromptUsed) setAutoPromptUsed(false);
               }}
               placeholder={
-                isVideo
+                isManualVideo
+                  ? "Paste full Seedance prompt — References (@image1 = …), Visual Style, Shot N (Xs-Ys), Dialogue, SFX. Gửi nguyên văn."
+                  : isVideo
                   ? "Bỏ trống để tự sinh motion prompt từ source image ✨"
                   : isPrompt
                   ? "Nhập prompt mồi để feed cho downstream image / video…"
@@ -1073,8 +1163,9 @@ export function GenerationDialog() {
           </div>
         )}
 
-        {/* Camera movement (video only) */}
-        {isVideo && (
+        {/* Camera movement (automation video only — Manual mode bakes
+            camera direction into the pasted prompt). */}
+        {isVideo && !isManualVideo && (
           <div className="gen-dialog__field">
             <span className="gen-dialog__label">Camera</span>
             <div className="aspect-chip-row">

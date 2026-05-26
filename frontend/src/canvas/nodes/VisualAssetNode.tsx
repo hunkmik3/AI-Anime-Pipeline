@@ -16,6 +16,7 @@ import {
 } from "../../store/shotWorkflow";
 import { BaseNodeShell } from "./BaseNodeShell";
 import { BriefHint } from "./shared/BriefHint";
+import { RefLabelFields } from "./shared/RefLabelFields";
 import { saveTileToLibrary } from "./shared/saveTileToLibrary";
 
 function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }) {
@@ -227,6 +228,7 @@ function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData
             e.target.value = "";
           }}
         />
+        <RefLabelFields rfId={rfId} data={data} />
         {error && <p className="visual-asset__error">{error}</p>}
       </div>
     );
@@ -309,6 +311,7 @@ function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData
           />
         </div>
       )}
+      <RefLabelFields rfId={rfId} data={data} />
       {error && <p className="visual-asset__error">{error}</p>}
     </div>
   );

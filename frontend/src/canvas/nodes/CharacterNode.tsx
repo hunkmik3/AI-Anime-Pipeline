@@ -11,6 +11,7 @@ import {
 } from "../../store/shotWorkflow";
 import { BaseNodeShell } from "./BaseNodeShell";
 import { BriefHint } from "./shared/BriefHint";
+import { RefLabelFields } from "./shared/RefLabelFields";
 import { saveTileToLibrary } from "./shared/saveTileToLibrary";
 
 const ACCEPT_MIME = "image/png,image/jpeg,image/webp,image/gif";
@@ -137,6 +138,7 @@ function CharacterBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
         >
           ★ Save
         </button>
+        <RefLabelFields rfId={rfId} data={data} />
         <input
           ref={fileInputRef}
           type="file"
@@ -184,6 +186,7 @@ function CharacterBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
           </>
         )}
       </div>
+      <RefLabelFields rfId={rfId} data={data} />
       <input
         ref={fileInputRef}
         type="file"

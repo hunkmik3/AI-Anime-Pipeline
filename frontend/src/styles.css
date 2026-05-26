@@ -2138,6 +2138,34 @@ button:disabled {
   border-radius: 4px;
 }
 
+/* Phase 8.1 — per-ref @image label + description (Character / VisualAsset) */
+.ref-label-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.ref-label-fields__label,
+.ref-label-fields__desc {
+  font-size: 11px;
+  padding: 4px 6px;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.ref-label-fields__label {
+  font-family: var(--mono, monospace);
+}
+
+.ref-label-fields__desc {
+  resize: vertical;
+}
+
 .visual-asset__refine-actions {
   display: flex;
   gap: 4px;

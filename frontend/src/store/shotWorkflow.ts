@@ -86,6 +86,14 @@ export interface FlowboardNodeData extends Record<string, unknown> {
   duration_seconds?: number;
   resolution?: string;
   generate_audio?: boolean;
+
+  // Phase 8.1 — Manual vs Automation prompt mode (VideoNode only; default
+  // "manual"). Manual = paste full prompt, no synth / no Bible.
+  prompt_mode?: "manual" | "automation";
+  // Per-ref node (Character / VisualAsset): user-assigned @image label
+  // (drives positional ref ordering) + optional 2-3 line description.
+  reference_label?: string;
+  reference_description?: string;
 }
 
 export type FlowNode = Node<FlowboardNodeData>;

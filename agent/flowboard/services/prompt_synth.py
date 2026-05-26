@@ -488,6 +488,8 @@ def _format_user_message(
     target: Node,
     project_bible: dict[str, Any],
     scene_bible_text: str,
+    *,
+    skip_bible: bool = False,
 ) -> str:
     """Render the upstream context + bibles into a compact prompt.
 
@@ -497,12 +499,17 @@ def _format_user_message(
     ``script`` and ``bible_ref`` passthrough nodes surface their text
     under dedicated sections so the LLM has the dramatic / style
     context driving this shot.
+
+    ``skip_bible`` (Phase 8.1): when True, the Project/Scene Bible block is
+    omitted entirely — the manual-mode bible-skip mechanism (decision A4:
+    Bible nodes stay visual on the canvas, backend just doesn't inject).
     """
     parts: list[str] = []
 
-    bible_block = _format_bible_block(project_bible, scene_bible_text)
-    if bible_block:
-        parts.append(bible_block)
+    if not skip_bible:
+        bible_block = _format_bible_block(project_bible, scene_bible_text)
+        if bible_block:
+            parts.append(bible_block)
 
     # Build the label-translation map for image-sibling multi-subject
     # detection (so an `image` record's `subject_chars` entries can be
@@ -856,6 +863,20 @@ async def auto_prompt(node_id: int, *, camera: Optional[str] = None) -> str:
     records, target, project_bible, scene_bible_text = _collect_upstream(node_id)
     if target is None:
         raise PromptSynthError(f"node {node_id} not found")
+
+    # Phase 8.1: Manual mode is paste-the-full-prompt — Phase 6 LLM synth +
+    # Bible injection are INTENTIONALLY skipped. The frontend never calls
+    # auto_prompt for a manual node; this guard is the server-side
+    # enforcement so an accidental call can't silently re-introduce
+    # synth/bible on a manually-authored prompt.
+    #
+    # Only an EXPLICIT prompt_mode="manual" raises. A missing field is
+    # treated as automation so pre-8.1 nodes (and the existing image/video
+    # auto-synth corpus, which never set the field) keep working — the
+    # product default ("manual" for new video nodes) is stamped explicitly
+    # by the UI, so any 8.1-era node carries a real value here.
+    if (target.data or {}).get("prompt_mode") == "manual":
+        raise PromptSynthError("manual_mode_no_synth")
 
     is_video = target.type == "video"
     subject_count = len(_distinct_subjects(records))

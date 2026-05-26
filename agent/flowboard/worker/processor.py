@@ -242,11 +242,21 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
         except VideoError as exc:
             return {"error": str(exc)}, f"{exc.code}:{exc}"
 
-        ref_inputs = params.get("reference_images") or []
+        # Phase 8.1: reorder refs by their per-node @image label digit BEFORE
+        # the R2 hoist so the Nth reference_image block (and the hoist order)
+        # matches @imageN. `reference_labels` is positionally parallel to
+        # `reference_images`; all-null (Automation / label-less canvas) is a
+        # no-op. We reorder the bare media_ids/urls first, then hoist.
+        ref_inputs = [r for r in (params.get("reference_images") or []) if isinstance(r, str) and r]
+        raw_labels = params.get("reference_labels")
+        if isinstance(raw_labels, list) and ref_inputs:
+            from flowboard.services.video.ref_ordering import order_refs_by_label
+
+            labels = [(lbl if isinstance(lbl, str) else None) for lbl in raw_labels]
+            ref_inputs = order_refs_by_label(ref_inputs, labels)
+
         resolved_refs: list[str] = []
         for r in ref_inputs:
-            if not isinstance(r, str) or not r:
-                continue
             if r.startswith(("http://", "https://", "data:")):
                 resolved_refs.append(r)
                 continue

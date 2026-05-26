@@ -128,17 +128,35 @@ function collectUpstreamAudioMediaId(targetRfId: string): string | undefined {
  */
 const R2V_REF_TYPES = new Set(["character", "visual_asset", "master_shot"]);
 
-function collectUpstreamR2vRefs(targetRfId: string): string[] {
+/**
+ * Phase 8.1: r2v refs WITH each ref node's user-assigned @image label.
+ * The label drives positional ordering on the backend so the Nth
+ * reference_image block matches @imageN in the pasted prompt. Edge order
+ * is preserved (and dedup keeps the first occurrence's label).
+ */
+function collectUpstreamR2vRefsDetailed(
+  targetRfId: string,
+): { id: string; label: string | null }[] {
   const { nodes, edges } = useShotWorkflowStore.getState();
-  const ids: string[] = [];
+  const out: { id: string; label: string | null }[] = [];
   for (const e of edges) {
     if (e.target !== targetRfId) continue;
     const src = nodes.find((n) => n.id === e.source);
     if (!src || !R2V_REF_TYPES.has(src.data.type)) continue;
     const mid = src.data.mediaId;
-    if (typeof mid === "string" && mid && !ids.includes(mid)) ids.push(mid);
+    if (typeof mid !== "string" || !mid) continue;
+    if (out.some((r) => r.id === mid)) continue;
+    const label =
+      typeof src.data.reference_label === "string" && src.data.reference_label.trim()
+        ? src.data.reference_label.trim()
+        : null;
+    out.push({ id: mid, label });
   }
-  return ids;
+  return out;
+}
+
+function collectUpstreamR2vRefs(targetRfId: string): string[] {
+  return collectUpstreamR2vRefsDetailed(targetRfId).map((r) => r.id);
 }
 
 function collectUpstreamRefMediaIds(targetRfId: string): string[] {
@@ -346,12 +364,21 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         const resolvedCaps = useVideoModelsStore
           .getState()
           .models.find((m) => m.model_id === resolvedModelId)?.capabilities;
+        // Phase 8.1: refs carry parallel @image labels. The manual VideoNode
+        // list (bare media_ids) has no per-node label → all null (backend
+        // no-op). Canvas-wired ref nodes carry their reference_label, which
+        // the backend uses to order reference_images so @imageN binds right.
         let r2vRefs = manualRefs;
+        let r2vLabels: (string | null)[] = manualRefs.map(() => null);
         if (manualRefs.length === 0 && resolvedCaps?.supports_multi_ref) {
-          r2vRefs = collectUpstreamR2vRefs(rfId);
+          const detailed = collectUpstreamR2vRefsDetailed(rfId);
+          r2vRefs = detailed.map((r) => r.id);
+          r2vLabels = detailed.map((r) => r.label);
         }
         if (r2vRefs.length > 0) {
           videoParams.reference_images = r2vRefs;
+          // Always sent (one code path); backend ignores an all-null list.
+          videoParams.reference_labels = r2vLabels;
         }
         if (typeof videoSettings.last_frame_asset_id === "string" && videoSettings.last_frame_asset_id) {
           videoParams.last_frame_url = videoSettings.last_frame_asset_id;
