@@ -8,7 +8,7 @@ import {
   uploadImageFromUrl,
 } from "../../api/client";
 import { requestAutoBrief } from "../../api/autoBrief";
-import { useGenerationStore } from "../../store/generation";
+import { resolvePrimaryMediaId, useGenerationStore } from "../../store/generation";
 import {
   useShotWorkflowStore,
   type FlowNode,
@@ -18,9 +18,13 @@ import { BaseNodeShell } from "./BaseNodeShell";
 import { BriefHint } from "./shared/BriefHint";
 import { RefLabelFields } from "./shared/RefLabelFields";
 import { saveTileToLibrary } from "./shared/saveTileToLibrary";
+import { uploadVariantToNode } from "./shared/uploadVariant";
 
 function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }) {
   const mediaId = data.mediaId;
+  // Phase 8.1.5b: show the PRIMARY variant (primary_variant_id ?? mediaId ??
+  // mediaIds[0]) so a user-chosen primary drives what's displayed/saved.
+  const displayId = resolvePrimaryMediaId(data) ?? mediaId;
   const isProcessing = data.status === "queued" || data.status === "running";
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,11 +36,28 @@ function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData
   const [linkValue, setLinkValue] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const refInputRef = useRef<HTMLInputElement>(null);
+  const variantInputRef = useRef<HTMLInputElement>(null);
+
+  async function onVariantPick(file: File) {
+    setError(null);
+    setUploading(true);
+    try {
+      const mid = await uploadVariantToNode(rfId, data, file);
+      if (!mid) setError("no project");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "upload failed");
+    } finally {
+      setUploading(false);
+    }
+  }
 
   function persistMedia(newMediaId: string, aspectRatio?: string) {
+    // Replace/initial = single fresh image: clear any stale primary so the
+    // displayed thumbnail (resolvePrimaryMediaId) shows the new image.
     useShotWorkflowStore.getState().updateNodeData(rfId, {
       mediaId: newMediaId,
       mediaIds: [newMediaId],
+      primary_variant_id: undefined,
       variantCount: 1,
       status: "done",
       aiBrief: undefined,
@@ -49,6 +70,7 @@ function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData
         data: {
           mediaId: newMediaId,
           mediaIds: [newMediaId],
+          primary_variant_id: null,
           variantCount: 1,
           aiBrief: null,
           aspectRatio,
@@ -238,9 +260,12 @@ function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData
     <div className="node-body node-body--visual-asset node-body--visual-asset-with-media">
       <div className="visual-asset__media">
         <img
-          className="visual-asset__image"
-          src={mediaUrl(mediaId)}
+          className="visual-asset__image visual-asset__image--clickable"
+          src={mediaUrl(displayId ?? mediaId)}
           alt={data.title}
+          role="button"
+          tabIndex={0}
+          onClick={() => useGenerationStore.getState().openResultViewer(rfId)}
         />
         {!isProcessing && (
           <button
@@ -261,7 +286,7 @@ function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData
           onClick={(e) => {
             e.stopPropagation();
             saveTileToLibrary({
-              mediaId,
+              mediaId: displayId ?? mediaId,
               nodeType: data.type,
               data,
             });
@@ -272,6 +297,60 @@ function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData
           ★ Save
         </button>
       )}
+      {!isProcessing && (
+        <button
+          type="button"
+          className="visual-asset__action"
+          onClick={(e) => {
+            e.stopPropagation();
+            fileInputRef.current?.click();
+          }}
+          disabled={uploading}
+          title="Replace this image (resets variants)"
+          aria-label="Replace image"
+        >
+          ⤓ Replace
+        </button>
+      )}
+      {!isProcessing && (
+        <button
+          type="button"
+          className="visual-asset__action"
+          onClick={(e) => {
+            e.stopPropagation();
+            variantInputRef.current?.click();
+          }}
+          disabled={uploading}
+          title="Upload another image as a variant (double-click node → set primary)"
+          aria-label="Upload variant"
+        >
+          + Variant
+        </button>
+      )}
+      <input
+        ref={variantInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void onVariantPick(f);
+          e.target.value = "";
+        }}
+      />
+      {/* Replace picker (has-media state) — the empty-state input is in the
+          other branch, so the Replace button needs its own input here. */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) uploadOwn(f);
+          e.target.value = "";
+        }}
+      />
       {refineOpen && (
         <div className="visual-asset__refine-panel" role="region" aria-label="Refine">
           <textarea
@@ -336,10 +415,11 @@ export function VisualAssetNode(props: NodeProps<FlowNode>) {
 }
 
 function downloadVisualAsset(data: FlowboardNodeData) {
-  if (!data.mediaId) return;
+  const dl = resolvePrimaryMediaId(data) ?? data.mediaId;
+  if (!dl) return;
   const safeTitle = (data.title || data.type).replace(/[^A-Za-z0-9_-]+/g, "_");
   const a = document.createElement("a");
-  a.href = mediaUrl(data.mediaId);
+  a.href = mediaUrl(dl);
   a.download = `${safeTitle}-${data.shortId}.png`;
   document.body.appendChild(a);
   a.click();

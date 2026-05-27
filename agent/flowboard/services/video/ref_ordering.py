@@ -22,9 +22,39 @@ This module is intentionally pure (no DB, no I/O) so it unit-tests cleanly.
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Any, Optional
 
 _DIGIT_RE = re.compile(r"\d+")
+
+
+def resolve_primary_media_id(node_data: Optional[dict[str, Any]]) -> Optional[str]:
+    """Phase 8.1.5 — pick the canonical media_id for a ref node (Character /
+    VisualAsset) from its persisted ``data``.
+
+    3-tier fallback (locked D6):
+      1. ``primary_variant_id`` — the user-chosen primary (a media_id string)
+      2. ``mediaId``            — the node's active media (gen sets = variant 1)
+      3. ``mediaIds[0]``        — first variant, if neither of the above set
+
+    Returns ``None`` when the node carries no usable media at all. A
+    ``primary_variant_id`` that doesn't match any known variant is still
+    honored (the user may have pointed it at a custom-uploaded variant whose
+    id isn't in a stale ``mediaIds`` snapshot) — we only fall through when it
+    is empty / not a string.
+    """
+    data = node_data or {}
+    primary = data.get("primary_variant_id")
+    if isinstance(primary, str) and primary:
+        return primary
+    media_id = data.get("mediaId")
+    if isinstance(media_id, str) and media_id:
+        return media_id
+    media_ids = data.get("mediaIds")
+    if isinstance(media_ids, list):
+        for m in media_ids:
+            if isinstance(m, str) and m:
+                return m
+    return None
 
 
 def _label_digit(label: Optional[str]) -> Optional[int]:

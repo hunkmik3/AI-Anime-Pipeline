@@ -103,7 +103,11 @@ SEEDANCE_2_0_CAPABILITY = VideoProviderCapability(
     max_refs=9,
     aspect_ratios=("1:1", "16:9", "9:16"),
     resolutions=("720p", "1080p"),
-    durations=(5, 8, 10),
+    # Phase 8.1.5c: contiguous 4..15s range (Dreamina UI exposes a slider).
+    # Only 5/8s are live-verified (contract §11); the rest are accepted by
+    # the provider and gated by the live test — if the ARK API rejects a
+    # value the submit fails loudly and we narrow this tuple.
+    durations=tuple(range(4, 16)),
 )
 
 

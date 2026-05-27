@@ -42,6 +42,9 @@ interface GenerationState {
       // prompt — required for batch auto-prompt to keep poses distinct
       // across the 4 generated images.
       prompts?: string[];
+      // Phase 8.1.5: standalone custom refs uploaded in the video dialog
+      // (not persisted to a node). Appended to reference_images/labels.
+      customRefs?: { mediaId: string; label: string | null }[];
     },
   ): Promise<void>;
 
@@ -129,6 +132,27 @@ function collectUpstreamAudioMediaId(targetRfId: string): string | undefined {
 const R2V_REF_TYPES = new Set(["character", "visual_asset", "master_shot"]);
 
 /**
+ * Phase 8.1.5: resolve a ref node's canonical media_id. Mirrors the backend
+ * helper resolve_primary_media_id (agent/.../services/video/ref_ordering.py):
+ * primary_variant_id ?? mediaId ?? first non-empty mediaIds entry.
+ */
+export function resolvePrimaryMediaId(
+  data: Record<string, unknown> | undefined,
+): string | undefined {
+  const d = data ?? {};
+  const primary = d.primary_variant_id;
+  if (typeof primary === "string" && primary) return primary;
+  const mid = d.mediaId;
+  if (typeof mid === "string" && mid) return mid;
+  const ids = d.mediaIds;
+  if (Array.isArray(ids)) {
+    const first = ids.find((m): m is string => typeof m === "string" && m.length > 0);
+    if (first) return first;
+  }
+  return undefined;
+}
+
+/**
  * Phase 8.1: r2v refs WITH each ref node's user-assigned @image label.
  * The label drives positional ordering on the backend so the Nth
  * reference_image block matches @imageN in the pasted prompt. Edge order
@@ -143,8 +167,11 @@ function collectUpstreamR2vRefsDetailed(
     if (e.target !== targetRfId) continue;
     const src = nodes.find((n) => n.id === e.source);
     if (!src || !R2V_REF_TYPES.has(src.data.type)) continue;
-    const mid = src.data.mediaId;
-    if (typeof mid !== "string" || !mid) continue;
+    // Phase 8.1.5: resolve the node's PRIMARY variant
+    // (primary_variant_id ?? mediaId ?? mediaIds[0]) — must mirror the
+    // backend resolve_primary_media_id (services/video/ref_ordering.py).
+    const mid = resolvePrimaryMediaId(src.data);
+    if (!mid) continue;
     if (out.some((r) => r.id === mid)) continue;
     const label =
       typeof src.data.reference_label === "string" && src.data.reference_label.trim()
@@ -243,6 +270,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
     sourceMediaIds?: string[];
     variantCount?: number;
     prompts?: string[];
+    customRefs?: { mediaId: string; label: string | null }[];
   }) {
     const projectId = await get().ensureProjectId();
     if (projectId === null) return;
@@ -374,6 +402,16 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
           const detailed = collectUpstreamR2vRefsDetailed(rfId);
           r2vRefs = detailed.map((r) => r.id);
           r2vLabels = detailed.map((r) => r.label);
+        }
+        // Phase 8.1.5: standalone custom refs (uploaded in the dialog, not
+        // wired to a node) append after the canvas refs, preserving order.
+        if (Array.isArray(opts.customRefs) && opts.customRefs.length > 0) {
+          for (const c of opts.customRefs) {
+            if (c.mediaId && !r2vRefs.includes(c.mediaId)) {
+              r2vRefs = [...r2vRefs, c.mediaId];
+              r2vLabels = [...r2vLabels, c.label];
+            }
+          }
         }
         if (r2vRefs.length > 0) {
           videoParams.reference_images = r2vRefs;

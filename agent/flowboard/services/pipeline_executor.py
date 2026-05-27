@@ -43,6 +43,7 @@ from sqlmodel import select
 
 from flowboard.db import get_session
 from flowboard.db.models import Edge, Node, PipelineRun, Plan, Request
+from flowboard.services.video.ref_ordering import resolve_primary_media_id
 from flowboard.short_id import generate_unique_short_id
 from flowboard.worker.processor import get_worker
 
@@ -415,11 +416,13 @@ async def run_pipeline(
         upstream_nodes = [node_by_id[u] for u in upstream_node_ids if u in node_by_id]
 
         if node.type == "image":
+            # Phase 8.1.5: resolve each ref node to its primary variant
+            # (primary_variant_id ?? mediaId ?? mediaIds[0]) so a user-chosen
+            # primary drives the ref, not always variant 1.
             ref_media_ids = [
-                (u.data or {}).get("mediaId")
+                resolve_primary_media_id(u.data)
                 for u in upstream_nodes
                 if u.type in ("character", "image", "visual_asset")
-                and isinstance((u.data or {}).get("mediaId"), str)
             ]
             ref_media_ids = [m for m in ref_media_ids if m]
             params = {

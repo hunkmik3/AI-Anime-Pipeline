@@ -94,6 +94,9 @@ export interface FlowboardNodeData extends Record<string, unknown> {
   // (drives positional ref ordering) + optional 2-3 line description.
   reference_label?: string;
   reference_description?: string;
+  // Phase 8.1.5 — chosen primary variant (a media_id from mediaIds). Global
+  // per node; downstream refs resolve primary_variant_id ?? mediaId ?? mediaIds[0].
+  primary_variant_id?: string;
 }
 
 export type FlowNode = Node<FlowboardNodeData>;

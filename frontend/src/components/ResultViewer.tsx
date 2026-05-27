@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useGenerationStore } from "../store/generation";
 import { useShotWorkflowStore } from "../store/shotWorkflow";
 import { useSettingsStore } from "../store/settings";
-import { getMediaStatus, mediaUrl, type MediaStatus } from "../api/client";
+import { getMediaStatus, mediaUrl, patchNode, type MediaStatus } from "../api/client";
 import { countryLabel, vibeLabel } from "../constants/character";
 
 const ICON: Record<string, string> = {
@@ -304,6 +304,32 @@ export function ResultViewer() {
     setCacheKey((k) => k + 1);
   }
 
+  // Phase 8.1.5 — primary variant selection (ref-source nodes only).
+  // Downstream r2v / image refs resolve primary_variant_id ?? mediaId ??
+  // mediaIds[0], so marking a variant primary makes every shot using this
+  // ref feed that exact image (identity consistency across the scene).
+  const PRIMARY_ELIGIBLE = new Set(["character", "visual_asset", "image"]);
+  const canSetPrimary =
+    !!rfId && !!data && PRIMARY_ELIGIBLE.has(data.type) && mediaIds.length >= 2;
+  const resolvedPrimaryId =
+    (typeof data?.primary_variant_id === "string" && data.primary_variant_id) ||
+    (typeof data?.mediaId === "string" && data.mediaId) ||
+    (typeof mediaIds[0] === "string" ? mediaIds[0] : undefined);
+  const activeVariantId =
+    typeof mediaIds[activeIdx] === "string" ? (mediaIds[activeIdx] as string) : undefined;
+  const activeIsPrimary = !!activeVariantId && activeVariantId === resolvedPrimaryId;
+
+  function setActiveAsPrimary() {
+    if (!rfId || !activeVariantId) return;
+    useShotWorkflowStore.getState().updateNodeData(rfId, {
+      primary_variant_id: activeVariantId,
+    });
+    const dbId = parseInt(rfId, 10);
+    if (!isNaN(dbId)) {
+      patchNode(dbId, { data: { primary_variant_id: activeVariantId } }).catch(() => {});
+    }
+  }
+
   let hintText: string;
   if (status === null) {
     hintText = "Loading…";
@@ -492,19 +518,26 @@ export function ResultViewer() {
                 variants succeeded vs failed. */}
             {mediaIds.length > 0 && (
               <div className="variant-switcher" role="group" aria-label="Variant selection">
-                {mediaIds.map((_id, idx) => {
+                {mediaIds.map((id, idx) => {
                   const chipError = data?.slotErrors?.[idx] ?? null;
                   const blocked = chipError !== null && chipError !== undefined;
+                  const isPrimary =
+                    canSetPrimary && typeof id === "string" && id === resolvedPrimaryId;
                   return (
                     <button
                       key={idx}
-                      className={`variant-switcher__chip${idx === activeIdx ? " variant-switcher__chip--active" : ""}${blocked ? " variant-switcher__chip--blocked" : ""}`}
+                      className={`variant-switcher__chip${idx === activeIdx ? " variant-switcher__chip--active" : ""}${blocked ? " variant-switcher__chip--blocked" : ""}${isPrimary ? " variant-switcher__chip--primary" : ""}`}
                       onClick={() => setActiveIdx(idx)}
-                      aria-label={blocked ? `Variant ${idx + 1} — blocked: ${chipError}` : `Variant ${idx + 1}`}
-                      title={blocked ? `Blocked: ${chipError}` : undefined}
+                      aria-label={
+                        blocked
+                          ? `Variant ${idx + 1} — blocked: ${chipError}`
+                          : `Variant ${idx + 1}${isPrimary ? " (primary)" : ""}`
+                      }
+                      title={blocked ? `Blocked: ${chipError}` : isPrimary ? "Primary variant" : undefined}
                       aria-pressed={idx === activeIdx}
                     >
                       {blocked ? "⚠" : idx + 1}
+                      {isPrimary && <span className="variant-switcher__chip-star" aria-hidden="true">★</span>}
                     </button>
                   );
                 })}
@@ -636,6 +669,20 @@ export function ResultViewer() {
             >
               New variant +
             </button>
+            {canSetPrimary && (
+              <button
+                className={`result-viewer__btn${activeIsPrimary ? " result-viewer__btn--primary" : ""}`}
+                onClick={setActiveAsPrimary}
+                disabled={activeIsPrimary}
+                title={
+                  activeIsPrimary
+                    ? "This variant is the primary used by downstream refs"
+                    : "Make this variant the canonical image for every shot using this ref"
+                }
+              >
+                {activeIsPrimary ? "★ Primary" : "Set as primary"}
+              </button>
+            )}
             {projectId ? (
               <a
                 className="result-viewer__btn result-viewer__btn--link"

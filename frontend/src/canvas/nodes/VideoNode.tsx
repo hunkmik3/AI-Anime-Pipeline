@@ -24,8 +24,18 @@ function VideoBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }) {
   const isError = data.status === "error";
   const isPartial = data.status === "done" && Boolean(data.error);
 
+  // Phase 8.1.5c: the poster is only meaningful for i2v — the upstream
+  // image/storyboard IS the video's first frame. For r2v the upstream is a
+  // Character/VisualAsset ref sheet (NOT the video's content), so using it as
+  // a poster made the Video node look like the character sheet. With no
+  // poster, VideoTile renders the actual <video> (its own first frame).
   const { nodes, edges } = useShotWorkflowStore.getState();
-  const upstreamEdge = edges.find((e) => e.target === rfId);
+  const I2V_SOURCE_TYPES = new Set(["image", "storyboard"]);
+  const upstreamEdge = edges.find((e) => {
+    if (e.target !== rfId) return false;
+    const s = nodes.find((n) => n.id === e.source);
+    return !!s && I2V_SOURCE_TYPES.has(s.data.type);
+  });
   const upstreamNode = upstreamEdge
     ? nodes.find((n) => n.id === upstreamEdge.source)
     : undefined;

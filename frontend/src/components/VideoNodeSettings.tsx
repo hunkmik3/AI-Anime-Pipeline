@@ -78,7 +78,16 @@ export function VideoNodeSettings({ rfId }: Props) {
     ? (data.reference_role_hints as (string | null)[])
     : [];
   const lastFrame = (data.last_frame_asset_id as string | undefined) ?? "";
-  const duration = (data.duration_seconds as number | undefined) ?? caps.durations[0];
+  // Default 5s when the model allows it (both Seedance tiers do), else the
+  // model's first allowed value.
+  const durationDefault = caps.durations.includes(5) ? 5 : caps.durations[0];
+  const duration = (data.duration_seconds as number | undefined) ?? durationDefault;
+  // Phase 8.1.5c: render a slider when durations form a contiguous 1s range
+  // (Seedance 2.0 = 4..15); otherwise keep the discrete dropdown (1.5-pro = 5/8/10).
+  const durSorted = [...caps.durations].sort((a, b) => a - b);
+  const durIsRange =
+    durSorted.length > 1 &&
+    durSorted[durSorted.length - 1] - durSorted[0] + 1 === durSorted.length;
   const aspect = (data.aspect_ratio as string | undefined) ?? caps.aspect_ratios[0];
   const resolution = (data.resolution as string | undefined) ?? caps.resolutions[0];
   const generateAudio =
@@ -177,20 +186,34 @@ export function VideoNodeSettings({ rfId }: Props) {
 
       <div className="video-settings-row">
         <label className="video-settings-label" htmlFor={`vs-dur-${rfId}`}>
-          Duration
+          Duration{durIsRange ? `: ${duration}s` : ""}
         </label>
-        <select
-          id={`vs-dur-${rfId}`}
-          value={duration}
-          onChange={(e) => persist({ duration_seconds: parseInt(e.target.value, 10) })}
-          className="video-settings-select"
-        >
-          {caps.durations.map((d) => (
-            <option key={d} value={d}>
-              {d}s
-            </option>
-          ))}
-        </select>
+        {durIsRange ? (
+          <input
+            id={`vs-dur-${rfId}`}
+            type="range"
+            min={durSorted[0]}
+            max={durSorted[durSorted.length - 1]}
+            step={1}
+            value={duration}
+            onChange={(e) => persist({ duration_seconds: parseInt(e.target.value, 10) })}
+            className="video-settings-slider"
+            aria-label={`Duration ${duration} seconds`}
+          />
+        ) : (
+          <select
+            id={`vs-dur-${rfId}`}
+            value={duration}
+            onChange={(e) => persist({ duration_seconds: parseInt(e.target.value, 10) })}
+            className="video-settings-select"
+          >
+            {caps.durations.map((d) => (
+              <option key={d} value={d}>
+                {d}s
+              </option>
+            ))}
+          </select>
+        )}
 
         <label className="video-settings-label" htmlFor={`vs-ar-${rfId}`}>
           Aspect

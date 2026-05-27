@@ -3,6 +3,7 @@ import { useGenerationStore } from "../store/generation";
 import { useShotWorkflowStore } from "../store/shotWorkflow";
 import { useProjectStore } from "../store/project";
 import { VideoNodeSettings } from "./VideoNodeSettings";
+import { VideoRefsPanel, type CustomRef } from "./VideoRefsPanel";
 import {
   autoPrompt as autoPromptApi,
   autoPromptBatch as autoPromptBatchApi,
@@ -168,6 +169,9 @@ export function GenerationDialog() {
   // the storyboard request maps to a continuity tree, not pose-distinct
   // variants of one image. Default 4 (one Phase A batch, no Phase B).
   const [shotCount, setShotCount] = useState(4);
+  // Phase 8.1.5: standalone custom refs uploaded in this dialog session
+  // (not persisted to a node). Reset whenever the dialog opens.
+  const [customRefs, setCustomRefs] = useState<CustomRef[]>([]);
 
   // Character builder state — only used when targetType === "character".
   const [charGender, setCharGender] = useState<GenderKey | null>(null);
@@ -226,7 +230,17 @@ export function GenerationDialog() {
   // multiple variants, we batch-i2v one video per variant — `sourceMediaIds`
   // captures the full set; `sourceMediaId` is the active variant for the
   // legacy single-source path.
-  const sourceEdge = isVideo ? edges.find((e) => e.target === rfId) : undefined;
+  // Phase 8.1.5: the i2v Source-image panel is ONLY for genuine first-frame
+  // sources (upstream image / storyboard). Character / VisualAsset / MasterShot
+  // are r2v refs and belong to the References panel, not here — this kills the
+  // old "Character variants shown as i2v sources → gen N videos" confusion.
+  const sourceEdge = isVideo
+    ? edges.find((e) => {
+        if (e.target !== rfId) return false;
+        const s = nodes.find((n) => n.id === e.source);
+        return !!s && (s.data.type === "image" || s.data.type === "storyboard");
+      })
+    : undefined;
   const sourceNode = sourceEdge ? nodes.find((n) => n.id === sourceEdge.source) : undefined;
   const sourceMediaId = sourceNode?.data.mediaId ?? null;
   // Drop null placeholders from the upstream variant list — partial-
@@ -342,6 +356,7 @@ export function GenerationDialog() {
       setCharPromptMode("builder");
       setAutoBuilding(false);
       setAutoPromptUsed(false);
+      setCustomRefs([]);
       // Phase 8.1: ensure a video node carries an explicit prompt_mode so
       // the backend synth guard has a real value (default = manual). Only
       // stamps when the field is absent — never overrides a user choice.
@@ -352,13 +367,18 @@ export function GenerationDialog() {
           patchNode(dbId, { data: { prompt_mode: "manual" } }).catch(() => {});
         }
       }
-      // Default-select every upstream source variant for video targets so
-      // the user just hits Generate when they want all videos.
-      const upstreamEdge = useShotWorkflowStore
-        .getState()
-        .edges.find((e) => e.target === rfId);
+      // Default-select every upstream i2v source variant for video targets so
+      // the user just hits Generate when they want all videos. Phase 8.1.5:
+      // only genuine image/storyboard upstreams count as i2v sources — Character
+      // / VisualAsset are r2v refs (References panel), not first-frame sources.
+      const st = useShotWorkflowStore.getState();
+      const upstreamEdge = st.edges.find((e) => {
+        if (e.target !== rfId) return false;
+        const s = st.nodes.find((n) => n.id === e.source);
+        return !!s && (s.data.type === "image" || s.data.type === "storyboard");
+      });
       const upstreamNode = upstreamEdge
-        ? useShotWorkflowStore.getState().nodes.find((n) => n.id === upstreamEdge.source)
+        ? st.nodes.find((n) => n.id === upstreamEdge.source)
         : undefined;
       const ups =
         upstreamNode?.data.mediaIds ??
@@ -577,6 +597,10 @@ export function GenerationDialog() {
         sourceMediaId: useMulti ? undefined : picked[0],
         sourceMediaIds: useMulti ? picked : undefined,
         variantCount: Math.max(1, picked.length),
+        customRefs: customRefs.map((c) => ({
+          mediaId: c.mediaId,
+          label: c.label.trim() || null,
+        })),
       });
       closeGenerationDialog();
       return;
@@ -651,6 +675,10 @@ export function GenerationDialog() {
         // otherwise it defaults to 1 placeholder even though we're
         // dispatching N i2v ops.
         variantCount: picked.length,
+        customRefs: customRefs.map((c) => ({
+          mediaId: c.mediaId,
+          label: c.label.trim() || null,
+        })),
       });
     } else {
       dispatchGeneration(rfId, {
@@ -685,7 +713,7 @@ export function GenerationDialog() {
     : isManualVideo
     ? prompt.trim().length > 0 && !isWorking
     : isVideo
-    ? selectedSourceIdx.size > 0 && !isWorking
+    ? (selectedSourceIdx.size > 0 || customRefs.length > 0) && !isWorking
     : !isWorking;
 
   return (
@@ -932,8 +960,20 @@ export function GenerationDialog() {
           </>
         )}
 
-        {/* Source image (video only — i2v, multi-select variants → N videos) */}
-        {isVideo && (
+        {/* References (r2v) — per ref node, primary variant + expand. */}
+        {isVideo && rfId !== null && (
+          <div className="gen-dialog__field">
+            <VideoRefsPanel
+              rfId={rfId}
+              customRefs={customRefs}
+              onCustomRefsChange={setCustomRefs}
+            />
+          </div>
+        )}
+
+        {/* Source image (video only — i2v first-frame source; only shown when
+            a genuine upstream image/storyboard feeds this video node). */}
+        {isVideo && sourceNode && (
           <div className="gen-dialog__field">
             <div className="gen-dialog__label-row">
               <span className="gen-dialog__label">

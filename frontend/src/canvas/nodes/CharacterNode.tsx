@@ -3,7 +3,7 @@ import type { NodeProps } from "@xyflow/react";
 
 import { mediaUrl, patchNode, uploadImage } from "../../api/client";
 import { requestAutoBrief } from "../../api/autoBrief";
-import { useGenerationStore } from "../../store/generation";
+import { resolvePrimaryMediaId, useGenerationStore } from "../../store/generation";
 import {
   useShotWorkflowStore,
   type FlowNode,
@@ -13,20 +13,44 @@ import { BaseNodeShell } from "./BaseNodeShell";
 import { BriefHint } from "./shared/BriefHint";
 import { RefLabelFields } from "./shared/RefLabelFields";
 import { saveTileToLibrary } from "./shared/saveTileToLibrary";
+import { uploadVariantToNode } from "./shared/uploadVariant";
 
 const ACCEPT_MIME = "image/png,image/jpeg,image/webp,image/gif";
 
 function CharacterBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }) {
+  // Phase 8.1.5b: display the PRIMARY variant (primary_variant_id ?? mediaId
+  // ?? mediaIds[0]) — not always the first gen output. `mediaId` is still the
+  // presence gate (a node with any media shows the rendered state).
   const mediaId = data.mediaId;
+  const displayId = resolvePrimaryMediaId(data) ?? mediaId;
   const isProcessing = data.status === "queued" || data.status === "running";
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const variantInputRef = useRef<HTMLInputElement>(null);
+
+  async function onVariantPick(file: File) {
+    setError(null);
+    setUploading(true);
+    try {
+      const mid = await uploadVariantToNode(rfId, data, file);
+      if (!mid) setError("no project");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "upload failed");
+    } finally {
+      setUploading(false);
+    }
+  }
 
   function persistMedia(newMediaId: string, aspectRatio?: string) {
+    // Replace/initial upload = a fresh single image: collapse variants to
+    // just this one and clear any stale primary so the displayed thumbnail
+    // (resolvePrimaryMediaId) shows the new image, not an old primary.
     useShotWorkflowStore.getState().updateNodeData(rfId, {
       mediaId: newMediaId,
+      mediaIds: [newMediaId],
+      primary_variant_id: undefined,
       status: "done",
       aiBrief: undefined,
       aspectRatio,
@@ -37,6 +61,8 @@ function CharacterBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
         status: "done",
         data: {
           mediaId: newMediaId,
+          mediaIds: [newMediaId],
+          primary_variant_id: null,
           aiBrief: null,
           aspectRatio,
           renderedAt: new Date().toISOString(),
@@ -109,14 +135,14 @@ function CharacterBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
       >
         <div
           className={`character-avatar${dragOver ? " character-avatar--over" : ""}${uploading ? " character-avatar--uploading" : ""}`}
-          onClick={onPick}
+          onClick={() => useGenerationStore.getState().openResultViewer(rfId)}
           role="button"
-          aria-label="Replace character image"
+          aria-label="Open character variants"
           tabIndex={0}
         >
           <img
             className="character-avatar__img"
-            src={mediaUrl(mediaId)}
+            src={mediaUrl(displayId ?? mediaId!)}
             alt={data.title}
           />
           {uploading && <span className="character-drop__overlay">…</span>}
@@ -128,7 +154,7 @@ function CharacterBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
           onClick={(e) => {
             e.stopPropagation();
             saveTileToLibrary({
-              mediaId,
+              mediaId: displayId ?? mediaId!,
               nodeType: data.type,
               data,
             });
@@ -138,6 +164,32 @@ function CharacterBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
         >
           ★ Save
         </button>
+        <button
+          type="button"
+          className="visual-asset__action"
+          onClick={(e) => {
+            e.stopPropagation();
+            onPick();
+          }}
+          disabled={uploading}
+          title="Replace this image (resets variants)"
+          aria-label="Replace image"
+        >
+          ⤓ Replace
+        </button>
+        <button
+          type="button"
+          className="visual-asset__action"
+          onClick={(e) => {
+            e.stopPropagation();
+            variantInputRef.current?.click();
+          }}
+          disabled={uploading}
+          title="Upload another image as a variant (double-click node → set primary)"
+          aria-label="Upload variant"
+        >
+          + Variant
+        </button>
         <RefLabelFields rfId={rfId} data={data} />
         <input
           ref={fileInputRef}
@@ -145,6 +197,17 @@ function CharacterBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
           accept={ACCEPT_MIME}
           style={{ display: "none" }}
           onChange={onChange}
+        />
+        <input
+          ref={variantInputRef}
+          type="file"
+          accept={ACCEPT_MIME}
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) void onVariantPick(f);
+            e.target.value = "";
+          }}
         />
         {error && <p className="character-drop__error" role="alert">{error}</p>}
       </div>
@@ -218,10 +281,11 @@ export function CharacterNode(props: NodeProps<FlowNode>) {
 }
 
 function triggerCharacterDownload(_rfId: string, data: FlowboardNodeData) {
-  if (!data.mediaId) return;
+  const dl = resolvePrimaryMediaId(data) ?? data.mediaId;
+  if (!dl) return;
   const safeTitle = (data.title || data.type).replace(/[^A-Za-z0-9_-]+/g, "_");
   const a = document.createElement("a");
-  a.href = mediaUrl(data.mediaId);
+  a.href = mediaUrl(dl);
   a.download = `${safeTitle}-${data.shortId}.png`;
   document.body.appendChild(a);
   a.click();

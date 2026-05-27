@@ -1643,10 +1643,14 @@ button:disabled {
 /* Filled-state avatar — centered circle showing the character image. */
 .character-avatar {
   position: relative;
-  align-self: center;
-  width: 96px;
-  height: 96px;
-  border-radius: 50%;
+  align-self: stretch;
+  /* Phase 8.1.5b: 16:9 rounded rectangle (was a 96px circle) so the wide
+   * character sheet is legible for identity at a glance. contain (below)
+   * shows the whole sheet without cropping faces. */
+  width: 180px;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
   overflow: hidden;
   cursor: pointer;
   border: 1px solid var(--border);
@@ -1669,7 +1673,7 @@ button:disabled {
 .character-avatar__img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
   display: block;
 }
 
@@ -2100,6 +2104,16 @@ button:disabled {
   object-fit: contain;
   display: block;
 }
+.visual-asset__image--clickable {
+  cursor: pointer;
+}
+/* Phase 8.1.5c — duration slider (Seedance 2.0 4..15s). */
+.video-settings-slider {
+  flex: 1;
+  min-width: 80px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
 
 .visual-asset__refine-btn {
   position: absolute;
@@ -2164,6 +2178,141 @@ button:disabled {
 
 .ref-label-fields__desc {
   resize: vertical;
+}
+
+/* Phase 8.1.5 — video dialog References (r2v) panel */
+.video-refs-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.video-refs-panel__count {
+  font-size: 11px;
+  color: var(--muted);
+}
+.video-ref-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-high);
+}
+.video-ref-row--custom {
+  border-style: dashed;
+}
+.video-ref-row__thumb-btn {
+  position: relative;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+.video-ref-row__thumb {
+  width: 96px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 6px;
+  display: block;
+}
+.video-ref-row__thumb--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel);
+  color: var(--muted);
+}
+.video-ref-row__variant-count {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  font-size: 9px;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 8px;
+  padding: 0 4px;
+}
+.video-ref-row__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 120px;
+}
+.video-ref-row__label {
+  font-size: 12px;
+  font-family: var(--mono, monospace);
+  color: var(--text);
+}
+.video-ref-row__id {
+  color: var(--muted);
+  font-family: inherit;
+}
+.video-ref-row__desc {
+  font-size: 11px;
+  color: var(--muted);
+}
+.video-ref-row__custom-tag {
+  font-size: 10px;
+  color: var(--muted);
+}
+.video-ref-row__variants {
+  display: flex;
+  gap: 6px;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+}
+.video-ref-row__variant {
+  position: relative;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  background: none;
+}
+.video-ref-row__variant--primary {
+  border-color: var(--accent);
+}
+.video-ref-row__variant img {
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 2px;
+  display: block;
+}
+.video-ref-row__variant-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  font-size: 9px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 4px;
+  color: var(--accent);
+}
+.video-ref-row__remove {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+.video-refs-panel__add {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 4px 10px;
+  background: var(--panel-high);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+}
+.video-refs-panel__add:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .visual-asset__refine-actions {
@@ -3544,6 +3693,21 @@ button:disabled {
 .variant-switcher__chip--blocked.variant-switcher__chip--active {
   background: rgba(245, 158, 11, 0.22);
   border-color: #f59e0b;
+}
+
+/* Phase 8.1.5 — primary variant marker on the switcher chip. */
+.variant-switcher__chip--primary {
+  border-color: var(--accent);
+  position: relative;
+}
+.variant-switcher__chip-star {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--accent);
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.6);
 }
 
 /* Right panel */
