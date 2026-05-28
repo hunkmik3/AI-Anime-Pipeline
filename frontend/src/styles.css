@@ -2311,6 +2311,11 @@ button:disabled {
 .video-ref-row__verify--err {
   color: #ef4444;
 }
+.video-ref-row__manual-hint {
+  font-size: 9px;
+  color: var(--muted);
+  font-style: italic;
+}
 .video-ref-row__variants {
   display: flex;
   gap: 6px;

@@ -242,20 +242,23 @@ export function VideoRefsPanel({ rfId, customRefs, onCustomRefsChange }: Props) 
                 {icon} {c.kind}{dur ? ` · ${dur}` : ""} · this gen only
               </span>
               {badge}
-              {c.kind === "image" && (
-                <input
-                  className="ref-label-fields__label"
-                  type="text"
-                  value={c.label}
-                  placeholder="@image1"
-                  maxLength={40}
-                  onChange={(e) => {
-                    const next = [...customRefs];
-                    next[idx] = { ...c, label: e.target.value };
-                    onCustomRefsChange(next);
-                  }}
-                  aria-label="Custom ref label"
-                />
+              <input
+                className="ref-label-fields__label"
+                type="text"
+                value={c.label}
+                placeholder={c.kind === "image" ? "@image1" : "@label (manual)"}
+                maxLength={40}
+                onChange={(e) => {
+                  const next = [...customRefs];
+                  next[idx] = { ...c, label: e.target.value };
+                  onCustomRefsChange(next);
+                }}
+                aria-label="Custom ref label"
+              />
+              {c.kind !== "image" && (
+                <span className="video-ref-row__manual-hint">
+                  Manual: tự gõ nhãn này vào prompt — {c.kind} ref chưa có @-binding tự động
+                </span>
               )}
             </div>
             <button
