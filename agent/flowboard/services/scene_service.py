@@ -5,6 +5,7 @@ import uuid
 from typing import Any, Optional
 
 from sqlalchemy import func
+from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Session, select
 
 from flowboard.db.models import Asset, Project, Scene, Shot
@@ -53,7 +54,6 @@ def create_scene(
     *,
     name: str,
     order_index: Optional[int] = None,
-    scene_bible_text: str = "",
 ) -> Scene:
     project = session.get(Project, project_id)
     if project is None:
@@ -64,7 +64,6 @@ def create_scene(
         project_id=project_id,
         name=name,
         order_index=order_index,
-        scene_bible_text=scene_bible_text,
     )
     session.add(scene)
     session.commit()
@@ -85,15 +84,12 @@ def update_scene(
     *,
     name: Optional[str] = None,
     order_index: Optional[int] = None,
-    scene_bible_text: Optional[str] = None,
 ) -> Scene:
     scene = get_scene(session, scene_id)
     if name is not None:
         scene.name = name
     if order_index is not None:
         scene.order_index = order_index
-    if scene_bible_text is not None:
-        scene.scene_bible_text = scene_bible_text
     session.add(scene)
     session.commit()
     session.refresh(scene)
@@ -158,10 +154,10 @@ def reorder_shots(
     )
 
 
-# ── Bible ─────────────────────────────────────────────────────────────────
+# ── Establishing asset (was bundled with the removed Scene Bible) ──────────
 
 
-def get_scene_bible(session: Session, scene_id: uuid.UUID) -> dict[str, Any]:
+def get_scene_establishing(session: Session, scene_id: uuid.UUID) -> dict[str, Any]:
     scene = get_scene(session, scene_id)
     media_id: Optional[str] = None
     if scene.master_establishing_asset_id is not None:
@@ -169,25 +165,21 @@ def get_scene_bible(session: Session, scene_id: uuid.UUID) -> dict[str, Any]:
         if asset is not None:
             media_id = asset.uuid_media_id
     return {
-        "scene_bible_text": scene.scene_bible_text,
         "master_establishing_asset_id": scene.master_establishing_asset_id,
         # Read-only convenience: lets the frontend MasterShotNode populate
-        # ``data.mediaId`` without a second roundtrip. PUT body still
-        # accepts only ``master_establishing_asset_id``.
+        # ``data.mediaId`` without a second roundtrip.
         "master_establishing_media_id": media_id,
     }
 
 
-def put_scene_bible(
+def put_scene_establishing(
     session: Session,
     scene_id: uuid.UUID,
     *,
-    scene_bible_text: str,
     master_establishing_asset_id: Optional[int],
 ) -> dict[str, Any]:
-    """Replace bible fields. If ``master_establishing_asset_id`` is set,
-    validates the asset belongs to the scene's project.
-    """
+    """Set the scene's master/establishing asset. If set, validates the asset
+    belongs to the scene's project."""
     scene = get_scene(session, scene_id)
     if master_establishing_asset_id is not None:
         asset = session.get(Asset, master_establishing_asset_id)
@@ -199,9 +191,157 @@ def put_scene_bible(
             raise InvalidBibleAsset(
                 f"asset {master_establishing_asset_id} belongs to a different project"
             )
-    scene.scene_bible_text = scene_bible_text
     scene.master_establishing_asset_id = master_establishing_asset_id
     session.add(scene)
     session.commit()
     session.refresh(scene)
-    return get_scene_bible(session, scene.id)
+    return get_scene_establishing(session, scene.id)
+
+
+# ── Phase 8.3: multi-shot canvas state + group metadata + auto-migration ───
+
+# Default vertical-stack layout for auto-migration (group origin per shot).
+_GROUP_STACK_X = 120.0
+_GROUP_STACK_Y0 = 100.0
+_GROUP_STACK_DY = 500.0
+
+
+def _shots_ordered(session: Session, scene_id: uuid.UUID) -> list[Shot]:
+    return list(
+        session.exec(
+            select(Shot)
+            .where(Shot.scene_id == scene_id)
+            .order_by(Shot.order_index, Shot.created_at, Shot.id)
+        ).all()
+    )
+
+
+def get_scene_canvas(session: Session, scene_id: uuid.UUID) -> dict[str, Any]:
+    """Return the full multi-shot canvas: shots + all nodes + all edges across
+    the scene's shots + the persisted shot_groups layout (canvas_state)."""
+    from flowboard.db.models import Edge, Node  # local import to avoid cycle
+
+    scene = get_scene(session, scene_id)
+    shots = _shots_ordered(session, scene_id)
+    shot_ids = [sh.id for sh in shots]
+
+    nodes: list[Node] = []
+    edges: list[Edge] = []
+    if shot_ids:
+        nodes = list(session.exec(select(Node).where(Node.shot_id.in_(shot_ids))).all())  # type: ignore[attr-defined]
+        edges = list(session.exec(select(Edge).where(Edge.shot_id.in_(shot_ids))).all())  # type: ignore[attr-defined]
+
+    return {
+        "scene_id": str(scene.id),
+        "project_id": str(scene.project_id),
+        "shots": [
+            {
+                "id": str(sh.id),
+                "order_index": sh.order_index,
+                "script_text": sh.script_text,
+                "status": sh.status,
+            }
+            for sh in shots
+        ],
+        "nodes": [
+            {
+                "id": n.id,
+                "shot_id": str(n.shot_id),
+                "short_id": n.short_id,
+                "type": n.type,
+                "x": n.x,
+                "y": n.y,
+                "data": n.data,
+                "status": n.status,
+            }
+            for n in nodes
+        ],
+        "edges": [
+            {
+                "id": e.id,
+                "shot_id": str(e.shot_id),
+                "source_id": e.source_id,
+                "target_id": e.target_id,
+                "kind": e.kind,
+                "source_variant_idx": e.source_variant_idx,
+            }
+            for e in edges
+        ],
+        "shot_groups": (scene.canvas_state or {}).get("shot_groups", []),
+    }
+
+
+def auto_migrate_canvas(session: Session, scene_id: uuid.UUID) -> dict[str, Any]:
+    """Idempotently build canvas_state.shot_groups for a scene: one group per
+    shot, default vertical-stack origin, collapsed=false, label "Shot N".
+
+    Existing entries are preserved; only shots missing a group get one
+    appended — so a re-run never clobbers user-moved groups (Q5 idempotent).
+    """
+    scene = get_scene(session, scene_id)
+    state = dict(scene.canvas_state or {})
+    groups: list[dict] = list(state.get("shot_groups") or [])
+    have = {g.get("shot_id") for g in groups if isinstance(g, dict)}
+
+    shots = _shots_ordered(session, scene_id)
+    next_slot = len(groups)
+    for sh in shots:
+        sid = str(sh.id)
+        if sid in have:
+            continue
+        groups.append({
+            "shot_id": sid,
+            "position": {"x": _GROUP_STACK_X, "y": _GROUP_STACK_Y0 + next_slot * _GROUP_STACK_DY},
+            "collapsed": False,
+            "label": f"Shot {sh.order_index + 1}",
+            "order": sh.order_index,
+        })
+        next_slot += 1
+
+    state["shot_groups"] = groups
+    scene.canvas_state = state
+    # Plain JSONB (no MutableDict) doesn't track nested mutations; force the
+    # UPDATE so a re-run that only touches nested dicts still persists.
+    flag_modified(scene, "canvas_state")
+    session.add(scene)
+    session.commit()
+    session.refresh(scene)
+    return {"scene_id": str(scene.id), "shot_groups": groups, "migrated": True}
+
+
+def update_shot_group(
+    session: Session,
+    scene_id: uuid.UUID,
+    shot_id: uuid.UUID,
+    *,
+    position: Optional[dict] = None,
+    collapsed: Optional[bool] = None,
+    label: Optional[str] = None,
+    order: Optional[int] = None,
+) -> dict[str, Any]:
+    """Patch a single shot's group metadata in scene.canvas_state. Creates the
+    group entry if it doesn't exist yet (e.g. a brand-new shot)."""
+    scene = get_scene(session, scene_id)
+    state = dict(scene.canvas_state or {})
+    groups: list[dict] = list(state.get("shot_groups") or [])
+    sid = str(shot_id)
+    entry = next((g for g in groups if isinstance(g, dict) and g.get("shot_id") == sid), None)
+    if entry is None:
+        entry = {"shot_id": sid, "position": {"x": _GROUP_STACK_X, "y": _GROUP_STACK_Y0},
+                 "collapsed": False, "label": "Shot", "order": len(groups)}
+        groups.append(entry)
+    if position is not None:
+        entry["position"] = position
+    if collapsed is not None:
+        entry["collapsed"] = collapsed
+    if label is not None:
+        entry["label"] = label
+    if order is not None:
+        entry["order"] = order
+    state["shot_groups"] = groups
+    scene.canvas_state = state
+    # See auto_migrate_canvas: force the JSONB UPDATE for nested mutations.
+    flag_modified(scene, "canvas_state")
+    session.add(scene)
+    session.commit()
+    return entry

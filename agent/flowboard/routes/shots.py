@@ -18,9 +18,20 @@ from pydantic import BaseModel
 
 from flowboard.db import get_session
 from flowboard.schemas import ShotCreate, ShotUpdate
+from flowboard.services import scene_service as scenes
 from flowboard.services import shot_service as ss
 
 router = APIRouter(tags=["shots"])
+
+
+class ShotGroupPatch(BaseModel):
+    """Phase 8.3: a shot's SceneCanvas group metadata (lives in
+    scene.canvas_state.shot_groups). Only the provided fields are updated."""
+
+    position: dict[str, float] | None = None
+    collapsed: bool | None = None
+    label: str | None = None
+    order: int | None = None
 
 
 def _shot_dict(shot) -> dict:
@@ -104,6 +115,27 @@ def update_shot(shot_id: uuid.UUID, body: ShotUpdate):
         except ss.ShotNotFound:
             raise HTTPException(404, "shot not found")
         return _shot_dict(shot)
+
+
+@router.patch("/api/shots/{shot_id}/group")
+def update_shot_group(shot_id: uuid.UUID, body: ShotGroupPatch):
+    """Phase 8.3: update a shot's SceneCanvas group metadata (position,
+    collapsed, label, order) inside its parent scene's canvas_state."""
+    patch = body.model_dump(exclude_unset=True)
+    with get_session() as s:
+        try:
+            shot = ss.get_shot(s, shot_id)
+        except ss.ShotNotFound:
+            raise HTTPException(404, "shot not found")
+        return scenes.update_shot_group(
+            s,
+            shot.scene_id,
+            shot_id,
+            position=patch.get("position"),
+            collapsed=patch.get("collapsed"),
+            label=patch.get("label"),
+            order=patch.get("order"),
+        )
 
 
 @router.delete("/api/shots/{shot_id}")

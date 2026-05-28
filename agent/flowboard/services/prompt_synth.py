@@ -262,6 +262,11 @@ _REF_SOURCE_TYPES = {
 def _load_bibles_for_shot(session, shot_id: uuid.UUID) -> tuple[dict[str, Any], str]:
     """Walk Shot → Scene → Project and return (project_bible, scene_bible_text).
 
+    Phase 8.3: Scene Bible was removed — scene_bible_text is always "" now.
+    The empty string flows through ``_format_bible_block`` (which drops empty
+    scene text), so no scene bible is ever injected. The tuple shape is kept
+    to avoid churning every caller.
+
     Missing rows fall back to empty values — bare-bones projects without a
     bible filled in MUST NOT break ``auto_prompt``.
     """
@@ -273,7 +278,7 @@ def _load_bibles_for_shot(session, shot_id: uuid.UUID) -> tuple[dict[str, Any], 
         return {}, ""
     project = session.get(Project, scene.project_id)
     project_bible = dict(project.project_bible or {}) if project else {}
-    return project_bible, scene.scene_bible_text or ""
+    return project_bible, ""
 
 
 def _format_bible_block(

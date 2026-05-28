@@ -1,8 +1,8 @@
-"""Phase 2: Project Bible + Scene Bible CRUD.
+"""Project Bible CRUD + Scene establishing-asset pointer.
 
-Lives in its own router so the strict Pydantic validation (extra=forbid)
-is grouped — both bibles are JSONB columns and easy to drift if their
-shape is enforced ad-hoc inside the parent routes.
+Phase 8.3: Scene Bible (text) was removed; the ``/scenes/{id}/bible``
+endpoint now manages only ``master_establishing_asset_id`` (the MasterShot
+reference), kept under the same path for frontend compatibility.
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import uuid
 from fastapi import APIRouter, HTTPException
 
 from flowboard.db import get_session
-from flowboard.schemas import ProjectBible, SceneBible
+from flowboard.schemas import ProjectBible, SceneEstablishing
 from flowboard.services import project_service as ps
 from flowboard.services import scene_service as ss
 
@@ -39,26 +39,25 @@ def put_project_bible(project_id: uuid.UUID, body: ProjectBible):
             raise HTTPException(404, "project not found")
 
 
-# ── Scene Bible ──────────────────────────────────────────────────────────
+# ── Scene establishing asset (MasterShot reference) ───────────────────────
 
 
 @router.get("/api/scenes/{scene_id}/bible")
-def get_scene_bible(scene_id: uuid.UUID):
+def get_scene_establishing(scene_id: uuid.UUID):
     with get_session() as s:
         try:
-            return ss.get_scene_bible(s, scene_id)
+            return ss.get_scene_establishing(s, scene_id)
         except ss.SceneNotFound:
             raise HTTPException(404, "scene not found")
 
 
 @router.put("/api/scenes/{scene_id}/bible")
-def put_scene_bible(scene_id: uuid.UUID, body: SceneBible):
+def put_scene_establishing(scene_id: uuid.UUID, body: SceneEstablishing):
     with get_session() as s:
         try:
-            return ss.put_scene_bible(
+            return ss.put_scene_establishing(
                 s,
                 scene_id,
-                scene_bible_text=body.scene_bible_text,
                 master_establishing_asset_id=body.master_establishing_asset_id,
             )
         except ss.SceneNotFound:

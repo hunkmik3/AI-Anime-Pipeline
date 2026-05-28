@@ -28,7 +28,7 @@ def _scene_dict(scene) -> dict:
         "project_id": str(scene.project_id),
         "name": scene.name,
         "order_index": scene.order_index,
-        "scene_bible_text": scene.scene_bible_text,
+        "canvas_state": scene.canvas_state or {},
         "master_establishing_asset_id": scene.master_establishing_asset_id,
         "created_at": scene.created_at.isoformat() if scene.created_at else None,
     }
@@ -60,7 +60,6 @@ def create_scene(project_id: uuid.UUID, body: SceneCreate):
                 project_id,
                 name=body.name,
                 order_index=body.order_index,
-                scene_bible_text=body.scene_bible_text,
             )
         except ss.ProjectNotFound:
             raise HTTPException(404, "project not found")
@@ -91,7 +90,6 @@ def update_scene(scene_id: uuid.UUID, body: SceneUpdate):
                 scene_id,
                 name=body.name,
                 order_index=body.order_index,
-                scene_bible_text=body.scene_bible_text,
             )
         except ss.SceneNotFound:
             raise HTTPException(404, "scene not found")
@@ -106,6 +104,29 @@ def delete_scene(scene_id: uuid.UUID):
         except ss.SceneNotFound:
             raise HTTPException(404, "scene not found")
         return {"deleted": str(scene_id)}
+
+
+@router.get("/api/scenes/{scene_id}/canvas")
+def get_scene_canvas(scene_id: uuid.UUID):
+    """Phase 8.3: multi-shot SceneCanvas payload — shots + all nodes + all
+    edges across the scene's shots + the persisted shot_groups layout."""
+    with get_session() as s:
+        try:
+            return ss.get_scene_canvas(s, scene_id)
+        except ss.SceneNotFound:
+            raise HTTPException(404, "scene not found")
+
+
+@router.post("/api/scenes/{scene_id}/auto-migrate")
+def auto_migrate_canvas(scene_id: uuid.UUID):
+    """Phase 8.3: one-time, idempotent — build canvas_state.shot_groups for a
+    scene (one group per shot, default vertical-stack layout). Safe to re-run;
+    never clobbers existing (user-moved) groups."""
+    with get_session() as s:
+        try:
+            return ss.auto_migrate_canvas(s, scene_id)
+        except ss.SceneNotFound:
+            raise HTTPException(404, "scene not found")
 
 
 @router.post("/api/scenes/{scene_id}/reorder")

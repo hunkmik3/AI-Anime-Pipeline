@@ -14,13 +14,14 @@ def test_create_scene_under_project(client):
     pid = _make_project(client)
     r = client.post(
         f"/api/projects/{pid}/scenes",
-        json={"name": "Opening", "scene_bible_text": "rainy alley"},
+        json={"name": "Opening"},
     )
     assert r.status_code == 200, r.text
     scene = r.json()
     assert scene["project_id"] == pid
     assert scene["name"] == "Opening"
-    assert scene["scene_bible_text"] == "rainy alley"
+    # Phase 8.3: Scene Bible removed; new scenes start with empty canvas_state.
+    assert scene["canvas_state"] == {}
     # First scene under a fresh project defaults to order_index 0.
     assert scene["order_index"] == 0
 
@@ -96,13 +97,12 @@ def test_patch_scene_updates_fields(client):
     ).json()
     r = client.patch(
         f"/api/scenes/{scene['id']}",
-        json={"name": "New", "order_index": 9, "scene_bible_text": "neon"},
+        json={"name": "New", "order_index": 9},
     )
     assert r.status_code == 200
     out = r.json()
     assert out["name"] == "New"
     assert out["order_index"] == 9
-    assert out["scene_bible_text"] == "neon"
 
 
 def test_patch_missing_scene_404(client):

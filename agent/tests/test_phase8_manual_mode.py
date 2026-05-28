@@ -175,16 +175,13 @@ async def test_manual_mode_worker_reorders_refs_by_label(_dreamina_env):
 # ── helpers for the prompt_synth tests ───────────────────────────────────
 
 
-def _make_video_target(prompt_mode: str | None, *, scene_bible: str = "") -> int:
+def _make_video_target(prompt_mode: str | None) -> int:
     """character → video target chain; set prompt_mode on the video node."""
     with get_session() as s:
         project = Project(name="p8", project_bible={"art_style": "cel-shaded anime"})
         s.add(project)
         s.flush()
-        scene = Scene(
-            project_id=project.id, name="S1", order_index=0,
-            scene_bible_text=scene_bible,
-        )
+        scene = Scene(project_id=project.id, name="S1", order_index=0)
         s.add(scene)
         s.flush()
         shot = Shot(scene_id=scene.id, order_index=0)
@@ -262,7 +259,8 @@ def test_manual_mode_skips_bible_inject():
 @pytest.mark.asyncio
 async def test_automation_mode_unchanged(client, monkeypatch):
     """A node with prompt_mode='automation' still runs Phase 6 synth AND
-    injects the Bible — the manual guard must not fire."""
+    injects the PROJECT Bible — the manual guard must not fire.
+    (Phase 8.3: Scene Bible removed, so only the project bible is asserted.)"""
     captured: dict = {}
 
     async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
@@ -270,13 +268,12 @@ async def test_automation_mode_unchanged(client, monkeypatch):
         return "Slow push-in on the office."
 
     monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    vid_id = _make_video_target("automation", scene_bible="Rainy neon alley.")
+    vid_id = _make_video_target("automation")
 
     out = await prompt_synth.auto_prompt(vid_id)
     assert out  # synth ran and returned text
-    # Bible injected into the user message (regression guard).
+    # Project bible injected into the user message (regression guard).
     assert "cel-shaded anime" in captured["user_msg"]
-    assert "Rainy neon alley" in captured["user_msg"]
 
 
 # ── 9-12: persist round-trips ────────────────────────────────────────────

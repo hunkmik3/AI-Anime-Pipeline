@@ -38,14 +38,13 @@ def _make_shot(
     *,
     name: str = "t",
     project_bible: dict | None = None,
-    scene_bible_text: str = "",
     master_establishing_asset_id: int | None = None,
 ) -> Shot:
     """Build Project → Scene → Shot and return the Shot.
 
     Bible fields are optional so tests that don't care about
-    injection still get clean defaults (empty bible → no prepend
-    block).
+    injection still get clean defaults (empty project bible → no prepend
+    block). Phase 8.3: Scene Bible removed.
     """
     project = Project(name=name, project_bible=project_bible or {})
     session.add(project)
@@ -54,7 +53,6 @@ def _make_shot(
         project_id=project.id,
         name="Scene 1",
         order_index=0,
-        scene_bible_text=scene_bible_text,
         master_establishing_asset_id=master_establishing_asset_id,
     )
     session.add(scene)
@@ -302,49 +300,8 @@ async def test_bible_injection_project_bible_prepends(client, monkeypatch):
     assert bible_pos < subj_pos
 
 
-@pytest.mark.asyncio
-async def test_bible_injection_scene_bible_prepends(client, monkeypatch):
-    """Scene Bible text prepends as a labeled SCENE BIBLE block."""
-    with get_session() as s:
-        b = _make_shot(
-            s,
-            name="bible-scene",
-            scene_bible_text="rainy alley at night, neon reflections, low camera",
-        )
-        char = Node(
-            shot_id=b.id, short_id="sbc", type="character",
-            x=0, y=0, w=240, h=180,
-            data={
-                "title": "Hero",
-                "aiBrief": "young woman, twin braids",
-                "mediaId": "uuuuuuuu-sbc1-1111-2222-333333333333",
-            },
-            status="done",
-        )
-        tgt = Node(
-            shot_id=b.id, short_id="sbg", type="image",
-            x=0, y=0, w=240, h=180, data={"title": "shot"},
-            status="idle",
-        )
-        s.add_all([char, tgt]); s.commit()
-        for n in (char, tgt):
-            s.refresh(n)
-        s.add(Edge(shot_id=b.id, source_id=char.id, target_id=tgt.id))
-        s.commit()
-        tgt_id = tgt.id
-
-    captured: dict = {}
-
-    async def stub_run(feature, prompt, *, system_prompt=None, timeout=0):
-        captured["prompt"] = prompt
-        return "Cel anime medium close-up in rainy alley."
-
-    monkeypatch.setattr(prompt_synth, "run_llm", stub_run)
-    await prompt_synth.auto_prompt(tgt_id)
-
-    user = captured["prompt"]
-    assert "SCENE BIBLE" in user
-    assert "rainy alley at night, neon reflections" in user
+# Phase 8.3: Scene Bible removed — the scene-bible-prepends test was deleted.
+# Project Bible injection (above) is unchanged + still covered.
 
 
 @pytest.mark.asyncio

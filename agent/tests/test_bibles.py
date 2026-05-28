@@ -74,31 +74,20 @@ def test_project_bible_missing_project_put(client):
     assert r.status_code == 404
 
 
-# ── Scene Bible ──────────────────────────────────────────────────────────
+# ── Scene establishing asset (Phase 8.3: Scene Bible text removed) ─────────
 
 
-def test_scene_bible_starts_empty(client):
+def test_scene_establishing_starts_empty(client):
     pid = _project(client)
     sid = _scene(client, pid)
     r = client.get(f"/api/scenes/{sid}/bible")
     assert r.status_code == 200
     body = r.json()
-    assert body["scene_bible_text"] == ""
+    assert "scene_bible_text" not in body
     assert body["master_establishing_asset_id"] is None
 
 
-def test_put_then_get_scene_bible(client):
-    pid = _project(client)
-    sid = _scene(client, pid)
-    r = client.put(
-        f"/api/scenes/{sid}/bible",
-        json={"scene_bible_text": "rooftop night, neon", "master_establishing_asset_id": None},
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["scene_bible_text"] == "rooftop night, neon"
-
-
-def test_scene_bible_validates_asset_belongs_to_project(client):
+def test_scene_establishing_validates_asset_belongs_to_project(client):
     """master_establishing_asset_id must point to an Asset whose
     project_id == scene.project_id. Cross-project asset → 400."""
     from flowboard.db import get_session
@@ -121,15 +110,12 @@ def test_scene_bible_validates_asset_belongs_to_project(client):
 
     r = client.put(
         f"/api/scenes/{sid_a}/bible",
-        json={
-            "scene_bible_text": "x",
-            "master_establishing_asset_id": wrong_asset_id,
-        },
+        json={"master_establishing_asset_id": wrong_asset_id},
     )
     assert r.status_code == 400
 
 
-def test_scene_bible_accepts_matching_project_asset(client):
+def test_scene_establishing_accepts_matching_project_asset(client):
     from flowboard.db import get_session
     from flowboard.db.models import Asset
 
@@ -148,40 +134,41 @@ def test_scene_bible_accepts_matching_project_asset(client):
 
     r = client.put(
         f"/api/scenes/{sid}/bible",
-        json={"scene_bible_text": "ok", "master_establishing_asset_id": aid},
+        json={"master_establishing_asset_id": aid},
     )
     assert r.status_code == 200, r.text
     assert r.json()["master_establishing_asset_id"] == aid
 
 
-def test_scene_bible_rejects_unknown_asset_id(client):
+def test_scene_establishing_rejects_unknown_asset_id(client):
     pid = _project(client)
     sid = _scene(client, pid)
     r = client.put(
         f"/api/scenes/{sid}/bible",
-        json={"scene_bible_text": "x", "master_establishing_asset_id": 999999},
+        json={"master_establishing_asset_id": 999999},
     )
     assert r.status_code == 400
 
 
-def test_scene_bible_strict_validation(client):
+def test_scene_establishing_strict_validation(client):
+    """Phase 8.3: scene_bible_text no longer accepted (extra=forbid)."""
     pid = _project(client)
     sid = _scene(client, pid)
     r = client.put(
         f"/api/scenes/{sid}/bible",
-        json={"scene_bible_text": "x", "smuggle": True},
+        json={"scene_bible_text": "x"},
     )
     assert r.status_code == 422
 
 
-def test_scene_bible_missing_scene_get(client):
+def test_scene_establishing_missing_scene_get(client):
     r = client.get(f"/api/scenes/{uuid.uuid4()}/bible")
     assert r.status_code == 404
 
 
-def test_scene_bible_missing_scene_put(client):
+def test_scene_establishing_missing_scene_put(client):
     r = client.put(
         f"/api/scenes/{uuid.uuid4()}/bible",
-        json={"scene_bible_text": "x"},
+        json={"master_establishing_asset_id": None},
     )
     assert r.status_code == 404

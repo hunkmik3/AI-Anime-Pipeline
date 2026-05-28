@@ -51,7 +51,10 @@ class Scene(SQLModel, table=True):
     project_id: uuid.UUID = Field(foreign_key="project.id", index=True)
     name: str
     order_index: int = 0
-    scene_bible_text: str = ""
+    # Phase 8.3: multi-shot SceneCanvas layout.
+    # shot_groups[] = [{shot_id, position:{x,y}, collapsed, label, order}].
+    # (Scene Bible removed — Manual mode runs no Phase 6 bible injection.)
+    canvas_state: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
     # Master establishing asset is set later (after first shot completes).
     # FK is declared at the Postgres level via the migration; we don't
     # model the relationship here because Asset has its own project_id
