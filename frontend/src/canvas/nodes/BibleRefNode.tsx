@@ -3,12 +3,9 @@ import type { NodeProps } from "@xyflow/react";
 
 import {
   getProjectBible,
-  getSceneBible,
   patchNode,
 } from "../../api/client";
 import { useProjectStore } from "../../store/project";
-import { useSceneStore } from "../../store/scene";
-import { useShotStore } from "../../store/shot";
 import {
   useShotWorkflowStore,
   type FlowNode,
@@ -45,11 +42,6 @@ function BibleRefBody({ rfId, data }: { rfId: string; data: FlowboardNodeData })
   const [error, setError] = useState<string | null>(null);
 
   const projectId = useProjectStore((s) => s.currentProjectId);
-  // BibleRefNode lives inside ShotEditor; the active shot's scene is the
-  // natural default for "scene" bible. Pull from useShotStore.currentShot
-  // so the dropdown stays in sync when the user switches shots.
-  const currentShot = useShotStore((s) => s.currentShot);
-  const sceneId = currentShot?.scene_id ?? useSceneStore.getState().currentSceneId;
 
   async function reload(type: "project" | "scene") {
     setLoading(true);
@@ -64,12 +56,9 @@ function BibleRefBody({ rfId, data }: { rfId: string; data: FlowboardNodeData })
         const b = await getProjectBible(projectId);
         formatted = formatProjectBible(b as Record<string, unknown>);
       } else {
-        if (!sceneId) {
-          setError("no scene");
-          return;
-        }
-        const b = await getSceneBible(sceneId);
-        formatted = b.scene_bible_text || "(Scene Bible empty)";
+        // Phase 8.3: Scene Bible was removed. Keep the node type for
+        // backward compat but surface that there's no scene bible anymore.
+        formatted = "(Scene Bible removed in Phase 8.3 — use Project Bible)";
       }
       setText(formatted);
       useShotWorkflowStore.getState().updateNodeData(rfId, {

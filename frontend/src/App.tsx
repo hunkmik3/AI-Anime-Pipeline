@@ -14,8 +14,9 @@ import { ResultViewer } from "./components/ResultViewer";
 import { ForcedSetupGate } from "./components/ForcedSetupGate";
 
 import { ProjectListPage } from "./routes/ProjectListPage";
-import { ProjectDashboard } from "./routes/ProjectDashboard";
 import { SceneView } from "./routes/SceneView";
+import { SceneCanvas } from "./routes/SceneCanvas";
+import { LegacySceneRedirect } from "./routes/LegacySceneRedirect";
 import { ShotEditor } from "./routes/ShotEditor";
 import { AssetLibraryPage } from "./routes/AssetLibraryPage";
 import { CostDashboard } from "./routes/CostDashboard";
@@ -36,7 +37,8 @@ export function App() {
         <Route element={<AppLayout />}>
           <Route index element={<Navigate to="/projects" replace />} />
           <Route path="/projects" element={<ProjectListPage />} />
-          <Route path="/projects/:projectId" element={<ProjectDashboard />} />
+          {/* Phase 8.3: project hub (entry point) = SceneView. */}
+          <Route path="/projects/:projectId" element={<SceneView />} />
           <Route
             path="/projects/:projectId/library"
             element={<AssetLibraryPage />}
@@ -45,7 +47,13 @@ export function App() {
             path="/projects/:projectId/cost"
             element={<CostDashboard />}
           />
-          <Route path="/scenes/:sceneId" element={<SceneView />} />
+          {/* Phase 8.3: multi-shot canvas, nested under its project. */}
+          <Route
+            path="/projects/:projectId/scenes/:sceneId"
+            element={<SceneCanvas />}
+          />
+          {/* Legacy redirects → new nested routes. */}
+          <Route path="/scenes/:sceneId" element={<LegacySceneRedirect />} />
           <Route path="/shots/:shotId" element={<ShotEditor />} />
           <Route path="*" element={<Navigate to="/projects" replace />} />
         </Route>

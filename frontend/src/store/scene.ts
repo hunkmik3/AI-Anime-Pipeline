@@ -4,11 +4,8 @@ import {
   createScene as apiCreateScene,
   deleteScene as apiDeleteScene,
   getScene,
-  getSceneBible,
   listScenes,
   patchScene,
-  putSceneBible,
-  type SceneBible,
   type SceneDTO,
   type SceneDetailDTO,
 } from "../api/client";
@@ -21,7 +18,6 @@ interface SceneState {
   loadingProjectId: string | null;
   currentSceneId: string | null;
   currentScene: SceneDetailDTO | null;
-  sceneBible: SceneBible | null;
   error: string | null;
 
   loadScenes(projectId: string): Promise<SceneDTO[]>;
@@ -29,15 +25,9 @@ interface SceneState {
   renameScene(id: string, name: string): Promise<void>;
   deleteScene(id: string): Promise<void>;
   selectScene(id: string | null): Promise<void>;
-  loadBible(id: string): Promise<void>;
-  saveBible(bible: SceneBible): Promise<void>;
   // Replace scene list when the active project drops out from under us.
   resetForProject(projectId: string | null): void;
   clearError(): void;
-}
-
-function emptyBible(): SceneBible {
-  return { scene_bible_text: "", master_establishing_asset_id: null };
 }
 
 export const useSceneStore = create<SceneState>((set, get) => ({
@@ -45,7 +35,6 @@ export const useSceneStore = create<SceneState>((set, get) => ({
   loadingProjectId: null,
   currentSceneId: null,
   currentScene: null,
-  sceneBible: null,
   error: null,
 
   async loadScenes(projectId) {
@@ -126,49 +115,21 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         scenesByProject: next,
         currentSceneId: isActive ? null : s.currentSceneId,
         currentScene: isActive ? null : s.currentScene,
-        sceneBible: isActive ? null : s.sceneBible,
       };
     });
   },
 
   async selectScene(id) {
     if (id === null) {
-      set({ currentSceneId: null, currentScene: null, sceneBible: null });
+      set({ currentSceneId: null, currentScene: null });
       return;
     }
     if (id === get().currentSceneId && get().currentScene) {
       return;
     }
     try {
-      const [detail, bible] = await Promise.all([
-        getScene(id),
-        getSceneBible(id).catch(() => emptyBible()),
-      ]);
-      set({
-        currentSceneId: id,
-        currentScene: detail,
-        sceneBible: bible,
-      });
-    } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
-    }
-  },
-
-  async loadBible(id) {
-    try {
-      const bible = await getSceneBible(id);
-      set({ sceneBible: bible });
-    } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
-    }
-  },
-
-  async saveBible(bible) {
-    const { currentSceneId } = get();
-    if (!currentSceneId) return;
-    try {
-      const saved = await putSceneBible(currentSceneId, bible);
-      set({ sceneBible: saved });
+      const detail = await getScene(id);
+      set({ currentSceneId: id, currentScene: detail });
     } catch (err) {
       set({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -180,7 +141,6 @@ export const useSceneStore = create<SceneState>((set, get) => ({
         scenesByProject: {},
         currentSceneId: null,
         currentScene: null,
-        sceneBible: null,
       });
       return;
     }

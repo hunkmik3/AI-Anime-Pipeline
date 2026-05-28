@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 
-import { getSceneBible, mediaUrl, patchNode } from "../../api/client";
+import { getSceneEstablishing, mediaUrl, patchNode } from "../../api/client";
 import { useSceneStore } from "../../store/scene";
 import { useShotStore } from "../../store/shot";
 import {
@@ -31,8 +31,8 @@ function MasterShotBody({ rfId, data }: { rfId: string; data: FlowboardNodeData 
     setLoading(true);
     setError(null);
     try {
-      const bible = await getSceneBible(sceneId);
-      const assetId = bible.master_establishing_asset_id;
+      const est = await getSceneEstablishing(sceneId);
+      const assetId = est.master_establishing_asset_id;
       if (!assetId) {
         setError("scene has no master establishing shot");
         useShotWorkflowStore.getState().updateNodeData(rfId, {
@@ -47,7 +47,7 @@ function MasterShotBody({ rfId, data }: { rfId: string; data: FlowboardNodeData 
       // (via mediaUrl) and the wire-side ref payload
       // (``collectUpstreamRefMediaIds`` picks it up automatically once
       // ``master_shot`` joined REF_SOURCE_TYPES).
-      const resolvedMediaId = bible.master_establishing_media_id ?? undefined;
+      const resolvedMediaId = est.master_establishing_media_id ?? undefined;
       useShotWorkflowStore.getState().updateNodeData(rfId, {
         masterShotAssetId: assetId,
         mediaId: resolvedMediaId,

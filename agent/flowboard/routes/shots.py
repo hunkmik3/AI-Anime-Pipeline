@@ -32,6 +32,9 @@ class ShotGroupPatch(BaseModel):
     collapsed: bool | None = None
     label: str | None = None
     order: int | None = None
+    # Phase 8.3b: manual group frame size {w, h}. When set, the frontend uses
+    # it instead of auto-fitting to children.
+    size: dict[str, float] | None = None
 
 
 def _shot_dict(shot) -> dict:
@@ -135,6 +138,7 @@ def update_shot_group(shot_id: uuid.UUID, body: ShotGroupPatch):
             collapsed=patch.get("collapsed"),
             label=patch.get("label"),
             order=patch.get("order"),
+            size=patch.get("size"),
         )
 
 

@@ -2316,6 +2316,433 @@ button:disabled {
   color: var(--muted);
   font-style: italic;
 }
+
+/* Phase 8.3 — project hub (SceneView) layout: refs sidebar + scenes. */
+.scene-hub-grid {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 20px;
+  align-items: start;
+}
+.scene-hub-refs {
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+}
+.scene-hub-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.project-bible-collapse {
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+.project-bible-collapse > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+}
+.project-bible-collapse .dashboard-bible {
+  margin-top: 12px;
+}
+
+/* Phase 8.3 — multi-shot SceneCanvas.
+   Higher specificity (.page.page--scene-canvas) so it beats the base `.page`
+   rule (which is defined LATER in this file) and removes the 1400px centered
+   cap → the canvas goes full-bleed. */
+.page.page--scene-canvas {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  padding: 16px 20px;
+}
+.page-header--canvas {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.scene-canvas__banner {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  font-size: 13px;
+  margin: 4px 0;
+}
+.scene-canvas__flow {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* Shot-group container (React Flow parent node). */
+.shot-group {
+  width: 100%;
+  height: 100%;
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 10px;
+  /* Opaque panel so the frame is clearly distinct from the dark dotted canvas. */
+  background: color-mix(in srgb, var(--panel) 88%, #000);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 6px 24px rgba(0, 0, 0, 0.45);
+}
+.shot-group--collapsed {
+  border-style: solid;
+  background: var(--panel-high);
+}
+.react-flow__node-shotGroup.selected .shot-group,
+.react-flow__node-shotGroup:focus .shot-group {
+  border-color: var(--accent);
+  border-style: solid;
+}
+/* Phase 8.3b — group resize handles (visible when the group is selected). */
+.shot-group .react-flow__resize-control.handle {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: var(--accent);
+  border: 1px solid var(--panel);
+}
+.shot-group .react-flow__resize-control.line {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+.shot-group__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  color: var(--muted);
+  border-bottom: 1px dashed var(--border);
+}
+.shot-group__toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 100ms ease, color 100ms ease;
+}
+.shot-group__toggle:hover {
+  background: var(--panel-high);
+  color: var(--text);
+}
+.shot-group__label {
+  cursor: text;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  line-height: 1.2;
+}
+.shot-group__num {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.shot-group__scene {
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--text);
+}
+.shot-group__label-input {
+  font-size: 16px;
+  font-weight: 700;
+  padding: 2px 6px;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+}
+.shot-group__badge {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+}
+.shot-group__delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 100ms ease, color 100ms ease;
+}
+.shot-group__delete:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+.scene-canvas__empty {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+/* React Flow built-in widgets — match dark theme.
+   colorMode="dark" already flips xyflow's vars; these overrides snap them
+   onto our palette + soften the harsh bright buttons. */
+.scene-canvas__flow .react-flow__controls {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+.scene-canvas__flow .react-flow__controls-button {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  width: 28px;
+  height: 28px;
+}
+.scene-canvas__flow .react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+.scene-canvas__flow .react-flow__controls-button:hover {
+  background: var(--panel-high);
+  color: var(--accent);
+}
+.scene-canvas__flow .react-flow__controls-button svg {
+  fill: currentColor;
+  max-width: 14px;
+  max-height: 14px;
+}
+.scene-canvas__flow .react-flow__minimap {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* Shot-group "+ node" quick-add menu */
+.shot-group__add-wrap {
+  position: relative;
+}
+.shot-group__add {
+  font-size: 11px;
+  padding: 3px 8px;
+  background: var(--panel-high);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+}
+.shot-group__add-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  min-width: 130px;
+  background: var(--panel-higher);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.shot-group__add-menu button {
+  text-align: left;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.shot-group__add-menu button:hover {
+  background: var(--panel-high);
+}
+
+/* Cmd+K jump-to-shot palette */
+.jump-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+}
+.jump-modal {
+  width: 480px;
+  max-width: calc(100vw - 32px);
+  background: var(--panel-higher);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.jump-modal__input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 16px;
+  font-size: 15px;
+  background: var(--panel);
+  color: var(--fg);
+  border: none;
+  border-bottom: 1px solid var(--border);
+}
+.jump-modal__list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.jump-modal__item {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+.jump-modal__item:hover {
+  background: var(--panel-high);
+}
+.jump-modal__item-label {
+  font-weight: 700;
+  color: var(--accent);
+}
+.jump-modal__item-scene {
+  font-size: 13px;
+  color: var(--muted);
+}
+.jump-modal__empty {
+  padding: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Floating node-add toolbar (bottom-left of SceneCanvas) */
+.canvas-toolbar {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  z-index: 8;
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  background: var(--panel-higher);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+.canvas-toolbar__btn {
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 18px;
+  transition: border-color 100ms ease, background 100ms ease;
+}
+.canvas-toolbar__btn:hover {
+  border-color: var(--accent);
+}
+.canvas-toolbar__btn--active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 25%, var(--panel));
+}
+.scene-canvas__flow--placing {
+  cursor: crosshair;
+}
+
+/* Cursor-follow ghost chip */
+.canvas-ghost {
+  position: fixed;
+  z-index: 320;
+  pointer-events: none;
+  padding: 4px 8px;
+  font-size: 12px;
+  background: var(--panel-higher);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+/* Right-click context menu */
+.canvas-ctx-menu {
+  position: fixed;
+  z-index: 320;
+  min-width: 170px;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-higher);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+.canvas-ctx-menu button {
+  text-align: left;
+  padding: 7px 12px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.canvas-ctx-menu button:hover {
+  background: var(--panel-high);
+}
+.canvas-ctx-menu__danger:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+.canvas-ctx-menu__divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+.shot-group__collapsed-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: calc(100% - 33px);
+  color: var(--muted);
+  font-size: 11px;
+}
 .video-ref-row__variants {
   display: flex;
   gap: 6px;

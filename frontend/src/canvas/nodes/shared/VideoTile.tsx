@@ -118,15 +118,24 @@ export function VideoTile({
           }}
         />
       ) : !givenUp ? (
+        // Phase 8.3b: when there's no poster (r2v + custom-ref videos), we
+        // rely on the <video> element itself to render its first frame as
+        // the thumbnail. `preload="metadata"` is required — without it the
+        // browser fetches nothing and the user sees an empty player forever
+        // (placeholder ▶/0:00 never gets replaced because onLoadedData never
+        // fires). `loadedmetadata` fires as soon as the first frame is known,
+        // which is what we want for a still thumb.
         <video
           key={attempt}
           className="node-card__thumbnail"
           data-kind="video"
           src={src}
-          preload="none"
+          preload="metadata"
           muted
+          playsInline
           aria-label={alt}
           style={loaded ? undefined : { display: "none" }}
+          onLoadedMetadata={() => setLoaded(true)}
           onLoadedData={() => setLoaded(true)}
           onError={() => {
             retryTimerRef.current = setTimeout(() => {
@@ -135,7 +144,10 @@ export function VideoTile({
           }}
         />
       ) : null}
-      {posterMediaId && (
+      {/* Play affordance — shown when there's either a poster image OR the
+          video's first frame has rendered (loaded). Tells the user the result
+          is ready & clickable, fixing the "looks empty after gen" issue. */}
+      {(posterMediaId || loaded) && (
         <span className="video-tile__play-badge" aria-hidden="true">▶</span>
       )}
     </div>

@@ -978,12 +978,29 @@ export interface ProjectDetailDTO extends ProjectDTO {
   asset_count: number;
 }
 
+// Phase 8.3: a shot's SceneCanvas group metadata (lives in
+// scene.canvas_state.shot_groups). Size is auto-fit by React Flow.
+export interface ShotGroup {
+  shot_id: string;
+  position: { x: number; y: number };
+  collapsed: boolean;
+  label: string;
+  order: number;
+  // Phase 8.3b — manual frame size; when set, overrides the auto-fit.
+  size?: { w: number; h: number };
+}
+
+export interface SceneCanvasState {
+  shot_groups?: ShotGroup[];
+}
+
 export interface SceneDTO {
   id: string;
   project_id: string;
   name: string;
   order_index: number;
-  scene_bible_text: string;
+  // Phase 8.3: Scene Bible removed; multi-shot layout lives here.
+  canvas_state: SceneCanvasState;
   master_establishing_asset_id: number | null;
   created_at: string | null;
 }
@@ -1011,8 +1028,9 @@ export interface ShotDTO {
   created_at: string | null;
 }
 
-export interface SceneBible {
-  scene_bible_text: string;
+// Phase 8.3: Scene Bible text removed; this now carries only the scene's
+// master/establishing asset pointer (MasterShot reference flow).
+export interface SceneEstablishing {
   master_establishing_asset_id: number | null;
   // Read-only convenience populated by GET — the Asset's uuid_media_id
   // (so the MasterShotNode can show the actual image without a second
@@ -1081,7 +1099,7 @@ export function listScenes(projectId: string): Promise<SceneDTO[]> {
 
 export function createScene(
   projectId: string,
-  input: { name: string; order_index?: number; scene_bible_text?: string },
+  input: { name: string; order_index?: number },
 ): Promise<SceneDTO> {
   return api<SceneDTO>(`/api/projects/${projectId}/scenes`, {
     method: "POST",
@@ -1098,7 +1116,6 @@ export function patchScene(
   patch: {
     name?: string;
     order_index?: number;
-    scene_bible_text?: string;
   },
 ): Promise<SceneDTO> {
   return api<SceneDTO>(`/api/scenes/${id}`, {
@@ -1111,17 +1128,69 @@ export function deleteScene(id: string): Promise<{ deleted: string }> {
   return api<{ deleted: string }>(`/api/scenes/${id}`, { method: "DELETE" });
 }
 
-export function getSceneBible(id: string): Promise<SceneBible> {
-  return api<SceneBible>(`/api/scenes/${id}/bible`);
+export function getSceneEstablishing(id: string): Promise<SceneEstablishing> {
+  return api<SceneEstablishing>(`/api/scenes/${id}/bible`);
 }
 
-export function putSceneBible(
+export function putSceneEstablishing(
   id: string,
-  bible: SceneBible,
-): Promise<SceneBible> {
-  return api<SceneBible>(`/api/scenes/${id}/bible`, {
+  body: { master_establishing_asset_id: number | null },
+): Promise<SceneEstablishing> {
+  return api<SceneEstablishing>(`/api/scenes/${id}/bible`, {
     method: "PUT",
-    body: JSON.stringify(bible),
+    body: JSON.stringify(body),
+  });
+}
+
+// ── Phase 8.3: multi-shot SceneCanvas ──────────────────────────────────────
+
+export interface SceneCanvasDTO {
+  scene_id: string;
+  project_id: string;
+  shots: {
+    id: string;
+    order_index: number;
+    script_text: string;
+    status: string;
+  }[];
+  nodes: {
+    id: number;
+    shot_id: string;
+    short_id: string;
+    type: string;
+    x: number;
+    y: number;
+    data: Record<string, unknown>;
+    status: string;
+  }[];
+  edges: {
+    id: number;
+    shot_id: string;
+    source_id: number;
+    target_id: number;
+    kind: string;
+    source_variant_idx: number | null;
+  }[];
+  shot_groups: ShotGroup[];
+}
+
+export function getSceneCanvas(sceneId: string): Promise<SceneCanvasDTO> {
+  return api<SceneCanvasDTO>(`/api/scenes/${sceneId}/canvas`);
+}
+
+export function autoMigrateScene(
+  sceneId: string,
+): Promise<{ scene_id: string; shot_groups: ShotGroup[]; migrated: boolean }> {
+  return api(`/api/scenes/${sceneId}/auto-migrate`, { method: "POST" });
+}
+
+export function patchShotGroup(
+  shotId: string,
+  patch: Partial<Omit<ShotGroup, "shot_id">>,
+): Promise<ShotGroup> {
+  return api<ShotGroup>(`/api/shots/${shotId}/group`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
   });
 }
 

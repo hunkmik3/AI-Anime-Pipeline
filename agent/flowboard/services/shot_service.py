@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy import func
+from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Session, select
 
 from flowboard.db.models import Edge, Node, Request, Scene, Shot
@@ -94,7 +95,22 @@ def update_shot(
 
 def delete_shot(session: Session, shot_id: uuid.UUID) -> None:
     shot = get_shot(session, shot_id)
-    session.delete(shot)
+    scene_id = shot.scene_id
+    session.delete(shot)  # FK CASCADE drops the shot's nodes + edges
+    # Phase 8.3: also drop this shot's SceneCanvas group entry so the deleted
+    # shot doesn't reappear as an orphan frame on reload.
+    scene = session.get(Scene, scene_id)
+    if scene is not None:
+        state = dict(scene.canvas_state or {})
+        groups = state.get("shot_groups")
+        if isinstance(groups, list):
+            sid = str(shot_id)
+            kept = [g for g in groups if not (isinstance(g, dict) and g.get("shot_id") == sid)]
+            if len(kept) != len(groups):
+                state["shot_groups"] = kept
+                scene.canvas_state = state
+                flag_modified(scene, "canvas_state")
+                session.add(scene)
     session.commit()
 
 

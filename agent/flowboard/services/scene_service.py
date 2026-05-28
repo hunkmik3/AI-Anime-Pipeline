@@ -224,6 +224,7 @@ def get_scene_canvas(session: Session, scene_id: uuid.UUID) -> dict[str, Any]:
     scene = get_scene(session, scene_id)
     shots = _shots_ordered(session, scene_id)
     shot_ids = [sh.id for sh in shots]
+    shot_id_strs = {str(sid) for sid in shot_ids}
 
     nodes: list[Node] = []
     edges: list[Edge] = []
@@ -267,7 +268,13 @@ def get_scene_canvas(session: Session, scene_id: uuid.UUID) -> dict[str, Any]:
             }
             for e in edges
         ],
-        "shot_groups": (scene.canvas_state or {}).get("shot_groups", []),
+        # Defensive: drop orphan group entries whose shot no longer exists
+        # (e.g. legacy data, or a shot deleted out-of-band).
+        "shot_groups": [
+            g
+            for g in (scene.canvas_state or {}).get("shot_groups", [])
+            if isinstance(g, dict) and g.get("shot_id") in shot_id_strs
+        ],
     }
 
 
@@ -318,6 +325,7 @@ def update_shot_group(
     collapsed: Optional[bool] = None,
     label: Optional[str] = None,
     order: Optional[int] = None,
+    size: Optional[dict] = None,
 ) -> dict[str, Any]:
     """Patch a single shot's group metadata in scene.canvas_state. Creates the
     group entry if it doesn't exist yet (e.g. a brand-new shot)."""
@@ -338,6 +346,8 @@ def update_shot_group(
         entry["label"] = label
     if order is not None:
         entry["order"] = order
+    if size is not None:
+        entry["size"] = size
     state["shot_groups"] = groups
     scene.canvas_state = state
     # See auto_migrate_canvas: force the JSONB UPDATE for nested mutations.

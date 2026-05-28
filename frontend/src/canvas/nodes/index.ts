@@ -8,10 +8,13 @@ import { NoteNode } from "./NoteNode";
 import { PromptNode } from "./PromptNode";
 import { ScriptNode } from "./ScriptNode";
 import { StoryboardNode } from "./StoryboardNode";
+import { ShotGroupNode } from "./ShotGroupNode";
 import { VideoNode } from "./VideoNode";
 import { VisualAssetNode } from "./VisualAssetNode";
 
 export const nodeTypes = {
+  // Phase 8.3 — SceneCanvas shot-group container (parent/child frames).
+  shotGroup: ShotGroupNode,
   character: CharacterNode,
   image: ImageNode,
   video: VideoNode,

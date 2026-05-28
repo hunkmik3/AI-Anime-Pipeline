@@ -6,9 +6,11 @@ import {
   createNode,
   deleteEdge,
   deleteNode,
+  getSceneCanvas,
   getShotWorkflow,
   patchNode,
   type NodeType,
+  type ShotGroup,
 } from "../api/client";
 
 export type { NodeType };
@@ -102,6 +104,9 @@ export interface FlowboardNodeData extends Record<string, unknown> {
   // returns no real %). Cleared on done/error.
   genProgress?: number;
   genPhase?: "queued" | "generating";
+  // Phase 8.3 — owning shot id (set when loaded via the multi-shot
+  // SceneCanvas so nodes can be grouped by shot). Absent in single-shot mode.
+  shotId?: string;
 }
 
 export type FlowNode = Node<FlowboardNodeData>;
@@ -204,16 +209,30 @@ function nodeFromDto(n: RawNode): FlowNode {
 
 interface ShotWorkflowState {
   shotId: string | null;
+  // Phase 8.3: when the multi-shot SceneCanvas is active, sceneId is set and
+  // nodes/edges hold the WHOLE scene's graph (each node's data.shotId tags
+  // its owning shot). shotId stays null in scene mode.
+  sceneId: string | null;
+  shotGroups: ShotGroup[];
   nodes: FlowNode[];
   edges: Edge<FlowboardEdgeData>[];
   loading: boolean;
   error: string | null;
 
   loadShotWorkflow(shotId: string): Promise<void>;
+  loadSceneCanvas(sceneId: string): Promise<void>;
+  setShotGroups(groups: ShotGroup[]): void;
+  updateShotGroupLocal(shotId: string, patch: Partial<ShotGroup>): void;
   refreshWorkflow(): Promise<void>;
   clearShot(): void;
 
   addNodeOfType(type: NodeType, position: { x: number; y: number }): Promise<string | null>;
+  // Phase 8.3 — add a node into a SPECIFIC shot (multi-shot SceneCanvas).
+  addNodeToShot(
+    shotId: string,
+    type: NodeType,
+    position: { x: number; y: number },
+  ): Promise<string | null>;
   addReferenceNode(
     ref: {
       mediaId: string;
@@ -227,6 +246,10 @@ interface ShotWorkflowState {
   persistNodePosition(rfId: string, position: { x: number; y: number }): Promise<void>;
   deleteNodeByRfId(rfId: string): Promise<void>;
   addEdgeFromConnection(source: string, target: string): Promise<void>;
+  // Phase 8.3 — connect nodes on the multi-shot SceneCanvas. The edge is
+  // owned by the source node's shot (Edge.shot_id). Works in scene mode
+  // where the single `shotId` is null.
+  addSceneEdge(source: string, target: string): Promise<void>;
   deleteEdgeByRfId(rfId: string): Promise<void>;
   cloneNodeWithUpstream(rfId: string): Promise<string | null>;
 
@@ -239,6 +262,8 @@ interface ShotWorkflowState {
 
 export const useShotWorkflowStore = create<ShotWorkflowState>((set, get) => ({
   shotId: null,
+  sceneId: null,
+  shotGroups: [],
   nodes: [],
   edges: [],
   loading: false,
@@ -266,6 +291,54 @@ export const useShotWorkflowStore = create<ShotWorkflowState>((set, get) => ({
     }
   },
 
+  async loadSceneCanvas(sceneId) {
+    // Multi-shot mode: load the whole scene's graph (nodes across all shots)
+    // + the shot_groups layout. shotId stays null so single-shot helpers
+    // (addNodeOfType etc.) no-op; SceneCanvas drives group/position writes.
+    set({ sceneId, shotId: null, nodes: [], edges: [], shotGroups: [], loading: true, error: null });
+    try {
+      const canvas = await getSceneCanvas(sceneId);
+      if (get().sceneId !== sceneId) return;
+      const nodes: FlowNode[] = canvas.nodes.map((n) => {
+        const fn = nodeFromDto({
+          id: n.id,
+          short_id: n.short_id,
+          type: n.type as NodeType,
+          x: n.x,
+          y: n.y,
+          data: n.data,
+          status: n.status as NodeStatus,
+        });
+        fn.data.shotId = n.shot_id; // tag owning shot for grouping
+        return fn;
+      });
+      const edges = canvas.edges.map((e) =>
+        edgeFromDto({
+          id: e.id,
+          source_id: e.source_id,
+          target_id: e.target_id,
+          source_variant_idx: e.source_variant_idx,
+        }),
+      );
+      set({ nodes, edges, shotGroups: canvas.shot_groups, loading: false });
+    } catch (err) {
+      if (get().sceneId !== sceneId) return;
+      set({ loading: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  setShotGroups(groups) {
+    set({ shotGroups: groups });
+  },
+
+  updateShotGroupLocal(shotId, patch) {
+    set((s) => ({
+      shotGroups: s.shotGroups.map((g) =>
+        g.shot_id === shotId ? { ...g, ...patch } : g,
+      ),
+    }));
+  },
+
   async refreshWorkflow() {
     const { shotId } = get();
     if (!shotId) return;
@@ -282,7 +355,7 @@ export const useShotWorkflowStore = create<ShotWorkflowState>((set, get) => ({
   },
 
   clearShot() {
-    set({ shotId: null, nodes: [], edges: [] });
+    set({ shotId: null, sceneId: null, shotGroups: [], nodes: [], edges: [] });
   },
 
   async addNodeOfType(type, position) {
@@ -315,6 +388,33 @@ export const useShotWorkflowStore = create<ShotWorkflowState>((set, get) => ({
       // surface silently for now
     }
     return null;
+  },
+
+  async addNodeToShot(shotId, type, position) {
+    const title = TYPE_TITLE[type];
+    try {
+      const dto = await createNode({
+        shot_id: shotId,
+        type,
+        x: Math.round(position.x),
+        y: Math.round(position.y),
+        data: { title },
+      });
+      const node = nodeFromDto({
+        id: dto.id,
+        short_id: dto.short_id,
+        type: dto.type,
+        x: dto.x,
+        y: dto.y,
+        data: dto.data,
+        status: dto.status,
+      });
+      node.data.shotId = shotId; // tag for SceneCanvas grouping
+      set((s) => ({ nodes: [...s.nodes, node] }));
+      return node.id;
+    } catch {
+      return null;
+    }
   },
 
   async addReferenceNode(ref, position) {
@@ -413,6 +513,28 @@ export const useShotWorkflowStore = create<ShotWorkflowState>((set, get) => ({
         target_id: targetId,
       });
       if (get().shotId !== shotId) return;
+      set((s) => ({ edges: [...s.edges, edgeFromDto(dto)] }));
+    } catch {
+      /* ignore */
+    }
+  },
+
+  async addSceneEdge(source, target) {
+    const nodes = get().nodes;
+    const src = nodes.find((n) => n.id === source);
+    const tgt = nodes.find((n) => n.id === target);
+    // The edge lives in the source node's shot (fall back to target's).
+    const shotId = src?.data.shotId ?? tgt?.data.shotId;
+    if (!shotId) return;
+    const sourceId = parseInt(source, 10);
+    const targetId = parseInt(target, 10);
+    if (isNaN(sourceId) || isNaN(targetId)) return;
+    try {
+      const dto = await createEdge({
+        shot_id: shotId,
+        source_id: sourceId,
+        target_id: targetId,
+      });
       set((s) => ({ edges: [...s.edges, edgeFromDto(dto)] }));
     } catch {
       /* ignore */
