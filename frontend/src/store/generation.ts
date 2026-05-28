@@ -42,9 +42,10 @@ interface GenerationState {
       // prompt — required for batch auto-prompt to keep poses distinct
       // across the 4 generated images.
       prompts?: string[];
-      // Phase 8.1.5: standalone custom refs uploaded in the video dialog
-      // (not persisted to a node). Appended to reference_images/labels.
-      customRefs?: { mediaId: string; label: string | null }[];
+      // Phase 8.1.5/d: standalone custom refs uploaded in the video dialog
+      // (not persisted to a node). image → reference_images; audio →
+      // audio_ref_url; video → reference_videos.
+      customRefs?: { mediaId: string; label: string | null; kind: "image" | "audio" | "video" }[];
     },
   ): Promise<void>;
 
@@ -270,7 +271,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
     sourceMediaIds?: string[];
     variantCount?: number;
     prompts?: string[];
-    customRefs?: { mediaId: string; label: string | null }[];
+    customRefs?: { mediaId: string; label: string | null; kind: "image" | "audio" | "video" }[];
   }) {
     const projectId = await get().ensureProjectId();
     if (projectId === null) return;
@@ -380,34 +381,34 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         if (videoSettings.duration_seconds) videoParams.duration_seconds = videoSettings.duration_seconds;
         if (videoSettings.resolution) videoParams.resolution = videoSettings.resolution;
         if (videoSettings.generate_audio !== undefined) videoParams.generate_audio = videoSettings.generate_audio;
-        // References for r2v. Manual multi-ref list (VideoNodeSettings) is
-        // authoritative; if it's empty AND the model supports multi-ref,
-        // fall back to identity-anchor nodes wired on the canvas so a
-        // Character->Video graph still drives r2v (DRIFT 1 fix) instead of
-        // silently dropping to i2v.
-        const manualRefs =
-          Array.isArray(videoSettings.reference_image_ids) && videoSettings.reference_image_ids.length > 0
-            ? (videoSettings.reference_image_ids as string[])
-            : [];
+        // References for r2v. Phase 8.1.5d: the legacy manual multi-ref list
+        // (VideoNodeSettings text input) was removed — canvas-wired ref nodes
+        // (Character/VisualAsset/MasterShot) are the single source, each
+        // carrying its @image label for positional ordering. Standalone
+        // custom uploads from the dialog are appended below.
         const resolvedCaps = useVideoModelsStore
           .getState()
           .models.find((m) => m.model_id === resolvedModelId)?.capabilities;
-        // Phase 8.1: refs carry parallel @image labels. The manual VideoNode
-        // list (bare media_ids) has no per-node label → all null (backend
-        // no-op). Canvas-wired ref nodes carry their reference_label, which
-        // the backend uses to order reference_images so @imageN binds right.
-        let r2vRefs = manualRefs;
-        let r2vLabels: (string | null)[] = manualRefs.map(() => null);
-        if (manualRefs.length === 0 && resolvedCaps?.supports_multi_ref) {
+        let r2vRefs: string[] = [];
+        let r2vLabels: (string | null)[] = [];
+        if (resolvedCaps?.supports_multi_ref) {
           const detailed = collectUpstreamR2vRefsDetailed(rfId);
           r2vRefs = detailed.map((r) => r.id);
           r2vLabels = detailed.map((r) => r.label);
         }
-        // Phase 8.1.5: standalone custom refs (uploaded in the dialog, not
-        // wired to a node) append after the canvas refs, preserving order.
-        if (Array.isArray(opts.customRefs) && opts.customRefs.length > 0) {
+        // Phase 8.1.5/d: standalone custom refs (uploaded in the dialog, not
+        // wired to a node). Split by kind: image → reference_images (append
+        // after canvas refs); audio → audio_ref_url; video → reference_videos.
+        const customVideoRefs: string[] = [];
+        let customAudioRef: string | undefined;
+        if (Array.isArray(opts.customRefs)) {
           for (const c of opts.customRefs) {
-            if (c.mediaId && !r2vRefs.includes(c.mediaId)) {
+            if (!c.mediaId) continue;
+            if (c.kind === "audio") {
+              if (!customAudioRef) customAudioRef = c.mediaId; // single audio (multi defer 8.2)
+            } else if (c.kind === "video") {
+              if (!customVideoRefs.includes(c.mediaId)) customVideoRefs.push(c.mediaId);
+            } else if (!r2vRefs.includes(c.mediaId)) {
               r2vRefs = [...r2vRefs, c.mediaId];
               r2vLabels = [...r2vLabels, c.label];
             }
@@ -418,13 +419,17 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
           // Always sent (one code path); backend ignores an all-null list.
           videoParams.reference_labels = r2vLabels;
         }
+        if (customVideoRefs.length > 0) {
+          videoParams.reference_videos = customVideoRefs;
+        }
         if (typeof videoSettings.last_frame_asset_id === "string" && videoSettings.last_frame_asset_id) {
           videoParams.last_frame_url = videoSettings.last_frame_asset_id;
         }
-        // Audio reference (Seedance 2.0 r2v+audio): explicit node setting
-        // wins; else the first connected AudioRefNode. Worker hoists the
-        // media_id → R2 public URL on submit.
+        // Audio reference (Seedance 2.0 r2v+audio): a freshly-uploaded custom
+        // audio wins; else explicit node setting; else the first connected
+        // AudioRefNode. Worker hoists the media_id → R2 public URL on submit.
         const audioRef =
+          customAudioRef ||
           (typeof videoSettings.audio_ref_media_id === "string" && videoSettings.audio_ref_media_id) ||
           collectUpstreamAudioMediaId(rfId);
         if (audioRef) {
@@ -494,7 +499,19 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
           networkRetries = 0;
 
           if (req.status === "running") {
-            useShotWorkflowStore.getState().updateNodeData(rfId, { status: "running" });
+            // Phase 8.1.5d: client-side phase progress for video (the API
+            // returns no %). Estimate generating 10→90% from elapsed time vs
+            // duration×K; capped at 90 until the clip lands (status=done).
+            const runPatch: Record<string, unknown> = { status: "running" };
+            if (kind === "video") {
+              const created = Date.parse(req.created_at);
+              const dur = (req.params.duration_seconds as number) || 5;
+              const estTotalMs = dur * 30_000; // K≈30s of wall-clock per output-second
+              const elapsed = Number.isFinite(created) ? Date.now() - created : 0;
+              runPatch.genPhase = "generating";
+              runPatch.genProgress = Math.min(90, Math.max(10, Math.round(10 + 80 * (elapsed / estTotalMs))));
+            }
+            useShotWorkflowStore.getState().updateNodeData(rfId, runPatch);
             // Reschedule
             set((s) => ({
               active: {
@@ -546,6 +563,8 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
               aspectRatio: opts.aspectRatio,
               renderedAt: new Date().toISOString(),
               error: partialError ?? undefined,
+              genProgress: undefined,
+              genPhase: undefined,
               ...(stampedImageModel ? { imageModel: stampedImageModel } : {}),
               ...(stampedVideoQuality ? { videoQuality: stampedVideoQuality } : {}),
             });
@@ -600,7 +619,9 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
             });
           } else if (req.status === "failed") {
             const errMsg = req.error ?? "unknown";
-            useShotWorkflowStore.getState().updateNodeData(rfId, { status: "error", error: errMsg });
+            useShotWorkflowStore.getState().updateNodeData(rfId, {
+              status: "error", error: errMsg, genProgress: undefined, genPhase: undefined,
+            });
             set((s) => {
               const next = { ...s.active };
               delete next[rfId];
@@ -608,6 +629,11 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
             });
           } else {
             // queued — keep polling
+            if (kind === "video") {
+              useShotWorkflowStore.getState().updateNodeData(rfId, {
+                status: "queued", genPhase: "queued", genProgress: 5,
+              });
+            }
             set((s) => ({
               active: {
                 ...s.active,

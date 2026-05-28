@@ -74,6 +74,9 @@ class VideoProviderCapability:
     aspect_ratios: tuple[str, ...]    # e.g. ("1:1", "16:9", "9:16")
     resolutions: tuple[str, ...]      # e.g. ("720p", "1080p")
     durations: tuple[int, ...]        # allowed seconds
+    # Phase 8.1.5d: r2v with video_url role="reference_video" (Seedance 2.0;
+    # contract §11.9). Default False so pre-existing caps need no change.
+    supports_video_ref: bool = False
 
 
 class VideoGenSubmitParams(TypedDict, total=False):
@@ -99,6 +102,10 @@ class VideoGenSubmitParams(TypedDict, total=False):
     # which forbids a first_frame block — the provider drops first_frame
     # when audio is present.
     audio_ref_url: Optional[str]
+    # Phase 8.1.5d: reference video URLs (role="reference_video", §11.9).
+    # Only honored when ``capabilities.supports_video_ref``; dropped-with-
+    # warning otherwise. Reference media → r2v mode (no first_frame).
+    reference_videos: list[str]
     motion_prompt: str
     duration_seconds: int
     aspect_ratio: str          # "1:1" | "16:9" | "9:16"

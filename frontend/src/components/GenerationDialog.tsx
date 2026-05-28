@@ -600,6 +600,7 @@ export function GenerationDialog() {
         customRefs: customRefs.map((c) => ({
           mediaId: c.mediaId,
           label: c.label.trim() || null,
+          kind: c.kind,
         })),
       });
       closeGenerationDialog();
@@ -678,6 +679,7 @@ export function GenerationDialog() {
         customRefs: customRefs.map((c) => ({
           mediaId: c.mediaId,
           label: c.label.trim() || null,
+          kind: c.kind,
         })),
       });
     } else {
@@ -757,6 +759,10 @@ export function GenerationDialog() {
             esc
           </button>
         </div>
+
+        {/* Phase 8.1.5d: scrollable body so a long prompt + many refs never
+            push the footer (Generate) off-screen. Header/footer stay fixed. */}
+        <div className="gen-dialog__body">
 
         {/* Prompt-mode toggle (video only) — Manual paste vs Automation
             synth. Persisted per-node; default Manual. */}
@@ -1286,6 +1292,7 @@ export function GenerationDialog() {
             </div>
           </div>
         )}
+        </div>{/* /gen-dialog__body */}
 
         {/* Footer */}
         <div className="gen-dialog__footer">

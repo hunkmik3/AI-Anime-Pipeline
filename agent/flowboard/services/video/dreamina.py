@@ -100,6 +100,7 @@ SEEDANCE_2_0_CAPABILITY = VideoProviderCapability(
     supports_last_frame=True,
     supports_audio_toggle=True,
     supports_audio_ref=True,
+    supports_video_ref=True,  # Phase 8.1.5d — reference_video probed OK (§11.9)
     max_refs=9,
     aspect_ratios=("1:1", "16:9", "9:16"),
     resolutions=("720p", "1080p"),
@@ -185,6 +186,16 @@ class DreaminaVideoProvider:
             )
             reference_images = reference_images[:cut]
 
+        # Phase 8.1.5d: reference videos (role="reference_video", contract §11.9).
+        reference_videos = [r for r in (params.get("reference_videos") or []) if isinstance(r, str) and r]
+        if reference_videos and not self.capabilities.supports_video_ref:
+            warnings.append(
+                f"Dropped {len(reference_videos)} reference video(s): "
+                f"{self.entry.display_name} doesn't support reference_video. "
+                f"Switch to Seedance 2.0."
+            )
+            reference_videos = []
+
         if audio_ref_url and not self.capabilities.supports_audio_ref:
             warnings.append(
                 f"Dropped audio reference: {self.entry.display_name} "
@@ -214,7 +225,9 @@ class DreaminaVideoProvider:
                     "bad_input",
                     "audio reference requires at least one reference image",
                 )
-        elif self.capabilities.supports_multi_ref and len(reference_images) > 1:
+        elif self.capabilities.supports_multi_ref and (len(reference_images) > 1 or reference_videos):
+            # r2v also triggers when a reference VIDEO is present (it's
+            # reference media, like multi-image), even with ≤1 image.
             mode = "r2v"
             if first_frame_url:
                 warnings.append(
@@ -329,6 +342,14 @@ class DreaminaVideoProvider:
                     "type": "image_url",
                     "image_url": {"url": ref},
                     "role": "reference_image",
+                })
+            # Phase 8.1.5d: reference videos (contract §11.9). Emitted after
+            # image refs, before audio.
+            for vref in reference_videos:
+                content.append({
+                    "type": "video_url",
+                    "video_url": {"url": vref},
+                    "role": "reference_video",
                 })
             if audio_ref_url:
                 content.append({

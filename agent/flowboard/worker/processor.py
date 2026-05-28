@@ -281,10 +281,28 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
                 except VideoError as exc:
                     logger.warning("dreamina: skipped unreachable audio ref: %s", exc)
 
+        # Reference videos (Seedance 2.0 r2v, contract §11.9). Same R2 hoist
+        # as images/audio. List in/out so multiple video refs are preserved.
+        raw_video_refs = params.get("reference_videos") or params.get("video_ref_urls") or []
+        resolved_videos: list[str] = []
+        if isinstance(raw_video_refs, list):
+            for v in raw_video_refs:
+                if not isinstance(v, str) or not v:
+                    continue
+                if v.startswith(("http://", "https://", "data:")):
+                    resolved_videos.append(v)
+                    continue
+                try:
+                    resolved_videos.append(
+                        media_id_to_public_url(v, project_id=params.get("project_id"))
+                    )
+                except VideoError as exc:
+                    logger.warning("dreamina: skipped unreachable video ref: %s", exc)
+
         # first_frame is optional in reference-media (r2v / r2v+audio) modes;
-        # the provider derives mode from refs/audio and validates per-mode.
+        # the provider derives mode from refs/audio/video and validates per-mode.
         # Only hard-fail when there's nothing to generate from at all.
-        if not first_frame and not resolved_refs and not resolved_audio:
+        if not first_frame and not resolved_refs and not resolved_audio and not resolved_videos:
             return {}, "missing_first_frame_url"
 
         last_frame = params.get("last_frame_url")
@@ -300,6 +318,7 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
         provider_params.update({
             "first_frame_url": first_frame or "",
             "reference_images": resolved_refs,
+            "reference_videos": resolved_videos,
             "last_frame_url": last_frame if isinstance(last_frame, str) else None,
             "audio_ref_url": resolved_audio,
             "duration_seconds": int(params.get("duration_seconds") or 5),

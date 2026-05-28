@@ -452,3 +452,33 @@ Outputs downloaded to `storage/media/seedance2-test{1,3,4}-*.mp4` and
 `storage/media/3shot-vert-*.mp4` (local, gitignored) for visual QA. No
 canonical samples committed — these probes used real character references,
 not sanitized fixtures.
+
+### 11.9 `reference_video` role (Phase 8.1.5d probe)
+
+> **Status**: probed live on 2026-05-27 against `dreamina-seedance-2-0-260128`.
+> Settles the open question "does Seedance 2.0 accept a VIDEO reference?"
+
+A submit with one valid `reference_image` block **plus** a
+`{"type":"video_url","video_url":{"url":...},"role":"reference_video"}`
+block (bogus/unreachable URL) returned:
+
+```
+HTTP 400 InvalidParameter
+"The parameter `content[2].video_url` ... is not valid: resource download failed"
+```
+
+This is the **same signature as the §11.3 audio probe**: the schema +
+role **validated** (it did NOT return "invalid role specified for video
+content"), and only the URL fetch failed. **Conclusion: `video_url` +
+`role: "reference_video"` IS supported** on Seedance 2.0. No task was
+created (400 before generation) → **0 tokens billed**.
+
+| Block type | Accepted `role` (updated) |
+|---|---|
+| `video_url` | `reference_video` — **supported** (this probe) |
+
+**Caveat**: API *acceptance* of the field is proven; whether the model
+**honors** the video as a meaningful reference (and any duration / size /
+count constraints on the input video) is **visual QA + unprobed** — feed a
+real public MP4 and inspect. Flowboard ships the wiring (provider emits the
+block in r2v mode, parallel to `reference_audio`); efficacy is a live item.

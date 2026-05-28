@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 
-import { mediaUrl, patchNode, uploadImage } from "../api/client";
+import { mediaUrl, patchNode, uploadAudio, uploadImage, uploadVideo } from "../api/client";
 import { useGenerationStore, resolvePrimaryMediaId } from "../store/generation";
 import { useShotWorkflowStore } from "../store/shotWorkflow";
 
@@ -18,10 +18,21 @@ import { useShotWorkflowStore } from "../store/shotWorkflow";
 
 const R2V_REF_TYPES = new Set(["character", "visual_asset", "master_shot"]);
 
+export type CustomRefKind = "image" | "audio" | "video";
+
 export interface CustomRef {
   mediaId: string;
   label: string;
   description: string;
+  kind: CustomRefKind;
+  filename: string;
+}
+
+function fmtDuration(sec: number): string {
+  if (!Number.isFinite(sec) || sec <= 0) return "";
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
 interface Props {
@@ -38,7 +49,16 @@ export function VideoRefsPanel({ rfId, customRefs, onCustomRefsChange }: Props) 
   const [expanded, setExpanded] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  // mediaId → duration seconds, read from the <video>/<audio> metadata once loaded.
+  const [durations, setDurations] = useState<Record<string, number>>({});
+  // mediaId → server-verify state. "ok" only when the media element actually
+  // fetched + decoded the bytes from /media/{id} (genuine server confirmation,
+  // not optimistic UI); "error" when that fetch fails. Absent = verifying.
+  const [verified, setVerified] = useState<Record<string, "ok" | "error">>({});
+  const imageRef = useRef<HTMLInputElement>(null);
+  const audioRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLInputElement>(null);
 
   // Upstream r2v ref nodes feeding this video node, in edge order.
   const refNodes = edges
@@ -56,19 +76,22 @@ export function VideoRefsPanel({ rfId, customRefs, onCustomRefsChange }: Props) 
     }
   }
 
-  async function addCustom(file: File) {
+  async function addCustom(file: File, kind: CustomRefKind) {
     setError(null);
     setUploading(true);
+    setMenuOpen(false);
     try {
       const projectId = await useGenerationStore.getState().ensureProjectId();
       if (!projectId) {
         setError("no project");
         return;
       }
-      const resp = await uploadImage(file, projectId, undefined);
+      const up =
+        kind === "audio" ? uploadAudio : kind === "video" ? uploadVideo : uploadImage;
+      const resp = await up(file, projectId, undefined);
       onCustomRefsChange([
         ...customRefs,
-        { mediaId: resp.media_id, label: "", description: "" },
+        { mediaId: resp.media_id, label: "", description: "", kind, filename: file.name },
       ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "upload failed");
@@ -151,55 +174,141 @@ export function VideoRefsPanel({ rfId, customRefs, onCustomRefsChange }: Props) 
         );
       })}
 
-      {/* Standalone custom refs (this gen only) */}
-      {customRefs.map((c, idx) => (
-        <div key={c.mediaId} className="video-ref-row video-ref-row--custom">
-          <img className="video-ref-row__thumb" src={thumb(c.mediaId)} alt="custom ref" />
-          <div className="video-ref-row__meta">
-            <input
-              className="ref-label-fields__label"
-              type="text"
-              value={c.label}
-              placeholder="@image1"
-              maxLength={40}
-              onChange={(e) => {
-                const next = [...customRefs];
-                next[idx] = { ...c, label: e.target.value };
-                onCustomRefsChange(next);
-              }}
-              aria-label="Custom ref label"
-            />
-            <span className="video-ref-row__custom-tag">custom · this gen only</span>
+      {/* Standalone custom refs (this gen only) — real preview per kind. */}
+      {customRefs.map((c, idx) => {
+        const icon = c.kind === "audio" ? "🔊" : c.kind === "video" ? "🎬" : "🖼️";
+        const dur = fmtDuration(durations[c.mediaId] ?? 0);
+        const vstate = verified[c.mediaId]; // undefined = verifying
+        // Real server confirmation: fires only when the browser fetched +
+        // decoded the bytes from /media/{id}.
+        const markOk = (e?: React.SyntheticEvent<HTMLMediaElement>) => {
+          if (e) {
+            const d = e.currentTarget.duration;
+            setDurations((prev) => (prev[c.mediaId] ? prev : { ...prev, [c.mediaId]: d }));
+          }
+          setVerified((prev) => (prev[c.mediaId] ? prev : { ...prev, [c.mediaId]: "ok" }));
+        };
+        const markErr = () =>
+          setVerified((prev) => ({ ...prev, [c.mediaId]: "error" }));
+        const badge =
+          vstate === "ok" ? (
+            <span className="video-ref-row__verify video-ref-row__verify--ok">✓ uploaded</span>
+          ) : vstate === "error" ? (
+            <span className="video-ref-row__verify video-ref-row__verify--err">✕ not on server</span>
+          ) : (
+            <span className="video-ref-row__verify">⏳ verifying…</span>
+          );
+        return (
+          <div key={c.mediaId} className="video-ref-row video-ref-row--custom">
+            {c.kind === "image" && (
+              <img
+                className="video-ref-row__thumb"
+                src={thumb(c.mediaId)}
+                alt={c.filename || "custom ref"}
+                onLoad={() => markOk()}
+                onError={markErr}
+              />
+            )}
+            {c.kind === "video" && (
+              <span className="video-ref-row__thumb-wrap">
+                <video
+                  className="video-ref-row__thumb"
+                  src={thumb(c.mediaId)}
+                  preload="metadata"
+                  muted
+                  onLoadedMetadata={markOk}
+                  onError={markErr}
+                />
+                <span className="video-ref-row__play" aria-hidden>▶</span>
+              </span>
+            )}
+            {c.kind === "audio" && (
+              <span className="video-ref-row__thumb video-ref-row__thumb--empty" aria-hidden>
+                {icon}
+                <audio
+                  src={thumb(c.mediaId)}
+                  preload="metadata"
+                  onLoadedMetadata={markOk}
+                  onError={markErr}
+                  style={{ display: "none" }}
+                />
+              </span>
+            )}
+            <div className="video-ref-row__meta">
+              <span className="video-ref-row__label" title={c.filename}>
+                {c.filename || `${c.kind} ref`}
+              </span>
+              <span className="video-ref-row__custom-tag">
+                {icon} {c.kind}{dur ? ` · ${dur}` : ""} · this gen only
+              </span>
+              {badge}
+              {c.kind === "image" && (
+                <input
+                  className="ref-label-fields__label"
+                  type="text"
+                  value={c.label}
+                  placeholder="@image1"
+                  maxLength={40}
+                  onChange={(e) => {
+                    const next = [...customRefs];
+                    next[idx] = { ...c, label: e.target.value };
+                    onCustomRefsChange(next);
+                  }}
+                  aria-label="Custom ref label"
+                />
+              )}
+            </div>
+            <button
+              type="button"
+              className="video-ref-row__remove"
+              onClick={() => onCustomRefsChange(customRefs.filter((_, i) => i !== idx))}
+              aria-label="Remove custom ref"
+            >
+              ✕
+            </button>
           </div>
-          <button
-            type="button"
-            className="video-ref-row__remove"
-            onClick={() => onCustomRefsChange(customRefs.filter((_, i) => i !== idx))}
-            aria-label="Remove custom ref"
-          >
-            ✕
-          </button>
-        </div>
-      ))}
+        );
+      })}
 
-      <button
-        type="button"
-        className="video-refs-panel__add"
-        onClick={() => fileRef.current?.click()}
-        disabled={uploading}
-      >
-        {uploading ? "Uploading…" : "+ Add custom image"}
-      </button>
+      {/* Add-custom dropdown: image / audio / video (Phase 8.1.5d). */}
+      <div className="video-refs-panel__add-wrap">
+        <button
+          type="button"
+          className="video-refs-panel__add"
+          onClick={() => setMenuOpen((o) => !o)}
+          disabled={uploading}
+          aria-expanded={menuOpen}
+        >
+          {uploading ? "Uploading…" : "+ Add custom ▾"}
+        </button>
+        {menuOpen && !uploading && (
+          <div className="video-refs-panel__menu" role="menu">
+            <button type="button" role="menuitem" onClick={() => imageRef.current?.click()}>🖼️ Image</button>
+            <button type="button" role="menuitem" onClick={() => audioRef.current?.click()}>🔊 Audio</button>
+            <button type="button" role="menuitem" onClick={() => videoRef.current?.click()}>🎬 Video</button>
+          </div>
+        )}
+      </div>
       <input
-        ref={fileRef}
+        ref={imageRef}
         type="file"
         accept="image/png,image/jpeg,image/webp,image/gif"
         style={{ display: "none" }}
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) void addCustom(f);
-          e.target.value = "";
-        }}
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) void addCustom(f, "image"); e.target.value = ""; }}
+      />
+      <input
+        ref={audioRef}
+        type="file"
+        accept="audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/aac,audio/ogg"
+        style={{ display: "none" }}
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) void addCustom(f, "audio"); e.target.value = ""; }}
+      />
+      <input
+        ref={videoRef}
+        type="file"
+        accept="video/mp4,video/quicktime,video/webm"
+        style={{ display: "none" }}
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) void addCustom(f, "video"); e.target.value = ""; }}
       />
       {error && <p className="gen-dialog__hint" style={{ color: "#ef4444" }}>{error}</p>}
     </div>

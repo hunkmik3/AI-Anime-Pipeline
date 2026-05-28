@@ -97,6 +97,11 @@ export interface FlowboardNodeData extends Record<string, unknown> {
   // Phase 8.1.5 — chosen primary variant (a media_id from mediaIds). Global
   // per node; downstream refs resolve primary_variant_id ?? mediaId ?? mediaIds[0].
   primary_variant_id?: string;
+  // Phase 8.1.5d — client-side gen progress (video). genProgress 0-100,
+  // genPhase = queued | generating (estimate from elapsed/duration; the API
+  // returns no real %). Cleared on done/error.
+  genProgress?: number;
+  genPhase?: "queued" | "generating";
 }
 
 export type FlowNode = Node<FlowboardNodeData>;

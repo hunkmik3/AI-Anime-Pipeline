@@ -347,6 +347,73 @@ async def upload_audio(
     return {"media_id": media_id, "mime": mime, "size": size}
 
 
+# ── Video upload (Phase 8.1.5d — Seedance 2.0 reference_video, §11.9) ────
+MAX_VIDEO_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB — short reference clips
+ALLOWED_VIDEO_MIMES = {
+    "video/mp4",
+    "video/quicktime",
+    "video/webm",
+}
+_VIDEO_EXT_BY_MIME = {
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "video/webm": ".webm",
+}
+
+
+@router.post("/upload-video")
+async def upload_video(
+    project_id: str = Form(...),
+    node_id: Optional[int] = Form(default=None),
+    file: UploadFile = File(...),
+):
+    """Upload a reference video for Seedance 2.0 r2v (role=reference_video).
+    Mirrors upload-audio: persist locally, mint an Asset; the worker hoists
+    the media_id to a public R2 URL before submit (media_id_to_public_url)."""
+    if not is_valid_project_id(project_id):
+        raise HTTPException(status_code=400, detail="invalid project_id")
+
+    mime = (file.content_type or "").lower().split(";")[0].strip()
+    if mime not in ALLOWED_VIDEO_MIMES:
+        raise HTTPException(
+            status_code=415,
+            detail=f"unsupported video mime: {mime!r}; allowed: {sorted(ALLOWED_VIDEO_MIMES)}",
+        )
+
+    raw = await file.read(MAX_VIDEO_UPLOAD_BYTES + 1)
+    size = len(raw)
+    if size == 0:
+        raise HTTPException(status_code=400, detail="empty file")
+    if size > MAX_VIDEO_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"file too large: {size} > {MAX_VIDEO_UPLOAD_BYTES}",
+        )
+
+    media_id = str(uuid.uuid4())
+    ext = _VIDEO_EXT_BY_MIME.get(mime, ".mp4")
+    cache_path = media_service.MEDIA_CACHE_DIR / f"{media_id}{ext}"
+    try:
+        cache_path.write_bytes(raw)
+    except OSError as exc:
+        logger.error("failed to write video cache %s: %s", cache_path, exc)
+        raise HTTPException(status_code=500, detail="failed to cache video upload")
+
+    with get_session() as s:
+        row = Asset(
+            uuid_media_id=media_id,
+            kind="video",
+            local_path=str(cache_path),
+            mime=mime,
+            node_id=node_id,
+        )
+        s.add(row)
+        s.commit()
+
+    logger.info("upload-video: media_id=%s size=%d mime=%s", media_id, size, mime)
+    return {"media_id": media_id, "mime": mime, "size": size}
+
+
 class UrlUploadBody(BaseModel):
     url: str
     project_id: str

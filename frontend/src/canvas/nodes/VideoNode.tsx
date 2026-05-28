@@ -69,11 +69,25 @@ function VideoBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }) {
     );
   }
 
+  // Phase 8.1.5d: client-side gen progress overlay (estimate; API has no %).
+  const genProgress = typeof data.genProgress === "number" ? data.genProgress : null;
+  const genPhase = data.genPhase;
+  const progressLabel =
+    genPhase === "queued" ? "Queued ⏳" : genPhase === "generating" ? "Generating ⚙️" : "Working";
+
   return (
     <div className="node-body node-body--video">
       <div className={`video-grid video-grid--${tileCount}`}>
         {tiles}
       </div>
+      {isProcessing && genProgress !== null && (
+        <div className="video-progress" role="status" aria-label={`${progressLabel} ${genProgress}%`}>
+          <div className="video-progress__bar">
+            <div className="video-progress__fill" style={{ width: `${genProgress}%` }} />
+          </div>
+          <span className="video-progress__label">{progressLabel} {genProgress}%</span>
+        </div>
+      )}
       {(isError || isPartial) && data.error && (
         <p
           className={`node-error${isPartial ? " node-error--partial" : ""}`}

@@ -48,6 +48,9 @@ _EXT_BY_MIME = {
     "image/gif": ".gif",
     "video/mp4": ".mp4",
     "video/webm": ".webm",
+    # Phase 8.1.5e — .mov reference-video uploads serve with the right mime
+    # so the dialog's <video> preview renders (not application/octet-stream).
+    "video/quicktime": ".mov",
     # Audio — Seedance 2.0 reference_audio uploads (Phase 7).
     "audio/mpeg": ".mp3",
     "audio/wav": ".wav",

@@ -503,6 +503,26 @@ export async function uploadAudio(
   return res.json() as Promise<AudioUploadResponse>;
 }
 
+/**
+ * Upload a reference video (Phase 8.1.5d — Seedance 2.0 reference_video,
+ * contract §11.9). Cached locally + mirrored to R2 on video submit.
+ */
+export async function uploadVideo(
+  file: File,
+  projectId: string,
+  nodeId?: number,
+): Promise<AudioUploadResponse> {
+  const form = new FormData();
+  form.append("project_id", projectId);
+  if (nodeId !== undefined) form.append("node_id", String(nodeId));
+  form.append("file", file);
+  const res = await fetch("/api/upload-video", { method: "POST", body: form });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json() as Promise<AudioUploadResponse>;
+}
+
 export interface VisionDescribeResponse {
   media_id: string;
   description: string;
