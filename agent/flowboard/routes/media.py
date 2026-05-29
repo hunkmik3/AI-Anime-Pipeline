@@ -7,9 +7,11 @@ state for the frontend to poll while it waits for a URL to arrive.
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, Field
 
 from flowboard.services import media as media_service
 
@@ -50,6 +52,46 @@ def get_media_status(media_id: str):
             content={"available": False, "has_url": False, "reason": "invalid_id"},
         )
     return media_service.status(media_id)
+
+
+class ExtractFrameBody(BaseModel):
+    # Lower bound here; the dynamic upper bound (video duration) is checked in
+    # the service so it can 422 with the real range in the message.
+    time: float = Field(ge=0)
+    shot_id: Optional[str] = None
+    request_id: Optional[int] = None
+
+
+@api_router.post("/{media_id}/extract-frame")
+def extract_frame_endpoint(media_id: str, body: ExtractFrameBody):
+    """Phase 8.4 — extract a still frame from a cached video at ``time``
+    seconds → a new visual_asset (kind=image). The frame is cached locally
+    (like an upload) and hoisted to R2 on demand at the next gen via
+    media_id_to_public_url, so no pre-upload here."""
+    from flowboard.services import frame_extract
+
+    media_id = media_service.normalize_media_id(media_id)
+    if not media_service.is_valid_media_id(media_id):
+        raise HTTPException(status_code=400, detail="invalid media_id")
+    if media_service.cached_path(media_id) is None:
+        raise HTTPException(status_code=404, detail="source video not cached")
+
+    try:
+        return frame_extract.extract_frame(
+            media_id,
+            body.time,
+            source_shot_id=body.shot_id,
+            source_request_id=body.request_id,
+        )
+    except frame_extract.FrameExtractError as exc:
+        if exc.code == "time_out_of_range":
+            raise HTTPException(status_code=422, detail=str(exc))
+        if exc.code in ("ffmpeg_missing",):
+            raise HTTPException(status_code=503, detail=str(exc))
+        if exc.code == "not_cached":
+            raise HTTPException(status_code=404, detail=str(exc))
+        logger.error("extract-frame failed (%s): %s", exc.code, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @api_router.get("/_debug/assets")
