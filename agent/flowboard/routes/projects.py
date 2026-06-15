@@ -17,6 +17,7 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, Query
 
+from flowboard.config import BRIDGE_ENABLED
 from flowboard.db import get_session
 from flowboard.schemas import ProjectCreate, ProjectUpdate
 from flowboard.services import project_service as ps
@@ -121,6 +122,15 @@ def list_project_chat(
 @router.get("/{project_id}/flow-project")
 def get_flow_project(project_id: uuid.UUID):
     with get_session() as s:
+        # Bridge off (Avis/Seedance mode): there's no Google Flow binding —
+        # the DB project id doubles as the project handle that uploads + the
+        # worker's R2 namespace key need.
+        if not BRIDGE_ENABLED:
+            try:
+                ps.get_project(s, project_id)
+            except ps.ProjectNotFound:
+                raise HTTPException(404, "project not found")
+            return {"flow_project_id": str(project_id), "created": False}
         try:
             row = ps.get_flow_project(s, project_id)
         except ps.ProjectNotFound:
@@ -138,6 +148,10 @@ async def ensure_flow_project(project_id: uuid.UUID):
             project = ps.get_project(s, project_id)
         except ps.ProjectNotFound:
             raise HTTPException(404, "project not found")
+        # Bridge off: skip the Flow extension round-trip entirely and hand back
+        # the DB project id as the handle (see get_flow_project above).
+        if not BRIDGE_ENABLED:
+            return {"flow_project_id": str(project_id), "created": False}
         try:
             existing = ps.get_flow_project(s, project_id)
             return {"flow_project_id": existing.flow_project_id, "created": False}

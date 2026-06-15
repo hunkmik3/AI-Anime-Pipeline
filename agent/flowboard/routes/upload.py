@@ -28,6 +28,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlmodel import select
 
+from flowboard.config import BRIDGE_ENABLED
 from flowboard.db import get_session
 from flowboard.db.models import Asset
 from flowboard.services import media as media_service
@@ -182,25 +183,34 @@ async def _ingest_image_bytes(
     file_name: str,
     node_id: Optional[int],
 ) -> dict:
-    """Push bytes to Flow's uploadImage, cache locally, upsert Asset row."""
-    image_b64 = base64.b64encode(raw).decode("ascii")
-    resp = await get_flow_sdk().upload_image(
-        image_base64=image_b64,
-        mime_type=mime,
-        project_id=project_id,
-        file_name=file_name,
-    )
-    if resp.get("error"):
-        raise HTTPException(
-            status_code=502,
-            detail={"message": resp["error"], "raw": resp.get("raw")},
+    """Acquire a media_id, cache the bytes locally, upsert the Asset row.
+
+    With the Flow bridge ON, the media_id comes from Flow's uploadImage (the
+    handle a Flow video dispatch needs). With the bridge OFF (Avis/Seedance
+    mode) there's no Flow round-trip — we mint a local uuid; the worker hoists
+    the cached file to R2 at gen time, so the image never has to touch Flow.
+    """
+    if BRIDGE_ENABLED:
+        image_b64 = base64.b64encode(raw).decode("ascii")
+        resp = await get_flow_sdk().upload_image(
+            image_base64=image_b64,
+            mime_type=mime,
+            project_id=project_id,
+            file_name=file_name,
         )
-    media_id = resp.get("media_id")
-    if not isinstance(media_id, str) or not media_service.is_valid_media_id(media_id):
-        raise HTTPException(
-            status_code=502,
-            detail={"message": "invalid media_id from Flow", "raw": resp.get("raw")},
-        )
+        if resp.get("error"):
+            raise HTTPException(
+                status_code=502,
+                detail={"message": resp["error"], "raw": resp.get("raw")},
+            )
+        media_id = resp.get("media_id")
+        if not isinstance(media_id, str) or not media_service.is_valid_media_id(media_id):
+            raise HTTPException(
+                status_code=502,
+                detail={"message": "invalid media_id from Flow", "raw": resp.get("raw")},
+            )
+    else:
+        media_id = str(uuid.uuid4())
     ext = _EXT_BY_MIME.get(mime, ".bin")
     cache_path = media_service.MEDIA_CACHE_DIR / f"{media_id}{ext}"
     try:
