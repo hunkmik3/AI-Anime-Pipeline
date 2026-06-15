@@ -55,3 +55,6 @@ jobs:
           name: flowboard-windows
           path: agent/out/
           if-no-files-found: error
+          # .env.example is a dotfile — upload-artifact@v4 skips hidden files
+          # unless told otherwise.
+          include-hidden-files: true
