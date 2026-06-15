@@ -107,6 +107,16 @@ export interface FlowboardNodeData extends Record<string, unknown> {
   // Phase 8.3 — owning shot id (set when loaded via the multi-shot
   // SceneCanvas so nodes can be grouped by shot). Absent in single-shot mode.
   shotId?: string;
+
+  // Phase 8.4 — frame extraction + cross-shot continuity.
+  // On the extracted-frame visual_asset (lives in the source shot):
+  source_type?: "extracted_frame";
+  source_time?: number; // seconds into the source video
+  source_video_node?: string; // rfId of the Video node it was cut from (virtual source edge)
+  // On the continuity clone (an `image` node in the target shot → i2v first_frame):
+  continuity_source_media?: string; // the frame media_id
+  continuity_from_node?: string; // rfId of the extracted-frame node (virtual continuity edge)
+  continuity_from_shot?: string; // source shot id (for the prompt hint + label)
 }
 
 export type FlowNode = Node<FlowboardNodeData>;
@@ -203,6 +213,14 @@ function nodeFromDto(n: RawNode): FlowNode {
       masterShotAssetId: n.data["masterShotAssetId"] as number | undefined,
       gateTitle: n.data["gateTitle"] as string | undefined,
       gateNotes: n.data["gateNotes"] as string | undefined,
+      // Phase 8.4 — frame extraction + continuity metadata (must round-trip so
+      // the virtual source/continuity edges survive a reload).
+      source_type: n.data["source_type"] as "extracted_frame" | undefined,
+      source_time: n.data["source_time"] as number | undefined,
+      source_video_node: n.data["source_video_node"] as string | undefined,
+      continuity_source_media: n.data["continuity_source_media"] as string | undefined,
+      continuity_from_node: n.data["continuity_from_node"] as string | undefined,
+      continuity_from_shot: n.data["continuity_from_shot"] as string | undefined,
     },
   };
 }
@@ -252,6 +270,20 @@ interface ShotWorkflowState {
   addSceneEdge(source: string, target: string): Promise<void>;
   deleteEdgeByRfId(rfId: string): Promise<void>;
   cloneNodeWithUpstream(rfId: string): Promise<string | null>;
+  // Phase 8.4 — create a visual_asset node from an extracted frame, placed
+  // beside its source Video node in the same shot.
+  addExtractedFrameNode(
+    videoRfId: string,
+    frameMediaId: string,
+    time: number,
+  ): Promise<string | null>;
+  // Phase 8.4 — clone an extracted frame into another shot as an `image` node
+  // (= i2v first_frame slot) carrying continuity metadata; auto-wire it to the
+  // target shot's first Video node when one exists. Returns the new node id.
+  sendFrameAsContinuity(
+    frameNodeId: string,
+    targetShotId: string,
+  ): Promise<string | null>;
 
   updateNodeData(rfId: string, partial: Partial<FlowboardNodeData>): void;
   updateEdgeData(edgeId: string, partial: Partial<FlowboardEdgeData>): void;
@@ -458,6 +490,118 @@ export const useShotWorkflowStore = create<ShotWorkflowState>((set, get) => ({
       // ignore
     }
     return null;
+  },
+
+  async addExtractedFrameNode(videoRfId, frameMediaId, time) {
+    const video = get().nodes.find((n) => n.id === videoRfId);
+    const shotId = video?.data.shotId;
+    if (!video || !shotId) return null;
+    const label = `Frame @${time.toFixed(1)}s`;
+    try {
+      const dto = await createNode({
+        shot_id: shotId,
+        type: "visual_asset",
+        x: Math.round(video.position.x + 320),
+        y: Math.round(video.position.y),
+        data: {
+          title: label,
+          mediaId: frameMediaId,
+          source_type: "extracted_frame",
+          source_time: time,
+          source_video_node: videoRfId,
+          renderedAt: new Date().toISOString(),
+        },
+      });
+      // createNode can't set status; persist done so reloads keep it (the
+      // thumbnail renders off mediaId regardless, but keep state honest).
+      patchNode(dto.id, { status: "done" }).catch(() => {});
+      const node = nodeFromDto({
+        id: dto.id,
+        short_id: dto.short_id,
+        type: dto.type,
+        x: dto.x,
+        y: dto.y,
+        data: dto.data,
+        status: "done",
+      });
+      node.data.shotId = shotId;
+      set((s) => ({ nodes: [...s.nodes, node] }));
+      return node.id;
+    } catch {
+      return null;
+    }
+  },
+
+  async sendFrameAsContinuity(frameNodeId, targetShotId) {
+    const frame = get().nodes.find((n) => n.id === frameNodeId);
+    const frameMediaId = frame?.data.mediaId;
+    if (!frame || !frameMediaId) return null;
+    const sourceShotId = frame.data.shotId;
+    const time = typeof frame.data.source_time === "number" ? frame.data.source_time : 0;
+
+    // Drop the clone below any existing nodes in the target shot so it doesn't
+    // land on top of them (positions are shot-local under extent:"parent").
+    const targetNodes = get().nodes.filter((n) => n.data.shotId === targetShotId);
+    const maxBottom = targetNodes.reduce((m, n) => Math.max(m, n.position.y + 240), 100);
+    const pos = { x: 140, y: Math.round(maxBottom + 40) };
+
+    let node: FlowNode;
+    try {
+      const dto = await createNode({
+        shot_id: targetShotId,
+        // `image` (not visual_asset) so an edge into the shot's Video node is
+        // picked up as the i2v first_frame (strongest Seedance continuity),
+        // not an r2v reference_image.
+        type: "image",
+        x: pos.x,
+        y: pos.y,
+        data: {
+          title: `Continuity @${time.toFixed(1)}s`,
+          mediaId: frameMediaId,
+          continuity_source_media: frameMediaId,
+          continuity_from_node: frameNodeId,
+          continuity_from_shot: sourceShotId,
+          source_time: time,
+          renderedAt: new Date().toISOString(),
+        },
+      });
+      patchNode(dto.id, { status: "done" }).catch(() => {});
+      node = nodeFromDto({
+        id: dto.id,
+        short_id: dto.short_id,
+        type: dto.type,
+        x: dto.x,
+        y: dto.y,
+        data: dto.data,
+        status: "done",
+      });
+      node.data.shotId = targetShotId;
+      set((s) => ({ nodes: [...s.nodes, node] }));
+    } catch {
+      return null;
+    }
+
+    // Auto-wire to the target shot's first Video node → i2v first_frame.
+    const targetVideo = get().nodes.find(
+      (n) => n.data.shotId === targetShotId && n.data.type === "video",
+    );
+    if (targetVideo) {
+      const sourceId = parseInt(node.id, 10);
+      const targetId = parseInt(targetVideo.id, 10);
+      if (!isNaN(sourceId) && !isNaN(targetId)) {
+        try {
+          const edgeDto = await createEdge({
+            shot_id: targetShotId,
+            source_id: sourceId,
+            target_id: targetId,
+          });
+          set((s) => ({ edges: [...s.edges, edgeFromDto(edgeDto)] }));
+        } catch {
+          /* leave unwired — user can connect manually */
+        }
+      }
+    }
+    return node.id;
   },
 
   async persistNodePosition(rfId, position) {

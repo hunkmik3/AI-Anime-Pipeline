@@ -22,6 +22,15 @@ import { AiProviderDialog } from "./AiProviderDialog";
 
 const POLL_INTERVAL_MS = 30_000;
 
+// Temporary escape hatch: set VITE_DISABLE_SETUP_GATE=1 (frontend/.env.local)
+// to never force the AI-provider dialog — used while running video gen on the
+// Dreamina/Seedance API without committing to an LLM provider. Remove the env
+// var (or set =0) and restart the dev server to restore the gate. Read at
+// module scope so it's a build-time constant.
+const SETUP_GATE_DISABLED = ["1", "true", "yes", "on"].includes(
+  (import.meta.env.VITE_DISABLE_SETUP_GATE ?? "").toString().toLowerCase(),
+);
+
 export function ForcedSetupGate() {
   // null = haven't checked yet (don't render anything to avoid a flash
   // of forced-open dialog before the real state lands).
@@ -60,7 +69,7 @@ export function ForcedSetupGate() {
     };
   }, []);
 
-  if (configured !== false) return null;
+  if (SETUP_GATE_DISABLED || configured !== false) return null;
 
   return (
     <AiProviderDialog

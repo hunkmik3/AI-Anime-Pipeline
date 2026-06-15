@@ -314,11 +314,13 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
     lastHeightsKey.current = key;
   }, [storeNodes, shotGroups, reflowStack]);
 
-  // Cross-shot edges (source & target in different shots) get a dashed accent
-  // style so they read as inter-shot links (useful for Phase 8.4 later).
+  // Real edges + Phase 8.4 virtual edges (derived from node metadata, never
+  // persisted as Edge rows): a neutral dashed "source" link Video→extracted
+  // frame, and an amber dashed "continuity" link frame→clone across shots.
   const rfEdges = useMemo(() => {
+    const ids = new Set(storeNodes.map((n) => n.id));
     const shotOf = new Map(storeNodes.map((n) => [n.id, n.data.shotId]));
-    return edges.map((e) => {
+    const out: typeof edges = edges.map((e) => {
       const a = shotOf.get(e.source);
       const b = shotOf.get(e.target);
       if (a && b && a !== b) {
@@ -330,6 +332,37 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
       }
       return e;
     });
+
+    for (const n of storeNodes) {
+      const src = n.data.source_video_node;
+      if (typeof src === "string" && ids.has(src)) {
+        out.push({
+          id: `v-src-${n.id}`,
+          source: src,
+          target: n.id,
+          deletable: false,
+          selectable: false,
+          className: "edge--frame-source",
+          style: { stroke: "var(--muted)", strokeWidth: 1.5, strokeDasharray: "4 4" },
+        } as (typeof edges)[number]);
+      }
+      const from = n.data.continuity_from_node;
+      if (typeof from === "string" && ids.has(from)) {
+        out.push({
+          id: `v-cont-${n.id}`,
+          source: from,
+          target: n.id,
+          deletable: false,
+          selectable: false,
+          label: "continuity",
+          className: "edge--continuity",
+          style: { stroke: "#f59e0b", strokeWidth: 2, strokeDasharray: "6 4" },
+          labelStyle: { fill: "#f59e0b", fontSize: 11, fontWeight: 600 },
+          labelBgStyle: { fill: "var(--panel)" },
+        } as (typeof edges)[number]);
+      }
+    }
+    return out;
   }, [edges, storeNodes]);
 
   const onNodesChange = useCallback((changes: NodeChange[]) => {

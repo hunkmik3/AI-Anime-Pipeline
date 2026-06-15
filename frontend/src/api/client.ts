@@ -477,6 +477,43 @@ export async function uploadImage(
   return res.json() as Promise<UploadResponse>;
 }
 
+// ── Frame extraction (Phase 8.4 — continuity) ────────────────────────────────
+
+export interface ExtractFrameResponse {
+  media_id: string;
+  asset_id: number;
+  time: number;
+  duration: number;
+  width: number;
+  height: number;
+  mime: string;
+}
+
+/**
+ * Extract a still frame from a generated video at `time` seconds. The frame
+ * becomes a new image media_id (kind=image) that can drive the next shot's
+ * first_frame (i2v) for continuity.
+ */
+export async function extractFrame(
+  mediaId: string,
+  opts: { time: number; shotId?: string; requestId?: number },
+): Promise<ExtractFrameResponse> {
+  const clean = mediaId.replace(/^media\//, "");
+  const res = await fetch(`/api/media/${encodeURIComponent(clean)}/extract-frame`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      time: opts.time,
+      shot_id: opts.shotId,
+      request_id: opts.requestId,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json() as Promise<ExtractFrameResponse>;
+}
+
 export interface AudioUploadResponse {
   media_id: string;
   mime: string;

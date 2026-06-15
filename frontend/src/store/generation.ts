@@ -72,6 +72,11 @@ interface GenerationState {
 
   cancelGeneration(rfId: string): void;
   clearError(): void;
+  // Phase 8.4 — transient success/info notice (e.g. "Frame extracted"),
+  // rendered by the Toaster distinctly from errors.
+  notice: string | null;
+  setNotice(msg: string): void;
+  clearNotice(): void;
 }
 
 // Walk the board to collect mediaIds of every upstream media-bearing node
@@ -225,6 +230,14 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
   projectId: null,
   paygateTier: null,
   error: null,
+  notice: null,
+
+  setNotice(msg) {
+    set({ notice: msg });
+  },
+  clearNotice() {
+    set({ notice: null });
+  },
 
   openGenerationDialog(rfId, prompt) {
     set({ openDialog: { rfId, prompt } });
@@ -276,15 +289,30 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
     const projectId = await get().ensureProjectId();
     if (projectId === null) return;
 
-    // Pre-flight: refuse to dispatch if the paygate tier is unknown.
-    // The backend would reject with `paygate_tier_unknown` anyway (since
-    // Phase 1 stopped silently defaulting to Pro), but bailing here gives
-    // the user a clearer hint without spending a captcha round-trip and
-    // without leaving a `failed` request row in the DB. The
-    // AccountPanel's "Tier unknown — Open Flow" banner is the recovery
-    // path.
+    const kind = opts.kind ?? "image";
+
+    // Pre-flight tier gate is Flow-ONLY. Image gen always routes through Flow,
+    // so it needs a known plan tier. Video gen only needs it on the Flow model
+    // — a non-Flow model (Seedance via Avis/Dreamina) carries no Google Flow
+    // plan, so we resolve the effective video model and skip the gate for it.
+    // Without this, every Seedance dispatch was blocked with
+    // `paygate_tier_unknown` whenever the Flow extension wasn't connected.
+    let effectiveVideoModel: string | undefined;
+    if (kind === "video") {
+      const nodeForModel = useShotWorkflowStore.getState().nodes.find((n) => n.id === rfId);
+      const projectSettings = useProjectStore.getState().currentProject?.settings;
+      const nodeOverride = (nodeForModel?.data as { videoModelId?: string } | undefined)?.videoModelId;
+      const projectDefault =
+        typeof projectSettings === "object" && projectSettings !== null
+          ? ((projectSettings as Record<string, unknown>).default_video_model as string | undefined)
+          : undefined;
+      effectiveVideoModel =
+        nodeOverride ?? projectDefault ?? useVideoModelsStore.getState().defaultModelId ?? undefined;
+    }
+    const isFlowDispatch = kind !== "video" || effectiveVideoModel === "flow-default";
+
     const knownTier = opts.paygateTier ?? get().paygateTier;
-    if (!knownTier) {
+    if (isFlowDispatch && !knownTier) {
       set({
         error: "Open Flow once so the extension can detect your plan, then retry. (See the Tier-unknown banner in the bottom-left.)",
       });
@@ -313,8 +341,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
       mediaId: undefined,
     });
 
-    // Create request
-    const kind = opts.kind ?? "image";
+    // Create request (kind resolved above for the tier pre-flight)
     let reqDto;
     try {
       const nodeDbId = parseInt(rfId, 10);
@@ -355,7 +382,13 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
           typeof projectSettings === "object" && projectSettings !== null
             ? ((projectSettings as Record<string, unknown>).default_video_model as string | undefined)
             : undefined;
-        const resolvedModelId = nodeOverride ?? projectDefault;
+        // Fall back to the system default model (GET /api/video/models) when
+        // neither the node nor the project pins one. Without this, a node on
+        // the *system default* model resolved to `undefined` here, so the
+        // capability lookup below missed → r2v references were silently
+        // dropped → the backend hard-failed with `missing_first_frame_url`.
+        const resolvedModelId =
+          nodeOverride ?? projectDefault ?? useVideoModelsStore.getState().defaultModelId ?? undefined;
 
         const videoParams: Record<string, unknown> = {
           prompt: opts.prompt,

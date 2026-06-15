@@ -14,6 +14,10 @@ export function Toaster() {
   const clearGenError = useGenerationStore((s) => s.clearError);
   const clearPipelineError = usePipelineStore((s) => s.clearError);
 
+  // Phase 8.4 — non-error info/success notice (e.g. "Frame extracted").
+  const notice = useGenerationStore((s) => s.notice);
+  const clearNotice = useGenerationStore((s) => s.clearNotice);
+
   // Priority: chat > pipeline > generation > board
   const error = chatError ?? pipelineError ?? genError ?? boardError;
   const clearError =
@@ -25,14 +29,19 @@ export function Toaster() {
       ? clearGenError
       : clearBoardError;
 
+  // Errors take precedence over the info notice.
+  const isError = Boolean(error);
+  const message = error ?? notice;
+  const dismiss = isError ? clearError : clearNotice;
+
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (!error) return;
+    if (!message) return;
 
     if (timerRef.current !== null) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
-      clearError();
+      dismiss();
       timerRef.current = null;
     }, 5000);
 
@@ -42,19 +51,23 @@ export function Toaster() {
         timerRef.current = null;
       }
     };
-  }, [error, clearError]);
+  }, [message, dismiss]);
 
-  if (!error) return null;
+  if (!message) return null;
 
   return (
-    <div className="toaster" role="alert" aria-live="assertive">
+    <div
+      className={`toaster${isError ? "" : " toaster--notice"}`}
+      role={isError ? "alert" : "status"}
+      aria-live={isError ? "assertive" : "polite"}
+    >
       <div className="toaster__body">
-        <span className="toaster__icon" aria-hidden="true">!</span>
-        <span className="toaster__msg">{error}</span>
+        <span className="toaster__icon" aria-hidden="true">{isError ? "!" : "✓"}</span>
+        <span className="toaster__msg">{message}</span>
         <button
           className="toaster__close"
-          onClick={clearError}
-          aria-label="Dismiss error"
+          onClick={dismiss}
+          aria-label={isError ? "Dismiss error" : "Dismiss"}
         >
           ×
         </button>

@@ -1,7 +1,7 @@
 import type { NodeProps } from "@xyflow/react";
 
 import { mediaUrl } from "../../api/client";
-import { useGenerationStore } from "../../store/generation";
+import { resolvePrimaryMediaId, useGenerationStore } from "../../store/generation";
 import {
   useShotWorkflowStore,
   type FlowNode,
@@ -9,6 +9,7 @@ import {
 } from "../../store/shotWorkflow";
 import { BaseNodeShell } from "./BaseNodeShell";
 import { VideoTile } from "./shared/VideoTile";
+import { VideoScrubber } from "./shared/VideoScrubber";
 
 function tileCountFor(data: FlowboardNodeData): number {
   const fromVariants = data.variantCount;
@@ -75,11 +76,26 @@ function VideoBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }) {
   const progressLabel =
     genPhase === "queued" ? "Queued ⏳" : genPhase === "generating" ? "Generating ⚙️" : "Working";
 
+  // Phase 8.4 — inline scrubber on a finished video so the user can extract a
+  // continuity frame. Operates on the PRIMARY playable variant.
+  const scrubId =
+    data.status === "done"
+      ? (() => {
+          const primary = resolvePrimaryMediaId(data) ?? data.mediaId;
+          if (typeof primary === "string" && primary) return primary;
+          const first = ids.find((m): m is string => typeof m === "string" && !!m);
+          return first;
+        })()
+      : undefined;
+
   return (
     <div className="node-body node-body--video">
       <div className={`video-grid video-grid--${tileCount}`}>
         {tiles}
       </div>
+      {scrubId && (
+        <VideoScrubber videoRfId={rfId} mediaId={scrubId} shotId={data.shotId} />
+      )}
       {isProcessing && genProgress !== null && (
         <div className="video-progress" role="status" aria-label={`${progressLabel} ${genProgress}%`}>
           <div className="video-progress__bar">
