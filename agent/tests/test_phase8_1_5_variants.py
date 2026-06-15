@@ -164,7 +164,7 @@ async def test_standalone_custom_ref_in_video_gen(_dreamina_env):
     dreamina.set_http_client_factory(lambda: httpx.AsyncClient(transport=transport, timeout=5.0))
 
     result, err = await proc._handle_gen_video({
-        "model_id": "seedance-2-0",
+        "model_id": "seedance-2-0-byteplus",
         "motion_prompt": "@image1 @image2 in a room",
         "reference_images": ["https://e/kenji.png", "https://e/custom-upload.png"],
         "reference_labels": ["@image1", "@image2"],
@@ -199,7 +199,7 @@ async def test_seedance_2_0_accepts_duration_4_to_15(_dreamina_env, dur):
 
     transport = httpx.MockTransport(handler)
     dreamina.set_http_client_factory(lambda: httpx.AsyncClient(transport=transport, timeout=5.0))
-    provider = get_video_provider("seedance-2-0")
+    provider = get_video_provider("seedance-2-0-byteplus")
 
     await provider.submit({
         "reference_images": ["https://e/a.png", "https://e/b.png"],
@@ -215,7 +215,7 @@ async def test_seedance_2_0_accepts_duration_4_to_15(_dreamina_env, dur):
 @pytest.mark.asyncio
 async def test_seedance_2_0_rejects_out_of_range_duration(_dreamina_env, dur):
     """Outside 4..15 → bad_input before any HTTP call (capability gate)."""
-    provider = get_video_provider("seedance-2-0")
+    provider = get_video_provider("seedance-2-0-byteplus")
     with pytest.raises(VideoError) as exc:
         await provider.submit({
             "reference_images": ["https://e/a.png", "https://e/b.png"],

@@ -122,7 +122,7 @@ async def test_manual_mode_uses_textarea_content_as_prompt(_dreamina_env):
         "Visual Style: Makoto Shinkai. Shot 1 (0-5s): they walk."
     )
     result, err = await proc._handle_gen_video({
-        "model_id": "seedance-2-0",
+        "model_id": "seedance-2-0-byteplus",
         "motion_prompt": pasted,
         "reference_images": ["https://e/kenji.png", "https://e/ren.png"],
         "duration_seconds": 5,
@@ -152,7 +152,7 @@ async def test_manual_mode_worker_reorders_refs_by_label(_dreamina_env):
 
     # Edge order puts ren first, but ren is @image2 and kenji is @image1.
     result, err = await proc._handle_gen_video({
-        "model_id": "seedance-2-0",
+        "model_id": "seedance-2-0-byteplus",
         "motion_prompt": "@image1 and @image2 walk together",
         "reference_images": ["https://e/ren.png", "https://e/kenji.png"],
         "reference_labels": ["@image2", "@image1"],

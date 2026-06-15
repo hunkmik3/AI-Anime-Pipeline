@@ -144,7 +144,7 @@ async def test_r2v_model_emits_reference_image_blocks_no_first_frame():
         return httpx.Response(200, json={"id": "cgt-r2v-test"})
 
     dreamina.set_http_client_factory(_factory_with_handler(handler))
-    provider = get_video_provider("seedance-2-0")
+    provider = get_video_provider("seedance-2-0-byteplus")
 
     result = await provider.submit({
         # An upstream start frame is present but MUST be ignored in r2v.
@@ -186,7 +186,7 @@ async def test_r2v_skips_label_injection_when_prompt_has_tags():
         return httpx.Response(200, json={"id": "cgt-r2v-tags"})
 
     dreamina.set_http_client_factory(_factory_with_handler(handler))
-    provider = get_video_provider("seedance-2-0")
+    provider = get_video_provider("seedance-2-0-byteplus")
     await provider.submit({
         "reference_images": ["https://e/r1.png", "https://e/r2.png"],
         "motion_prompt": "@image1 = Kenji left, @image2 = Ren right, they talk",
@@ -211,7 +211,7 @@ async def test_r2v_plus_audio_emits_reference_audio_block():
         return httpx.Response(200, json={"id": "cgt-audio"})
 
     dreamina.set_http_client_factory(_factory_with_handler(handler))
-    provider = get_video_provider("seedance-2-0")
+    provider = get_video_provider("seedance-2-0-byteplus")
     result = await provider.submit({
         "reference_images": ["https://e/kenji.png"],
         "audio_ref_url": "https://e/voice.mp3",
@@ -267,7 +267,7 @@ async def test_single_ref_on_2_0_stays_i2v():
         return httpx.Response(200, json={"id": "cgt-single"})
 
     dreamina.set_http_client_factory(_factory_with_handler(handler))
-    provider = get_video_provider("seedance-2-0")
+    provider = get_video_provider("seedance-2-0-byteplus")
     await provider.submit({
         "reference_images": ["https://e/only.png"],
         "motion_prompt": "pan across",
@@ -287,7 +287,7 @@ async def test_refs_truncated_to_max_refs():
         return httpx.Response(200, json={"id": "cgt-test"})
 
     dreamina.set_http_client_factory(_factory_with_handler(handler))
-    provider = get_video_provider("seedance-2-0")
+    provider = get_video_provider("seedance-2-0-byteplus")
 
     # Seedance 2.0 capability is max_refs=4 (per registry.py); pass 10.
     result = await provider.submit({
