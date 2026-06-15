@@ -141,6 +141,33 @@ def test_upload_happy_path(client, monkeypatch):
     assert status["available"] is True
 
 
+def test_upload_bridge_off_skips_flow_and_mints_local_media_id(client, monkeypatch):
+    """Flow bridge OFF (Avis/Seedance mode): upload must NOT hit Flow — it
+    mints a local media_id + caches bytes so the worker can hoist to R2 at
+    gen time. A DB project uuid is accepted as the project_id."""
+    from flowboard.routes import upload as upload_route
+
+    async def boom_upload(self, **kwargs):
+        raise AssertionError("Flow upload_image must not be called when bridge is off")
+
+    monkeypatch.setattr(upload_route, "BRIDGE_ENABLED", False)
+    monkeypatch.setattr(flow_sdk_module.FlowSDK, "upload_image", boom_upload)
+    monkeypatch.setattr(flow_sdk_module, "_sdk", None)
+
+    payload = _png_bytes()
+    r = client.post(
+        "/api/upload",
+        data={"project_id": "a36186cd-b5d4-46c5-8b95-a7df709f1cb9"},  # DB uuid
+        files={"file": ("char.png", payload, "image/png")},
+    )
+    assert r.status_code == 200, r.text
+    mid = r.json()["media_id"]
+    assert media_service.is_valid_media_id(mid)
+    cached = media_service.cached_path(mid)
+    assert cached is not None and cached.exists()
+    assert Path(cached).read_bytes() == payload
+
+
 def test_upload_propagates_sdk_error(client, monkeypatch):
     async def stub_upload(self, **kwargs):
         return {"raw": None, "error": "captcha_failed"}

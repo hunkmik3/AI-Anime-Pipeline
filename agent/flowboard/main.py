@@ -30,8 +30,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header, Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
 
-from flowboard.config import WS_HOST
-from flowboard.db import get_session
+from flowboard.config import WS_HOST, BRIDGE_ENABLED, FRONTEND_DIST
+from flowboard.db import get_session, init_db
 from flowboard.db.models import Request
 from flowboard.routes import (
     activity,
@@ -92,17 +92,31 @@ def _recover_orphan_running_requests() -> int:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Schema is owned by Alembic now — run `alembic upgrade head` before
-    # boot. We deliberately don't auto-create tables on startup so a
-    # missing migration surfaces as a clean failure instead of drifting
-    # the schema silently.
+    # Postgres schema is owned by Alembic — run `alembic upgrade head` before
+    # boot; we don't auto-create on that path so a missing migration surfaces
+    # loudly. The bundled SQLite build has no Alembic, so init_db() creates the
+    # schema from SQLModel.metadata on first run (no-op on Postgres).
+    init_db()
     recovered = _recover_orphan_running_requests()
     if recovered:
         logger.info("recovered %d orphan running request(s) → failed", recovered)
     worker = get_worker()
-    ws_task = asyncio.create_task(run_ws_server(), name="ext-ws-server")
+    # Flow bridge is opt-out via FLOWBOARD_DISABLE_BRIDGE — skip the :9223 WS
+    # server entirely when running video gen on the Dreamina/Seedance API.
+    ws_task = (
+        asyncio.create_task(run_ws_server(), name="ext-ws-server")
+        if BRIDGE_ENABLED
+        else None
+    )
     worker_task = asyncio.create_task(worker.start(), name="request-worker")
-    logger.info("flowboard agent started (ws:9223 + worker)")
+    if BRIDGE_ENABLED:
+        logger.info("flowboard agent started (ws:9223 + worker)")
+    else:
+        logger.warning(
+            "flowboard agent started (worker only) — Flow bridge DISABLED "
+            "via FLOWBOARD_DISABLE_BRIDGE; video gen routes to the configured "
+            "non-Flow model"
+        )
     try:
         yield
     finally:
@@ -111,9 +125,10 @@ async def lifespan(app: FastAPI):
             await asyncio.wait_for(worker.drain(), timeout=5.0)
         except asyncio.TimeoutError:
             logger.warning("worker drain timed out")
-        for t in (ws_task, worker_task):
+        tasks = [t for t in (ws_task, worker_task) if t is not None]
+        for t in tasks:
             t.cancel()
-        await asyncio.gather(ws_task, worker_task, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
         logger.info("flowboard agent stopped")
 
 
@@ -179,3 +194,27 @@ async def ext_callback(
 
     matched = flow_client.resolve_callback(payload)
     return {"ok": matched}
+
+
+# ── Frontend SPA (single-process / bundled build) ────────────────────────
+# Registered LAST so the API/media/ws routers above always take precedence.
+# Inactive in normal dev (no built dist → FRONTEND_DIST is None; Vite serves
+# the UI on :5173). Active in the bundled desktop build and after `npm run
+# build`, where FastAPI serves the SPA on the same port as the API.
+if FRONTEND_DIST is not None:
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+
+    _assets_dir = FRONTEND_DIST / "assets"
+    if _assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def _spa_fallback(full_path: str):
+        # Never shadow the API surface — let unknown /api,/media,/ws 404 as JSON.
+        if full_path.startswith(("api/", "media/", "ws")):
+            raise HTTPException(status_code=404, detail="not found")
+        candidate = FRONTEND_DIST / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(FRONTEND_DIST / "index.html")

@@ -83,11 +83,25 @@ def list_video_models() -> list[VideoModelEntry]:
 
 
 def get_default_model_id() -> str:
-    """Process-wide default. Currently pinned to Flow.
+    """Process-wide default video model.
 
-    Per-project + per-node overrides happen above this layer (see
-    worker resolution chain in processor._handle_gen_video).
+    Resolved from ``FLOWBOARD_DEFAULT_VIDEO_MODEL`` (config.DEFAULT_VIDEO_MODEL),
+    falling back to ``"flow-default"`` when unset or pointing at a model that
+    isn't registered. Per-project + per-node overrides happen above this layer
+    (see worker resolution chain in processor._handle_gen_video).
     """
+    from flowboard.config import DEFAULT_VIDEO_MODEL
+
+    if DEFAULT_VIDEO_MODEL and DEFAULT_VIDEO_MODEL in _MODELS:
+        return DEFAULT_VIDEO_MODEL
+    if DEFAULT_VIDEO_MODEL and DEFAULT_VIDEO_MODEL != "flow-default":
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "FLOWBOARD_DEFAULT_VIDEO_MODEL=%r is not a registered model; "
+            "falling back to flow-default",
+            DEFAULT_VIDEO_MODEL,
+        )
     return "flow-default"
 
 
@@ -125,6 +139,7 @@ def register_defaults() -> None:
         SEEDANCE_1_5_PRO_CAPABILITY,
         SEEDANCE_2_0_CAPABILITY,
     )
+    from .avis import AvisVideoProvider, AVIS_SEEDANCE_2_0_CAPABILITY
 
     register(
         VideoModelEntry(
@@ -149,8 +164,21 @@ def register_defaults() -> None:
     register(
         VideoModelEntry(
             model_id="seedance-2-0",
+            provider_name="avis",
+            display_name="Seedance 2.0 (Avis · r2v)",
+            upstream_model_id="dreamina-seedance-2-0",
+            capabilities=AVIS_SEEDANCE_2_0_CAPABILITY,
+            factory=lambda entry: AvisVideoProvider(entry),
+        )
+    )
+    # Direct BytePlus ARK path for Seedance 2.0. Kept (under a distinct id)
+    # after Seedance 2.0 was repointed to the Avis gateway, so the
+    # Dreamina-native r2v/audio/@imageN behaviour stays available + tested.
+    register(
+        VideoModelEntry(
+            model_id="seedance-2-0-byteplus",
             provider_name="dreamina",
-            display_name="Dreamina Seedance 2.0 (r2v + audio)",
+            display_name="Seedance 2.0 (BytePlus direct · r2v + audio)",
             upstream_model_id="dreamina-seedance-2-0-260128",
             capabilities=SEEDANCE_2_0_CAPABILITY,
             factory=lambda entry: DreaminaVideoProvider(entry),

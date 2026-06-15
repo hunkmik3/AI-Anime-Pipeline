@@ -64,6 +64,7 @@ _DEFAULT_PATH = Path.home() / ".flowboard" / "secrets.json"
 # its secrets.json entry.
 _PROVIDER_ENV_VARS: dict[str, tuple[str, ...]] = {
     "dreamina": ("BYTEPLUS_KEY", "DREAMINA_API_KEY"),
+    "avis": ("AVIS_API_KEY",),
 }
 
 

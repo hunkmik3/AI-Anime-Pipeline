@@ -34,6 +34,14 @@ function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData
   const [refMediaId, setRefMediaId] = useState<string | null>(null);
   const [linkMode, setLinkMode] = useState(false);
   const [linkValue, setLinkValue] = useState("");
+  // Phase 8.4 — "use as continuity" target-shot picker (extracted frames only).
+  const [continuityOpen, setContinuityOpen] = useState(false);
+  const isExtractedFrame = data.source_type === "extracted_frame";
+  // Select the stable array reference, then filter in render — a selector that
+  // returns a fresh `.filter()` array each call breaks useSyncExternalStore
+  // (infinite "getSnapshot should be cached" loop).
+  const shotGroups = useShotWorkflowStore((s) => s.shotGroups);
+  const otherShots = shotGroups.filter((g) => g.shot_id !== data.shotId);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const refInputRef = useRef<HTMLInputElement>(null);
   const variantInputRef = useRef<HTMLInputElement>(null);
@@ -157,6 +165,20 @@ function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData
 
   function openGenerate() {
     useGenerationStore.getState().openGenerationDialog(rfId, data.prompt ?? "");
+  }
+
+  async function onSendContinuity(targetShotId: string, targetLabel: string) {
+    setContinuityOpen(false);
+    const id = await useShotWorkflowStore
+      .getState()
+      .sendFrameAsContinuity(rfId, targetShotId);
+    if (id) {
+      useGenerationStore
+        .getState()
+        .setNotice(`Continuity reference added to ${targetLabel}`);
+    } else {
+      useGenerationStore.setState({ error: "Couldn't add continuity reference" });
+    }
   }
 
   if (!mediaId) {
@@ -338,6 +360,41 @@ function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData
           e.target.value = "";
         }}
       />
+      {/* Phase 8.4 — extracted frames can be sent into another shot as an
+          i2v first_frame continuity reference. */}
+      {!isProcessing && isExtractedFrame && (
+        <div className="continuity-send">
+          <button
+            type="button"
+            className="visual-asset__action continuity-send__btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              setContinuityOpen((o) => !o);
+            }}
+            title="Send this frame to another shot as a continuity reference"
+          >
+            → Use as continuity
+          </button>
+          {continuityOpen && (
+            <div className="continuity-send__menu nodrag" onClick={(e) => e.stopPropagation()}>
+              {otherShots.length === 0 ? (
+                <div className="continuity-send__empty">No other shots</div>
+              ) : (
+                otherShots.map((g) => (
+                  <button
+                    key={g.shot_id}
+                    type="button"
+                    className="continuity-send__item"
+                    onClick={() => void onSendContinuity(g.shot_id, g.label)}
+                  >
+                    {g.label}
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {/* Replace picker (has-media state) — the empty-state input is in the
           other branch, so the Replace button needs its own input here. */}
       <input

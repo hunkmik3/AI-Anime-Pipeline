@@ -59,7 +59,7 @@ async def test_video_ref_emits_reference_video_block(_dreamina_env):
         return httpx.Response(200, json={"id": "cgt-vref"})
 
     dreamina.set_http_client_factory(_factory(handler))
-    provider = get_video_provider("seedance-2-0")
+    provider = get_video_provider("seedance-2-0-byteplus")
     res = await provider.submit({
         "reference_images": ["https://e/kenji.png"],
         "reference_videos": ["https://e/clip.mp4"],
@@ -125,7 +125,7 @@ async def test_worker_forwards_reference_videos(_dreamina_env):
 
     dreamina.set_http_client_factory(_factory(handler))
     result, err = await proc._handle_gen_video({
-        "model_id": "seedance-2-0",
+        "model_id": "seedance-2-0-byteplus",
         "motion_prompt": "@image1 + ref clip",
         "reference_images": ["https://e/a.png"],
         "reference_videos": ["https://e/clip.mp4"],

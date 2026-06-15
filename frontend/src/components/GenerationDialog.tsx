@@ -154,6 +154,16 @@ function pickDefaultAspect(
   return "IMAGE_ASPECT_RATIO_PORTRAIT";
 }
 
+// Phase 8.4 — prepended to a manual prompt when the shot continues from a
+// prior shot's extracted frame (i2v first_frame). i2v already pins the start
+// frame; this nudges Seedance to hold lighting / pose / wardrobe / environment
+// so the cut reads as continuous.
+const CONTINUITY_PREFIX =
+  "CONTINUITY: This shot continues directly from the previous shot. The " +
+  "provided starting frame is the final frame of the previous shot — keep the " +
+  "same lighting, character poses, wardrobe, and environment, then continue " +
+  "the action naturally from there.";
+
 export function GenerationDialog() {
   const openDialog = useGenerationStore((s) => s.openDialog);
   const closeGenerationDialog = useGenerationStore((s) => s.closeGenerationDialog);
@@ -194,6 +204,8 @@ export function GenerationDialog() {
   // time). Click another chip → swap; click the same chip → close;
   // click outside (handled inline) → close.
   const [openVariantPicker, setOpenVariantPicker] = useState<string | null>(null);
+  // Phase 8.4 — continuity prompt-hint dismiss state (per dialog open).
+  const [continuityDismissed, setContinuityDismissed] = useState(false);
 
   const dialogRef = useRef<HTMLDivElement>(null);
   const firstFocusRef = useRef<HTMLTextAreaElement>(null);
@@ -243,6 +255,20 @@ export function GenerationDialog() {
     : undefined;
   const sourceNode = sourceEdge ? nodes.find((n) => n.id === sourceEdge.source) : undefined;
   const sourceMediaId = sourceNode?.data.mediaId ?? null;
+
+  // Phase 8.4 — continuity hint. When the i2v first_frame source is a clone
+  // carrying continuity metadata, the shot continues directly from a previous
+  // shot's frame; offer a prompt prefix that tells Seedance to hold lighting /
+  // pose / environment. i2v is automatic (the source is an `image` node), so
+  // this is purely a prompt nudge, not a mode switch.
+  const continuitySource =
+    isVideo && sourceNode && typeof sourceNode.data.continuity_source_media === "string"
+      ? sourceNode
+      : undefined;
+  const continuityFromShot =
+    typeof continuitySource?.data.continuity_from_shot === "string"
+      ? continuitySource.data.continuity_from_shot
+      : undefined;
   // Drop null placeholders from the upstream variant list — partial-
   // batch results may carry them, but downstream dispatch needs a
   // dense array of valid mediaIds to feed into Flow.
@@ -322,6 +348,7 @@ export function GenerationDialog() {
   useEffect(() => {
     if (rfId !== null) {
       setPrompt(openDialog.prompt);
+      setContinuityDismissed(false);
       const openNode = nodes.find((n) => n.id === rfId);
       const openNodeType = openNode?.data.type ?? "image";
       // Character → always 1:1 portrait headshot (its own opinionated
@@ -791,6 +818,42 @@ export function GenerationDialog() {
               không Bible inject. <strong>Automation</strong> = auto-synth
               motion prompt + Bible (Phase 6).
             </p>
+          </div>
+        )}
+
+        {/* Phase 8.4 — continuity prompt hint (video continuing from a prior
+            shot's extracted frame). i2v first_frame is already wired; this just
+            offers the prompt prefix. */}
+        {continuitySource && !continuityDismissed && (
+          <div className="gen-dialog__continuity" role="note">
+            <div className="gen-dialog__continuity-head">
+              <span className="gen-dialog__continuity-icon" aria-hidden="true">🔗</span>
+              <span>
+                This shot continues from a previous frame{continuityFromShot ? " (i2v first frame set)" : ""}.
+                Add a continuity instruction to the prompt?
+              </span>
+            </div>
+            <pre className="gen-dialog__continuity-preview">{CONTINUITY_PREFIX}</pre>
+            <div className="gen-dialog__continuity-actions">
+              <button
+                type="button"
+                className="gen-dialog__continuity-accept"
+                onClick={() => {
+                  setPrompt((p) => CONTINUITY_PREFIX + (p.trim() ? `\n\n${p}` : ""));
+                  setContinuityDismissed(true);
+                  if (autoPromptUsed) setAutoPromptUsed(false);
+                }}
+              >
+                Add to prompt
+              </button>
+              <button
+                type="button"
+                className="gen-dialog__continuity-dismiss"
+                onClick={() => setContinuityDismissed(true)}
+              >
+                Dismiss
+              </button>
+            </div>
           </div>
         )}
 

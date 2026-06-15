@@ -22,9 +22,14 @@ def test_default_model_is_flow():
     assert get_default_model_id() == "flow-default"
 
 
-def test_three_models_registered_at_phase5_boot():
+def test_models_registered_at_boot():
     ids = {m.model_id for m in list_video_models()}
-    assert ids == {"flow-default", "seedance-1-5-pro", "seedance-2-0"}
+    assert ids == {
+        "flow-default",
+        "seedance-1-5-pro",
+        "seedance-2-0",
+        "seedance-2-0-byteplus",
+    }
 
 
 def test_unknown_model_raises_keyerror():
@@ -42,12 +47,25 @@ def test_seedance_1_5_pro_is_i2v_only():
     assert entry.capabilities.supports_last_frame is True
 
 
-def test_seedance_2_0_advertises_r2v_and_audio():
+def test_seedance_2_0_routes_through_avis():
+    # Seedance 2.0 was repointed to the Avis gateway (see registry). It still
+    # advertises r2v + the generate-audio toggle, but NOT audio-reference
+    # (audioInput isn't wired in the Avis adapter yet).
     entry = get_video_model("seedance-2-0")
-    assert entry.provider_name == "dreamina"
+    assert entry.provider_name == "avis"
+    assert entry.upstream_model_id == "dreamina-seedance-2-0"
     assert entry.capabilities.supports_multi_ref is True
     assert entry.capabilities.max_refs >= 1
     assert entry.capabilities.supports_audio_toggle is True
+    assert entry.capabilities.supports_audio_ref is False
+
+
+def test_seedance_2_0_byteplus_keeps_direct_path():
+    # The BytePlus-direct path is retained under a distinct id, still r2v+audio.
+    entry = get_video_model("seedance-2-0-byteplus")
+    assert entry.provider_name == "dreamina"
+    assert entry.upstream_model_id == "dreamina-seedance-2-0-260128"
+    assert entry.capabilities.supports_multi_ref is True
     assert entry.capabilities.supports_audio_ref is True
 
 

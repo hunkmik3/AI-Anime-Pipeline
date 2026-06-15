@@ -231,22 +231,28 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
             "resolution": "720p",
         })
     else:
-        # Dreamina (and any other public-URL provider): hoist media_id
-        # → R2 presigned URL when the caller passes a bare media_id.
+        # Non-flow providers resolve a bare Flowboard media_id into something
+        # the provider can consume. Dreamina (BytePlus direct) needs a publicly
+        # reachable URL → hoist to an R2 presigned URL. Avis sends reference
+        # media INLINE (base64) and needs no R2, so the bare media_id is passed
+        # straight through and the provider reads the local cache + encodes.
+        hoist = entry.provider_name != "avis"
+
+        def _resolve(ref: str) -> str:
+            if ref.startswith(("http://", "https://", "data:")) or not hoist:
+                return ref
+            return media_id_to_public_url(ref, project_id=params.get("project_id"))
+
         try:
-            if first_frame and not first_frame.startswith(("http://", "https://", "data:")):
-                first_frame = media_id_to_public_url(
-                    first_frame,
-                    project_id=params.get("project_id"),
-                )
+            if first_frame:
+                first_frame = _resolve(first_frame)
         except VideoError as exc:
             return {"error": str(exc)}, f"{exc.code}:{exc}"
 
         # Phase 8.1: reorder refs by their per-node @image label digit BEFORE
-        # the R2 hoist so the Nth reference_image block (and the hoist order)
-        # matches @imageN. `reference_labels` is positionally parallel to
-        # `reference_images`; all-null (Automation / label-less canvas) is a
-        # no-op. We reorder the bare media_ids/urls first, then hoist.
+        # resolution so the Nth reference block matches @imageN.
+        # `reference_labels` is positionally parallel to `reference_images`;
+        # all-null (Automation / label-less canvas) is a no-op.
         ref_inputs = [r for r in (params.get("reference_images") or []) if isinstance(r, str) and r]
         raw_labels = params.get("reference_labels")
         if isinstance(raw_labels, list) and ref_inputs:
@@ -257,47 +263,31 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
 
         resolved_refs: list[str] = []
         for r in ref_inputs:
-            if r.startswith(("http://", "https://", "data:")):
-                resolved_refs.append(r)
-                continue
             try:
-                resolved_refs.append(
-                    media_id_to_public_url(r, project_id=params.get("project_id"))
-                )
+                resolved_refs.append(_resolve(r))
             except VideoError as exc:
-                logger.warning("dreamina: skipped unreachable ref %s: %s", r, exc)
+                logger.warning("video: skipped unreachable ref %s: %s", r, exc)
 
-        # Audio reference (Seedance 2.0 r2v+audio). Same R2 hoist as images.
+        # Audio reference (Seedance 2.0 r2v+audio).
         audio_ref = params.get("audio_ref_url") or params.get("audio_ref_media_id")
         resolved_audio: Optional[str] = None
         if isinstance(audio_ref, str) and audio_ref:
-            if audio_ref.startswith(("http://", "https://", "data:")):
-                resolved_audio = audio_ref
-            else:
-                try:
-                    resolved_audio = media_id_to_public_url(
-                        audio_ref, project_id=params.get("project_id")
-                    )
-                except VideoError as exc:
-                    logger.warning("dreamina: skipped unreachable audio ref: %s", exc)
+            try:
+                resolved_audio = _resolve(audio_ref)
+            except VideoError as exc:
+                logger.warning("video: skipped unreachable audio ref: %s", exc)
 
-        # Reference videos (Seedance 2.0 r2v, contract §11.9). Same R2 hoist
-        # as images/audio. List in/out so multiple video refs are preserved.
+        # Reference videos (Seedance 2.0 r2v, contract §11.9).
         raw_video_refs = params.get("reference_videos") or params.get("video_ref_urls") or []
         resolved_videos: list[str] = []
         if isinstance(raw_video_refs, list):
             for v in raw_video_refs:
                 if not isinstance(v, str) or not v:
                     continue
-                if v.startswith(("http://", "https://", "data:")):
-                    resolved_videos.append(v)
-                    continue
                 try:
-                    resolved_videos.append(
-                        media_id_to_public_url(v, project_id=params.get("project_id"))
-                    )
+                    resolved_videos.append(_resolve(v))
                 except VideoError as exc:
-                    logger.warning("dreamina: skipped unreachable video ref: %s", exc)
+                    logger.warning("video: skipped unreachable video ref: %s", exc)
 
         # first_frame is optional in reference-media (r2v / r2v+audio) modes;
         # the provider derives mode from refs/audio/video and validates per-mode.
