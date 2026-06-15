@@ -1,0 +1,57 @@
+name: Build Windows desktop (.exe)
+
+# Builds the self-contained Flowboard.exe on a Windows runner (PyInstaller
+# can't cross-compile, so this is how a mac/Linux dev gets a Windows binary).
+# Trigger manually from the Actions tab, or on a version tag.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Build the frontend → frontend/dist (bundled into the exe).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      # 2. Install the agent + PyInstaller, then bundle.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install agent + PyInstaller
+        working-directory: agent
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pyinstaller==6.*
+      - name: Build exe
+        working-directory: agent
+        run: pyinstaller flowboard.spec --noconfirm
+
+      # 3. Ship the exe + a .env template the recipient fills with their key.
+      - name: Stage release files
+        working-directory: agent
+        shell: bash
+        run: |
+          mkdir -p out
+          cp dist/Flowboard.exe out/
+          cp packaging/.env.example out/.env.example
+          cp packaging/README-desktop.md out/README.txt || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flowboard-windows
+          path: agent/out/
+          if-no-files-found: error

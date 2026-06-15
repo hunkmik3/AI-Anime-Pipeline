@@ -2,8 +2,14 @@
 
 Hierarchy: Project → Scene → Shot → (Node, Edge). Project/Scene/Shot use
 UUID PKs; child tables keep INT PKs for compatibility with existing tests
-and frontend. JSON columns use Postgres JSONB so future queries can index
-into them.
+and frontend.
+
+JSON columns are dialect-aware via ``with_variant``: **JSONB on Postgres**
+(dev/prod/tests — indexable, unchanged) and generic **JSON on every other
+dialect** (SQLite, for the self-contained desktop build that creates its
+schema with ``SQLModel.metadata.create_all``). ``uuid.UUID`` PKs map through
+SQLModel's generic ``Uuid`` type, which is native UUID on Postgres and
+CHAR(32) on SQLite — no per-dialect handling needed.
 """
 from __future__ import annotations
 
@@ -11,8 +17,12 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy import JSON, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Column, Field, SQLModel
+
+# JSONB on Postgres, plain JSON elsewhere (SQLite). One type, both engines.
+_JSON = JSON().with_variant(JSONB(), "postgresql")
 
 
 def _utcnow() -> datetime:
@@ -24,11 +34,11 @@ def _uuid_pk() -> uuid.UUID:
 
 
 def _jsonb_dict() -> Column:
-    return Column(JSONB, nullable=False, server_default="{}")
+    return Column(_JSON, nullable=False, server_default=text("'{}'"))
 
 
 def _jsonb_list() -> Column:
-    return Column(JSONB, nullable=False, server_default="[]")
+    return Column(_JSON, nullable=False, server_default=text("'[]'"))
 
 
 # ── Hierarchy: Project → Scene → Shot ────────────────────────────────────
