@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -60,8 +61,11 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.avis.xyz/api/v1"
 
-AVIS_POLL_INTERVAL_S = 15.0
-AVIS_POLL_MAX_CYCLES = 30  # 30 × 15s = 7.5 min ceiling; >> the 90-220s typical
+# Local poll cadence + ceiling for a running video task. Seedance 2.0 at
+# 1080p / 15s / multi-ref (or person-driven) can take well over 7.5 min, so
+# the ceiling is generous (default 80 × 15s = 20 min) and env-overridable.
+AVIS_POLL_INTERVAL_S = float(os.getenv("FLOWBOARD_AVIS_POLL_INTERVAL_S", "15"))
+AVIS_POLL_MAX_CYCLES = int(os.getenv("FLOWBOARD_AVIS_POLL_MAX_CYCLES", "80"))
 
 # Process-local concurrency cap (mirrors the Dreamina-direct provider).
 _CONCURRENCY_SEM = asyncio.Semaphore(3)

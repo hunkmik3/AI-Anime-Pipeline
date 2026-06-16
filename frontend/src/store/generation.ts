@@ -543,7 +543,10 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
             if (kind === "video") {
               const created = parseServerTimeMs(req.created_at);
               const dur = (req.params.duration_seconds as number) || 5;
-              const estTotalMs = dur * 30_000; // K≈30s of wall-clock per output-second
+              // K≈60s wall-clock per output-second — Seedance 2.0 at 1080p /
+              // multi-ref / person-driven runs several minutes, so a smaller K
+              // pegged the bar at 90% long before the clip landed.
+              const estTotalMs = dur * 60_000;
               const elapsed = Number.isFinite(created) ? Date.now() - created : 0;
               runPatch.genPhase = "generating";
               runPatch.genProgress = Math.min(90, Math.max(10, Math.round(10 + 80 * (elapsed / estTotalMs))));
