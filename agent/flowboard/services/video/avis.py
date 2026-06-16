@@ -63,9 +63,9 @@ BASE_URL = "https://api.avis.xyz/api/v1"
 
 # Local poll cadence + ceiling for a running video task. Seedance 2.0 at
 # 1080p / 15s / multi-ref (or person-driven) can take well over 7.5 min, so
-# the ceiling is generous (default 80 × 15s = 20 min) and env-overridable.
+# the ceiling is generous (default 160 × 15s = 40 min) and env-overridable.
 AVIS_POLL_INTERVAL_S = float(os.getenv("FLOWBOARD_AVIS_POLL_INTERVAL_S", "15"))
-AVIS_POLL_MAX_CYCLES = int(os.getenv("FLOWBOARD_AVIS_POLL_MAX_CYCLES", "80"))
+AVIS_POLL_MAX_CYCLES = int(os.getenv("FLOWBOARD_AVIS_POLL_MAX_CYCLES", "160"))
 
 # Process-local concurrency cap (mirrors the Dreamina-direct provider).
 _CONCURRENCY_SEM = asyncio.Semaphore(3)
