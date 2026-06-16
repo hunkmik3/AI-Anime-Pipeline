@@ -77,6 +77,10 @@ class VideoProviderCapability:
     # Phase 8.1.5d: r2v with video_url role="reference_video" (Seedance 2.0;
     # contract §11.9). Default False so pre-existing caps need no change.
     supports_video_ref: bool = False
+    # Person-driven (KYC) inputs — portrait→video / lip-sync / video-reference
+    # via identity-verified KYC assets. Only the Avis Seedance 2.0 models.
+    # The frontend shows the "Person-driven (KYC)" toggle when this is True.
+    supports_kyc: bool = False
 
 
 class VideoGenSubmitParams(TypedDict, total=False):
@@ -111,6 +115,13 @@ class VideoGenSubmitParams(TypedDict, total=False):
     aspect_ratio: str          # "1:1" | "16:9" | "9:16"
     resolution: str            # "720p" | "1080p"
     generate_audio: bool
+    # Person-driven (KYC) — Avis Seedance 2.0 only. Already-resolved Avis KYC
+    # assetIds (the worker creates/caches them from media_ids before dispatch).
+    # When any is set the provider emits kyc*AssetId content parts and skips the
+    # regular reference parts. Only honored when ``capabilities.supports_kyc``.
+    kyc_image_asset_id: Optional[str]
+    kyc_audio_asset_id: Optional[str]
+    kyc_video_asset_id: Optional[str]
     # Flow-only fields. Other providers ignore these. Kept on the same
     # TypedDict so the worker doesn't need to branch params per provider.
     project_id: str

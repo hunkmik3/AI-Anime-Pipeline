@@ -82,6 +82,9 @@ export function VideoNodeSettings({ rfId }: Props) {
   const resolution = (data.resolution as string | undefined) ?? caps.resolutions[0];
   const generateAudio =
     typeof data.generate_audio === "boolean" ? (data.generate_audio as boolean) : true;
+  // Person-driven (KYC): when on, the wired image/audio/video refs are sent as
+  // identity-verified KYC assets (portrait→video / lip-sync / video-reference).
+  const kycMode = typeof data.kycMode === "boolean" ? (data.kycMode as boolean) : false;
 
   function persist(patch: Record<string, unknown>) {
     updateNodeData(rfId, patch);
@@ -210,6 +213,20 @@ export function VideoNodeSettings({ rfId }: Props) {
             onChange={(e) => persist({ generate_audio: e.target.checked })}
           />
           <span>Generate audio track</span>
+        </label>
+      ) : null}
+
+      {caps.supports_kyc ? (
+        <label className="video-settings-row video-settings-row--toggle">
+          <input
+            type="checkbox"
+            checked={kycMode}
+            onChange={(e) => persist({ kycMode: e.target.checked })}
+          />
+          <span>
+            Người thật (KYC) — portrait→video / lip-sync
+            <span className="video-settings-hint"> cần KYC + ảnh người thật</span>
+          </span>
         </label>
       ) : null}
     </div>

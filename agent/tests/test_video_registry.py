@@ -58,6 +58,9 @@ def test_seedance_2_0_routes_through_avis():
     assert entry.capabilities.max_refs >= 1
     assert entry.capabilities.supports_audio_toggle is True
     assert entry.capabilities.supports_audio_ref is False
+    # Person-driven (KYC) supported on Avis Seedance 2.0; not on the byteplus path.
+    assert entry.capabilities.supports_kyc is True
+    assert get_video_model("seedance-2-0-byteplus").capabilities.supports_kyc is False
 
 
 def test_seedance_2_0_byteplus_keeps_direct_path():

@@ -209,7 +209,47 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
         "motion_prompt": motion_prompt.strip(),
     }
 
-    if entry.provider_name == "flow":
+    # Person-driven (KYC) path — resolve up to one image/audio/video media_id
+    # into Avis KYC assetIds and dispatch with those (portrait→video / lip-sync
+    # / video-reference). Bypasses Flow + the regular base64/R2 ref resolution.
+    if params.get("kyc_mode") and entry.capabilities.supports_kyc:
+        from flowboard.services.video.avis import ensure_kyc_asset
+
+        proj = params.get("project_id")
+        img_mid = first_frame or next(
+            (r for r in (params.get("reference_images") or []) if isinstance(r, str) and r),
+            None,
+        )
+        aud_mid = (params.get("audio_ref_url") or params.get("audio_ref_media_id") or "").strip() or None
+        vid_mid = next(
+            (v for v in (params.get("reference_videos") or []) if isinstance(v, str) and v),
+            None,
+        )
+        if not (img_mid or aud_mid or vid_mid):
+            return {}, "missing_first_frame_url"
+        try:
+            if img_mid:
+                provider_params["kyc_image_asset_id"] = await ensure_kyc_asset(
+                    img_mid, "Image", project_id=proj
+                )
+            if aud_mid:
+                provider_params["kyc_audio_asset_id"] = await ensure_kyc_asset(
+                    aud_mid, "Audio", project_id=proj
+                )
+            if vid_mid:
+                provider_params["kyc_video_asset_id"] = await ensure_kyc_asset(
+                    vid_mid, "Video", project_id=proj
+                )
+        except VideoError as exc:
+            return {"error": str(exc), "code": exc.code, "raw": exc.raw}, f"{exc.code}:{exc}"
+        provider_params.update({
+            "duration_seconds": int(params.get("duration_seconds") or 5),
+            "aspect_ratio": params.get("aspect_ratio") or "16:9",
+            "resolution": params.get("resolution") or "720p",
+        })
+        if "generate_audio" in params:
+            provider_params["generate_audio"] = bool(params["generate_audio"])
+    elif entry.provider_name == "flow":
         # Flow keeps the broader legacy param surface. start_media_ids
         # (batch) is forwarded through a private knob so the provider
         # can split it back out for sdk.gen_video.

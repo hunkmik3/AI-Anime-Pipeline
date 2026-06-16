@@ -289,3 +289,133 @@ async def test_is_available_tracks_key(monkeypatch):
     assert await _provider().is_available() is True
     secrets.set_api_key("avis", None)
     assert await _provider().is_available() is False
+
+
+# ── KYC (person-driven) ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_ensure_kyc_asset_create_poll_active(monkeypatch, tmp_path):
+    """Hoist -> POST /kyc/user/assets -> poll until active -> cache + return id."""
+    from flowboard.services.video import avis as avis_mod
+
+    img = tmp_path / "p.png"
+    img.write_bytes(b"x")
+    monkeypatch.setattr(avis_mod.media_service, "cached_path", lambda mid: str(img))
+    monkeypatch.setattr(avis_mod, "prepare_image_url", lambda *a, **k: "https://r2.example/p.png")
+    monkeypatch.setattr(avis_mod, "_read_cached_kyc_asset", lambda *a, **k: None)
+    written: dict = {}
+    monkeypatch.setattr(
+        avis_mod, "_write_cached_kyc_asset",
+        lambda mid, t, aid: written.update({"mid": mid, "t": t, "aid": aid}),
+    )
+    monkeypatch.setattr(avis_mod, "KYC_POLL_INTERVAL_S", 0)
+
+    seen: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.method == "POST" and req.url.path.endswith("/kyc/user/assets"):
+            seen.append(json.loads(req.content))
+            return httpx.Response(201, json={"data": {"assetId": "asset-x", "status": "processing"}, "success": True})
+        if req.method == "GET" and req.url.path.endswith("/kyc/user/assets/asset-x"):
+            return httpx.Response(200, json={"data": {"status": "active"}, "success": True})
+        return httpx.Response(500, json={"error": "x"})
+
+    avis.set_http_client_factory(_factory(handler))
+    asset_id = await avis_mod.ensure_kyc_asset("mid-1", "Image", project_id="p")
+    assert asset_id == "asset-x"
+    assert seen[0] == {"url": "https://r2.example/p.png", "assetType": "Image", "name": "mid-1"}
+    assert written == {"mid": "mid-1", "t": "Image", "aid": "asset-x"}
+
+
+@pytest.mark.asyncio
+async def test_ensure_kyc_asset_cache_hit(monkeypatch):
+    """A cached active assetId short-circuits — no network, no R2 hoist."""
+    from flowboard.services.video import avis as avis_mod
+
+    monkeypatch.setattr(
+        avis_mod, "_read_cached_kyc_asset",
+        lambda mid, t: "asset-cached" if t == "Image" else None,
+    )
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        raise AssertionError("must not hit the network on a cache hit")
+
+    avis.set_http_client_factory(_factory(handler))
+    assert await avis_mod.ensure_kyc_asset("mid-1", "Image") == "asset-cached"
+
+
+@pytest.mark.asyncio
+async def test_ensure_kyc_asset_requires_public_hosting(monkeypatch, tmp_path):
+    """No R2 -> ObjectStorageError -> clear bad_input mentioning hosting."""
+    from flowboard.services.storage import ObjectStorageError
+    from flowboard.services.video import avis as avis_mod
+
+    img = tmp_path / "p.png"
+    img.write_bytes(b"x")
+    monkeypatch.setattr(avis_mod.media_service, "cached_path", lambda mid: str(img))
+    monkeypatch.setattr(avis_mod, "_read_cached_kyc_asset", lambda *a, **k: None)
+
+    def boom(*a, **k):
+        raise ObjectStorageError("R2 not configured")
+
+    monkeypatch.setattr(avis_mod, "prepare_image_url", boom)
+    with pytest.raises(VideoError) as exc:
+        await avis_mod.ensure_kyc_asset("mid-1", "Image")
+    assert exc.value.code == "bad_input"
+    assert "R2" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_ensure_kyc_asset_failed_policy(monkeypatch, tmp_path):
+    """A 'failed' poll with a policy errorCode maps to content_filtered."""
+    from flowboard.services.video import avis as avis_mod
+
+    img = tmp_path / "p.png"
+    img.write_bytes(b"x")
+    monkeypatch.setattr(avis_mod.media_service, "cached_path", lambda mid: str(img))
+    monkeypatch.setattr(avis_mod, "prepare_image_url", lambda *a, **k: "https://r2.example/p.png")
+    monkeypatch.setattr(avis_mod, "_read_cached_kyc_asset", lambda *a, **k: None)
+    monkeypatch.setattr(avis_mod, "_write_cached_kyc_asset", lambda *a, **k: None)
+    monkeypatch.setattr(avis_mod, "KYC_POLL_INTERVAL_S", 0)
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.method == "POST":
+            return httpx.Response(201, json={"data": {"assetId": "asset-y", "status": "processing"}, "success": True})
+        return httpx.Response(200, json={"data": {
+            "status": "failed",
+            "errorCode": "InputImageSensitiveContentDetected.PolicyViolation",
+            "errorMessage": "blocked",
+        }, "success": True})
+
+    avis.set_http_client_factory(_factory(handler))
+    with pytest.raises(VideoError) as exc:
+        await avis_mod.ensure_kyc_asset("mid-1", "Image")
+    assert exc.value.code == "content_filtered"
+
+
+@pytest.mark.asyncio
+async def test_submit_kyc_emits_kyc_content_parts():
+    """KYC assetIds in params -> kyc*AssetId content parts, no regular refs."""
+    seen: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        return httpx.Response(200, json={"data": {"taskId": "cgt-kyc"}, "success": True})
+
+    avis.set_http_client_factory(_factory(handler))
+    res = await _provider().submit({
+        "motion_prompt": "the person walks",
+        "kyc_image_asset_id": "asset-img",
+        "kyc_audio_asset_id": "asset-aud",
+        "duration_seconds": 5,
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
+        "generate_audio": False,
+    })
+    assert res["external_job_id"] == "cgt-kyc"
+    content = seen[0]["content"]
+    assert {"type": "kycImageAssetId", "assetId": "asset-img"} in content
+    assert {"type": "kycAudioAssetId", "assetId": "asset-aud"} in content
+    assert not any(b.get("type") in ("imageUrl", "imageBase64", "videoUrl") for b in content)
+    assert seen[0]["generateAudio"] is False

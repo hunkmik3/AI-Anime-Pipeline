@@ -1339,6 +1339,9 @@ export interface VideoModelCapability {
   aspect_ratios: string[];
   resolutions: string[];
   durations: number[];
+  // Person-driven (KYC) inputs — portrait→video / lip-sync / video-ref.
+  // Only the Avis Seedance 2.0 model; the gen dialog shows the KYC toggle.
+  supports_kyc?: boolean;
 }
 
 export interface VideoModelDTO {

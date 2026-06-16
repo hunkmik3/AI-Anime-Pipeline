@@ -77,6 +77,7 @@ AVIS_SEEDANCE_2_0_CAPABILITY = VideoProviderCapability(
     supports_audio_toggle=True,
     supports_audio_ref=False,
     supports_video_ref=True,
+    supports_kyc=True,
     max_refs=9,
     aspect_ratios=("1:1", "16:9", "9:16"),
     resolutions=("720p", "1080p"),
@@ -159,6 +160,138 @@ def _image_content_part(ref: str, role: str) -> dict:
     return {"type": "imageBase64", "data": data, "mediaType": mime, "role": role}
 
 
+# ── KYC assets (person-driven video) ────────────────────────────────────────
+# Portrait→video / lip-sync / video-reference need an identity-verified Avis
+# KYC asset. Unlike regular refs (base64 inline), a KYC asset is created from a
+# PUBLIC HTTPS URL, so the local media is hoisted to R2 first. The created
+# assetId is cached on the Asset row (reusable) so we don't re-upload+re-poll.
+
+KYC_POLL_INTERVAL_S = 4.0
+KYC_POLL_MAX_CYCLES = 75  # ~5 min — matches Avis's processing timeout
+_KYC_ASSET_TYPES = {"Image", "Video", "Audio"}
+
+
+def _kyc_headers() -> dict[str, str]:
+    api_key = secrets.get_api_key("avis")
+    if not api_key:
+        raise VideoError("auth", "Avis API key not configured (AVIS_API_KEY)")
+    return {"accept": "application/json", "x-api-key": api_key, "Content-Type": "application/json"}
+
+
+def _read_cached_kyc_asset(media_id: str, asset_type: str) -> Optional[str]:
+    """Return a cached, still-active Avis KYC assetId for this media_id, if any."""
+    from sqlmodel import select
+
+    from flowboard.db import get_session
+    from flowboard.db.models import Asset
+
+    with get_session() as s:
+        row = s.exec(select(Asset).where(Asset.uuid_media_id == media_id)).first()
+        meta = (row.asset_metadata or {}) if row is not None else {}
+        kyc = meta.get("avis_kyc") if isinstance(meta, dict) else None
+        if (
+            isinstance(kyc, dict)
+            and kyc.get("status") == "active"
+            and kyc.get("asset_type") == asset_type
+            and isinstance(kyc.get("asset_id"), str)
+        ):
+            return kyc["asset_id"]
+    return None
+
+
+def _write_cached_kyc_asset(media_id: str, asset_type: str, asset_id: str) -> None:
+    from sqlmodel import select
+
+    from flowboard.db import get_session
+    from flowboard.db.models import Asset
+
+    with get_session() as s:
+        row = s.exec(select(Asset).where(Asset.uuid_media_id == media_id)).first()
+        if row is None:
+            return  # no Asset row to cache on — harmless, re-resolve next time
+        meta = dict(row.asset_metadata or {})
+        meta["avis_kyc"] = {"asset_id": asset_id, "asset_type": asset_type, "status": "active"}
+        row.asset_metadata = meta
+        s.add(row)
+        s.commit()
+
+
+async def ensure_kyc_asset(
+    media_id: str, asset_type: str, *, project_id: Optional[str] = None
+) -> str:
+    """Resolve a local media_id to an *active* Avis KYC assetId (cached, reused).
+
+    Hoists the cached file to a public R2 URL, creates the KYC asset, polls until
+    ``active``, caches the assetId on the Asset row, and returns it. Raises
+    VideoError on R2 misconfig, processing failure, or timeout. The caller must
+    have a KYC-verified account (``isKyc: true``) or creation returns 403.
+    """
+    if asset_type not in _KYC_ASSET_TYPES:
+        raise VideoError("internal", f"bad KYC asset_type: {asset_type!r}")
+
+    cached = _read_cached_kyc_asset(media_id, asset_type)
+    if cached:
+        return cached
+
+    local = media_service.cached_path(media_id)
+    if local is None:
+        raise VideoError("bad_input", f"KYC asset media {media_id!r} has no local cache file")
+    try:
+        public_url = prepare_image_url(Path(local), project_id=project_id, asset_id=media_id)
+    except ObjectStorageError as exc:
+        raise VideoError(
+            "bad_input",
+            "Person-driven (KYC) video needs public file hosting (R2) configured — "
+            f"set the R2 block in .env/secrets. ({exc})",
+        ) from exc
+
+    async with _http_client_factory() as client:
+        try:
+            resp = await client.post(
+                f"{BASE_URL}/kyc/user/assets",
+                json={"url": public_url, "assetType": asset_type, "name": media_id[:64]},
+                headers=_kyc_headers(),
+            )
+        except httpx.HTTPError as exc:
+            raise VideoError("internal", f"avis kyc create transport error: {exc}") from exc
+    if resp.status_code >= 400:
+        raise _classify_avis_http_error(resp)
+    data = _unwrap(resp)
+    asset_id = data.get("assetId")
+    if not isinstance(asset_id, str) or not asset_id:
+        raise VideoError("internal", "avis kyc create missing assetId", raw=data)
+
+    status = data.get("status")
+    attempts = 0
+    while status not in ("active", "failed") and attempts < KYC_POLL_MAX_CYCLES:
+        await asyncio.sleep(KYC_POLL_INTERVAL_S)
+        attempts += 1
+        async with _http_client_factory() as client:
+            try:
+                presp = await client.get(
+                    f"{BASE_URL}/kyc/user/assets/{asset_id}", headers=_kyc_headers()
+                )
+            except httpx.HTTPError as exc:
+                raise VideoError("internal", f"avis kyc poll transport error: {exc}") from exc
+        if presp.status_code >= 400:
+            raise _classify_avis_http_error(presp)
+        pdata = _unwrap(presp)
+        status = pdata.get("status")
+        if status == "failed":
+            msg = pdata.get("errorMessage") or pdata.get("errorCode") or "kyc asset processing failed"
+            code_raw = str(pdata.get("errorCode") or "").lower()
+            code: VideoErrorCode = (
+                "content_filtered" if ("sensitive" in code_raw or "policy" in code_raw) else "bad_input"
+            )
+            raise VideoError(code, str(msg)[:200], raw=pdata)
+
+    if status != "active":
+        raise VideoError("timeout", f"KYC asset {asset_id} not active after {attempts} polls")
+
+    _write_cached_kyc_asset(media_id, asset_type, asset_id)
+    return asset_id
+
+
 class AvisVideoProvider:
     """One instance per registered model. ``upstream_model_id`` is the Avis
     model id (e.g. ``dreamina-seedance-2-0``)."""
@@ -196,6 +329,24 @@ class AvisVideoProvider:
         motion_prompt = (params.get("motion_prompt") or "").strip()
         if not motion_prompt:
             raise VideoError("bad_input", "missing motion_prompt")
+
+        # ── person-driven (KYC) path ────────────────────────────────────
+        # Pre-resolved Avis KYC assetIds (the worker creates them from local
+        # media_ids). When any is present this is portrait→video / lip-sync /
+        # video-reference: emit kyc*AssetId parts and skip the regular refs.
+        kyc_ids = {
+            "kycImageAssetId": params.get("kyc_image_asset_id"),
+            "kycAudioAssetId": params.get("kyc_audio_asset_id"),
+            "kycVideoAssetId": params.get("kyc_video_asset_id"),
+        }
+        if any(kyc_ids.values()):
+            if not self.capabilities.supports_kyc:
+                warnings.append(
+                    f"Dropped KYC assets: {self.entry.display_name} doesn't "
+                    f"support person-driven video."
+                )
+            else:
+                return await self._submit_kyc(params, motion_prompt, kyc_ids, headers, warnings)
 
         first_frame_url = (params.get("first_frame_url") or "").strip()
         last_frame_url = params.get("last_frame_url")
@@ -338,6 +489,12 @@ class AvisVideoProvider:
         if generate_audio is not None:
             body["generateAudio"] = bool(generate_audio)
 
+        return await self._post_generation(body, headers, warnings)
+
+    async def _post_generation(
+        self, body: dict, headers: dict, warnings: list[str]
+    ) -> VideoGenSubmitResult:
+        """POST a built /video/generations body; return the submit result."""
         await _CONCURRENCY_SEM.acquire()
         try:
             async with _http_client_factory() as client:
@@ -361,6 +518,47 @@ class AvisVideoProvider:
             "submitted_at": int(time.time()),
             "warnings": warnings,
         }
+
+    async def _submit_kyc(
+        self,
+        params: VideoGenSubmitParams,
+        motion_prompt: str,
+        kyc_ids: dict,
+        headers: dict,
+        warnings: list[str],
+    ) -> VideoGenSubmitResult:
+        """Person-driven submit: text + kyc*AssetId content parts (no regular refs)."""
+        duration = int(params.get("duration_seconds") or 5)
+        if duration not in self.capabilities.durations:
+            allowed = ", ".join(str(d) for d in self.capabilities.durations)
+            raise VideoError(
+                "bad_input", f"duration_seconds={duration} not supported (allowed: {allowed})"
+            )
+        aspect = params.get("aspect_ratio") or "1:1"
+        if aspect not in self.capabilities.aspect_ratios:
+            allowed = ", ".join(self.capabilities.aspect_ratios)
+            raise VideoError("bad_input", f"aspect_ratio={aspect!r} not supported (allowed: {allowed})")
+        resolution = params.get("resolution") or "720p"
+        if resolution not in self.capabilities.resolutions:
+            allowed = ", ".join(self.capabilities.resolutions)
+            raise VideoError("bad_input", f"resolution={resolution!r} not supported (allowed: {allowed})")
+
+        content: list[dict] = [{"type": "text", "text": motion_prompt}]
+        for part_type, asset_id in kyc_ids.items():
+            if asset_id:
+                content.append({"type": part_type, "assetId": asset_id})
+
+        body: dict = {
+            "model": self.upstream_model_id,
+            "content": content,
+            "duration": duration,
+            "resolution": resolution,
+            "ratio": aspect,
+        }
+        generate_audio = params.get("generate_audio")
+        if generate_audio is not None and self.capabilities.supports_audio_toggle:
+            body["generateAudio"] = bool(generate_audio)
+        return await self._post_generation(body, headers, warnings)
 
     # ── poll ──────────────────────────────────────────────────────────
 
