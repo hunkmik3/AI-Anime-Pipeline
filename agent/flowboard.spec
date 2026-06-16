@@ -15,6 +15,7 @@ block_cipher = None
 hiddenimports = (
     collect_submodules("uvicorn")
     + collect_submodules("flowboard")
+    + collect_submodules("PIL")
     + [
         "anyio",
         "sqlalchemy.dialects.sqlite",

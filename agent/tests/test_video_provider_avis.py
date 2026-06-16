@@ -115,13 +115,20 @@ async def test_submit_r2v_emits_reference_and_video_blocks():
 
 
 @pytest.mark.asyncio
-async def test_local_media_id_sent_as_base64(monkeypatch, tmp_path):
-    """A bare media_id (local cache, no R2) is encoded inline as imageBase64;
-    a public URL stays an imageUrl. This is the desktop-build path."""
+async def test_local_media_id_sent_as_downscaled_jpeg_base64(monkeypatch, tmp_path):
+    """A bare media_id (local cache, no R2) is downscaled + JPEG-recompressed and
+    sent inline as imageBase64; a public URL stays an imageUrl. Downscaling keeps
+    multi-ref payloads under Avis's request-size limit (no more HTTP 413)."""
+    import base64 as _b
+    import io
+
+    from PIL import Image
+
     from flowboard.services.video import avis as avis_mod
 
+    # A large PNG (3000x2000) — must come back shrunk to <=1280 and as JPEG.
     img = tmp_path / "ref.png"
-    img.write_bytes(b"\x89PNG\r\n\x1a\nFAKEBYTES")
+    Image.new("RGB", (3000, 2000), (200, 50, 50)).save(img, "PNG")
     monkeypatch.setattr(
         avis_mod.media_service, "cached_path",
         lambda mid: str(img) if mid == "local-mid-1" else None,
@@ -144,9 +151,11 @@ async def test_local_media_id_sent_as_base64(monkeypatch, tmp_path):
 
     blocks = seen[0]["content"]
     b64 = next(b for b in blocks if b["type"] == "imageBase64")
-    assert b64["role"] == "referenceImage" and b64["mediaType"] == "image/png"
-    import base64 as _b
-    assert _b.b64decode(b64["data"]) == b"\x89PNG\r\n\x1a\nFAKEBYTES"
+    assert b64["role"] == "referenceImage" and b64["mediaType"] == "image/jpeg"
+    decoded = _b.b64decode(b64["data"])
+    assert decoded[:3] == b"\xff\xd8\xff"  # JPEG magic
+    with Image.open(io.BytesIO(decoded)) as out:
+        assert max(out.size) <= avis_mod._INLINE_MAX_DIM  # downscaled
     # public URL stays a URL, not base64
     assert any(b.get("type") == "imageUrl" and b.get("url") == "https://e/remote.png" for b in blocks)
 

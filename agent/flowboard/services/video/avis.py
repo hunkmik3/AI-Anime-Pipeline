@@ -107,14 +107,37 @@ _MIME_BY_EXT = {
 }
 
 
+# Inline reference images are downscaled + JPEG-recompressed: reference sheets
+# are often several MB, and inlining a few raw blows past Avis's request-size
+# limit (HTTP 413). 1280px / q85 preserves identity for a video reference while
+# keeping each block ~100-400 KB.
+_INLINE_MAX_DIM = 1280
+_INLINE_JPEG_Q = 85
+
+
+def _encode_local_image_inline(path: Path) -> tuple[str, str]:
+    """Return (base64, mediaType) for a local image, shrunk to <=_INLINE_MAX_DIM
+    on the longest side and re-encoded as JPEG."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    with Image.open(path) as im:
+        im = im.convert("RGB")
+        im.thumbnail((_INLINE_MAX_DIM, _INLINE_MAX_DIM))  # shrink-only, keeps aspect
+        buf = BytesIO()
+        im.save(buf, format="JPEG", quality=_INLINE_JPEG_Q, optimize=True)
+    return base64.b64encode(buf.getvalue()).decode("ascii"), "image/jpeg"
+
+
 def _image_content_part(ref: str, role: str) -> dict:
     """Build an Avis image content block.
 
     A public URL passes through as ``imageUrl``. A bare Flowboard media_id is
-    read from the local media cache and sent INLINE as ``imageBase64`` — Avis
-    stores it server-side and returns an internal assetId. This is what lets
-    the self-contained desktop build run with **no R2** (the worker passes
-    media_ids straight through for the Avis provider).
+    read from the local media cache, downscaled, and sent INLINE as
+    ``imageBase64`` — Avis stores it server-side and returns an internal
+    assetId. This is what lets the self-contained desktop build run with **no
+    R2** (the worker passes media_ids straight through for the Avis provider).
     """
     if ref.startswith(("http://", "https://", "data:")):
         return {"type": "imageUrl", "url": ref, "role": role}
@@ -125,13 +148,15 @@ def _image_content_part(ref: str, role: str) -> dict:
             f"reference image {ref!r} has no local cache file — upload it first",
         )
     p = Path(path)
-    mime = _MIME_BY_EXT.get(p.suffix.lower(), "image/png")
-    return {
-        "type": "imageBase64",
-        "data": base64.b64encode(p.read_bytes()).decode("ascii"),
-        "mediaType": mime,
-        "role": role,
-    }
+    try:
+        data, mime = _encode_local_image_inline(p)
+    except (OSError, ValueError) as exc:
+        # Unreadable / non-image — fall back to raw bytes so small valid files
+        # still work (large ones may then hit Avis's 413).
+        logger.warning("avis: inline recompress failed for %s (%s); sending raw", ref, exc)
+        data = base64.b64encode(p.read_bytes()).decode("ascii")
+        mime = _MIME_BY_EXT.get(p.suffix.lower(), "image/png")
+    return {"type": "imageBase64", "data": data, "mediaType": mime, "role": role}
 
 
 class AvisVideoProvider:
