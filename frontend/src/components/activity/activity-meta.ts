@@ -3,6 +3,8 @@
 // (SVG) live in ActivityIcon.tsx; status icons stay as ASCII glyphs
 // since they read clean at small sizes.
 
+import { parseServerTimeMs } from "../../utils/serverTime";
+
 export const ACTIVITY_TYPE_META: Record<
   string,
   { label: string; group: "llm" | "gen" | "upload" }
@@ -41,7 +43,7 @@ export function statusMeta(status: string) {
 }
 
 export function relativeTime(iso: string): string {
-  const t = new Date(iso).getTime();
+  const t = parseServerTimeMs(iso);
   const diff = Date.now() - t;
   if (diff < 0) return "just now";
   const sec = Math.round(diff / 1000);

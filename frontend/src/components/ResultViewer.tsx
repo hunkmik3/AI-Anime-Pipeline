@@ -4,6 +4,7 @@ import { useShotWorkflowStore } from "../store/shotWorkflow";
 import { useSettingsStore } from "../store/settings";
 import { getMediaStatus, mediaUrl, patchNode, type MediaStatus } from "../api/client";
 import { countryLabel, vibeLabel } from "../constants/character";
+import { parseServerTimeMs } from "../utils/serverTime";
 
 const ICON: Record<string, string> = {
   character: "◎",
@@ -52,7 +53,7 @@ function formatAspectRatio(value: string | undefined): string {
  *  back to "—" when the timestamp is missing or unparseable. */
 function formatRelativeTime(iso: string | undefined): string {
   if (!iso) return "—";
-  const t = new Date(iso).getTime();
+  const t = parseServerTimeMs(iso);
   if (isNaN(t)) return "—";
   const diffSec = Math.max(0, (Date.now() - t) / 1000);
   if (diffSec < 60) return "vừa xong";

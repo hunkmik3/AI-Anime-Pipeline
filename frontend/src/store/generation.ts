@@ -4,6 +4,7 @@ import { useShotWorkflowStore, type NodeStatus } from "./shotWorkflow";
 import { useProjectStore } from "./project";
 import { useSettingsStore } from "./settings";
 import { useVideoModelsStore } from "./videoModels";
+import { parseServerTimeMs } from "../utils/serverTime";
 
 type PollEntry = { requestId: number; timerId: ReturnType<typeof setTimeout> | null };
 
@@ -537,7 +538,7 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
             // duration×K; capped at 90 until the clip lands (status=done).
             const runPatch: Record<string, unknown> = { status: "running" };
             if (kind === "video") {
-              const created = Date.parse(req.created_at);
+              const created = parseServerTimeMs(req.created_at);
               const dur = (req.params.duration_seconds as number) || 5;
               const estTotalMs = dur * 30_000; // K≈30s of wall-clock per output-second
               const elapsed = Number.isFinite(created) ? Date.now() - created : 0;
