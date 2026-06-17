@@ -8,6 +8,10 @@ import { useSceneStore } from "../store/scene";
 
 const EMPTY_SCENES: SceneDTO[] = [];
 
+// Project Bible editor is hidden for now (not needed yet). Flip to true to
+// restore it — all the state/handlers below stay wired so this is reversible.
+const SHOW_PROJECT_BIBLE = false;
+
 /**
  * Phase 8.3 project hub (the new entry point at /projects/:projectId).
  *
@@ -213,6 +217,7 @@ export function SceneView() {
             </ol>
           )}
 
+          {SHOW_PROJECT_BIBLE && (
           <details className="project-bible-collapse">
             <summary>Project Bible (style anchor)</summary>
             <div className="dashboard-bible">
@@ -283,6 +288,7 @@ export function SceneView() {
               </div>
             </div>
           </details>
+          )}
         </section>
       </div>
     </div>

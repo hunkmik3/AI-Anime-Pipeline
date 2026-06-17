@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { useProjectStore } from "../store/project";
-import { AccountPanel } from "./AccountPanel";
 
 /**
  * Phase 3 project-aware sidebar. Reads from ``useProjectStore`` (post-
@@ -236,8 +235,6 @@ export function ProjectSidebar() {
           </ul>
         </>
       )}
-
-      <AccountPanel collapsed={collapsed} />
 
       {deleteTarget && (
         <div

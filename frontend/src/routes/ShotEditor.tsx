@@ -5,7 +5,6 @@ import { ReactFlowProvider } from "@xyflow/react";
 import { ShotCanvas } from "../canvas/ShotCanvas";
 import { AddNodePalette } from "../canvas/AddNodePalette";
 import { ReferencesPanel } from "../components/ReferencesPanel";
-import { StatusBar } from "../components/StatusBar";
 
 import { useProjectStore } from "../store/project";
 import { useSceneStore } from "../store/scene";
@@ -177,7 +176,6 @@ export function ShotEditor() {
               <AddNodePalette />
             </>
           )}
-          <StatusBar />
           <ReferencesPanel />
         </div>
       </ReactFlowProvider>
