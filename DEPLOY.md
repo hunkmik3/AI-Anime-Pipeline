@@ -77,7 +77,12 @@ cloudflared tunnel run flowboard
 ## Operating notes
 - ⚠️ **Sum of all user budgets ≤ real Avis balance** — one shared key; if it
   hits $0 every user's gens fail. (A global pool guard isn't built yet.)
-- **Media** is stored locally under `STORAGE` (fine on 256 GB to start; move to
-  R2 later if it fills up).
+- **Person-driven (KYC) video needs Cloudflare R2.** Normal Avis Seedance video
+  works without it, but KYC uploads assets to a public URL → set the four
+  `R2_*` vars in `.env` (see `.env.example` + `docs/r2_setup.md`). Without them,
+  clicking KYC fails with *"needs public file hosting (R2)"*. You can reuse one
+  R2 bucket across machines.
+- **Media** is otherwise stored locally under `STORAGE` (fine on 256 GB to
+  start; move to R2 later if it fills up).
 - **Update:** `git pull && ./deploy.sh`, then restart the server
   (`launchctl unload/load` the plist, or just re-run uvicorn).
