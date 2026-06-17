@@ -7471,3 +7471,9 @@ button:disabled {
 }
 .admin-actions button:hover { border-color: #6c5cff66; }
 .admin-self { color: #8a8a93; font-size: 0.8rem; }
+
+/* Phase 9.2: budget chip in the account menu */
+.account-menu__budget {
+  font-size: 0.78rem; color: #7ee2b8; background: #12241c;
+  border: 1px solid #1f4836; border-radius: 6px; padding: 2px 8px; font-variant-numeric: tabular-nums;
+}

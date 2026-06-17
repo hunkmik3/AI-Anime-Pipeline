@@ -296,6 +296,28 @@ async def ensure_kyc_asset(
     return asset_id
 
 
+async def _fetch_actual_usd_cost(generation_id: str) -> Optional[float]:
+    """Real usdCost for a finished gen, looked up from the generations history
+    (``/video/generations``) — the per-task endpoint doesn't include it. Used to
+    settle per-user budgets on actual spend. Returns None if not found."""
+    try:
+        async with _http_client_factory() as client:
+            resp = await client.get(
+                f"{BASE_URL}/video/generations?limit=50", headers=_kyc_headers()
+            )
+        if resp.status_code >= 400:
+            return None
+        data = _unwrap(resp)
+    except (httpx.HTTPError, VideoError, ValueError):
+        return None
+    for rec in data.get("results") or []:
+        if isinstance(rec, dict) and rec.get("id") == generation_id:
+            usage = rec.get("usage") if isinstance(rec.get("usage"), dict) else {}
+            cost = usage.get("usdCost")
+            return float(cost) if isinstance(cost, (int, float)) else None
+    return None
+
+
 class AvisVideoProvider:
     """One instance per registered model. ``upstream_model_id`` is the Avis
     model id (e.g. ``dreamina-seedance-2-0``)."""
@@ -674,7 +696,13 @@ class AvisVideoProvider:
             raw_cost = usage.get("usdCost")
             if isinstance(raw_cost, (int, float)):
                 usd_cost = float(raw_cost)
-        # Prefer the provider-reported USD cost; fall back to local token pricing.
+        # The poll envelope omits usdCost — look it up from the generations
+        # history so per-user budgets settle on the real charge.
+        if usd_cost is None:
+            gen_id = data.get("generationId")
+            if isinstance(gen_id, str) and gen_id:
+                usd_cost = await _fetch_actual_usd_cost(gen_id)
+        # Prefer the real USD cost; fall back to local token pricing.
         cost_usd = usd_cost if usd_cost is not None else compute_cost_usd(self.model_id, tokens=tokens)
 
         return {

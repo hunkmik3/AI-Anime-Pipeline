@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from flowboard.db.models import User
 from flowboard.routes.deps import get_current_user
-from flowboard.services import auth, user_service
+from flowboard.services import auth, budget_service, user_service
 
 logger = logging.getLogger(__name__)
 
@@ -40,4 +40,9 @@ def login(body: LoginBody) -> dict:
 
 @router.get("/me")
 def me(user: User = Depends(get_current_user)) -> dict:
-    return user_service.public_dict(user)
+    d = user_service.public_dict(user)
+    summ = budget_service.summary(user.id)
+    if summ:
+        d["available_usd"] = summ["available_usd"]
+        d["reserved_usd"] = summ["reserved_usd"]
+    return d

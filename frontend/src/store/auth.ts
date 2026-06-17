@@ -8,6 +8,9 @@ export interface AuthUser {
   role: string;          // "admin" | "user"
   status: string;
   display_name?: string | null;
+  budget_usd?: number;
+  spent_usd?: number;
+  available_usd?: number;
 }
 
 interface AuthState {

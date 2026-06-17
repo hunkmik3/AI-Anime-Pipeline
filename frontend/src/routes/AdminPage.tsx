@@ -10,6 +10,9 @@ interface AdminUser {
   status: string;
   display_name?: string | null;
   created_at?: string | null;
+  budget_usd?: number;
+  spent_usd?: number;
+  available_usd?: number;
 }
 
 async function jsonOrThrow(res: Response) {
@@ -98,6 +101,15 @@ export function AdminPage() {
     if (pw) void patchUser(u.id, { password: pw });
   }
 
+  function setBudget(u: AdminUser) {
+    const cur = typeof u.budget_usd === "number" ? u.budget_usd : 0;
+    const raw = window.prompt(`Ngân sách $ cho "${u.username}" (tổng):`, String(cur));
+    if (raw === null) return;
+    const v = Number(raw);
+    if (!Number.isFinite(v) || v < 0) return;
+    void patchUser(u.id, { budget_usd: v });
+  }
+
   return (
     <div className="admin-page">
       <div className="admin-head">
@@ -136,7 +148,8 @@ export function AdminPage() {
               <th>Tài khoản</th>
               <th>Vai trò</th>
               <th>Trạng thái</th>
-              <th>Tạo lúc</th>
+              <th>Ngân sách $</th>
+              <th>Còn lại $</th>
               <th>Thao tác</th>
             </tr>
           </thead>
@@ -149,8 +162,15 @@ export function AdminPage() {
                 </td>
                 <td>{u.role}</td>
                 <td>{u.status}</td>
-                <td>{u.created_at ? new Date(`${u.created_at}${/[zZ]|[+-]\d\d:?\d\d$/.test(u.created_at) ? "" : "Z"}`).toLocaleString() : "—"}</td>
+                <td>
+                  {typeof u.budget_usd === "number" ? `$${u.budget_usd.toFixed(2)}` : "—"}
+                  {typeof u.spent_usd === "number" ? (
+                    <span className="admin-uname"> (tiêu ${u.spent_usd.toFixed(2)})</span>
+                  ) : null}
+                </td>
+                <td>{typeof u.available_usd === "number" ? `$${u.available_usd.toFixed(2)}` : "—"}</td>
                 <td className="admin-actions">
+                  <button onClick={() => setBudget(u)}>Ngân sách</button>
                   {u.id === me?.id ? (
                     <span className="admin-self">(bạn)</span>
                   ) : (

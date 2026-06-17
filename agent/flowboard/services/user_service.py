@@ -167,6 +167,28 @@ def ensure_bootstrap_admin() -> None:
     logger.info("bootstrapped admin account %r (claimed %d existing project(s))", username, claimed)
 
 
+def set_budget(user_id, budget_usd: float) -> None:
+    uid = _coerce_uuid(user_id)
+    with get_session() as s:
+        u = s.get(User, uid) if uid else None
+        if u is None:
+            raise UserNotFound(str(user_id))
+        u.budget_usd = max(0.0, float(budget_usd))
+        s.add(u)
+        s.commit()
+
+
+def add_budget(user_id, delta_usd: float) -> None:
+    uid = _coerce_uuid(user_id)
+    with get_session() as s:
+        u = s.get(User, uid) if uid else None
+        if u is None:
+            raise UserNotFound(str(user_id))
+        u.budget_usd = max(0.0, round(float(u.budget_usd) + float(delta_usd), 6))
+        s.add(u)
+        s.commit()
+
+
 def public_dict(u: User) -> dict:
     return {
         "id": str(u.id),
@@ -174,5 +196,7 @@ def public_dict(u: User) -> dict:
         "role": u.role,
         "status": u.status,
         "display_name": u.display_name,
+        "budget_usd": round(float(u.budget_usd), 4),
+        "spent_usd": round(float(u.spent_usd), 4),
         "created_at": u.created_at.isoformat() if u.created_at else None,
     }

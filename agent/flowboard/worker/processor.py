@@ -983,8 +983,13 @@ class WorkerController:
                     req.error = None
                 s.add(req)
                 s.commit()
+                req_type = req.type
+            # Budget (Phase 9.2): settle the reservation on success with the
+            # real cost, release it on failure. No-op when there's no hold.
+            _settle_budget(rid, req_type, result, failed=bool(err))
         except Exception as exc:  # noqa: BLE001
             logger.exception("worker exception on rid=%s", rid)
+            _settle_budget(rid, "gen_video", None, failed=True)  # release any hold
             try:
                 with get_session() as s:
                     req = s.get(Request, rid)
@@ -998,6 +1003,23 @@ class WorkerController:
                 logger.exception("worker: failed to record failure for rid=%s", rid)
         finally:
             self._active -= 1
+
+
+def _settle_budget(rid: int, req_type: Optional[str], result, *, failed: bool) -> None:
+    """Settle (success → real cost) or release (failure) a gen_video budget hold.
+    No-op when the request had no reservation (non-video / auth off)."""
+    try:
+        from flowboard.services import budget_service
+
+        if req_type != "gen_video" or not budget_service.has_reservation(rid):
+            return
+        if failed:
+            budget_service.release(rid)
+        else:
+            cost = result.get("cost_usd") if isinstance(result, dict) else None
+            budget_service.settle(rid, float(cost) if isinstance(cost, (int, float)) else 0.0)
+    except Exception:  # noqa: BLE001
+        logger.exception("budget settle failed for rid=%s", rid)
 
 
 _worker: Optional[WorkerController] = None

@@ -249,4 +249,27 @@ class User(SQLModel, table=True):
     role: str = "user"        # "admin" | "user"
     status: str = "active"    # "active" | "suspended"
     display_name: Optional[str] = None
+    # Phase 9.2 budgeting (USD). budget_usd = total allocated by admin;
+    # spent_usd = running total of settled actual costs. Outstanding holds
+    # (reserved, not yet settled) live in UsageRecord.
+    budget_usd: float = Field(default=0.0)
+    spent_usd: float = Field(default=0.0)
     created_at: datetime = Field(default_factory=_utcnow)
+
+
+class UsageRecord(SQLModel, table=True):
+    """One metered generation. Reserved (estimate) at dispatch, then settled
+    with the real Avis ``usdCost`` (or released on failure)."""
+
+    __tablename__ = "usage_record"  # type: ignore[assignment]
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: uuid.UUID = Field(foreign_key="app_user.id", index=True)
+    request_id: Optional[int] = Field(default=None, index=True)
+    kind: str = "video"
+    model: Optional[str] = None
+    estimated_usd: float = 0.0
+    actual_usd: Optional[float] = None
+    status: str = "reserved"  # reserved | settled | released
+    created_at: datetime = Field(default_factory=_utcnow)
+    settled_at: Optional[datetime] = None
