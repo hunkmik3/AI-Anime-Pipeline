@@ -7,8 +7,8 @@ from flowboard.services import budget_service, user_service
 
 
 def test_estimate_video_usd():
-    assert budget_service.estimate_video_usd(5, "720p") == pytest.approx(1.1)
-    assert budget_service.estimate_video_usd(15, "1080p") == pytest.approx(7.5)
+    assert budget_service.estimate_video_usd(5, "720p") == pytest.approx(0.90)
+    assert budget_service.estimate_video_usd(15, "1080p") == pytest.approx(6.30)
     assert budget_service.estimate_video_usd(None, None) > 0  # safe default
 
 
@@ -66,4 +66,4 @@ def test_gen_video_reserves_within_budget(client):
     assert r.status_code == 200
     rid = r.json()["id"]
     assert budget_service.has_reservation(rid) is True
-    assert budget_service.available_usd(u.id) == pytest.approx(20.0 - 1.1)  # 5*0.22 held
+    assert budget_service.available_usd(u.id) == pytest.approx(20.0 - 0.90)  # 5*0.18 held

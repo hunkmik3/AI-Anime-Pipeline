@@ -8,6 +8,7 @@ budget_usd − spent_usd − sum(outstanding reserved estimates).
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -21,10 +22,16 @@ from flowboard.db.models import UsageRecord, User
 logger = logging.getLogger(__name__)
 
 
-# Conservative USD-per-output-second by resolution (observed Avis usdCost:
-# 15s/1080p ≈ $6.19, 5s/720p ≈ $0.83; padded ~20% so we never under-reserve).
-_RATE_USD_PER_SEC = {"720p": 0.22, "1080p": 0.50}
-_DEFAULT_RATE = 0.50
+# USD-per-output-second by resolution, calibrated to observed Avis usdCost
+# (15s/1080p ≈ $6.19 → ~$0.41/s; 5s/720p ≈ $0.83 → ~$0.17/s) with a ~2-3% pad.
+# Kept close to actual so the budget reflects reality (a generous pad would
+# block gens the user can actually afford). Settlement reconciles to the real
+# usdCost afterwards. Env-tunable as Avis pricing changes.
+_RATE_USD_PER_SEC = {
+    "720p": float(os.getenv("FLOWBOARD_USD_PER_SEC_720P", "0.18")),
+    "1080p": float(os.getenv("FLOWBOARD_USD_PER_SEC_1080P", "0.42")),
+}
+_DEFAULT_RATE = float(os.getenv("FLOWBOARD_USD_PER_SEC_1080P", "0.42"))
 
 
 def estimate_video_usd(duration_seconds, resolution) -> float:
