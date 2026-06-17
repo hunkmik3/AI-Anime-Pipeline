@@ -7392,3 +7392,82 @@ button:disabled {
 .gen-dialog__continuity-dismiss:hover {
   color: var(--text);
 }
+
+/* ── Phase 9 multi-user: login, account menu, admin ──────────────────────── */
+.app-booting {
+  display: flex; align-items: center; justify-content: center;
+  height: 100vh; color: #8a8a93; font-size: 0.95rem;
+}
+
+/* Login */
+.login-shell {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 100vh; background: #0c0c0f;
+}
+.login-card {
+  width: 320px; padding: 28px 26px; border-radius: 14px;
+  background: #16161c; border: 1px solid #26262e;
+  display: flex; flex-direction: column; gap: 14px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+}
+.login-title { margin: 0; font-size: 1.4rem; color: #f0f0f4; letter-spacing: 0.3px; }
+.login-sub { margin: -6px 0 6px; font-size: 0.85rem; color: #8a8a93; }
+.login-field { display: flex; flex-direction: column; gap: 5px; font-size: 0.8rem; color: #b6b6c0; }
+.login-field input {
+  padding: 9px 11px; border-radius: 8px; border: 1px solid #2c2c36;
+  background: #0e0e13; color: #f0f0f4; font-size: 0.9rem; outline: none;
+}
+.login-field input:focus { border-color: #6c5cff; }
+.login-error { font-size: 0.82rem; color: #ff6b6b; background: #2a1414; padding: 7px 10px; border-radius: 7px; }
+.login-btn {
+  margin-top: 4px; padding: 10px; border: none; border-radius: 8px;
+  background: #6c5cff; color: #fff; font-size: 0.92rem; font-weight: 600; cursor: pointer;
+}
+.login-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Account menu (top-right) */
+.account-menu {
+  position: fixed; top: 14px; right: 18px; z-index: 40;
+  display: flex; align-items: center; gap: 12px;
+  background: rgba(20,20,26,0.85); border: 1px solid #26262e;
+  padding: 6px 10px; border-radius: 10px; backdrop-filter: blur(6px);
+}
+.account-menu__link { font-size: 0.8rem; color: #a99bff; text-decoration: none; }
+.account-menu__link:hover { text-decoration: underline; }
+.account-menu__name { font-size: 0.82rem; color: #d6d6de; display: inline-flex; align-items: center; gap: 6px; }
+.account-menu__badge { font-size: 0.62rem; text-transform: uppercase; color: #6c5cff; border: 1px solid #6c5cff55; border-radius: 5px; padding: 1px 5px; }
+.account-menu__logout {
+  font-size: 0.78rem; color: #c6c6d0; background: transparent;
+  border: 1px solid #34343e; border-radius: 7px; padding: 4px 9px; cursor: pointer;
+}
+.account-menu__logout:hover { border-color: #ff6b6b66; color: #ff8585; }
+
+/* Admin page */
+.admin-page { padding: 28px 34px; max-width: 920px; }
+.admin-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 18px; }
+.admin-head h1 { margin: 0; font-size: 1.3rem; color: #f0f0f4; }
+.admin-back { font-size: 0.85rem; color: #a99bff; text-decoration: none; }
+.admin-create { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.admin-create input, .admin-create select {
+  padding: 8px 10px; border-radius: 7px; border: 1px solid #2c2c36;
+  background: #0e0e13; color: #f0f0f4; font-size: 0.86rem;
+}
+.admin-create button {
+  padding: 8px 14px; border: none; border-radius: 7px; background: #6c5cff;
+  color: #fff; font-weight: 600; font-size: 0.86rem; cursor: pointer;
+}
+.admin-create button:disabled { opacity: 0.5; cursor: not-allowed; }
+.admin-error { color: #ff6b6b; font-size: 0.84rem; margin-bottom: 12px; }
+.admin-loading { color: #8a8a93; }
+.admin-table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+.admin-table th, .admin-table td { text-align: left; padding: 9px 10px; border-bottom: 1px solid #20202840; color: #d6d6de; }
+.admin-table th { color: #8a8a93; font-weight: 500; }
+.admin-row--suspended td { opacity: 0.5; }
+.admin-uname { color: #8a8a93; }
+.admin-actions { display: flex; gap: 6px; }
+.admin-actions button {
+  font-size: 0.78rem; padding: 4px 9px; border-radius: 6px;
+  border: 1px solid #34343e; background: transparent; color: #c6c6d0; cursor: pointer;
+}
+.admin-actions button:hover { border-color: #6c5cff66; }
+.admin-self { color: #8a8a93; font-size: 0.8rem; }

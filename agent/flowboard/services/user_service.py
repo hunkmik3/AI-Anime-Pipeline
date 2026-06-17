@@ -15,7 +15,7 @@ from sqlalchemy import func
 from sqlmodel import select
 
 from flowboard.db import get_session
-from flowboard.db.models import User
+from flowboard.db.models import Project, User
 from flowboard.services import auth
 
 logger = logging.getLogger(__name__)
@@ -133,9 +133,25 @@ def set_password(user_id, password: str) -> None:
         s.commit()
 
 
+def claim_orphan_projects(owner_user_id) -> int:
+    """Assign every owner-less project to this user. Used on first-admin
+    bootstrap so an existing single-user DB's projects aren't orphaned."""
+    uid = _coerce_uuid(owner_user_id)
+    if uid is None:
+        return 0
+    with get_session() as s:
+        rows = list(s.exec(select(Project).where(Project.owner_user_id.is_(None))).all())
+        for p in rows:
+            p.owner_user_id = uid
+            s.add(p)
+        s.commit()
+        return len(rows)
+
+
 def ensure_bootstrap_admin() -> None:
     """Create the first admin from FLOWBOARD_ADMIN_USER/PASSWORD when the
-    accounts table is empty. No-op once any user exists."""
+    accounts table is empty. No-op once any user exists. Existing owner-less
+    projects are claimed by the new admin so they don't vanish."""
     if count_users() > 0:
         return
     username = os.getenv("FLOWBOARD_ADMIN_USER")
@@ -146,8 +162,9 @@ def ensure_bootstrap_admin() -> None:
             "set them to bootstrap the first admin"
         )
         return
-    create_user(username, password, role="admin", display_name="Admin")
-    logger.info("bootstrapped admin account %r", username)
+    u = create_user(username, password, role="admin", display_name="Admin")
+    claimed = claim_orphan_projects(u.id)
+    logger.info("bootstrapped admin account %r (claimed %d existing project(s))", username, claimed)
 
 
 def public_dict(u: User) -> dict:

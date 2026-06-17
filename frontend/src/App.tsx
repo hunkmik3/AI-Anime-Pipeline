@@ -12,6 +12,7 @@ import { Toaster } from "./components/Toaster";
 import { GenerationDialog } from "./components/GenerationDialog";
 import { ResultViewer } from "./components/ResultViewer";
 import { ForcedSetupGate } from "./components/ForcedSetupGate";
+import { AccountMenu } from "./components/AccountMenu";
 
 import { ProjectListPage } from "./routes/ProjectListPage";
 import { SceneView } from "./routes/SceneView";
@@ -20,21 +21,39 @@ import { LegacySceneRedirect } from "./routes/LegacySceneRedirect";
 import { ShotEditor } from "./routes/ShotEditor";
 import { AssetLibraryPage } from "./routes/AssetLibraryPage";
 import { CostDashboard } from "./routes/CostDashboard";
+import { LoginPage } from "./routes/LoginPage";
+import { AdminPage } from "./routes/AdminPage";
 
 import { useProjectStore } from "./store/project";
 import { useReferencesStore } from "./store/references";
+import { useAuthStore } from "./store/auth";
 import { migrateLegacyLocalStorage } from "./store/shot";
 
 /**
- * Phase 3 router shell. The pre-router App.tsx loaded one Board and
- * rendered the canvas inline. Now the canvas only renders on the
- * ``/shots/:shotId`` route; everything else is a hierarchy view.
+ * Phase 3 router shell + Phase 9 auth guard. ``/login`` is public; everything
+ * else requires a valid session (RequireAuth) — unauthenticated users are
+ * redirected to login. ``/admin`` additionally requires the admin role.
  */
 export function App() {
+  const loadMe = useAuthStore((s) => s.loadMe);
+  const booted = useRef(false);
+  useEffect(() => {
+    if (booted.current) return;
+    booted.current = true;
+    void loadMe(); // validate a persisted token on boot
+  }, [loadMe]);
+
   return (
     <BrowserRouter>
       <Routes>
-        <Route element={<AppLayout />}>
+        <Route path="/login" element={<LoginPage />} />
+        <Route
+          element={
+            <RequireAuth>
+              <AppLayout />
+            </RequireAuth>
+          }
+        >
           <Route index element={<Navigate to="/projects" replace />} />
           <Route path="/projects" element={<ProjectListPage />} />
           {/* Phase 8.3: project hub (entry point) = SceneView. */}
@@ -52,6 +71,8 @@ export function App() {
             path="/projects/:projectId/scenes/:sceneId"
             element={<SceneCanvas />}
           />
+          {/* Phase 9: admin-only account management. */}
+          <Route path="/admin" element={<RequireAdmin><AdminPage /></RequireAdmin>} />
           {/* Legacy redirects → new nested routes. */}
           <Route path="/scenes/:sceneId" element={<LegacySceneRedirect />} />
           <Route path="/shots/:shotId" element={<ShotEditor />} />
@@ -60,6 +81,20 @@ export function App() {
       </Routes>
     </BrowserRouter>
   );
+}
+
+function RequireAuth({ children }: { children: React.ReactNode }) {
+  const ready = useAuthStore((s) => s.ready);
+  const user = useAuthStore((s) => s.user);
+  if (!ready) return <div className="app-booting">Đang tải…</div>;
+  if (!user) return <Navigate to="/login" replace />;
+  return <>{children}</>;
+}
+
+function RequireAdmin({ children }: { children: React.ReactNode }) {
+  const user = useAuthStore((s) => s.user);
+  if (user?.role !== "admin") return <Navigate to="/projects" replace />;
+  return <>{children}</>;
 }
 
 function AppLayout() {
@@ -81,6 +116,7 @@ function AppLayout() {
       <main className="app-main">
         <Outlet />
       </main>
+      <AccountMenu />
       <Toaster />
       <GenerationDialog />
       <ResultViewer />
