@@ -30,11 +30,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header, Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
 
-from flowboard.config import WS_HOST, BRIDGE_ENABLED, FRONTEND_DIST
+from flowboard.config import WS_HOST, BRIDGE_ENABLED, FRONTEND_DIST, REQUIRE_AUTH
 from flowboard.db import get_session, init_db
 from flowboard.db.models import Request
 from flowboard.routes import (
+    account,
     activity,
+    admin,
     auth,
     bibles,
     chat,
@@ -97,6 +99,11 @@ async def lifespan(app: FastAPI):
     # loudly. The bundled SQLite build has no Alembic, so init_db() creates the
     # schema from SQLModel.metadata on first run (no-op on Postgres).
     init_db()
+    # Multi-user (Phase 9): seed the first admin from FLOWBOARD_ADMIN_USER/
+    # PASSWORD when the accounts table is empty. No-op once any user exists.
+    from flowboard.services import user_service
+
+    user_service.ensure_bootstrap_admin()
     recovered = _recover_orphan_running_requests()
     if recovered:
         logger.info("recovered %d orphan running request(s) → failed", recovered)
@@ -143,9 +150,41 @@ app.add_middleware(
 )
 
 
+# Multi-user (Phase 9): when FLOWBOARD_REQUIRE_AUTH is on, every /api call needs
+# a valid login token except login + health (+ the extension callback). Off by
+# default so single-user/dev and tests stay open. Routes still scope by owner
+# via get_optional_user.
+from fastapi.responses import JSONResponse as _JSONResponse  # noqa: E402
+from flowboard.services import auth as _auth  # noqa: E402
+
+_AUTH_OPEN_PATHS = {"/api/account/login", "/api/health"}
+
+
+@app.middleware("http")
+async def _auth_gate(request: FastAPIRequest, call_next):
+    if REQUIRE_AUTH and request.method != "OPTIONS":
+        path = request.url.path
+        if (
+            path.startswith("/api/")
+            and path not in _AUTH_OPEN_PATHS
+            and not path.startswith("/api/ext/")
+        ):
+            authz = request.headers.get("authorization") or ""
+            uid = (
+                _auth.verify_token(authz[7:].strip())
+                if authz.lower().startswith("bearer ")
+                else None
+            )
+            if not uid:
+                return _JSONResponse({"detail": "authentication required"}, status_code=401)
+    return await call_next(request)
+
+
 app.include_router(nodes.router)
 app.include_router(edges.router)
 app.include_router(chat.router)
+app.include_router(account.router)
+app.include_router(admin.router)
 app.include_router(projects.router)
 app.include_router(scenes.router)
 app.include_router(shots.router)

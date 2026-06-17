@@ -39,10 +39,14 @@ class FlowProjectNotBound(Exception):
 # ── CRUD ──────────────────────────────────────────────────────────────────
 
 
-def list_projects(session: Session) -> list[Project]:
-    return list(
-        session.exec(select(Project).order_by(Project.created_at, Project.id)).all()
-    )
+def list_projects(
+    session: Session, owner_user_id: Optional[uuid.UUID] = None
+) -> list[Project]:
+    # Multi-user: scope to the owner when given (None = all → single-user/admin).
+    stmt = select(Project)
+    if owner_user_id is not None:
+        stmt = stmt.where(Project.owner_user_id == owner_user_id)
+    return list(session.exec(stmt.order_by(Project.created_at, Project.id)).all())
 
 
 def create_project(
@@ -51,11 +55,13 @@ def create_project(
     name: str,
     project_bible: Optional[dict[str, Any]] = None,
     settings: Optional[dict[str, Any]] = None,
+    owner_user_id: Optional[uuid.UUID] = None,
 ) -> Project:
     project = Project(
         name=name,
         project_bible=project_bible or {},
         settings=settings or {},
+        owner_user_id=owner_user_id,
     )
     session.add(project)
     session.commit()
@@ -63,9 +69,17 @@ def create_project(
     return project
 
 
-def get_project(session: Session, project_id: uuid.UUID) -> Project:
+def get_project(
+    session: Session,
+    project_id: uuid.UUID,
+    owner_user_id: Optional[uuid.UUID] = None,
+) -> Project:
     project = session.get(Project, project_id)
     if project is None:
+        raise ProjectNotFound(str(project_id))
+    # Multi-user: a scoped caller that isn't the owner sees a 404 (don't leak
+    # existence). None = unscoped (single-user/admin/internal).
+    if owner_user_id is not None and project.owner_user_id != owner_user_id:
         raise ProjectNotFound(str(project_id))
     return project
 

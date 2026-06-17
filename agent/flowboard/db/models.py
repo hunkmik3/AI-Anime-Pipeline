@@ -51,6 +51,11 @@ class Project(SQLModel, table=True):
         sa_column_kwargs={"server_default": None},
     )
     name: str
+    # Multi-user (Phase 9): the user who owns this project. Nullable so rows
+    # created before auth (or by admin tooling) survive; all reads scope by it.
+    owner_user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="app_user.id", index=True
+    )
     project_bible: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
     settings: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
     created_at: datetime = Field(default_factory=_utcnow)
@@ -223,4 +228,25 @@ class ProjectFlowMapping(SQLModel, table=True):
 
     project_id: uuid.UUID = Field(primary_key=True, foreign_key="project.id")
     flow_project_id: str
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+# ── Multi-user (Phase 9) ─────────────────────────────────────────────────
+
+
+class User(SQLModel, table=True):
+    """An app account. Provisioned by an admin (no open signup). Owns
+    Projects; the Avis API key + usage budgeting live server-side.
+
+    Table is ``app_user`` because ``user`` is a reserved word in Postgres.
+    """
+
+    __tablename__ = "app_user"  # type: ignore[assignment]
+
+    id: uuid.UUID = Field(default_factory=_uuid_pk, primary_key=True)
+    username: str = Field(index=True, unique=True)
+    password_hash: str
+    role: str = "user"        # "admin" | "user"
+    status: str = "active"    # "active" | "suspended"
+    display_name: Optional[str] = None
     created_at: datetime = Field(default_factory=_utcnow)

@@ -55,6 +55,11 @@ EXTENSION_WS_PORT = int(os.getenv("FLOWBOARD_EXT_WS_PORT", "9223"))
 # FLOWBOARD_DISABLE_BRIDGE=0 force-re-enables it.
 BRIDGE_ENABLED = not _env_flag("FLOWBOARD_DISABLE_BRIDGE", default=BUNDLED)
 
+# Multi-user (Phase 9): when on, every data API requires a valid login token
+# and projects are scoped to their owner. Off by default so single-user/dev and
+# the test suite stay open; a multi-user deployment sets FLOWBOARD_REQUIRE_AUTH=1.
+REQUIRE_AUTH = _env_flag("FLOWBOARD_REQUIRE_AUTH")
+
 # Process-wide default video model (registry key). Per-project
 # (project.settings.default_video_model) and per-node (data.videoModelId)
 # overrides still win above this. Bundled desktop build defaults to Seedance

@@ -15,10 +15,11 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from flowboard.config import BRIDGE_ENABLED
 from flowboard.db import get_session
+from flowboard.routes.deps import get_optional_user
 from flowboard.schemas import ProjectCreate, ProjectUpdate
 from flowboard.services import project_service as ps
 from flowboard.services.flow_sdk import get_flow_sdk, is_valid_project_id
@@ -39,28 +40,32 @@ def _project_dict(project) -> dict:
 
 
 @router.get("")
-def list_projects():
+def list_projects(user=Depends(get_optional_user)):
+    owner = user.id if user else None
     with get_session() as s:
-        return [_project_dict(p) for p in ps.list_projects(s)]
+        return [_project_dict(p) for p in ps.list_projects(s, owner_user_id=owner)]
 
 
 @router.post("")
-def create_project(body: ProjectCreate):
+def create_project(body: ProjectCreate, user=Depends(get_optional_user)):
+    owner = user.id if user else None
     with get_session() as s:
         project = ps.create_project(
             s,
             name=body.name,
             project_bible=body.project_bible.model_dump() if body.project_bible else None,
             settings=body.settings,
+            owner_user_id=owner,
         )
         return _project_dict(project)
 
 
 @router.get("/{project_id}")
-def get_project(project_id: uuid.UUID):
+def get_project(project_id: uuid.UUID, user=Depends(get_optional_user)):
+    owner = user.id if user else None
     with get_session() as s:
         try:
-            project = ps.get_project(s, project_id)
+            project = ps.get_project(s, project_id, owner_user_id=owner)
         except ps.ProjectNotFound:
             raise HTTPException(404, "project not found")
         base = _project_dict(project)
@@ -70,9 +75,11 @@ def get_project(project_id: uuid.UUID):
 
 
 @router.patch("/{project_id}")
-def update_project(project_id: uuid.UUID, body: ProjectUpdate):
+def update_project(project_id: uuid.UUID, body: ProjectUpdate, user=Depends(get_optional_user)):
+    owner = user.id if user else None
     with get_session() as s:
         try:
+            ps.get_project(s, project_id, owner_user_id=owner)  # ownership gate (404 if not owner)
             project = ps.update_project(
                 s,
                 project_id,
@@ -85,9 +92,11 @@ def update_project(project_id: uuid.UUID, body: ProjectUpdate):
 
 
 @router.delete("/{project_id}")
-def delete_project(project_id: uuid.UUID):
+def delete_project(project_id: uuid.UUID, user=Depends(get_optional_user)):
+    owner = user.id if user else None
     with get_session() as s:
         try:
+            ps.get_project(s, project_id, owner_user_id=owner)  # ownership gate (404 if not owner)
             ps.delete_project(s, project_id)
         except ps.ProjectNotFound:
             raise HTTPException(404, "project not found")
