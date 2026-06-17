@@ -17,7 +17,15 @@ from sqlalchemy import func
 from sqlmodel import select
 
 from flowboard.db import get_session
-from flowboard.db.models import UsageRecord, User
+from flowboard.db.models import (
+    Node,
+    Project,
+    Request,
+    Scene,
+    Shot,
+    UsageRecord,
+    User,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +160,136 @@ def release(request_id: int) -> None:
         rec.settled_at = _utcnow()
         s.add(rec)
         s.commit()
+
+
+# Request types that count as a "generation" in the admin activity view.
+_GEN_TYPES = ("gen_video", "gen_image", "gen_storyboard", "edit_image")
+
+# Hard cap on how many requests we materialise per user (pathological safety).
+_ACTIVITY_FETCH_CAP = 1000
+
+
+# Params surfaced structurally elsewhere — excluded from the generic dump.
+_PARAMS_STRUCTURED = {"prompt", "reference_images", "reference_labels"}
+
+
+def _activity_item(req: Request, urec: Optional[UsageRecord]) -> dict:
+    """Shape one generation row, merging the Request (output/params/status)
+    with its budget ledger record (cost), when one exists. The expand view
+    needs the *full* picture, so this returns the complete prompt, every input
+    reference image, all remaining params, and the output media."""
+    params = (req.params or {})
+    result = (req.result or {})
+    media_ids = [m for m in (result.get("media_ids") or []) if m]
+    model = (urec.model if urec and urec.model else None) or params.get("model_id") or params.get("model")
+    actual = float(urec.actual_usd) if (urec and urec.actual_usd is not None) else None
+    est = float(urec.estimated_usd) if (urec and urec.estimated_usd is not None) else None
+    cost = actual if actual is not None else est  # None => not metered (free / pre-budget)
+
+    # Input reference images: media ids + their @labels (parallel arrays).
+    ref_ids = params.get("reference_images") or []
+    ref_labels = params.get("reference_labels") or []
+    inputs = [
+        {"id": str(rid), "label": (ref_labels[i] if i < len(ref_labels) else f"@image{i + 1}")}
+        for i, rid in enumerate(ref_ids)
+        if rid
+    ]
+    # Everything else in params, for a generic key/value dump in the detail row.
+    extra = {k: v for k, v in params.items() if k not in _PARAMS_STRUCTURED}
+
+    return {
+        "request_id": req.id,
+        "created_at": req.created_at,
+        "finished_at": req.finished_at,
+        "kind": (urec.kind if urec else None)
+        or ("video" if req.type == "gen_video" else "image"),
+        "model": model,
+        "ledger_status": urec.status if urec else None,  # None = not metered
+        "estimated_usd": round(est, 4) if est is not None else None,
+        "actual_usd": round(actual, 4) if actual is not None else None,
+        "cost_usd": round(cost, 4) if cost is not None else None,
+        "request_type": req.type,
+        "request_status": req.status,
+        "error": req.error,
+        "duration_seconds": params.get("duration_seconds"),
+        "resolution": params.get("resolution"),
+        "prompt": (str(params.get("prompt") or "") or None),  # full prompt, untruncated
+        "inputs": inputs,
+        "params": extra,
+        "media_ids": media_ids,
+        "video_url": result.get("videoUrl"),
+    }
+
+
+def user_activity(user_id, *, limit: int = 200) -> Optional[dict]:
+    """Per-user generation history for the admin view.
+
+    Attributes generations to the user via **project ownership** (Request →
+    Node → Shot → Scene → Project.owner_user_id), not just the budget ledger —
+    so historical / pre-budget gens show up too. The metered ledger
+    (``UsageRecord``) is merged in for the real $ cost, and any metered request
+    not reachable via the project join is still included. Newest first.
+
+    Returns None when the user doesn't exist. Outputs are exposed as
+    ``media_ids`` — the frontend streams each via ``GET /media/{id}``.
+    """
+    uid = _uuid(user_id)
+    if uid is None:
+        return None
+    with get_session() as s:
+        u = s.get(User, uid)
+        if u is None:
+            return None
+
+        # Budget ledger → cost-per-request lookup.
+        cost_by_rid: dict[int, UsageRecord] = {}
+        for r in s.exec(select(UsageRecord).where(UsageRecord.user_id == uid)).all():
+            if r.request_id is not None:
+                cost_by_rid[r.request_id] = r
+
+        # Generations in projects this user owns.
+        owned = list(s.exec(select(Project.id).where(Project.owner_user_id == uid)).all())
+        reqs: list[Request] = []
+        seen: set[int] = set()
+        if owned:
+            rows = s.exec(
+                select(Request)
+                .join(Node, Node.id == Request.node_id)
+                .join(Shot, Shot.id == Node.shot_id)
+                .join(Scene, Scene.id == Shot.scene_id)
+                .where(Scene.project_id.in_(owned), Request.type.in_(_GEN_TYPES))
+                .order_by(Request.created_at.desc())
+                .limit(_ACTIVITY_FETCH_CAP)
+            ).all()
+            for req in rows:
+                if req.id is not None and req.id not in seen:
+                    reqs.append(req)
+                    seen.add(req.id)
+
+        # Safety net: metered requests not reachable via the project join
+        # (e.g. node/shot deleted) must still appear.
+        missing = [rid for rid in cost_by_rid if rid not in seen]
+        if missing:
+            for req in s.exec(select(Request).where(Request.id.in_(missing))).all():
+                if req.id is not None and req.id not in seen:
+                    reqs.append(req)
+                    seen.add(req.id)
+
+        reqs.sort(key=lambda r: r.created_at, reverse=True)
+        total = len(reqs)
+        page = reqs[: max(1, int(limit))]
+        items = [_activity_item(req, cost_by_rid.get(req.id)) for req in page]
+
+        reserved = _reserved_sum(s, uid)
+        summary = {
+            "budget_usd": round(float(u.budget_usd), 4),
+            "spent_usd": round(float(u.spent_usd), 4),
+            "reserved_usd": round(reserved, 4),
+            "available_usd": round(float(u.budget_usd) - float(u.spent_usd) - reserved, 4),
+            "gen_count": total,
+            "shown": len(items),
+        }
+        return {"summary": summary, "items": items}
 
 
 def has_reservation(request_id: int) -> bool:

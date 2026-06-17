@@ -15,7 +15,7 @@ from sqlalchemy import func
 from sqlmodel import select
 
 from flowboard.db import get_session
-from flowboard.db.models import Project, User
+from flowboard.db.models import Project, UsageRecord, User
 from flowboard.services import auth
 
 logger = logging.getLogger(__name__)
@@ -130,6 +130,33 @@ def set_password(user_id, password: str) -> None:
             raise UserNotFound(str(user_id))
         u.password_hash = auth.hash_password(password)
         s.add(u)
+        s.commit()
+
+
+def count_admins() -> int:
+    with get_session() as s:
+        return int(
+            s.exec(
+                select(func.count()).select_from(User).where(User.role == "admin")
+            ).one()
+        )
+
+
+def delete_user(user_id) -> None:
+    """Delete an account. Non-destructive to their content: owned projects are
+    orphaned (owner_user_id → NULL), not deleted, so generations survive. The
+    user's budget ledger (usage_record, FK to app_user) is removed."""
+    uid = _coerce_uuid(user_id)
+    with get_session() as s:
+        u = s.get(User, uid) if uid else None
+        if u is None:
+            raise UserNotFound(str(user_id))
+        for p in s.exec(select(Project).where(Project.owner_user_id == uid)).all():
+            p.owner_user_id = None
+            s.add(p)
+        for rec in s.exec(select(UsageRecord).where(UsageRecord.user_id == uid)).all():
+            s.delete(rec)
+        s.delete(u)
         s.commit()
 
 

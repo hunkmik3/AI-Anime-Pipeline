@@ -103,3 +103,48 @@ def test_projects_unscoped_without_token(client):
     client.post("/api/projects", json={"name": "Orphan"})  # no token -> owner NULL
     names = {p["name"] for p in client.get("/api/projects").json()}  # no token -> all
     assert {"Owned", "Orphan"} <= names
+
+
+# ── delete account ───────────────────────────────────────────────────────
+
+
+def test_admin_delete_user(client):
+    user_service.create_user("delroot", "pw12345", role="admin")
+    target = user_service.create_user("delme", "pw12345")
+    h = {"Authorization": f"Bearer {_login(client, 'delroot', 'pw12345').json()['token']}"}
+    assert client.delete(f"/api/admin/users/{target.id}", headers=h).status_code == 200
+    assert user_service.get_by_id(target.id) is None
+
+
+def test_admin_cannot_delete_self(client):
+    me = user_service.create_user("delself", "pw12345", role="admin")
+    h = {"Authorization": f"Bearer {_login(client, 'delself', 'pw12345').json()['token']}"}
+    assert client.delete(f"/api/admin/users/{me.id}", headers=h).status_code == 400
+    assert user_service.get_by_id(me.id) is not None  # still there
+
+
+def test_admin_delete_orphans_projects(client):
+    from flowboard.db import get_session
+    from flowboard.db.models import Project
+
+    user_service.create_user("delowner_admin", "pw12345", role="admin")
+    owner = user_service.create_user("delowner", "pw12345")
+    with get_session() as s:
+        p = Project(name="Owned", owner_user_id=owner.id)
+        s.add(p)
+        s.commit()
+        s.refresh(p)
+        pid = p.id
+    h = {"Authorization": f"Bearer {_login(client, 'delowner_admin', 'pw12345').json()['token']}"}
+    assert client.delete(f"/api/admin/users/{owner.id}", headers=h).status_code == 200
+    with get_session() as s:
+        survived = s.get(Project, pid)
+        assert survived is not None          # content not destroyed
+        assert survived.owner_user_id is None  # just orphaned
+
+
+def test_delete_user_requires_admin(client):
+    user_service.create_user("plain_del", "pw12345")
+    target = user_service.create_user("victim", "pw12345")
+    h = {"Authorization": f"Bearer {_login(client, 'plain_del', 'pw12345').json()['token']}"}
+    assert client.delete(f"/api/admin/users/{target.id}", headers=h).status_code == 403

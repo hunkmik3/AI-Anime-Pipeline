@@ -63,6 +63,38 @@ def create_user(body: CreateUserBody) -> dict:
     return user_service.public_dict(u)
 
 
+@router.get("/users/{user_id}/activity")
+def user_activity(user_id: str, limit: int = 100) -> dict:
+    """Per-user generation history for the admin view: what they generated,
+    which model, the real $ cost, status, and output media ids."""
+    u = user_service.get_by_id(user_id)
+    if u is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    data = budget_service.user_activity(user_id, limit=min(max(1, limit), 500))
+    if data is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    data["user"] = _user_with_budget(u)
+    return data
+
+
+@router.delete("/users/{user_id}")
+def delete_user(user_id: str, caller=Depends(require_admin)) -> dict:
+    """Delete an account. Guards: can't delete yourself or the last admin.
+    Owned projects are orphaned (not destroyed)."""
+    if str(caller.id) == str(user_id):
+        raise HTTPException(status_code=400, detail="cannot delete your own account")
+    u = user_service.get_by_id(user_id)
+    if u is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    if u.role == "admin" and user_service.count_admins() <= 1:
+        raise HTTPException(status_code=400, detail="cannot delete the last admin")
+    try:
+        user_service.delete_user(user_id)
+    except user_service.UserNotFound:
+        raise HTTPException(status_code=404, detail="user not found")
+    return {"ok": True}
+
+
 @router.patch("/users/{user_id}")
 def update_user(user_id: str, body: UpdateUserBody) -> dict:
     try:
