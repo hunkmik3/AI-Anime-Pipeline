@@ -54,6 +54,55 @@ def test_gen_video_blocked_when_over_budget(client):
     assert r.status_code == 402  # est 7.5 > 1.0
 
 
+def test_cancel_releases_budget_hold(client):
+    """Cancelling a queued gen_video must give the reserved estimate back —
+    the worker skips canceled rows, so it never settles/releases them."""
+    u = user_service.create_user("canceller", "pw12345")
+    user_service.set_budget(u.id, 20.0)
+    h = {"Authorization": f"Bearer {_login(client, 'canceller')}"}
+    r = client.post(
+        "/api/requests",
+        json={"type": "gen_video", "params": {"duration_seconds": 15, "resolution": "1080p"}},
+        headers=h,
+    )
+    assert r.status_code == 200
+    rid = r.json()["id"]
+    assert budget_service.has_reservation(rid) is True
+    assert budget_service.available_usd(u.id) == pytest.approx(20.0 - 6.30)  # held
+
+    c = client.post(f"/api/requests/{rid}/cancel")
+    assert c.status_code == 200
+    assert budget_service.has_reservation(rid) is False
+    assert budget_service.available_usd(u.id) == pytest.approx(20.0)  # fully restored
+
+
+def test_worker_backstop_releases_drifted_hold():
+    """A reservation left behind by a row that drifted out of 'queued' (e.g.
+    canceled) must still be freed by the worker's _settle_budget backstop."""
+    from flowboard.worker.processor import _settle_budget
+
+    u = user_service.create_user("backstop", "pw12345")
+    user_service.set_budget(u.id, 20.0)
+    assert budget_service.reserve(u.id, request_id=99001, estimated_usd=6.30, model="m") is True
+    assert budget_service.available_usd(u.id) == pytest.approx(13.70)
+
+    _settle_budget(99001, "gen_video", None, failed=True)  # the drift-skip branch
+    assert budget_service.has_reservation(99001) is False
+    assert budget_service.available_usd(u.id) == pytest.approx(20.0)
+    assert budget_service.summary(u.id)["spent_usd"] == pytest.approx(0.0)  # nothing charged
+
+
+def test_double_release_is_idempotent():
+    """cancel (Fix 1) and the worker backstop (Fix 2) can both fire for one
+    request — the second release must not double-refund."""
+    u = user_service.create_user("idem", "pw12345")
+    user_service.set_budget(u.id, 20.0)
+    budget_service.reserve(u.id, request_id=99002, estimated_usd=6.30, model="m")
+    budget_service.release(99002)
+    budget_service.release(99002)  # second call is a no-op
+    assert budget_service.available_usd(u.id) == pytest.approx(20.0)  # not 26.30
+
+
 def test_gen_video_reserves_within_budget(client):
     u = user_service.create_user("rich", "pw12345")
     user_service.set_budget(u.id, 20.0)

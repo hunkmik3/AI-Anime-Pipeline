@@ -945,6 +945,10 @@ class WorkerController:
                     logger.info(
                         "worker: skipping rid=%s (status=%s)", rid, req.status
                     )
+                    # Backstop: a row that drifted out of queued (e.g. canceled)
+                    # won't reach the settle path below, so release any budget
+                    # hold here too. Idempotent — no-op if already released.
+                    _settle_budget(rid, req.type, None, failed=True)
                     return
                 handler = self._handlers.get(req.type)
                 if handler is None:

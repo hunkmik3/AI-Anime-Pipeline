@@ -97,4 +97,8 @@ def cancel_request(request_id: int):
         s.add(req)
         s.commit()
         s.refresh(req)
+        # Give back any budget hold: a queued gen_video reserved its estimate
+        # up-front, and the worker skips canceled rows (status != queued) so it
+        # never settles/releases them. Without this the hold leaks forever.
+        budget_service.release(request_id)
         return req
