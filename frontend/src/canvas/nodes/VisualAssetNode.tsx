@@ -28,6 +28,7 @@ function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData
   const isProcessing = data.status === "queued" || data.status === "running";
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
   const [refineOpen, setRefineOpen] = useState(false);
   const [refinePrompt, setRefinePrompt] = useState("");
   const [refRefreshKey, setRefRefreshKey] = useState(0);
@@ -167,6 +168,26 @@ function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData
     useGenerationStore.getState().openGenerationDialog(rfId, data.prompt ?? "");
   }
 
+  // Drag-and-drop an image straight onto the node (parity with CharacterNode).
+  // A drop uploads + sets it as the asset image (same as Replace/initial upload).
+  function onDrop(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+    const f = e.dataTransfer.files?.[0];
+    if (f) void uploadOwn(f);
+  }
+  function onDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!dragOver) setDragOver(true);
+  }
+  function onDragLeave(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+  }
+
   async function onSendContinuity(targetShotId: string, targetLabel: string) {
     setContinuityOpen(false);
     const id = await useShotWorkflowStore
@@ -183,12 +204,19 @@ function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData
 
   if (!mediaId) {
     return (
-      <div className="node-body node-body--visual-asset">
+      <div
+        className="node-body node-body--visual-asset"
+        onDrop={onDrop}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+      >
         <div
-          className={`visual-asset__empty${isProcessing ? " visual-asset__empty--processing" : ""}`}
+          className={`visual-asset__empty${dragOver ? " visual-asset__empty--over" : ""}${isProcessing ? " visual-asset__empty--processing" : ""}`}
         >
           {isProcessing ? (
             <span className="visual-asset__hint">Generating…</span>
+          ) : dragOver ? (
+            <span className="visual-asset__hint">Drop image</span>
           ) : linkMode ? (
             <div className="visual-asset__link-row">
               <input
@@ -279,8 +307,13 @@ function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData
   }
 
   return (
-    <div className="node-body node-body--visual-asset node-body--visual-asset-with-media">
-      <div className="visual-asset__media">
+    <div
+      className="node-body node-body--visual-asset node-body--visual-asset-with-media"
+      onDrop={onDrop}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+    >
+      <div className={`visual-asset__media${dragOver ? " visual-asset__media--over" : ""}`}>
         <img
           className="visual-asset__image visual-asset__image--clickable"
           src={mediaUrl(displayId ?? mediaId)}
