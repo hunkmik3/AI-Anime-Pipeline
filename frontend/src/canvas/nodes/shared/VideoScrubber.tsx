@@ -13,6 +13,10 @@ import { useShotWorkflowStore } from "../../../store/shotWorkflow";
  * with a big preview + precise scrubbing, then "Extract this frame" cuts the
  * still (POST /api/media/{id}/extract-frame) into a new Visual asset node.
  */
+// Extract-frame is temporarily hidden. Flip to true to restore the full
+// scrub-and-extract UI (the modal code below stays wired).
+const EXTRACT_FRAME_ENABLED = false;
+
 export function VideoScrubber({
   videoRfId,
   mediaId,
@@ -23,6 +27,22 @@ export function VideoScrubber({
   shotId?: string;
 }) {
   const [open, setOpen] = useState(false);
+
+  // Hidden: render a plain inline video preview (no extract affordance).
+  if (!EXTRACT_FRAME_ENABLED) {
+    return (
+      <div className="video-scrubber nodrag" onClick={(e) => e.stopPropagation()}>
+        <video
+          className="video-scrubber__thumb"
+          src={mediaUrl(mediaId)}
+          controls
+          preload="metadata"
+          playsInline
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="video-scrubber nodrag" onClick={(e) => e.stopPropagation()}>
       <button

@@ -78,7 +78,6 @@ export function VideoNodeSettings({ rfId }: Props) {
   const durIsRange =
     durSorted.length > 1 &&
     durSorted[durSorted.length - 1] - durSorted[0] + 1 === durSorted.length;
-  const aspect = (data.aspect_ratio as string | undefined) ?? caps.aspect_ratios[0];
   const resolution = (data.resolution as string | undefined) ?? caps.resolutions[0];
   const generateAudio =
     typeof data.generate_audio === "boolean" ? (data.generate_audio as boolean) : true;
@@ -148,21 +147,6 @@ export function VideoNodeSettings({ rfId }: Props) {
           </select>
         )}
 
-        <label className="video-settings-label" htmlFor={`vs-ar-${rfId}`}>
-          Aspect
-        </label>
-        <select
-          id={`vs-ar-${rfId}`}
-          value={aspect}
-          onChange={(e) => persist({ aspect_ratio: e.target.value })}
-          className="video-settings-select"
-        >
-          {caps.aspect_ratios.map((a) => (
-            <option key={a} value={a}>
-              {a}
-            </option>
-          ))}
-        </select>
 
         <label className="video-settings-label" htmlFor={`vs-res-${rfId}`}>
           Resolution
