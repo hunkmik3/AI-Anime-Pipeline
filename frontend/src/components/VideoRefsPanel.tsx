@@ -66,6 +66,15 @@ export function VideoRefsPanel({ rfId, customRefs, onCustomRefsChange }: Props) 
     .map((e) => nodes.find((n) => n.id === e.source))
     .filter((n): n is NonNullable<typeof n> => !!n && R2V_REF_TYPES.has(n.data.type));
 
+  // Connected VideoRefNode(s) — reference videos (separate @video1…N stream).
+  const videoRefNodes = edges
+    .filter((e) => e.target === rfId)
+    .map((e) => nodes.find((n) => n.id === e.source))
+    .filter(
+      (n): n is NonNullable<typeof n> =>
+        !!n && n.data.type === "video_ref" && typeof n.data.videoRefMediaId === "string" && !!n.data.videoRefMediaId,
+    );
+
   function setPrimary(refNodeId: string, variantId: string) {
     useShotWorkflowStore.getState().updateNodeData(refNodeId, {
       primary_variant_id: variantId,
@@ -100,21 +109,22 @@ export function VideoRefsPanel({ rfId, customRefs, onCustomRefsChange }: Props) 
     }
   }
 
-  const totalRefs = refNodes.length + customRefs.length;
+  const totalRefs = refNodes.length + videoRefNodes.length + customRefs.length;
 
   return (
     <div className="video-refs-panel">
       <div className="gen-dialog__label-row">
         <span className="gen-dialog__label">References (r2v)</span>
         <span className="video-refs-panel__count">
-          {totalRefs} ref{totalRefs === 1 ? "" : "s"} · order = @image1…N
+          {totalRefs} ref{totalRefs === 1 ? "" : "s"} · @image1…N
+          {videoRefNodes.length > 0 ? " · @video1…N" : ""}
         </span>
       </div>
 
-      {refNodes.length === 0 && customRefs.length === 0 && (
+      {refNodes.length === 0 && videoRefNodes.length === 0 && customRefs.length === 0 && (
         <p className="gen-dialog__hint">
-          Nối Character / Visual asset node vào Video node, hoặc thêm custom
-          image bên dưới.
+          Nối Character / Visual asset / Video ref node vào Video node, hoặc
+          thêm custom bên dưới.
         </p>
       )}
 
@@ -173,6 +183,31 @@ export function VideoRefsPanel({ rfId, customRefs, onCustomRefsChange }: Props) 
           </div>
         );
       })}
+
+      {/* Connected VideoRefNode(s) — reference videos with their @video label. */}
+      {videoRefNodes.map((n) => (
+        <div key={n.id} className="video-ref-row">
+          <span className="video-ref-row__thumb-wrap">
+            <video
+              className="video-ref-row__thumb"
+              src={thumb(n.data.videoRefMediaId as string)}
+              preload="metadata"
+              muted
+            />
+            <span className="video-ref-row__play" aria-hidden>▶</span>
+          </span>
+          <div className="video-ref-row__meta">
+            <span className="video-ref-row__label">
+              {(typeof n.data.reference_label === "string" && n.data.reference_label) || "(no @video label)"}
+              <span className="video-ref-row__id"> #{n.data.shortId}</span>
+            </span>
+            <span className="video-ref-row__custom-tag">🎬 video ref</span>
+            {typeof n.data.reference_description === "string" && n.data.reference_description && (
+              <span className="video-ref-row__desc">{n.data.reference_description}</span>
+            )}
+          </div>
+        </div>
+      ))}
 
       {/* Standalone custom refs (this gen only) — real preview per kind. */}
       {customRefs.map((c, idx) => {

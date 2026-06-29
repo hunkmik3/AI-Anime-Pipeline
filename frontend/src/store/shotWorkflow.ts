@@ -76,6 +76,11 @@ export interface FlowboardNodeData extends Record<string, unknown> {
   audioMediaId?: string;
   audioMime?: string;
   voiceDescription?: string;
+  // VideoRefNode: an uploaded reference video (Seedance 2.0 r2v video ref).
+  // Fed downstream to a connected VideoNode → reference_videos; the worker
+  // hoists it to a public R2 URL on submit (Avis has no inline video upload).
+  videoRefMediaId?: string;
+  videoRefMime?: string;
   // VideoNode multi-ref editor: ordered reference image media_ids (the
   // array order IS the @imageN positional binding) + optional per-ref
   // role hints (UI-only, NOT sent to the API — reserved for Phase 6
@@ -154,6 +159,7 @@ const TYPE_TITLE: Record<NodeType, string> = {
   master_shot: "Master shot",
   approval_gate: "Approval gate",
   audio_ref: "Audio ref",
+  video_ref: "Video ref",
 };
 
 const positionTimers = new Map<string, ReturnType<typeof setTimeout>>();

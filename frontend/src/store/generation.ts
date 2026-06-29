@@ -128,6 +128,30 @@ function collectUpstreamAudioMediaId(targetRfId: string): string | undefined {
 }
 
 /**
+ * Reference VIDEOS feeding a VideoNode (Seedance 2.0 r2v). Returns connected
+ * VideoRefNode media_ids in edge order (deduped). Only honored by models with
+ * `supports_video_ref`; the worker hoists each media_id → a public R2 URL on
+ * submit (Avis has no inline video upload).
+ */
+function collectUpstreamVideoRefsDetailed(
+  targetRfId: string,
+): { id: string; label: string | null }[] {
+  const { nodes, edges } = useShotWorkflowStore.getState();
+  const out: { id: string; label: string | null }[] = [];
+  for (const e of edges) {
+    if (e.target !== targetRfId) continue;
+    const src = nodes.find((n) => n.id === e.source);
+    if (src?.data.type !== "video_ref") continue;
+    const mid = src.data.videoRefMediaId;
+    if (typeof mid !== "string" || !mid || out.some((r) => r.id === mid)) continue;
+    const raw = src.data.reference_label;
+    const label = typeof raw === "string" && raw.trim() ? raw.trim() : null;
+    out.push({ id: mid, label });
+  }
+  return out;
+}
+
+/**
  * DRIFT 1 fix: identity-anchor refs feeding a VideoNode in r2v mode.
  * Collects mediaIds from connected Character / VisualAsset / MasterShot
  * nodes in edge order (deduped). Used only when the model supports
@@ -456,8 +480,27 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
           // Always sent (one code path); backend ignores an all-null list.
           videoParams.reference_labels = r2vLabels;
         }
-        if (customVideoRefs.length > 0) {
-          videoParams.reference_videos = customVideoRefs;
+        // Reference videos + their @video labels (parity with @image). Dialog
+        // custom refs carry no label; connected VideoRefNode(s) carry their
+        // reference_label. The worker orders reference_videos by label digit
+        // (same order_refs_by_label path as images) so @video1 = first input.
+        const allVideoRefs: string[] = [];
+        const allVideoLabels: (string | null)[] = [];
+        for (const v of customVideoRefs) {
+          if (!allVideoRefs.includes(v)) {
+            allVideoRefs.push(v);
+            allVideoLabels.push(null);
+          }
+        }
+        for (const r of collectUpstreamVideoRefsDetailed(rfId)) {
+          if (!allVideoRefs.includes(r.id)) {
+            allVideoRefs.push(r.id);
+            allVideoLabels.push(r.label);
+          }
+        }
+        if (allVideoRefs.length > 0) {
+          videoParams.reference_videos = allVideoRefs;
+          videoParams.reference_video_labels = allVideoLabels;
         }
         if (typeof videoSettings.last_frame_asset_id === "string" && videoSettings.last_frame_asset_id) {
           videoParams.last_frame_url = videoSettings.last_frame_asset_id;

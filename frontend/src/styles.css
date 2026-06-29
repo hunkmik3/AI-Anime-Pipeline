@@ -7134,6 +7134,38 @@ button:disabled {
 }
 .audio-ref__error { color: #ef4444; font-size: 11px; margin: 0; }
 
+/* VideoRefNode — mirrors audio-ref */
+.node-body--video-ref {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+.video-ref__empty,
+.video-ref__loaded { display: flex; flex-direction: column; gap: 6px; }
+.video-ref__player {
+  width: 100%; max-height: 160px; border-radius: 6px;
+  background: #000; border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.video-ref__action {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: inherit;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.video-ref__action:hover { background: rgba(255, 255, 255, 0.12); }
+.video-ref__hint { font-size: 11px; color: rgba(255, 255, 255, 0.45); }
+.video-ref__empty--over {
+  border: 1px dashed var(--accent, #6c5cff);
+  background: rgba(110, 168, 254, 0.08);
+  border-radius: 6px;
+  align-items: center; justify-content: center; min-height: 48px;
+}
+.video-ref__error { color: #ef4444; font-size: 11px; margin: 0; }
+
 /* ── Phase 8.4 — frame scrubber + continuity ─────────────────────────────── */
 
 /* Inline frame button on a finished Video node — a big thumbnail that opens

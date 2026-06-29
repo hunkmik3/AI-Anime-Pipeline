@@ -10,6 +10,7 @@ import { ScriptNode } from "./ScriptNode";
 import { StoryboardNode } from "./StoryboardNode";
 import { ShotGroupNode } from "./ShotGroupNode";
 import { VideoNode } from "./VideoNode";
+import { VideoRefNode } from "./VideoRefNode";
 import { VisualAssetNode } from "./VisualAssetNode";
 
 export const nodeTypes = {
@@ -27,4 +28,5 @@ export const nodeTypes = {
   master_shot: MasterShotNode,
   approval_gate: ApprovalGateNode,
   audio_ref: AudioRefNode,
+  video_ref: VideoRefNode,
 };

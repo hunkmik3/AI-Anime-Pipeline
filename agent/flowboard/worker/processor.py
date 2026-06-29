@@ -283,6 +283,15 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
                 return ref
             return media_id_to_public_url(ref, project_id=params.get("project_id"))
 
+        def _resolve_video(ref: str) -> str:
+            # Reference VIDEOS always need a public URL — no provider inlines
+            # video (Avis sends images as base64 but has NO inline video upload),
+            # so hoist a bare media_id to an R2 presigned URL regardless of the
+            # `hoist` flag (which only governs images). Caller-supplied URLs pass.
+            if ref.startswith(("http://", "https://")):
+                return ref
+            return media_id_to_public_url(ref, project_id=params.get("project_id"))
+
         try:
             if first_frame:
                 first_frame = _resolve(first_frame)
@@ -317,17 +326,26 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
             except VideoError as exc:
                 logger.warning("video: skipped unreachable audio ref: %s", exc)
 
-        # Reference videos (Seedance 2.0 r2v, contract §11.9).
-        raw_video_refs = params.get("reference_videos") or params.get("video_ref_urls") or []
+        # Reference videos (Seedance 2.0 r2v, contract §11.9). Order by the
+        # per-node @video label digit (parity with @image) so @video1 maps to
+        # the first video input; unlabeled refs keep edge order.
+        raw_video_refs = [
+            v
+            for v in (params.get("reference_videos") or params.get("video_ref_urls") or [])
+            if isinstance(v, str) and v
+        ]
+        raw_video_labels = params.get("reference_video_labels")
+        if isinstance(raw_video_labels, list) and raw_video_refs:
+            from flowboard.services.video.ref_ordering import order_refs_by_label
+
+            vlabels = [(lbl if isinstance(lbl, str) else None) for lbl in raw_video_labels]
+            raw_video_refs = order_refs_by_label(raw_video_refs, vlabels)
         resolved_videos: list[str] = []
-        if isinstance(raw_video_refs, list):
-            for v in raw_video_refs:
-                if not isinstance(v, str) or not v:
-                    continue
-                try:
-                    resolved_videos.append(_resolve(v))
-                except VideoError as exc:
-                    logger.warning("video: skipped unreachable video ref: %s", exc)
+        for v in raw_video_refs:
+            try:
+                resolved_videos.append(_resolve_video(v))
+            except VideoError as exc:
+                logger.warning("video: skipped unreachable video ref: %s", exc)
 
         # first_frame is optional in reference-media (r2v / r2v+audio) modes;
         # the provider derives mode from refs/audio/video and validates per-mode.

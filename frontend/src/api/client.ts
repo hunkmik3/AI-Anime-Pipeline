@@ -122,7 +122,8 @@ export type NodeType =
   | "bible_ref"
   | "master_shot"
   | "approval_gate"
-  | "audio_ref";
+  | "audio_ref"
+  | "video_ref";
 export type NodeStatus = "idle" | "queued" | "running" | "done" | "error" | "partial";
 
 export interface NodeDTO {

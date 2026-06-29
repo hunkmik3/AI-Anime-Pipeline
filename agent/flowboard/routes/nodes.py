@@ -30,6 +30,8 @@ NodeType = Literal[
     "approval_gate",
     # Phase 7: audio reference for Seedance 2.0 r2v+audio.
     "audio_ref",
+    # Reference video for Seedance 2.0 r2v (hoisted to a public R2 URL).
+    "video_ref",
 ]
 NodeStatus = Literal["idle", "queued", "running", "done", "error", "partial"]
 

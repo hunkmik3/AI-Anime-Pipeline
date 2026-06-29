@@ -139,7 +139,100 @@ async def test_worker_forwards_reference_videos(_dreamina_env):
     assert [b["video_url"]["url"] for b in vblocks] == ["https://e/clip.mp4"]
 
 
+@pytest.mark.asyncio
+async def test_avis_hoists_bare_video_ref_to_r2(_dreamina_env, monkeypatch):
+    """Avis sends image refs inline (no R2) but has NO inline video upload, so a
+    bare media_id video ref MUST still be hoisted to a public R2 URL."""
+    secrets.set_api_key("avis", "avis-test-key")
+    _r.register_defaults()
+
+    # Fake the R2 hoist (function-level import in the worker reads this attr).
+    monkeypatch.setattr(
+        dreamina,
+        "media_id_to_public_url",
+        lambda mid, project_id=None: f"https://r2.example/{mid}.mp4",
+    )
+
+    captured: dict = {}
+
+    async def fake_run(self, params):
+        captured.update(params)
+        return (
+            {"external_job_id": "cgt-avis", "media_ids": []},
+            {"status": "succeeded", "video_url": "https://signed/c.mp4", "cost_usd": None},
+        )
+
+    from flowboard.services.video.avis import AvisVideoProvider
+
+    monkeypatch.setattr(AvisVideoProvider, "run_to_completion", fake_run)
+
+    result, err = await proc._handle_gen_video({
+        "model_id": "seedance-2-0",  # → Avis provider
+        "motion_prompt": "@image1 moves like the clip",
+        "reference_images": ["https://e/a.png"],  # URL → passes through (no R2)
+        "reference_videos": ["vid_media_42"],      # bare media_id → MUST hoist
+        "duration_seconds": 5,
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
+        "project_id": "8b62385c-4916-4abd-b01f-b28173d8eb04",
+    })
+    assert err is None, result
+    # The bare media_id was hoisted to an R2 URL; the inline image ref was not.
+    assert captured["reference_videos"] == ["https://r2.example/vid_media_42.mp4"]
+    assert captured["reference_images"] == ["https://e/a.png"]
+
+
+@pytest.mark.asyncio
+async def test_video_refs_ordered_by_label(_dreamina_env, monkeypatch):
+    """reference_videos reorder by @video label digit (parity with @image)."""
+    secrets.set_api_key("avis", "k")
+    _r.register_defaults()
+    monkeypatch.setattr(
+        dreamina, "media_id_to_public_url",
+        lambda mid, project_id=None: f"https://r2/{mid}.mp4",
+    )
+    captured: dict = {}
+
+    async def fake_run(self, params):
+        captured.update(params)
+        return (
+            {"external_job_id": "x", "media_ids": []},
+            {"status": "succeeded", "video_url": "https://s/c.mp4", "cost_usd": None},
+        )
+
+    from flowboard.services.video.avis import AvisVideoProvider
+
+    monkeypatch.setattr(AvisVideoProvider, "run_to_completion", fake_run)
+
+    result, err = await proc._handle_gen_video({
+        "model_id": "seedance-2-0",
+        "motion_prompt": "x",
+        "reference_images": ["https://e/a.png"],
+        "reference_videos": ["vidB", "vidA"],          # edge order
+        "reference_video_labels": ["@video2", "@video1"],  # → reorder to vidA, vidB
+        "duration_seconds": 5,
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
+        "project_id": "8b62385c-4916-4abd-b01f-b28173d8eb04",
+    })
+    assert err is None, result
+    assert captured["reference_videos"] == ["https://r2/vidA.mp4", "https://r2/vidB.mp4"]
+
+
 # ── /upload-video endpoint ────────────────────────────────────────────────
+
+
+def test_create_video_ref_node(client):
+    """The video_ref node type must be accepted by the node-create endpoint.
+    (Backend Literal allowlist gates node.type; if missing the POST 422s and
+    the canvas silently fails to add the node.)"""
+    b = make_shot(client)
+    r = client.post(
+        "/api/nodes",
+        json={"shot_id": b["id"], "type": "video_ref", "x": 0, "y": 0, "data": {"title": "Video ref"}},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["type"] == "video_ref"
 
 
 def test_upload_video_accepts_mp4(client):

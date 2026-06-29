@@ -23,9 +23,11 @@ const DESC_MAX = 300;
 export function RefLabelFields({
   rfId,
   data,
+  labelPlaceholder = "@image1",
 }: {
   rfId: string;
   data: FlowboardNodeData;
+  labelPlaceholder?: string;
 }) {
   const [label, setLabel] = useState(data.reference_label ?? "");
   const [desc, setDesc] = useState(data.reference_description ?? "");
@@ -53,7 +55,7 @@ export function RefLabelFields({
         className="ref-label-fields__label"
         type="text"
         value={label}
-        placeholder="@image1"
+        placeholder={labelPlaceholder}
         maxLength={40}
         onChange={(e) => setLabel(e.target.value)}
         onBlur={() => persist({ reference_label: label.trim() })}
