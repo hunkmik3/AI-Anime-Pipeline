@@ -84,7 +84,8 @@ AVIS_SEEDANCE_2_0_CAPABILITY = VideoProviderCapability(
     supports_kyc=True,
     max_refs=9,
     aspect_ratios=("1:1", "16:9", "9:16"),
-    resolutions=("720p", "1080p"),
+    # 480p/720p/1080p/4k per BytePlus ModelArk (4k is Seedance-2.0-only).
+    resolutions=("480p", "720p", "1080p", "4k"),
     durations=tuple(range(4, 16)),
 )
 

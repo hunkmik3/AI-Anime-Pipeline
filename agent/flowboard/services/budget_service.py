@@ -36,8 +36,12 @@ logger = logging.getLogger(__name__)
 # block gens the user can actually afford). Settlement reconciles to the real
 # usdCost afterwards. Env-tunable as Avis pricing changes.
 _RATE_USD_PER_SEC = {
+    "480p": float(os.getenv("FLOWBOARD_USD_PER_SEC_480P", "0.10")),
     "720p": float(os.getenv("FLOWBOARD_USD_PER_SEC_720P", "0.18")),
     "1080p": float(os.getenv("FLOWBOARD_USD_PER_SEC_1080P", "0.42")),
+    # 4k is Seedance-2.0-only and much heavier; over-reserve (settles to real
+    # usdCost). Tune via env once real 4k pricing is observed.
+    "4k": float(os.getenv("FLOWBOARD_USD_PER_SEC_4K", "1.70")),
 }
 _DEFAULT_RATE = float(os.getenv("FLOWBOARD_USD_PER_SEC_1080P", "0.42"))
 

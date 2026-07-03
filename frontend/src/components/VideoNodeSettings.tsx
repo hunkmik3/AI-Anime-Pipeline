@@ -78,7 +78,11 @@ export function VideoNodeSettings({ rfId }: Props) {
   const durIsRange =
     durSorted.length > 1 &&
     durSorted[durSorted.length - 1] - durSorted[0] + 1 === durSorted.length;
-  const resolution = (data.resolution as string | undefined) ?? caps.resolutions[0];
+  // Default to 720p when the model offers it (matches the Seedance default),
+  // else the model's first allowed value — keeps new nodes off 480p/4k.
+  const resolution =
+    (data.resolution as string | undefined) ??
+    (caps.resolutions.includes("720p") ? "720p" : caps.resolutions[0]);
   const generateAudio =
     typeof data.generate_audio === "boolean" ? (data.generate_audio as boolean) : true;
   // Person-driven (KYC): when on, the wired image/audio/video refs are sent as
