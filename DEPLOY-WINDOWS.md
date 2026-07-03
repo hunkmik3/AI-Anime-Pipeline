@@ -80,16 +80,17 @@ Fill:
 
 ## 4. One-command setup
 ```powershell
-# SQLite, no Docker (simplest — recommended if you don't already run Docker):
-powershell -ExecutionPolicy Bypass -File .\deploy.ps1 -NoDocker
-
-# ── or ── Postgres via Docker (Docker Desktop must be running):
+# Postgres via Docker (default — Docker Desktop must be running):
 powershell -ExecutionPolicy Bypass -File .\deploy.ps1
+
+# ── or ── SQLite, no Docker:
+powershell -ExecutionPolicy Bypass -File .\deploy.ps1 -NoDocker
 ```
 It checks tools, creates the venv + installs the backend, sets up the database
-(Docker+Postgres+Alembic, or SQLite auto-schema with `-NoDocker`), and builds the
-frontend. Re-runnable after every `git pull`. (First run, if `.env` was missing,
-it creates one and stops — fill it, then run again **with the same flag**.)
+(default: Docker + Postgres + Alembic; or SQLite auto-schema with `-NoDocker`),
+and builds the frontend. Re-runnable after every `git pull`. (First run, if
+`.env` was missing, it creates one and stops — fill it, then run again **with the
+same flag**.)
 
 ## 5. Run (test)
 ```powershell
