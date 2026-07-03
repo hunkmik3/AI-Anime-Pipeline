@@ -2,16 +2,33 @@
 
 Same architecture as the Mac Mini guide ([DEPLOY.md](DEPLOY.md)): one backend
 process serves **both the API and the web UI** on port `8101` (it serves
-`frontend/dist`). Postgres runs in Docker. A Cloudflare Tunnel gives the public
-HTTPS URL **https://giantstudio.reelmind.co**. The Avis key stays server-side;
-users log in with admin-provisioned accounts.
+`frontend/dist`). A Cloudflare Tunnel gives the public HTTPS URL
+**https://giantstudio.reelmind.co**. The Avis key stays server-side; users log
+in with admin-provisioned accounts.
 
 ```
 Browser ─HTTPS→ Cloudflare Tunnel (giantstudio.reelmind.co) ─→ localhost:8101
                                                       (FastAPI + worker + SPA)
-                                                        └─ Postgres (Docker :15432)
+                                                        └─ database (see below)
                                                         └─ Avis API (Seedance video)
 ```
+
+### Database: Docker or no-Docker
+Pick one — the rest of the guide is identical:
+
+| | **Postgres via Docker** (default) | **SQLite, no Docker** (`-NoDocker`) |
+|---|---|---|
+| Extra install | Docker Desktop (needs WSL2 + BIOS virtualization) | none |
+| Data | Docker volume `flowboard_pgdata` | `.\storage\flowboard.db` |
+| Best for | heavier concurrent load / future scale | simplest; fine for a studio team (backend is one process, SQLite runs in WAL mode) |
+
+The backend is a **single process** (API + worker in one), so SQLite is safe
+here — the "no-Docker" path just runs `deploy.ps1 -NoDocker`, which sets
+`FLOWBOARD_DATABASE_URL=sqlite:///…/storage/flowboard.db` and skips Docker,
+Postgres, and Alembic entirely (the schema is created automatically on first
+boot). You can move to Postgres later without code changes — just change that
+one env var. **If you don't need Docker, take the SQLite path — it's the least
+to install on a bare Windows machine.**
 
 > This deploys the **committed stable version**: Seedance video gen + multi-user
 > + budgets + admin panel. It does **not** include the experimental Gemini /
@@ -26,15 +43,18 @@ Windows 10/11 ship `winget`. Install as Administrator:
 winget install --id Git.Git -e
 winget install --id OpenJS.NodeJS.LTS -e        # Node 20
 winget install --id Python.Python.3.12 -e
-winget install --id Docker.DockerDesktop -e     # needs WSL2 + virtualization
 winget install --id Cloudflare.cloudflared -e
+# Docker ONLY if you want the Postgres path (skip it for the SQLite / -NoDocker path):
+winget install --id Docker.DockerDesktop -e     # needs WSL2 + virtualization
 ```
 Then:
 - **Reopen PowerShell** so the new PATH entries load.
-- **Launch Docker Desktop once** and wait until it says *Engine running*. (If it
-  asks to install/enable WSL2, accept and reboot — Docker needs the WSL2 engine.
-  Virtualization must be enabled in BIOS.)
-- Verify: `git --version; node -v; python --version; docker info; cloudflared --version`
+- **(Docker path only)** Launch Docker Desktop once and wait until it says
+  *Engine running*. If it asks to install/enable WSL2, accept and reboot — Docker
+  needs the WSL2 engine, and virtualization must be enabled in BIOS. **If this is
+  a hassle, use the SQLite path instead and skip Docker entirely.**
+- Verify: `git --version; node -v; python --version; cloudflared --version`
+  (add `docker info` on the Docker path).
 
 ## 2. Clone
 ```powershell
@@ -60,12 +80,16 @@ Fill:
 
 ## 4. One-command setup
 ```powershell
+# SQLite, no Docker (simplest — recommended if you don't already run Docker):
+powershell -ExecutionPolicy Bypass -File .\deploy.ps1 -NoDocker
+
+# ── or ── Postgres via Docker (Docker Desktop must be running):
 powershell -ExecutionPolicy Bypass -File .\deploy.ps1
 ```
-It checks tools, creates the venv + installs the backend, starts Postgres in
-Docker and runs migrations, and builds the frontend. Re-runnable after every
-`git pull`. (First run, if `.env` was missing, it creates one and stops — fill
-it, then run again.)
+It checks tools, creates the venv + installs the backend, sets up the database
+(Docker+Postgres+Alembic, or SQLite auto-schema with `-NoDocker`), and builds the
+frontend. Re-runnable after every `git pull`. (First run, if `.env` was missing,
+it creates one and stops — fill it, then run again **with the same flag**.)
 
 ## 5. Run (test)
 ```powershell
@@ -133,9 +157,10 @@ Remove later: `nssm remove Flowboard confirm` ; `cloudflared service uninstall`.
   $0 every user's gens fail. (No global pool guard yet.)
 - **Person-driven (KYC) video needs Cloudflare R2** (four `R2_*` vars). Normal
   Avis Seedance video works without it. See [docs/r2_setup.md](docs/r2_setup.md).
-- **Media** is stored locally under `STORAGE` (fine to start; move to R2 if the
-  disk fills). The Postgres data lives in the Docker volume `flowboard_pgdata`.
-- **Update:** `git pull; powershell -ExecutionPolicy Bypass -File .\deploy.ps1`,
-  then restart the service: `nssm restart Flowboard`.
+- **Media** is stored locally under `.\storage` (fine to start; move to R2 if the
+  disk fills). The database lives in the Docker volume `flowboard_pgdata`
+  (Docker path) or `.\storage\flowboard.db` (SQLite path) — **back these up**.
+- **Update:** `git pull; powershell -ExecutionPolicy Bypass -File .\deploy.ps1`
+  (add `-NoDocker` if that's how you set up), then `nssm restart Flowboard`.
 - **Fresh database:** this is a new host — it starts with an empty DB (no projects
   from the dev Mac). Users create their own projects after logging in.
