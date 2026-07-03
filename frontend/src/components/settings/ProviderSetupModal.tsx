@@ -118,7 +118,7 @@ function ClaudeContent() {
   return (
     <div className="setup-modal__body">
       <p>
-        GiantStudio uses your existing Claude subscription via the official
+        Giant Studio uses your existing Claude subscription via the official
         CLI — no API key needed.
       </p>
       <ol className="setup-modal__steps">
@@ -150,7 +150,7 @@ function GeminiContent() {
   return (
     <div className="setup-modal__body">
       <p>
-        GiantStudio uses your existing Gemini subscription via the official
+        Giant Studio uses your existing Gemini subscription via the official
         CLI — no API key needed.
       </p>
       <ol className="setup-modal__steps">

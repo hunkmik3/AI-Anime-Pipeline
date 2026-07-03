@@ -34,7 +34,7 @@ export function LoginPage() {
   return (
     <div className="login-shell">
       <form className="login-card" onSubmit={onSubmit}>
-        <h1 className="login-title">GiantStudio</h1>
+        <h1 className="login-title">Giant Studio</h1>
         <p className="login-sub">Đăng nhập để tiếp tục</p>
 
         <label className="login-field">

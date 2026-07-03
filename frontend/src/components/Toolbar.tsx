@@ -40,7 +40,8 @@ export function Toolbar() {
 
   return (
     <div className="toolbar">
-      <span className="toolbar-wordmark">GiantStudio</span>
+      <img className="toolbar-logo" src="/favicon.png" alt="" aria-hidden="true" />
+      <span className="toolbar-wordmark">Giant Studio</span>
       <span className="toolbar-sep" aria-hidden="true">/</span>
       {editing ? (
         <input

@@ -1089,11 +1089,20 @@ button:disabled {
   z-index: 20;
 }
 
+.toolbar-logo {
+  height: 30px;
+  width: 30px;
+  object-fit: contain;
+  flex-shrink: 0;
+  display: block;
+}
+
 .toolbar-wordmark {
-  font-size: 13px;
+  font-size: 18px;
   font-weight: 700;
   letter-spacing: 0.01em;
   color: var(--text);
+  white-space: nowrap;
 }
 
 .toolbar-sep {
