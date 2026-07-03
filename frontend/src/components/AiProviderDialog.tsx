@@ -71,7 +71,7 @@ export function AiProviderDialog({ open, onClose, force = false }: AiProviderDia
         </div>
         {force && (
           <div className="ai-provider-dialog__force-banner" role="alert">
-            Flowboard needs an AI provider before it can run Auto-Prompt,
+            GiantStudio needs an AI provider before it can run Auto-Prompt,
             Vision, or Planner. Pick one card, run all 3 tests green, then
             Apply to continue.
           </div>

@@ -270,7 +270,7 @@ export function AiProvidersSection() {
   return (
     <div className="ai-providers-section">
       <div className="ai-providers-section__intro">
-        Pick which AI powers Flowboard. One provider serves all three
+        Pick which AI powers GiantStudio. One provider serves all three
         features — switching is one decision, not three.
       </div>
 

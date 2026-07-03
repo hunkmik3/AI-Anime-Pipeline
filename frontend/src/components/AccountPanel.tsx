@@ -294,7 +294,7 @@ export function AccountPanel({ collapsed = false }: { collapsed?: boolean }) {
       {!collapsed && (
         <div className="account-panel__version-row">
           <span className="account-panel__version-label">
-            Flowboard <code>v{APP_VERSION}</code>
+            GiantStudio <code>v{APP_VERSION}</code>
           </span>
           {updateAvailable && latestRelease && (
             <a

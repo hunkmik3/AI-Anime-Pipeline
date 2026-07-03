@@ -40,7 +40,7 @@ export function Toolbar() {
 
   return (
     <div className="toolbar">
-      <span className="toolbar-wordmark">Flowboard</span>
+      <span className="toolbar-wordmark">GiantStudio</span>
       <span className="toolbar-sep" aria-hidden="true">/</span>
       {editing ? (
         <input
