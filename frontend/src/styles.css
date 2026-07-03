@@ -7466,8 +7466,9 @@ button:disabled {
   display: flex; flex-direction: column; gap: 14px;
   box-shadow: 0 10px 40px rgba(0,0,0,0.5);
 }
-.login-title { margin: 0; font-size: 1.4rem; color: #f0f0f4; letter-spacing: 0.3px; }
-.login-sub { margin: -6px 0 6px; font-size: 0.85rem; color: #8a8a93; }
+.login-logo { align-self: center; width: 96px; height: 96px; object-fit: contain; margin-bottom: 2px; }
+.login-title { margin: 0; font-size: 1.4rem; color: #f0f0f4; letter-spacing: 0.3px; text-align: center; }
+.login-sub { margin: -6px 0 6px; font-size: 0.85rem; color: #8a8a93; text-align: center; }
 .login-field { display: flex; flex-direction: column; gap: 5px; font-size: 0.8rem; color: #b6b6c0; }
 .login-field input {
   padding: 9px 11px; border-radius: 8px; border: 1px solid #2c2c36;

@@ -34,6 +34,7 @@ export function LoginPage() {
   return (
     <div className="login-shell">
       <form className="login-card" onSubmit={onSubmit}>
+        <img className="login-logo" src="/giantstudio-512.png" alt="Giant Studio" />
         <h1 className="login-title">Giant Studio</h1>
         <p className="login-sub">Đăng nhập để tiếp tục</p>
 
