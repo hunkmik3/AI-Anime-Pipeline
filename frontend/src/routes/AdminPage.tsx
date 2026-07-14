@@ -4,6 +4,8 @@ import { Link } from "react-router-dom";
 import { useAuthStore } from "../store/auth";
 import { parseServerTimeMs } from "../utils/serverTime";
 import { ConfirmDialog, PromptDialog } from "../components/Modals";
+import { KebabMenu } from "../components/KebabMenu";
+import { CreateUserDialog, type NewUser } from "../components/CreateUserDialog";
 import { toast } from "../store/toast";
 
 interface AdminUser {
@@ -81,6 +83,32 @@ function fmtTime(iso?: string | null): string {
   return ms ? new Date(ms).toLocaleString() : "—";
 }
 
+/** "vừa xong" / "3 giờ trước" / "2 ngày trước" — friendlier than a raw stamp. */
+function relTime(iso?: string | null): string {
+  if (!iso) return "chưa đăng nhập";
+  const ms = parseServerTimeMs(iso);
+  if (!ms) return "—";
+  const diff = Math.max(0, Date.now() - ms);
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return "vừa xong";
+  if (m < 60) return `${m} phút trước`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} giờ trước`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d} ngày trước`;
+  return new Date(ms).toLocaleDateString();
+}
+
+function initials(u: { display_name?: string | null; username: string }): string {
+  const src = (u.display_name || u.username).trim();
+  const parts = src.split(/\s+/).filter(Boolean);
+  const s =
+    parts.length >= 2
+      ? parts[0][0] + parts[parts.length - 1][0]
+      : src.slice(0, 2);
+  return s.toUpperCase();
+}
+
 async function jsonOrThrow(res: Response) {
   if (!res.ok) {
     let detail = `${res.status}`;
@@ -100,11 +128,9 @@ export function AdminPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // create form
-  const [nu, setNu] = useState("");
-  const [np, setNp] = useState("");
-  const [nrole, setNrole] = useState("user");
-  const [nemail, setNemail] = useState("");
+  // create-member modal + search
+  const [createOpen, setCreateOpen] = useState(false);
+  const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
 
   // activity modal
@@ -184,8 +210,7 @@ export function AdminPage() {
     void refresh();
   }, [refresh]);
 
-  async function createUser(e: React.FormEvent) {
-    e.preventDefault();
+  async function createUser(nu: NewUser) {
     if (busy) return;
     setBusy(true);
     setError(null);
@@ -194,21 +219,16 @@ export function AdminPage() {
         await fetch("/api/admin/users", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            username: nu.trim(),
-            password: np,
-            role: nrole,
-            email: nemail.trim() || undefined,
-          }),
+          body: JSON.stringify(nu),
         }),
       );
-      setNu("");
-      setNp("");
-      setNrole("user");
-      setNemail("");
+      setCreateOpen(false);
       await refresh();
+      toast(`Đã tạo tài khoản "${nu.username}"`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "create failed");
+      const msg = e instanceof Error ? e.message : "create failed";
+      setError(msg);
+      toast(msg, "error");
     } finally {
       setBusy(false);
     }
@@ -246,138 +266,201 @@ export function AdminPage() {
     }
   }
 
-  return (
-    <div className="admin-page">
-      <div className="admin-head">
-        <h1>Quản lý tài khoản</h1>
-        <button className="admin-back" onClick={openAudit}>
-          Nhật ký audit
-        </button>
-        <Link className="admin-back" to="/projects">
-          ← Về Projects
-        </Link>
-      </div>
+  // Derived: search filter + summary stats.
+  const q = search.trim().toLowerCase();
+  const shown = users.filter(
+    (u) =>
+      !q ||
+      u.username.toLowerCase().includes(q) ||
+      (u.display_name ?? "").toLowerCase().includes(q) ||
+      (u.email ?? "").toLowerCase().includes(q),
+  );
+  const totalAvailable = users.reduce((s, u) => s + (u.available_usd ?? 0), 0);
+  const activeCount = users.filter((u) => u.status === "active").length;
+  const suspendedCount = users.length - activeCount;
 
-      <form className="admin-create" onSubmit={createUser}>
-        <input placeholder="Tài khoản" value={nu} onChange={(e) => setNu(e.target.value)} disabled={busy} />
+  return (
+    <div className="admin2">
+      <header className="admin2__head">
+        <div>
+          <h1 className="admin2__title">Quản lý tài khoản</h1>
+          <p className="admin2__sub">Cấp tài khoản, phân quyền và ngân sách cho đội ngũ.</p>
+        </div>
+        <div className="admin2__head-actions">
+          <Link className="btn2 btn2--ghost" to="/projects">
+            ← Projects
+          </Link>
+          <button className="btn2 btn2--ghost" onClick={openAudit}>
+            Nhật ký audit
+          </button>
+          <button className="btn2 btn2--primary" onClick={() => setCreateOpen(true)}>
+            + Thêm thành viên
+          </button>
+        </div>
+      </header>
+
+      <section className="admin2__stats">
+        <div className="stat">
+          <span className="stat__label">Thành viên</span>
+          <span className="stat__value">{users.length}</span>
+        </div>
+        <div className="stat">
+          <span className="stat__label">Đang hoạt động</span>
+          <span className="stat__value stat__value--good">{activeCount}</span>
+        </div>
+        <div className="stat">
+          <span className="stat__label">Đã khoá</span>
+          <span className={`stat__value${suspendedCount ? " stat__value--warn" : ""}`}>
+            {suspendedCount}
+          </span>
+        </div>
+        <div className="stat">
+          <span className="stat__label">Ngân sách còn lại</span>
+          <span className="stat__value">${totalAvailable.toFixed(2)}</span>
+        </div>
+      </section>
+
+      <div className="admin2__toolbar">
         <input
-          placeholder="Mật khẩu"
-          type="text"
-          value={np}
-          onChange={(e) => setNp(e.target.value)}
-          disabled={busy}
+          className="admin2__search"
+          placeholder="Tìm theo tên, tài khoản hoặc email…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
         />
-        <input
-          placeholder="Email (tuỳ chọn)"
-          type="email"
-          value={nemail}
-          onChange={(e) => setNemail(e.target.value)}
-          disabled={busy}
-        />
-        <select value={nrole} onChange={(e) => setNrole(e.target.value)} disabled={busy}>
-          <option value="user">user</option>
-          <option value="admin">admin</option>
-        </select>
-        <button type="submit" disabled={busy || !nu || !np}>
-          + Tạo tài khoản
-        </button>
-      </form>
+        <span className="admin2__count">
+          {shown.length}/{users.length} thành viên
+        </span>
+      </div>
 
       {error ? <div className="admin-error">{error}</div> : null}
 
-      {loading ? (
-        <div className="admin-loading">Đang tải…</div>
-      ) : (
-        <table className="admin-table">
-          <thead>
-            <tr>
-              <th>Tài khoản</th>
-              <th>Vai trò</th>
-              <th>Trạng thái</th>
-              <th>Ngân sách $</th>
-              <th>Còn lại $</th>
-              <th>Thao tác</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map((u) => (
-              <tr key={u.id} className={u.status === "suspended" ? "admin-row--suspended" : undefined}>
-                <td>
-                  {u.display_name || u.username}
-                  {u.username !== (u.display_name || u.username) ? <span className="admin-uname"> ({u.username})</span> : null}
-                  {u.has_password === false ? (
-                    <span className="admin-badge admin-badge--google" title="Đăng nhập bằng Google">
-                      google
-                    </span>
-                  ) : null}
-                  {u.email ? <span className="admin-uname"> · {u.email}</span> : null}
-                  <span className="admin-uname"> · đăng nhập: {fmtTime(u.last_login)}</span>
-                </td>
-                <td>
-                  <span className={`admin-badge admin-badge--role-${u.role}`}>{u.role}</span>
-                </td>
-                <td>
-                  <span className={`admin-badge admin-badge--${u.status}`}>
-                    {u.status === "active" ? "hoạt động" : "đã khoá"}
-                  </span>
-                </td>
-                <td>
-                  {typeof u.budget_usd === "number" ? `$${u.budget_usd.toFixed(2)}` : "—"}
-                  {typeof u.spent_usd === "number" ? (
-                    <span className="admin-uname"> (tiêu ${u.spent_usd.toFixed(2)})</span>
-                  ) : null}
-                </td>
-                <td>{typeof u.available_usd === "number" ? `$${u.available_usd.toFixed(2)}` : "—"}</td>
-                <td className="admin-actions">
-                  <button onClick={() => openActivity(u)}>Hoạt động</button>
-                  <button onClick={() => setModal({ kind: "budget", user: u })}>Ngân sách</button>
-                  {u.id === me?.id ? (
-                    <span className="admin-self">(bạn)</span>
-                  ) : (
-                    <>
-                      {u.status === "active" ? (
-                        <button
-                          onClick={() =>
-                            patchUser(u.id, { status: "suspended" }, `Đã khoá "${u.username}"`)
-                          }
-                        >
-                          Khoá
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() =>
-                            patchUser(u.id, { status: "active" }, `Đã mở khoá "${u.username}"`)
-                          }
-                        >
-                          Mở
-                        </button>
-                      )}
-                      <button
-                        onClick={() =>
-                          patchUser(
-                            u.id,
-                            { role: u.role === "admin" ? "user" : "admin" },
-                            `Đã đổi vai trò "${u.username}"`,
-                          )
-                        }
-                        title="Đổi vai trò"
-                      >
-                        {u.role === "admin" ? "→ user" : "→ admin"}
-                      </button>
-                      <button onClick={() => setModal({ kind: "password", user: u })}>
-                        Đổi mật khẩu
-                      </button>
-                      <button className="admin-del" onClick={() => setModal({ kind: "delete", user: u })}>
-                        Xoá
-                      </button>
-                    </>
-                  )}
-                </td>
+      <div className="admin2__card">
+        {loading ? (
+          <div className="admin2__skeleton">
+            <div className="admin2__sk-row" />
+            <div className="admin2__sk-row" />
+            <div className="admin2__sk-row" />
+          </div>
+        ) : shown.length === 0 ? (
+          <div className="admin2__empty">
+            {users.length === 0
+              ? "Chưa có thành viên nào — bấm “+ Thêm thành viên” để bắt đầu."
+              : "Không tìm thấy thành viên phù hợp."}
+          </div>
+        ) : (
+          <table className="admin2__table">
+            <thead>
+              <tr>
+                <th>Thành viên</th>
+                <th>Vai trò</th>
+                <th>Trạng thái</th>
+                <th>Ngân sách</th>
+                <th>Đăng nhập gần nhất</th>
+                <th className="admin2__th-actions" aria-label="Thao tác" />
               </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+            </thead>
+            <tbody>
+              {shown.map((u) => {
+                const budget = u.budget_usd ?? 0;
+                const spent = u.spent_usd ?? 0;
+                const pct = budget > 0 ? Math.min(100, (spent / budget) * 100) : 0;
+                const isMe = u.id === me?.id;
+                const isSso = u.has_password === false;
+                return (
+                  <tr key={u.id} className={u.status === "suspended" ? "is-suspended" : undefined}>
+                    <td>
+                      <div className="admin2__user">
+                        <span className="admin2__avatar" aria-hidden="true">
+                          {initials(u)}
+                        </span>
+                        <span className="admin2__user-txt">
+                          <span className="admin2__name">
+                            {u.display_name || u.username}
+                            {isMe ? <span className="admin2__you">bạn</span> : null}
+                          </span>
+                          <span className="admin2__email">{u.email || u.username}</span>
+                        </span>
+                      </div>
+                    </td>
+                    <td>
+                      <span className={`chip chip--role-${u.role}`}>{u.role}</span>
+                      {isSso ? <span className="chip chip--google">Google</span> : null}
+                    </td>
+                    <td>
+                      <span className={`chip chip--${u.status}`}>
+                        {u.status === "active" ? "Hoạt động" : "Đã khoá"}
+                      </span>
+                    </td>
+                    <td>
+                      <div className="admin2__budget">
+                        <span className="admin2__budget-nums">
+                          <b>{usd(u.available_usd)}</b> còn / {usd(budget)}
+                        </span>
+                        <span className="admin2__bar">
+                          <span style={{ width: `${pct}%` }} />
+                        </span>
+                      </div>
+                    </td>
+                    <td className="admin2__muted">{relTime(u.last_login)}</td>
+                    <td className="admin2__row-actions">
+                      <KebabMenu
+                        items={[
+                          { label: "Xem hoạt động", onSelect: () => void openActivity(u) },
+                          {
+                            label: "Đặt ngân sách",
+                            onSelect: () => setModal({ kind: "budget", user: u }),
+                          },
+                          ...(isMe
+                            ? []
+                            : [
+                                {
+                                  label: u.status === "active" ? "Khoá tài khoản" : "Mở khoá",
+                                  onSelect: () =>
+                                    void patchUser(
+                                      u.id,
+                                      { status: u.status === "active" ? "suspended" : "active" },
+                                      u.status === "active"
+                                        ? `Đã khoá "${u.username}"`
+                                        : `Đã mở khoá "${u.username}"`,
+                                    ),
+                                },
+                                {
+                                  label: u.role === "admin" ? "Hạ xuống user" : "Nâng lên admin",
+                                  onSelect: () =>
+                                    void patchUser(
+                                      u.id,
+                                      { role: u.role === "admin" ? "user" : "admin" },
+                                      `Đã đổi vai trò "${u.username}"`,
+                                    ),
+                                },
+                                {
+                                  label: isSso ? "Đặt mật khẩu" : "Đặt lại mật khẩu",
+                                  onSelect: () => setModal({ kind: "password", user: u }),
+                                },
+                                {
+                                  label: "Xoá tài khoản",
+                                  danger: true,
+                                  onSelect: () => setModal({ kind: "delete", user: u }),
+                                },
+                              ]),
+                        ]}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {createOpen ? (
+        <CreateUserDialog
+          busy={busy}
+          onSubmit={(nu) => void createUser(nu)}
+          onClose={() => setCreateOpen(false)}
+        />
+      ) : null}
 
       {auditOpen && (
         <div
