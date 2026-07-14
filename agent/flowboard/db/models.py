@@ -289,3 +289,22 @@ class UsageRecord(SQLModel, table=True):
     status: str = "reserved"  # reserved | settled | released
     created_at: datetime = Field(default_factory=_utcnow)
     settled_at: Optional[datetime] = None
+
+
+class AuditLog(SQLModel, table=True):
+    """Phase 3 — security audit trail: logins, SSO, and admin actions.
+
+    Actor/target are denormalized to *_label strings (no FK) so entries stay
+    readable and survive account deletion. Never stores secrets."""
+
+    __tablename__ = "audit_log"  # type: ignore[assignment]
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    created_at: datetime = Field(default_factory=_utcnow, index=True)
+    action: str = Field(index=True)                # e.g. "login.success", "user.suspend"
+    actor_user_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    actor_label: Optional[str] = None              # username/email at the time
+    target_user_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    target_label: Optional[str] = None
+    ip: Optional[str] = None
+    detail: Optional[str] = None                   # short human-readable context

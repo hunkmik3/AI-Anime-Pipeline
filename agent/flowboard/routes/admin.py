@@ -7,11 +7,11 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from flowboard.routes.deps import require_admin
-from flowboard.services import budget_service, user_service
+from flowboard.services import audit_service, budget_service, user_service
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ def list_users() -> list[dict]:
 
 
 @router.post("/users")
-def create_user(body: CreateUserBody) -> dict:
+def create_user(body: CreateUserBody, request: Request, caller=Depends(require_admin)) -> dict:
     try:
         u = user_service.create_user(
             body.username,
@@ -67,7 +67,17 @@ def create_user(body: CreateUserBody) -> dict:
         raise HTTPException(status_code=409, detail="username already exists")
     except user_service.UserError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    audit_service.record(
+        "user.create", actor=caller, target=u,
+        ip=audit_service.client_ip(request), detail=f"role={body.role}",
+    )
     return user_service.public_dict(u)
+
+
+@router.get("/audit")
+def audit(limit: int = 200, action: str | None = None) -> list[dict]:
+    """Recent security-audit entries (logins, SSO, admin actions), newest first."""
+    return audit_service.list_recent(limit=min(max(1, limit), 1000), action=action)
 
 
 @router.get("/users/{user_id}/activity")
@@ -85,7 +95,7 @@ def user_activity(user_id: str, limit: int = 100) -> dict:
 
 
 @router.delete("/users/{user_id}")
-def delete_user(user_id: str, caller=Depends(require_admin)) -> dict:
+def delete_user(user_id: str, request: Request, caller=Depends(require_admin)) -> dict:
     """Delete an account. Guards: can't delete yourself or the last admin.
     Owned projects are orphaned (not destroyed)."""
     if str(caller.id) == str(user_id):
@@ -95,15 +105,25 @@ def delete_user(user_id: str, caller=Depends(require_admin)) -> dict:
         raise HTTPException(status_code=404, detail="user not found")
     if u.role == "admin" and user_service.count_admins() <= 1:
         raise HTTPException(status_code=400, detail="cannot delete the last admin")
+    label = u.username
     try:
         user_service.delete_user(user_id)
     except user_service.UserNotFound:
         raise HTTPException(status_code=404, detail="user not found")
+    audit_service.record(
+        "user.delete", actor=caller, target=user_id, target_label=label,
+        ip=audit_service.client_ip(request),
+    )
     return {"ok": True}
 
 
 @router.patch("/users/{user_id}")
-def update_user(user_id: str, body: UpdateUserBody) -> dict:
+def update_user(user_id: str, body: UpdateUserBody, request: Request, caller=Depends(require_admin)) -> dict:
+    ip = audit_service.client_ip(request)
+
+    def _log(action: str, detail: str | None = None):
+        audit_service.record(action, actor=caller, target=u, ip=ip, detail=detail)
+
     try:
         u = user_service.get_by_id(user_id)
         if u is None:
@@ -112,18 +132,24 @@ def update_user(user_id: str, body: UpdateUserBody) -> dict:
             user_service.set_display_name(user_id, body.display_name)
         if body.email is not None:
             user_service.set_email(user_id, body.email)
+            _log("user.email")
         if body.role is not None:
             user_service.set_role(user_id, body.role)
+            _log("user.role", f"role={body.role}")
         if body.password:
             user_service.set_password(user_id, body.password)
+            _log("password.reset")
         if body.status is not None:
             user_service.set_status(user_id, body.status)
+            _log("user.suspend" if body.status == "suspended" else "user.activate")
         if body.must_change_password is not None:
             user_service.set_must_change_password(user_id, body.must_change_password)
         if body.budget_usd is not None:
             user_service.set_budget(user_id, body.budget_usd)
+            _log("user.budget", f"set=${body.budget_usd}")
         if body.add_budget_usd is not None:
             user_service.add_budget(user_id, body.add_budget_usd)
+            _log("user.budget", f"add=${body.add_budget_usd}")
         refreshed = user_service.get_by_id(user_id)
         return _user_with_budget(refreshed)
     except user_service.UserNotFound:

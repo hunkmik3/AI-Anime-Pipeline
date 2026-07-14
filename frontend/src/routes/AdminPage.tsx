@@ -41,6 +41,16 @@ interface ActivityItem {
   media_ids: string[];
 }
 
+interface AuditEntry {
+  id: number;
+  created_at?: string | null;
+  action: string;
+  actor?: string | null;
+  target?: string | null;
+  ip?: string | null;
+  detail?: string | null;
+}
+
 const usd = (v?: number | null): string => (v != null ? `$${v.toFixed(2)}` : "—");
 
 function fmtParamValue(v: unknown): string {
@@ -100,6 +110,24 @@ export function AdminPage() {
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityError, setActivityError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+
+  // audit log
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [auditRows, setAuditRows] = useState<AuditEntry[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+
+  async function openAudit() {
+    setAuditOpen(true);
+    setAuditLoading(true);
+    setAuditRows([]);
+    try {
+      setAuditRows(await jsonOrThrow(await fetch("/api/admin/audit?limit=300")));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "audit load failed");
+    } finally {
+      setAuditLoading(false);
+    }
+  }
 
   function toggleExpand(key: number) {
     setExpanded((prev) => {
@@ -228,6 +256,9 @@ export function AdminPage() {
     <div className="admin-page">
       <div className="admin-head">
         <h1>Quản lý tài khoản</h1>
+        <button className="admin-back" onClick={openAudit}>
+          Nhật ký audit
+        </button>
         <Link className="admin-back" to="/projects">
           ← Về Projects
         </Link>
@@ -323,6 +354,64 @@ export function AdminPage() {
             ))}
           </tbody>
         </table>
+      )}
+
+      {auditOpen && (
+        <div
+          className="admin-activity-backdrop"
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setAuditOpen(false);
+          }}
+        >
+          <div className="admin-activity" role="dialog" aria-label="Audit log">
+            <div className="admin-activity__head">
+              <h2>Nhật ký audit</h2>
+              <button
+                className="admin-activity__close"
+                onClick={() => setAuditOpen(false)}
+                aria-label="Đóng"
+              >
+                ×
+              </button>
+            </div>
+            {auditLoading ? (
+              <div className="admin-loading">Đang tải…</div>
+            ) : (
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    <th>Thời gian</th>
+                    <th>Hành động</th>
+                    <th>Người thực hiện</th>
+                    <th>Đối tượng</th>
+                    <th>IP</th>
+                    <th>Chi tiết</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {auditRows.map((a) => (
+                    <tr key={a.id}>
+                      <td>{fmtTime(a.created_at)}</td>
+                      <td>{a.action}</td>
+                      <td>{a.actor ?? "—"}</td>
+                      <td>{a.target ?? "—"}</td>
+                      <td>{a.ip ?? "—"}</td>
+                      <td>{a.detail ?? "—"}</td>
+                    </tr>
+                  ))}
+                  {auditRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="admin-uname">
+                        (chưa có sự kiện)
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
       )}
 
       {activityUser && (
