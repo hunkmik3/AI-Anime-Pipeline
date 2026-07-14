@@ -7,6 +7,7 @@ import { ConfirmDialog, PromptDialog } from "../components/Modals";
 import { KebabMenu } from "../components/KebabMenu";
 import { CreateUserDialog, type NewUser } from "../components/CreateUserDialog";
 import { toast } from "../store/toast";
+import { OverviewTab, CostTab, ProjectsTab, AuditTab } from "../components/admin/AdminTabs";
 
 interface AdminUser {
   id: string;
@@ -56,16 +57,6 @@ interface PoolSummary {
   configured: boolean;
   over_allocated: boolean;
   exhausted: boolean;
-}
-
-interface AuditEntry {
-  id: number;
-  created_at?: string | null;
-  action: string;
-  actor?: string | null;
-  target?: string | null;
-  ip?: string | null;
-  detail?: string | null;
 }
 
 const usd = (v?: number | null): string => (v != null ? `$${v.toFixed(2)}` : "—");
@@ -156,28 +147,16 @@ export function AdminPage() {
   const [activityError, setActivityError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
-  // audit log
-  const [auditOpen, setAuditOpen] = useState(false);
-  const [auditRows, setAuditRows] = useState<AuditEntry[]>([]);
-  const [auditLoading, setAuditLoading] = useState(false);
+  // which tab is showing
+  const [tab, setTab] = useState<"overview" | "members" | "cost" | "projects" | "audit">(
+    "overview",
+  );
 
   // Which action modal is open (replaces window.prompt / confirm).
   const [modal, setModal] = useState<
     { kind: "password" | "budget" | "delete"; user: AdminUser } | null
   >(null);
 
-  async function openAudit() {
-    setAuditOpen(true);
-    setAuditLoading(true);
-    setAuditRows([]);
-    try {
-      setAuditRows(await jsonOrThrow(await fetch("/api/admin/audit?limit=300")));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "audit load failed");
-    } finally {
-      setAuditLoading(false);
-    }
-  }
 
   function toggleExpand(key: number) {
     setExpanded((prev) => {
@@ -320,236 +299,288 @@ export function AdminPage() {
   const activeCount = users.filter((u) => u.status === "active").length;
   const suspendedCount = users.length - activeCount;
 
+  const TABS = [
+    ["overview", "Tổng quan"],
+    ["members", "Thành viên"],
+    ["cost", "Chi phí & Lãng phí"],
+    ["projects", "Dự án"],
+    ["audit", "Nhật ký"],
+  ] as const;
+
   return (
     <div className="admin2">
       <header className="admin2__head">
         <div>
-          <h1 className="admin2__title">Quản lý tài khoản</h1>
-          <p className="admin2__sub">Cấp tài khoản, phân quyền và ngân sách cho đội ngũ.</p>
+          <h1 className="admin2__title">Bảng điều khiển</h1>
+          <p className="admin2__sub">
+            Thành viên, chi phí thật và lãng phí — lấy thẳng từ hoá đơn Avis.
+          </p>
         </div>
         <div className="admin2__head-actions">
           <Link className="btn2 btn2--ghost" to="/projects">
             ← Projects
           </Link>
-          <button className="btn2 btn2--ghost" onClick={openAudit}>
-            Nhật ký audit
-          </button>
-          <button className="btn2 btn2--primary" onClick={() => setCreateOpen(true)}>
-            + Thêm thành viên
-          </button>
+          {tab === "members" ? (
+            <button className="btn2 btn2--primary" onClick={() => setCreateOpen(true)}>
+              + Thêm thành viên
+            </button>
+          ) : null}
         </div>
       </header>
 
-      {/* Global Avis pool — Avis exposes no balance API, so the admin enters the
-          top-up and we draw it down against the real per-gen usdCost. */}
-      <section className={`pool${pool?.exhausted ? " pool--danger" : pool?.over_allocated ? " pool--warn" : ""}`}>
-        <div className="pool__head">
-          <span className="pool__title">Quỹ Avis (số dư thật của API key)</span>
-          <button className="btn2 btn2--ghost pool__edit" onClick={() => setPoolOpen(true)}>
-            {pool?.configured ? "Cập nhật số dư" : "Nhập số dư"}
+      <nav className="tabs" role="tablist">
+        {TABS.map(([k, label]) => (
+          <button
+            key={k}
+            role="tab"
+            aria-selected={tab === k}
+            className={`tabs__btn${tab === k ? " is-active" : ""}`}
+            onClick={() => setTab(k)}
+          >
+            {label}
           </button>
-        </div>
-
-        {!pool?.configured ? (
-          <p className="pool__hint">
-            Avis không có API xem số dư — mở <b>dashboard Avis</b>, copy số dư hiện tại và
-            nhập vào đây. Hệ thống sẽ tự trừ dần theo <b>chi phí thật</b> của mỗi lần gen.
-          </p>
-        ) : (
-          <>
-            <div className="pool__nums">
-              <span><b>${pool.pool_usd.toFixed(2)}</b> đã nạp</span>
-              <span className="pool__sep">·</span>
-              <span>${pool.spent_usd.toFixed(2)} đã tiêu</span>
-              <span className="pool__sep">·</span>
-              <span>${pool.reserved_usd.toFixed(2)} đang giữ chỗ</span>
-              <span className="pool__sep">·</span>
-              <span className="pool__avail">
-                còn lại <b>${pool.available_usd.toFixed(2)}</b>
-              </span>
-            </div>
-            <div className="pool__bar">
-              <span
-                style={{
-                  width: `${pool.pool_usd > 0 ? Math.min(100, ((pool.spent_usd + pool.reserved_usd) / pool.pool_usd) * 100) : 0}%`,
-                }}
-              />
-            </div>
-            {pool.exhausted ? (
-              <p className="pool__alert">
-                🚫 <b>Quỹ đã cạn</b> — mọi yêu cầu gen mới sẽ bị từ chối. Nạp thêm trên Avis
-                rồi cập nhật số dư ở đây.
-              </p>
-            ) : pool.over_allocated ? (
-              <p className="pool__alert">
-                ⚠️ <b>Cấp vượt quỹ</b>: user còn có thể tiêu tổng cộng{" "}
-                <b>${pool.user_remaining_usd.toFixed(2)}</b> nhưng quỹ chỉ còn{" "}
-                <b>${pool.available_usd.toFixed(2)}</b>. Hãy nạp thêm hoặc giảm budget của user.
-              </p>
-            ) : (
-              <p className="pool__ok">
-                ✓ An toàn — user còn có thể tiêu tổng ${pool.user_remaining_usd.toFixed(2)},
-                nằm trong quỹ còn lại.
-              </p>
-            )}
-          </>
-        )}
-      </section>
-
-      <section className="admin2__stats">
-        <div className="stat">
-          <span className="stat__label">Thành viên</span>
-          <span className="stat__value">{users.length}</span>
-        </div>
-        <div className="stat">
-          <span className="stat__label">Đang hoạt động</span>
-          <span className="stat__value stat__value--good">{activeCount}</span>
-        </div>
-        <div className="stat">
-          <span className="stat__label">Đã khoá</span>
-          <span className={`stat__value${suspendedCount ? " stat__value--warn" : ""}`}>
-            {suspendedCount}
-          </span>
-        </div>
-        <div className="stat">
-          <span className="stat__label">Ngân sách còn lại</span>
-          <span className="stat__value">${totalAvailable.toFixed(2)}</span>
-        </div>
-      </section>
-
-      <div className="admin2__toolbar">
-        <input
-          className="admin2__search"
-          placeholder="Tìm theo tên, tài khoản hoặc email…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-        <span className="admin2__count">
-          {shown.length}/{users.length} thành viên
-        </span>
-      </div>
+        ))}
+      </nav>
 
       {error ? <div className="admin-error">{error}</div> : null}
 
-      <div className="admin2__card">
-        {loading ? (
-          <div className="admin2__skeleton">
-            <div className="admin2__sk-row" />
-            <div className="admin2__sk-row" />
-            <div className="admin2__sk-row" />
+      {/* ───────────────── TỔNG QUAN ───────────────── */}
+      {tab === "overview" ? (
+        <>
+          {/* Avis exposes no balance API — the admin enters the top-up and we
+              draw it down against the real per-generation usdCost. */}
+          <section
+            className={`pool${pool?.exhausted ? " pool--danger" : pool?.over_allocated ? " pool--warn" : ""}`}
+          >
+            <div className="pool__head">
+              <span className="pool__title">Quỹ Avis (số dư thật của API key)</span>
+              <button className="btn2 btn2--ghost pool__edit" onClick={() => setPoolOpen(true)}>
+                {pool?.configured ? "Cập nhật số dư" : "Nhập số dư"}
+              </button>
+            </div>
+
+            {!pool?.configured ? (
+              <p className="pool__hint">
+                Avis không có API xem số dư — mở <b>dashboard Avis</b>, copy số dư hiện tại và
+                nhập vào đây. Hệ thống sẽ tự trừ dần theo <b>chi phí thật</b> của mỗi lần gen.
+              </p>
+            ) : (
+              <>
+                <div className="pool__nums">
+                  <span>
+                    <b>${pool.pool_usd.toFixed(2)}</b> đã nạp
+                  </span>
+                  <span className="pool__sep">·</span>
+                  <span>${pool.spent_usd.toFixed(2)} đã tiêu</span>
+                  <span className="pool__sep">·</span>
+                  <span>${pool.reserved_usd.toFixed(2)} đang giữ chỗ</span>
+                  <span className="pool__sep">·</span>
+                  <span className="pool__avail">
+                    còn lại <b>${pool.available_usd.toFixed(2)}</b>
+                  </span>
+                </div>
+                <div className="pool__bar">
+                  <span
+                    style={{
+                      width: `${pool.pool_usd > 0 ? Math.min(100, ((pool.spent_usd + pool.reserved_usd) / pool.pool_usd) * 100) : 0}%`,
+                    }}
+                  />
+                </div>
+                {pool.exhausted ? (
+                  <p className="pool__alert">
+                    🚫 <b>Quỹ đã cạn</b> — mọi yêu cầu gen mới sẽ bị từ chối. Nạp thêm trên Avis
+                    rồi cập nhật số dư ở đây.
+                  </p>
+                ) : pool.over_allocated ? (
+                  <p className="pool__alert">
+                    ⚠️ <b>Cấp vượt quỹ</b>: user còn có thể tiêu tổng{" "}
+                    <b>${pool.user_remaining_usd.toFixed(2)}</b> nhưng quỹ chỉ còn{" "}
+                    <b>${pool.available_usd.toFixed(2)}</b>. Hãy nạp thêm hoặc giảm budget.
+                  </p>
+                ) : (
+                  <p className="pool__ok">
+                    ✓ An toàn — user còn có thể tiêu tổng ${pool.user_remaining_usd.toFixed(2)},
+                    nằm trong quỹ còn lại.
+                  </p>
+                )}
+              </>
+            )}
+          </section>
+
+          <OverviewTab />
+        </>
+      ) : null}
+
+      {/* ───────────────── THÀNH VIÊN ───────────────── */}
+      {tab === "members" ? (
+        <>
+          <section className="admin2__stats">
+            <div className="stat">
+              <span className="stat__label">Thành viên</span>
+              <span className="stat__value">{users.length}</span>
+            </div>
+            <div className="stat">
+              <span className="stat__label">Đang hoạt động</span>
+              <span className="stat__value stat__value--good">{activeCount}</span>
+            </div>
+            <div className="stat">
+              <span className="stat__label">Đã khoá</span>
+              <span className={`stat__value${suspendedCount ? " stat__value--warn" : ""}`}>
+                {suspendedCount}
+              </span>
+            </div>
+            <div className="stat">
+              <span className="stat__label">Ngân sách còn lại</span>
+              <span className="stat__value">${totalAvailable.toFixed(2)}</span>
+            </div>
+          </section>
+
+          <div className="admin2__toolbar">
+            <input
+              className="admin2__search"
+              placeholder="Tìm theo tên, tài khoản hoặc email…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <span className="admin2__count">
+              {shown.length}/{users.length} thành viên
+            </span>
           </div>
-        ) : shown.length === 0 ? (
-          <div className="admin2__empty">
-            {users.length === 0
-              ? "Chưa có thành viên nào — bấm “+ Thêm thành viên” để bắt đầu."
-              : "Không tìm thấy thành viên phù hợp."}
-          </div>
-        ) : (
-          <table className="admin2__table">
-            <thead>
-              <tr>
-                <th>Thành viên</th>
-                <th>Vai trò</th>
-                <th>Trạng thái</th>
-                <th>Ngân sách</th>
-                <th>Đăng nhập gần nhất</th>
-                <th className="admin2__th-actions" aria-label="Thao tác" />
-              </tr>
-            </thead>
-            <tbody>
-              {shown.map((u) => {
-                const budget = u.budget_usd ?? 0;
-                const spent = u.spent_usd ?? 0;
-                const pct = budget > 0 ? Math.min(100, (spent / budget) * 100) : 0;
-                const isMe = u.id === me?.id;
-                const isSso = u.has_password === false;
-                return (
-                  <tr key={u.id} className={u.status === "suspended" ? "is-suspended" : undefined}>
-                    <td>
-                      <div className="admin2__user">
-                        <span className="admin2__avatar" aria-hidden="true">
-                          {initials(u)}
-                        </span>
-                        <span className="admin2__user-txt">
-                          <span className="admin2__name">
-                            {u.display_name || u.username}
-                            {isMe ? <span className="admin2__you">bạn</span> : null}
-                          </span>
-                          <span className="admin2__email">{u.email || u.username}</span>
-                        </span>
-                      </div>
-                    </td>
-                    <td>
-                      <span className={`chip chip--role-${u.role}`}>{u.role}</span>
-                      {isSso ? <span className="chip chip--google">Google</span> : null}
-                    </td>
-                    <td>
-                      <span className={`chip chip--${u.status}`}>
-                        {u.status === "active" ? "Hoạt động" : "Đã khoá"}
-                      </span>
-                    </td>
-                    <td>
-                      <div className="admin2__budget">
-                        <span className="admin2__budget-nums">
-                          <b>{usd(u.available_usd)}</b> còn / {usd(budget)}
-                        </span>
-                        <span className="admin2__bar">
-                          <span style={{ width: `${pct}%` }} />
-                        </span>
-                      </div>
-                    </td>
-                    <td className="admin2__muted">{relTime(u.last_login)}</td>
-                    <td className="admin2__row-actions">
-                      <KebabMenu
-                        items={[
-                          { label: "Xem hoạt động", onSelect: () => void openActivity(u) },
-                          {
-                            label: "Đặt ngân sách",
-                            onSelect: () => setModal({ kind: "budget", user: u }),
-                          },
-                          ...(isMe
-                            ? []
-                            : [
-                                {
-                                  label: u.status === "active" ? "Khoá tài khoản" : "Mở khoá",
-                                  onSelect: () =>
-                                    void patchUser(
-                                      u.id,
-                                      { status: u.status === "active" ? "suspended" : "active" },
-                                      u.status === "active"
-                                        ? `Đã khoá "${u.username}"`
-                                        : `Đã mở khoá "${u.username}"`,
-                                    ),
-                                },
-                                {
-                                  label: u.role === "admin" ? "Hạ xuống user" : "Nâng lên admin",
-                                  onSelect: () =>
-                                    void patchUser(
-                                      u.id,
-                                      { role: u.role === "admin" ? "user" : "admin" },
-                                      `Đã đổi vai trò "${u.username}"`,
-                                    ),
-                                },
-                                {
-                                  label: isSso ? "Đặt mật khẩu" : "Đặt lại mật khẩu",
-                                  onSelect: () => setModal({ kind: "password", user: u }),
-                                },
-                                {
-                                  label: "Xoá tài khoản",
-                                  danger: true,
-                                  onSelect: () => setModal({ kind: "delete", user: u }),
-                                },
-                              ]),
-                        ]}
-                      />
-                    </td>
+
+          <div className="admin2__card">
+            {loading ? (
+              <div className="admin2__skeleton">
+                <div className="admin2__sk-row" />
+                <div className="admin2__sk-row" />
+                <div className="admin2__sk-row" />
+              </div>
+            ) : shown.length === 0 ? (
+              <div className="admin2__empty">
+                {users.length === 0
+                  ? "Chưa có thành viên nào — bấm “+ Thêm thành viên” để bắt đầu."
+                  : "Không tìm thấy thành viên phù hợp."}
+              </div>
+            ) : (
+              <table className="admin2__table">
+                <thead>
+                  <tr>
+                    <th>Thành viên</th>
+                    <th>Vai trò</th>
+                    <th>Trạng thái</th>
+                    <th>Ngân sách</th>
+                    <th>Đăng nhập gần nhất</th>
+                    <th className="admin2__th-actions" aria-label="Thao tác" />
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-      </div>
+                </thead>
+                <tbody>
+                  {shown.map((u) => {
+                    const budget = u.budget_usd ?? 0;
+                    const spent = u.spent_usd ?? 0;
+                    const pct = budget > 0 ? Math.min(100, (spent / budget) * 100) : 0;
+                    const isMe = u.id === me?.id;
+                    const isSso = u.has_password === false;
+                    return (
+                      <tr
+                        key={u.id}
+                        className={u.status === "suspended" ? "is-suspended" : undefined}
+                      >
+                        <td>
+                          <div className="admin2__user">
+                            <span className="admin2__avatar" aria-hidden="true">
+                              {initials(u)}
+                            </span>
+                            <span className="admin2__user-txt">
+                              <span className="admin2__name">
+                                {u.display_name || u.username}
+                                {isMe ? <span className="admin2__you">bạn</span> : null}
+                              </span>
+                              <span className="admin2__email">{u.email || u.username}</span>
+                            </span>
+                          </div>
+                        </td>
+                        <td>
+                          <span className={`chip chip--role-${u.role}`}>{u.role}</span>
+                          {isSso ? <span className="chip chip--google">Google</span> : null}
+                        </td>
+                        <td>
+                          <span className={`chip chip--${u.status}`}>
+                            {u.status === "active" ? "Hoạt động" : "Đã khoá"}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="admin2__budget">
+                            <span className="admin2__budget-nums">
+                              <b>{usd(u.available_usd)}</b> còn / {usd(budget)}
+                            </span>
+                            <span className="admin2__bar">
+                              <span style={{ width: `${pct}%` }} />
+                            </span>
+                          </div>
+                        </td>
+                        <td className="admin2__muted">{relTime(u.last_login)}</td>
+                        <td className="admin2__row-actions">
+                          <KebabMenu
+                            items={[
+                              { label: "Xem hoạt động", onSelect: () => void openActivity(u) },
+                              {
+                                label: "Đặt ngân sách",
+                                onSelect: () => setModal({ kind: "budget", user: u }),
+                              },
+                              ...(isMe
+                                ? []
+                                : [
+                                    {
+                                      label:
+                                        u.status === "active" ? "Khoá tài khoản" : "Mở khoá",
+                                      onSelect: () =>
+                                        void patchUser(
+                                          u.id,
+                                          {
+                                            status:
+                                              u.status === "active" ? "suspended" : "active",
+                                          },
+                                          u.status === "active"
+                                            ? `Đã khoá "${u.username}"`
+                                            : `Đã mở khoá "${u.username}"`,
+                                        ),
+                                    },
+                                    {
+                                      label:
+                                        u.role === "admin" ? "Hạ xuống user" : "Nâng lên admin",
+                                      onSelect: () =>
+                                        void patchUser(
+                                          u.id,
+                                          { role: u.role === "admin" ? "user" : "admin" },
+                                          `Đã đổi vai trò "${u.username}"`,
+                                        ),
+                                    },
+                                    {
+                                      label: isSso ? "Đặt mật khẩu" : "Đặt lại mật khẩu",
+                                      onSelect: () => setModal({ kind: "password", user: u }),
+                                    },
+                                    {
+                                      label: "Xoá tài khoản",
+                                      danger: true,
+                                      onSelect: () => setModal({ kind: "delete", user: u }),
+                                    },
+                                  ]),
+                            ]}
+                          />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </>
+      ) : null}
+
+      {/* ───────────────── CHI PHÍ / DỰ ÁN / NHẬT KÝ ───────────────── */}
+      {tab === "cost" ? <CostTab /> : null}
+      {tab === "projects" ? <ProjectsTab /> : null}
+      {tab === "audit" ? <AuditTab fmtTime={fmtTime} /> : null}
 
       {createOpen ? (
         <CreateUserDialog
@@ -576,63 +607,6 @@ export function AdminPage() {
         />
       ) : null}
 
-      {auditOpen && (
-        <div
-          className="admin-activity-backdrop"
-          role="presentation"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setAuditOpen(false);
-          }}
-        >
-          <div className="admin-activity" role="dialog" aria-label="Audit log">
-            <div className="admin-activity__head">
-              <h2>Nhật ký audit</h2>
-              <button
-                className="admin-activity__close"
-                onClick={() => setAuditOpen(false)}
-                aria-label="Đóng"
-              >
-                ×
-              </button>
-            </div>
-            {auditLoading ? (
-              <div className="admin-loading">Đang tải…</div>
-            ) : (
-              <table className="admin-table">
-                <thead>
-                  <tr>
-                    <th>Thời gian</th>
-                    <th>Hành động</th>
-                    <th>Người thực hiện</th>
-                    <th>Đối tượng</th>
-                    <th>IP</th>
-                    <th>Chi tiết</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {auditRows.map((a) => (
-                    <tr key={a.id}>
-                      <td>{fmtTime(a.created_at)}</td>
-                      <td>{a.action}</td>
-                      <td>{a.actor ?? "—"}</td>
-                      <td>{a.target ?? "—"}</td>
-                      <td>{a.ip ?? "—"}</td>
-                      <td>{a.detail ?? "—"}</td>
-                    </tr>
-                  ))}
-                  {auditRows.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="admin-uname">
-                        (chưa có sự kiện)
-                      </td>
-                    </tr>
-                  ) : null}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </div>
-      )}
 
       {modal?.kind === "password" && (
         <PromptDialog

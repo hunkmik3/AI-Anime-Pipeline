@@ -1,6 +1,6 @@
 import type { NodeProps } from "@xyflow/react";
 
-import { mediaUrl } from "../../api/client";
+import { markDownloaded, mediaUrl } from "../../api/client";
 import { resolvePrimaryMediaId, useGenerationStore } from "../../store/generation";
 import {
   useShotWorkflowStore,
@@ -127,14 +127,14 @@ export function VideoNode(props: NodeProps<FlowNode>) {
       onGenerate={() =>
         useGenerationStore.getState().openGenerationDialog(props.id, data.prompt ?? "")
       }
-      onDownload={() => downloadAllVideoVariants(data)}
+      onDownload={() => downloadAllVideoVariants(data, props.id)}
     >
       <VideoBody rfId={props.id} data={data} />
     </BaseNodeShell>
   );
 }
 
-function downloadAllVideoVariants(data: FlowboardNodeData) {
+function downloadAllVideoVariants(data: FlowboardNodeData, rfId?: string) {
   const rawIds =
     data.mediaIds && data.mediaIds.length > 0
       ? data.mediaIds
@@ -143,8 +143,11 @@ function downloadAllVideoVariants(data: FlowboardNodeData) {
         : [];
   const ids = rawIds.filter((m): m is string => typeof m === "string" && m.length > 0);
   if (ids.length === 0) return;
+  const nodeId = rfId ? Number(rfId) : undefined;
   const safeTitle = (data.title || data.type).replace(/[^A-Za-z0-9_-]+/g, "_");
   ids.forEach((mid, i) => {
+    // Downloading = this take was kept. Feeds the admin cost/waste stats.
+    markDownloaded(mid, nodeId);
     const a = document.createElement("a");
     a.href = mediaUrl(mid);
     const suffix = ids.length > 1 ? `-${i + 1}` : "";

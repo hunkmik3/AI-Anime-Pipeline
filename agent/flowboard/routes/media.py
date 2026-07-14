@@ -9,16 +9,47 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from flowboard.db import get_session
+from flowboard.db.models import DownloadEvent
+from flowboard.routes.deps import get_optional_user
 from flowboard.services import media as media_service
 
 logger = logging.getLogger(__name__)
 
 bytes_router = APIRouter(tags=["media"])
 api_router = APIRouter(prefix="/api/media", tags=["media"])
+
+
+class DownloadedBody(BaseModel):
+    node_id: Optional[int] = None
+
+
+@api_router.post("/{media_id}/downloaded")
+def mark_downloaded(
+    media_id: str, body: DownloadedBody, user=Depends(get_optional_user)
+) -> dict:
+    """Record that the user actually downloaded this output.
+
+    GET /media/:id doubles as the preview route, so we can't infer a download
+    from it — the download button pings this explicitly. This is the strongest
+    "the clip was kept/used" signal we get without asking for an extra click,
+    and it drives the cost/waste stats."""
+    if not media_service.is_valid_media_id(media_id):
+        raise HTTPException(status_code=400, detail="invalid media_id")
+    with get_session() as s:
+        s.add(
+            DownloadEvent(
+                user_id=(user.id if user is not None else None),
+                media_id=media_id,
+                node_id=body.node_id,
+            )
+        )
+        s.commit()
+    return {"ok": True}
 
 
 @bytes_router.get("/media/{media_id:path}")

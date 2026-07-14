@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 
 import {
+  markDownloaded,
   mediaUrl,
   patchNode,
   uploadImage,
@@ -497,17 +498,19 @@ export function VisualAssetNode(props: NodeProps<FlowNode>) {
       onGenerate={() =>
         useGenerationStore.getState().openGenerationDialog(props.id, data.prompt ?? "")
       }
-      onDownload={() => downloadVisualAsset(data)}
+      onDownload={() => downloadVisualAsset(data, props.id)}
     >
       <VisualAssetBody rfId={props.id} data={data} />
     </BaseNodeShell>
   );
 }
 
-function downloadVisualAsset(data: FlowboardNodeData) {
+function downloadVisualAsset(data: FlowboardNodeData, rfId?: string) {
+  const nodeId = rfId ? Number(rfId) : undefined;
   const dl = resolvePrimaryMediaId(data) ?? data.mediaId;
   if (!dl) return;
   const safeTitle = (data.title || data.type).replace(/[^A-Za-z0-9_-]+/g, "_");
+  markDownloaded(dl, nodeId);
   const a = document.createElement("a");
   a.href = mediaUrl(dl);
   a.download = `${safeTitle}-${data.shortId}.png`;

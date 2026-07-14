@@ -1361,3 +1361,19 @@ export interface VideoModelsResponse {
 export function listVideoModels(): Promise<VideoModelsResponse> {
   return api<VideoModelsResponse>("/api/video/models");
 }
+
+/**
+ * Record that the user actually downloaded an output. Fire-and-forget — it must
+ * never block or fail the download itself. The media route doubles as the
+ * preview route, so this explicit ping is the only reliable "was it kept?"
+ * signal; it drives the admin cost/waste stats.
+ */
+export function markDownloaded(mediaId: string, nodeId?: number): void {
+  void fetch(`/api/media/${mediaId}/downloaded`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ node_id: Number.isFinite(nodeId) ? nodeId : null }),
+  }).catch(() => {
+    /* stats are best-effort */
+  });
+}

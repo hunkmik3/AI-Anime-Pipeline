@@ -7860,3 +7860,48 @@ button:disabled {
 .pool__alert { margin: 0; font-size: 0.84rem; line-height: 1.5; color: #ffcf8f; }
 .pool--danger .pool__alert { color: #ff9d9d; }
 .pool__ok { margin: 0; font-size: 0.8rem; color: #6a6a73; }
+
+/* Admin tabs */
+.tabs {
+  display: flex; gap: 4px; margin-bottom: 16px;
+  border-bottom: 1px solid var(--a-border, #26262e);
+}
+.tabs__btn {
+  padding: 9px 14px; border: none; background: transparent; cursor: pointer;
+  color: #8a8a93; font-size: 0.86rem; font-weight: 600;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tabs__btn:hover { color: #d0d0d8; }
+.tabs__btn.is-active { color: #f0f0f4; border-bottom-color: #6c5cff; }
+
+.admin2__pad { padding: 16px 18px; }
+.tab-h { font-size: 0.88rem; color: #b6b6c0; margin-bottom: 16px; }
+.tab-h b { color: #f0f0f4; }
+.tab-h3 { margin: 0 0 12px; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.6px; color: #8a8a93; }
+.tab-note {
+  margin: 0; padding: 12px 16px; font-size: 0.8rem; line-height: 1.6; color: #8a8a93;
+  border-bottom: 1px solid var(--a-border, #26262e);
+}
+.tab-note b { color: #d0d0d8; }
+.stat__pct { font-size: 0.85rem; font-weight: 600; color: #8a8a93; }
+
+/* money in / money burned */
+.burn { color: #ff8f8f; font-weight: 600; }
+.burn--bad { color: #ff5f5f; }
+.keep { color: #6ee787; font-weight: 600; }
+
+/* model spend bars */
+.mbars { display: flex; flex-direction: column; gap: 10px; }
+.mbar { display: grid; grid-template-columns: 190px 1fr 170px; align-items: center; gap: 12px; }
+.mbar__label { font-size: 0.82rem; color: #d0d0d8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mbar__track { height: 8px; border-radius: 999px; background: rgba(255,255,255,0.07); overflow: hidden; }
+.mbar__fill { display: block; height: 100%; background: linear-gradient(90deg, #6c5cff, #a06cff); border-radius: 999px; }
+.mbar__val { font-size: 0.82rem; color: #f0f0f4; text-align: right; white-space: nowrap; }
+.mbar__val small { color: #8a8a93; font-weight: 400; }
+
+/* cost drill-down */
+.row-click { cursor: pointer; }
+.row-click:hover { background: rgba(255,255,255,0.03); }
+.drill { background: rgba(0,0,0,0.22); padding: 0 !important; }
+.drill__table { font-size: 0.82rem; }
+.drill__table thead th { background: rgba(255,255,255,0.02); }

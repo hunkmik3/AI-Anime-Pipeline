@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from flowboard.routes.deps import require_admin
-from flowboard.services import audit_service, budget_service, user_service
+from flowboard.services import audit_service, budget_service, stats_service, user_service
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,37 @@ def create_user(body: CreateUserBody, request: Request, caller=Depends(require_a
 def audit(limit: int = 200, action: str | None = None) -> list[dict]:
     """Recent security-audit entries (logins, SSO, admin actions), newest first."""
     return audit_service.list_recent(limit=min(max(1, limit), 1000), action=action)
+
+
+@router.get("/stats/overview")
+def stats_overview() -> dict:
+    """Totals: spent, how much produced a kept clip vs burned on re-rolls."""
+    return stats_service.overview()
+
+
+@router.get("/stats/users")
+def stats_users() -> list[dict]:
+    """Per user: granted vs spent, split into money on KEPT clips vs money
+    burned on discarded takes. Cannot be gamed — it's the actual bill."""
+    return stats_service.user_costs()
+
+
+@router.get("/stats/users/{user_id}/clips")
+def stats_user_clips(user_id: str) -> list[dict]:
+    """Drill-down: every clip that user made — takes, money burned, kept cost."""
+    if user_service.get_by_id(user_id) is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    return stats_service.user_clips(user_id)
+
+
+@router.get("/stats/projects")
+def stats_projects() -> list[dict]:
+    return stats_service.project_costs()
+
+
+@router.get("/stats/models")
+def stats_models() -> list[dict]:
+    return stats_service.model_costs()
 
 
 class PoolBody(BaseModel):

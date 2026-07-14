@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 
-import { mediaUrl, patchNode, uploadImage } from "../../api/client";
+import { markDownloaded, mediaUrl, patchNode, uploadImage } from "../../api/client";
 import { requestAutoBrief } from "../../api/autoBrief";
 import { useGenerationStore } from "../../store/generation";
 import {
@@ -258,14 +258,15 @@ export function ImageNode(props: NodeProps<FlowNode>) {
       onGenerate={() =>
         useGenerationStore.getState().openGenerationDialog(props.id, data.prompt ?? "")
       }
-      onDownload={() => downloadAllVariants(data)}
+      onDownload={() => downloadAllVariants(data, props.id)}
     >
       <ImageBody rfId={props.id} data={data} />
     </BaseNodeShell>
   );
 }
 
-function downloadAllVariants(data: FlowboardNodeData) {
+function downloadAllVariants(data: FlowboardNodeData, rfId?: string) {
+  const nodeId = rfId ? Number(rfId) : undefined;
   const rawIds =
     data.mediaIds && data.mediaIds.length > 0
       ? data.mediaIds
@@ -276,6 +277,7 @@ function downloadAllVariants(data: FlowboardNodeData) {
   if (ids.length === 0) return;
   const safeTitle = (data.title || data.type).replace(/[^A-Za-z0-9_-]+/g, "_");
   ids.forEach((mid, i) => {
+    markDownloaded(mid, nodeId);
     const a = document.createElement("a");
     a.href = mediaUrl(mid);
     const suffix = ids.length > 1 ? `-${i + 1}` : "";

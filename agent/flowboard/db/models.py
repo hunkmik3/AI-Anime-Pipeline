@@ -291,6 +291,23 @@ class UsageRecord(SQLModel, table=True):
     settled_at: Optional[datetime] = None
 
 
+class DownloadEvent(SQLModel, table=True):
+    """A user actually downloaded an output — the strongest "this was used"
+    signal we can get without asking them to click anything extra.
+
+    The media route is also used for previews, so downloads are recorded by an
+    explicit ping from the download button. Used by the cost/waste stats to
+    confirm which generation on a node was the one that got kept."""
+
+    __tablename__ = "download_event"  # type: ignore[assignment]
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: Optional[uuid.UUID] = Field(default=None, index=True)
+    media_id: str = Field(index=True)
+    node_id: Optional[int] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=_utcnow, index=True)
+
+
 class AppSetting(SQLModel, table=True):
     """Tiny key/value store for admin-editable runtime settings.
 

@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 
-import { mediaUrl, patchNode, uploadImage } from "../../api/client";
+import { markDownloaded, mediaUrl, patchNode, uploadImage } from "../../api/client";
 import { requestAutoBrief } from "../../api/autoBrief";
 import { resolvePrimaryMediaId, useGenerationStore } from "../../store/generation";
 import {
@@ -280,10 +280,12 @@ export function CharacterNode(props: NodeProps<FlowNode>) {
   );
 }
 
-function triggerCharacterDownload(_rfId: string, data: FlowboardNodeData) {
+function triggerCharacterDownload(rfId: string, data: FlowboardNodeData) {
+  const nodeId = rfId ? Number(rfId) : undefined;
   const dl = resolvePrimaryMediaId(data) ?? data.mediaId;
   if (!dl) return;
   const safeTitle = (data.title || data.type).replace(/[^A-Za-z0-9_-]+/g, "_");
+  markDownloaded(dl, nodeId);
   const a = document.createElement("a");
   a.href = mediaUrl(dl);
   a.download = `${safeTitle}-${data.shortId}.png`;
