@@ -46,6 +46,18 @@ interface ActivityItem {
   media_ids: string[];
 }
 
+interface PoolSummary {
+  pool_usd: number;
+  spent_usd: number;
+  reserved_usd: number;
+  available_usd: number;
+  granted_usd: number;
+  user_remaining_usd: number;
+  configured: boolean;
+  over_allocated: boolean;
+  exhausted: boolean;
+}
+
 interface AuditEntry {
   id: number;
   created_at?: string | null;
@@ -133,6 +145,10 @@ export function AdminPage() {
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
 
+  // global Avis pool (Avis has no balance API — admin enters the top-up)
+  const [pool, setPool] = useState<PoolSummary | null>(null);
+  const [poolOpen, setPoolOpen] = useState(false);
+
   // activity modal
   const [activityUser, setActivityUser] = useState<AdminUser | null>(null);
   const [activity, setActivity] = useState<ActivityData | null>(null);
@@ -197,7 +213,12 @@ export function AdminPage() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      setUsers(await jsonOrThrow(await fetch("/api/admin/users")));
+      const [us, pl] = await Promise.all([
+        jsonOrThrow(await fetch("/api/admin/users")),
+        jsonOrThrow(await fetch("/api/admin/pool")),
+      ]);
+      setUsers(us);
+      setPool(pl);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "load failed");
@@ -205,6 +226,26 @@ export function AdminPage() {
       setLoading(false);
     }
   }, []);
+
+  async function savePool(v: number) {
+    try {
+      setPool(
+        await jsonOrThrow(
+          await fetch("/api/admin/pool", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pool_usd: v }),
+          }),
+        ),
+      );
+      setPoolOpen(false);
+      toast(`Đã cập nhật quỹ Avis: $${v.toFixed(2)}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "pool update failed";
+      setError(msg);
+      toast(msg, "error");
+    }
+  }
 
   useEffect(() => {
     void refresh();
@@ -298,6 +339,62 @@ export function AdminPage() {
           </button>
         </div>
       </header>
+
+      {/* Global Avis pool — Avis exposes no balance API, so the admin enters the
+          top-up and we draw it down against the real per-gen usdCost. */}
+      <section className={`pool${pool?.exhausted ? " pool--danger" : pool?.over_allocated ? " pool--warn" : ""}`}>
+        <div className="pool__head">
+          <span className="pool__title">Quỹ Avis (số dư thật của API key)</span>
+          <button className="btn2 btn2--ghost pool__edit" onClick={() => setPoolOpen(true)}>
+            {pool?.configured ? "Cập nhật số dư" : "Nhập số dư"}
+          </button>
+        </div>
+
+        {!pool?.configured ? (
+          <p className="pool__hint">
+            Avis không có API xem số dư — mở <b>dashboard Avis</b>, copy số dư hiện tại và
+            nhập vào đây. Hệ thống sẽ tự trừ dần theo <b>chi phí thật</b> của mỗi lần gen.
+          </p>
+        ) : (
+          <>
+            <div className="pool__nums">
+              <span><b>${pool.pool_usd.toFixed(2)}</b> đã nạp</span>
+              <span className="pool__sep">·</span>
+              <span>${pool.spent_usd.toFixed(2)} đã tiêu</span>
+              <span className="pool__sep">·</span>
+              <span>${pool.reserved_usd.toFixed(2)} đang giữ chỗ</span>
+              <span className="pool__sep">·</span>
+              <span className="pool__avail">
+                còn lại <b>${pool.available_usd.toFixed(2)}</b>
+              </span>
+            </div>
+            <div className="pool__bar">
+              <span
+                style={{
+                  width: `${pool.pool_usd > 0 ? Math.min(100, ((pool.spent_usd + pool.reserved_usd) / pool.pool_usd) * 100) : 0}%`,
+                }}
+              />
+            </div>
+            {pool.exhausted ? (
+              <p className="pool__alert">
+                🚫 <b>Quỹ đã cạn</b> — mọi yêu cầu gen mới sẽ bị từ chối. Nạp thêm trên Avis
+                rồi cập nhật số dư ở đây.
+              </p>
+            ) : pool.over_allocated ? (
+              <p className="pool__alert">
+                ⚠️ <b>Cấp vượt quỹ</b>: user còn có thể tiêu tổng cộng{" "}
+                <b>${pool.user_remaining_usd.toFixed(2)}</b> nhưng quỹ chỉ còn{" "}
+                <b>${pool.available_usd.toFixed(2)}</b>. Hãy nạp thêm hoặc giảm budget của user.
+              </p>
+            ) : (
+              <p className="pool__ok">
+                ✓ An toàn — user còn có thể tiêu tổng ${pool.user_remaining_usd.toFixed(2)},
+                nằm trong quỹ còn lại.
+              </p>
+            )}
+          </>
+        )}
+      </section>
 
       <section className="admin2__stats">
         <div className="stat">
@@ -459,6 +556,23 @@ export function AdminPage() {
           busy={busy}
           onSubmit={(nu) => void createUser(nu)}
           onClose={() => setCreateOpen(false)}
+        />
+      ) : null}
+
+      {poolOpen ? (
+        <PromptDialog
+          title="Số dư quỹ Avis"
+          label="Số dư hiện tại trên dashboard Avis ($)"
+          type="number"
+          initial={String(pool?.pool_usd ?? 0)}
+          placeholder="vd 444.32"
+          submitLabel="Lưu"
+          validate={(v) => {
+            const n = Number(v);
+            return !Number.isFinite(n) || n < 0 ? "Số tiền không hợp lệ" : null;
+          }}
+          onSubmit={(v) => void savePool(Number(v))}
+          onClose={() => setPoolOpen(false)}
         />
       ) : null}
 

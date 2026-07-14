@@ -31,6 +31,11 @@ def create_request(body: RequestCreate, user=Depends(get_optional_user)):
         )
         if budget_service.available_usd(user.id) + 1e-9 < est:
             raise HTTPException(status_code=402, detail="insufficient_budget")
+        # Global Avis pool guard: refuse up-front when the shared key can't
+        # cover it, instead of letting the user wait on a gen Avis will reject.
+        pool_avail = budget_service.pool_available_usd()
+        if pool_avail is not None and pool_avail + 1e-9 < est:
+            raise HTTPException(status_code=402, detail="avis_pool_exhausted")
     with get_session() as s:
         if body.node_id is not None and not s.get(Node, body.node_id):
             raise HTTPException(404, "node not found")
@@ -51,14 +56,22 @@ def create_request(body: RequestCreate, user=Depends(get_optional_user)):
     # atomically — undo + reject if a concurrent gen ate the budget first).
     if body.type == "gen_video" and user is not None:
         if not budget_service.reserve(user.id, request_id=rid, estimated_usd=est, model=params.get("model_id")):
+            # Distinguish "your budget ran out" from "the shared Avis key ran out"
+            # so the UI can tell the user who to talk to.
+            pool_avail = budget_service.pool_available_usd()
+            detail = (
+                "avis_pool_exhausted"
+                if pool_avail is not None and pool_avail + 1e-9 < est
+                else "insufficient_budget"
+            )
             with get_session() as s:
                 r = s.get(Request, rid)
                 if r is not None:
                     r.status = "failed"
-                    r.error = "insufficient_budget"
+                    r.error = detail
                     s.add(r)
                     s.commit()
-            raise HTTPException(status_code=402, detail="insufficient_budget")
+            raise HTTPException(status_code=402, detail=detail)
     get_worker().enqueue(rid)
     return row
 

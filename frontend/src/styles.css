@@ -7835,3 +7835,28 @@ button:disabled {
   background: #0e0e13; color: #f0f0f4; font-size: 0.9rem; outline: none;
 }
 .login-field select:focus { border-color: #6c5cff; }
+
+/* Avis pool card (global spend guard) */
+.pool {
+  background: var(--a-panel, #16161c); border: 1px solid var(--a-border, #26262e);
+  border-left: 3px solid #6c5cff; border-radius: 12px;
+  padding: 14px 16px; margin-bottom: 14px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.pool--warn { border-left-color: #e0a63a; }
+.pool--danger { border-left-color: #d64545; }
+.pool__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.pool__title { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #9a9aa4; }
+.pool__edit { padding: 6px 11px; font-size: 0.78rem; }
+.pool__hint { margin: 0; font-size: 0.84rem; color: #8a8a93; line-height: 1.55; }
+.pool__nums { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 0.86rem; color: #b6b6c0; }
+.pool__nums b { color: #f0f0f4; }
+.pool__sep { color: #45454f; }
+.pool__avail b { color: #6ee787; font-size: 1.02rem; }
+.pool__bar { height: 6px; border-radius: 999px; background: rgba(255,255,255,0.07); overflow: hidden; }
+.pool__bar > span { display: block; height: 100%; background: linear-gradient(90deg, #6c5cff, #a06cff); border-radius: 999px; }
+.pool--warn .pool__bar > span { background: linear-gradient(90deg, #e0a63a, #f0c46a); }
+.pool--danger .pool__bar > span { background: linear-gradient(90deg, #d64545, #ff7676); }
+.pool__alert { margin: 0; font-size: 0.84rem; line-height: 1.5; color: #ffcf8f; }
+.pool--danger .pool__alert { color: #ff9d9d; }
+.pool__ok { margin: 0; font-size: 0.8rem; color: #6a6a73; }

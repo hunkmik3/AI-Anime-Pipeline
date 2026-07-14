@@ -291,6 +291,22 @@ class UsageRecord(SQLModel, table=True):
     settled_at: Optional[datetime] = None
 
 
+class AppSetting(SQLModel, table=True):
+    """Tiny key/value store for admin-editable runtime settings.
+
+    Currently holds ``avis_pool_usd`` — how much money the admin has topped up
+    on the shared Avis key. Avis exposes no balance API (its docs list only
+    model/chat/image/video endpoints), so the pool is entered by the admin and
+    drawn down against the REAL per-generation ``usdCost`` we already record in
+    UsageRecord. Generic on purpose: future settings need no new migration."""
+
+    __tablename__ = "app_setting"  # type: ignore[assignment]
+
+    key: str = Field(primary_key=True)
+    value: str = ""
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
 class AuditLog(SQLModel, table=True):
     """Phase 3 — security audit trail: logins, SSO, and admin actions.
 

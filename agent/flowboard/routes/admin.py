@@ -80,6 +80,31 @@ def audit(limit: int = 200, action: str | None = None) -> list[dict]:
     return audit_service.list_recent(limit=min(max(1, limit), 1000), action=action)
 
 
+class PoolBody(BaseModel):
+    pool_usd: Optional[float] = None   # set the topped-up amount (absolute)
+    add_usd: Optional[float] = None    # top up (+/-) by a delta
+
+
+@router.get("/pool")
+def get_pool() -> dict:
+    """Global Avis pool: topped-up amount, real spend, holds, and whether the
+    granted user budgets exceed what the shared key actually still holds.
+    (Avis has no balance API — the pool is admin-entered.)"""
+    return budget_service.pool_summary()
+
+
+@router.patch("/pool")
+def update_pool(body: PoolBody, request: Request, caller=Depends(require_admin)) -> dict:
+    ip = audit_service.client_ip(request)
+    if body.pool_usd is not None:
+        v = budget_service.set_pool_usd(body.pool_usd)
+        audit_service.record("pool.set", actor=caller, ip=ip, detail=f"pool=${v}")
+    if body.add_usd is not None:
+        v = budget_service.add_pool_usd(body.add_usd)
+        audit_service.record("pool.topup", actor=caller, ip=ip, detail=f"add=${body.add_usd} → ${v}")
+    return budget_service.pool_summary()
+
+
 @router.get("/users/{user_id}/activity")
 def user_activity(user_id: str, limit: int = 100) -> dict:
     """Per-user generation history for the admin view: what they generated,

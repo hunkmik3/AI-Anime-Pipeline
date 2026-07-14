@@ -18,6 +18,7 @@ from sqlmodel import select
 
 from flowboard.db import get_session
 from flowboard.db.models import (
+    AppSetting,
     Node,
     Project,
     Request,
@@ -28,6 +29,14 @@ from flowboard.db.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ── Global Avis pool ───────────────────────────────────────────────────────
+# Avis exposes NO balance endpoint (its docs list only model/chat/image/video
+# routes), so the admin enters how much they topped up and we draw it down
+# against the REAL per-generation usdCost already recorded in UsageRecord.
+# When the pool is 0 (unconfigured) the global guard is inactive — per-user
+# budgets behave exactly as before.
+POOL_KEY = "avis_pool_usd"
 
 
 # USD-per-output-second by resolution, calibrated to observed Avis usdCost
@@ -102,9 +111,97 @@ def summary(user_id) -> Optional[dict]:
         }
 
 
+def _pool_totals(session) -> tuple[float, float]:
+    """(settled_spend, outstanding_reservations) across ALL users — the real
+    money drawn from the shared Avis key."""
+    spent = session.exec(
+        select(func.coalesce(func.sum(UsageRecord.actual_usd), 0.0)).where(
+            UsageRecord.status == "settled"
+        )
+    ).one()
+    reserved = session.exec(
+        select(func.coalesce(func.sum(UsageRecord.estimated_usd), 0.0)).where(
+            UsageRecord.status == "reserved"
+        )
+    ).one()
+    return float(spent or 0.0), float(reserved or 0.0)
+
+
+def _read_pool(session) -> float:
+    row = session.get(AppSetting, POOL_KEY)
+    if row is None:
+        return 0.0
+    try:
+        return max(0.0, float(row.value))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def get_pool_usd() -> float:
+    with get_session() as s:
+        return _read_pool(s)
+
+
+def set_pool_usd(value: float) -> float:
+    """Set the topped-up Avis amount (admin copies it from the Avis dashboard)."""
+    v = max(0.0, round(float(value), 4))
+    with get_session() as s:
+        row = s.get(AppSetting, POOL_KEY)
+        if row is None:
+            row = AppSetting(key=POOL_KEY, value=str(v))
+        else:
+            row.value = str(v)
+            row.updated_at = _utcnow()
+        s.add(row)
+        s.commit()
+    return v
+
+
+def add_pool_usd(delta: float) -> float:
+    """Top up (or deduct) the pool by a delta."""
+    return set_pool_usd(get_pool_usd() + float(delta))
+
+
+def pool_summary() -> dict:
+    """Global Avis pool state + the over-allocation check the admin needs."""
+    with get_session() as s:
+        pool = _read_pool(s)
+        spent, reserved = _pool_totals(s)
+        granted = float(
+            s.exec(select(func.coalesce(func.sum(User.budget_usd), 0.0))).one() or 0.0
+        )
+        # What users could still spend if they all used their full budget.
+        rows = s.exec(select(User.budget_usd, User.spent_usd)).all()
+        user_remaining = sum(max(0.0, float(b or 0) - float(sp or 0)) for b, sp in rows)
+    available = round(pool - spent - reserved, 4)
+    configured = pool > 0
+    return {
+        "pool_usd": round(pool, 4),
+        "spent_usd": round(spent, 4),
+        "reserved_usd": round(reserved, 4),
+        "available_usd": available,
+        "granted_usd": round(granted, 4),
+        "user_remaining_usd": round(user_remaining, 4),
+        "configured": configured,
+        # Users can collectively still spend more than the key actually holds.
+        "over_allocated": bool(configured and user_remaining > available + 1e-9),
+        "exhausted": bool(configured and available <= 0),
+    }
+
+
+def pool_available_usd() -> Optional[float]:
+    """Remaining money on the shared key, or None when the pool is unconfigured."""
+    with get_session() as s:
+        pool = _read_pool(s)
+        if pool <= 0:
+            return None
+        spent, reserved = _pool_totals(s)
+    return round(pool - spent - reserved, 4)
+
+
 def reserve(user_id, *, request_id: Optional[int], estimated_usd: float, model: Optional[str], kind: str = "video") -> bool:
-    """Hold ``estimated_usd`` if the user can afford it. Returns False (no hold)
-    when over budget."""
+    """Hold ``estimated_usd`` if BOTH the user's budget and the global Avis pool
+    can cover it. Returns False (no hold) when either is insufficient."""
     uid = _uuid(user_id)
     if uid is None:
         return False
@@ -115,6 +212,13 @@ def reserve(user_id, *, request_id: Optional[int], estimated_usd: float, model: 
         avail = float(u.budget_usd) - float(u.spent_usd) - _reserved_sum(s, uid)
         if avail + 1e-9 < estimated_usd:
             return False
+        # Global pool guard (only when the admin configured a pool): never
+        # reserve past what the shared Avis key actually still holds.
+        pool = _read_pool(s)
+        if pool > 0:
+            spent_all, reserved_all = _pool_totals(s)
+            if (pool - spent_all - reserved_all) + 1e-9 < estimated_usd:
+                return False
         s.add(
             UsageRecord(
                 user_id=uid,
