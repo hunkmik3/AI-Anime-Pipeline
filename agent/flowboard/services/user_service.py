@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import func
@@ -19,6 +20,10 @@ from flowboard.db.models import Project, UsageRecord, User
 from flowboard.services import auth
 
 logger = logging.getLogger(__name__)
+
+# Login brute-force lockout (Phase 0). Env-tunable.
+_LOGIN_MAX_FAILED = int(os.getenv("FLOWBOARD_LOGIN_MAX_FAILED", "5"))
+_LOGIN_LOCKOUT_MIN = int(os.getenv("FLOWBOARD_LOGIN_LOCKOUT_MIN", "15"))
 
 
 class UserError(RuntimeError):
@@ -103,6 +108,12 @@ def set_status(user_id, status: str) -> User:
         if u is None:
             raise UserNotFound(str(user_id))
         u.status = status
+        if status == "suspended":
+            # Revoke any outstanding token immediately (offboarding).
+            u.token_version = int(u.token_version or 0) + 1
+        else:  # re-activated → clear any lockout so they can log back in
+            u.failed_attempts = 0
+            u.locked_until = None
         s.add(u)
         s.commit()
         s.refresh(u)
@@ -129,6 +140,82 @@ def set_password(user_id, password: str) -> None:
         if u is None:
             raise UserNotFound(str(user_id))
         u.password_hash = auth.hash_password(password)
+        # A password change revokes every existing session (force re-login).
+        u.token_version = int(u.token_version or 0) + 1
+        s.add(u)
+        s.commit()
+
+
+def authenticate_token(token: str) -> Optional[User]:
+    """Resolve a bearer token to an ACTIVE account, enforcing token_version.
+
+    Returns None if the token is invalid/expired/tampered, the account is
+    missing or suspended, or the token's ``tv`` is stale (revoked). This is the
+    single source of truth used by both the global auth middleware and the
+    per-route dependencies, so suspend/delete/password-change take effect on
+    the very next request across every route."""
+    data = auth.decode_token(token)
+    if not data:
+        return None
+    user = get_by_id(data["uid"])
+    if user is None or user.status != "active":
+        return None
+    if int(data.get("tv", 0)) != int(user.token_version or 0):
+        return None
+    return user
+
+
+def bump_token_version(user_id) -> None:
+    """Invalidate all of a user's outstanding tokens ("log out everywhere")."""
+    uid = _coerce_uuid(user_id)
+    with get_session() as s:
+        u = s.get(User, uid) if uid else None
+        if u is None:
+            raise UserNotFound(str(user_id))
+        u.token_version = int(u.token_version or 0) + 1
+        s.add(u)
+        s.commit()
+
+
+def is_locked(user: User) -> bool:
+    """True if the account is currently in a brute-force lockout window."""
+    lu = getattr(user, "locked_until", None)
+    if lu is None:
+        return False
+    if lu.tzinfo is None:  # SQLite may return naive datetimes
+        lu = lu.replace(tzinfo=timezone.utc)
+    return lu > datetime.now(timezone.utc)
+
+
+def register_failed_login(user_id) -> None:
+    """Count a failed password attempt; lock the account past the threshold."""
+    uid = _coerce_uuid(user_id)
+    with get_session() as s:
+        u = s.get(User, uid) if uid else None
+        if u is None:
+            return
+        u.failed_attempts = int(u.failed_attempts or 0) + 1
+        if u.failed_attempts >= _LOGIN_MAX_FAILED:
+            u.locked_until = datetime.now(timezone.utc) + timedelta(minutes=_LOGIN_LOCKOUT_MIN)
+            u.failed_attempts = 0  # reset the counter; the lock is the penalty
+        s.add(u)
+        s.commit()
+
+
+def register_successful_login(user_id, *, rehash_password: Optional[str] = None) -> None:
+    """Clear lockout counters, stamp last_login, and transparently upgrade a
+    legacy/low-cost password hash when ``rehash_password`` (the just-verified
+    plaintext) is supplied."""
+    uid = _coerce_uuid(user_id)
+    with get_session() as s:
+        u = s.get(User, uid) if uid else None
+        if u is None:
+            return
+        u.failed_attempts = 0
+        u.locked_until = None
+        u.last_login = datetime.now(timezone.utc)
+        if rehash_password is not None and auth.needs_rehash(u.password_hash):
+            u.password_hash = auth.hash_password(rehash_password)
         s.add(u)
         s.commit()
 
@@ -226,4 +313,5 @@ def public_dict(u: User) -> dict:
         "budget_usd": round(float(u.budget_usd), 4),
         "spent_usd": round(float(u.spent_usd), 4),
         "created_at": u.created_at.isoformat() if u.created_at else None,
+        "last_login": u.last_login.isoformat() if getattr(u, "last_login", None) else None,
     }

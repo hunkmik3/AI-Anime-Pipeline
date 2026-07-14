@@ -141,9 +141,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Flowboard Agent", version="0.0.2", lifespan=lifespan)
 
+# CORS — explicit origins only (no wildcard on a credentialed, internet-facing
+# app). In production the backend serves the SPA same-origin so CORS is barely
+# exercised; this mainly enables local dev (Vite on :5173/:5174). Override in
+# prod via FLOWBOARD_CORS_ORIGINS (comma-separated), e.g.
+# "https://giantstudio.reelmind.co".
+_DEFAULT_CORS_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+]
+_cors_env = [o.strip() for o in _os.getenv("FLOWBOARD_CORS_ORIGINS", "").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_env or _DEFAULT_CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -155,13 +167,20 @@ app.add_middleware(
 # default so single-user/dev and tests stay open. Routes still scope by owner
 # via get_optional_user.
 from fastapi.responses import JSONResponse as _JSONResponse  # noqa: E402
-from flowboard.services import auth as _auth  # noqa: E402
+from flowboard.services import auth as _auth  # noqa: E402,F401
+from flowboard.services import user_service as _user_service  # noqa: E402
 
+# Login + health are open; everything else under /api requires a valid session
+# when REQUIRE_AUTH is on. (SSO endpoints get added here in Phase 2.)
 _AUTH_OPEN_PATHS = {"/api/account/login", "/api/health"}
 
 
 @app.middleware("http")
 async def _auth_gate(request: FastAPIRequest, call_next):
+    """Central authentication gate. Unlike a signature-only check, this resolves
+    the token to a live, ACTIVE account with a matching token_version — so a
+    suspended/deleted user, or a revoked token, is rejected on the very next
+    request across EVERY route, not just the admin ones."""
     if REQUIRE_AUTH and request.method != "OPTIONS":
         path = request.url.path
         if (
@@ -170,14 +189,31 @@ async def _auth_gate(request: FastAPIRequest, call_next):
             and not path.startswith("/api/ext/")
         ):
             authz = request.headers.get("authorization") or ""
-            uid = (
-                _auth.verify_token(authz[7:].strip())
+            user = (
+                _user_service.authenticate_token(authz[7:].strip())
                 if authz.lower().startswith("bearer ")
                 else None
             )
-            if not uid:
+            if user is None:
                 return _JSONResponse({"detail": "authentication required"}, status_code=401)
+            request.state.user = user  # reused by the per-route dependencies
     return await call_next(request)
+
+
+@app.middleware("http")
+async def _security_headers(request: FastAPIRequest, call_next):
+    """Baseline hardening headers on every response. TLS terminates at the
+    Cloudflare tunnel, so HSTS is safe to advertise. A Content-Security-Policy
+    is opt-in via FLOWBOARD_CSP (an untested policy can break the SPA)."""
+    resp = await call_next(request)
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    _csp = _os.getenv("FLOWBOARD_CSP")
+    if _csp:
+        resp.headers.setdefault("Content-Security-Policy", _csp)
+    return resp
 
 
 app.include_router(nodes.router)

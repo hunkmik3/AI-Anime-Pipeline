@@ -254,6 +254,16 @@ class User(SQLModel, table=True):
     # (reserved, not yet settled) live in UsageRecord.
     budget_usd: float = Field(default=0.0)
     spent_usd: float = Field(default=0.0)
+    # Phase 0 security hardening:
+    #  - token_version: bumped on suspend / password-change / "log out
+    #    everywhere" → any outstanding token carrying an older tv is rejected
+    #    (stateless-token revocation without a server-side session store).
+    #  - failed_attempts / locked_until: login brute-force lockout.
+    #  - last_login: audit + compromise detection.
+    token_version: int = Field(default=0)
+    failed_attempts: int = Field(default=0)
+    locked_until: Optional[datetime] = None
+    last_login: Optional[datetime] = None
     created_at: datetime = Field(default_factory=_utcnow)
 
 
