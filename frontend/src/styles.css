@@ -7526,6 +7526,7 @@ button:disabled {
 .admin-badge--role-user { background: rgba(255, 255, 255, 0.08); color: #c9c9d2; }
 .admin-badge--active { background: rgba(52, 199, 89, 0.16); color: #6ee787; }
 .admin-badge--suspended { background: rgba(214, 69, 69, 0.18); color: #ff8f8f; }
+.admin-badge--google { background: rgba(66, 133, 244, 0.18); color: #8ab4f8; margin-left: 6px; }
 
 /* Account menu (top-right) */
 .account-menu {

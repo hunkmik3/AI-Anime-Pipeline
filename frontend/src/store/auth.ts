@@ -10,6 +10,7 @@ export interface AuthUser {
   display_name?: string | null;
   email?: string | null;
   must_change_password?: boolean;
+  has_password?: boolean;   // false = Google-SSO account (no password to change)
   budget_usd?: number;
   spent_usd?: number;
   available_usd?: number;

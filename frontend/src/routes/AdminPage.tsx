@@ -15,6 +15,7 @@ interface AdminUser {
   email?: string | null;
   last_login?: string | null;
   must_change_password?: boolean;
+  has_password?: boolean;   // false = Google-SSO account
   created_at?: string | null;
   budget_usd?: number;
   spent_usd?: number;
@@ -304,6 +305,11 @@ export function AdminPage() {
                 <td>
                   {u.display_name || u.username}
                   {u.username !== (u.display_name || u.username) ? <span className="admin-uname"> ({u.username})</span> : null}
+                  {u.has_password === false ? (
+                    <span className="admin-badge admin-badge--google" title="Đăng nhập bằng Google">
+                      google
+                    </span>
+                  ) : null}
                   {u.email ? <span className="admin-uname"> · {u.email}</span> : null}
                   <span className="admin-uname"> · đăng nhập: {fmtTime(u.last_login)}</span>
                 </td>

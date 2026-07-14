@@ -33,10 +33,18 @@ export function AccountMenu() {
       <span className="account-menu__name" title={user.username}>
         {user.display_name || user.username}
         {user.role === "admin" ? <span className="account-menu__badge">admin</span> : null}
+        {user.has_password === false ? (
+          <span className="account-menu__badge" title="Đăng nhập bằng Google">
+            google
+          </span>
+        ) : null}
       </span>
-      <button className="account-menu__link" onClick={() => setPwOpen(true)}>
-        Đổi mật khẩu
-      </button>
+      {/* Google-SSO accounts have no password — don't offer to change one. */}
+      {user.has_password === false ? null : (
+        <button className="account-menu__link" onClick={() => setPwOpen(true)}>
+          Đổi mật khẩu
+        </button>
+      )}
       <button className="account-menu__logout" onClick={() => logout()}>
         Đăng xuất
       </button>

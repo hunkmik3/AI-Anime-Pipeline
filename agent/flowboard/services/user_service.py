@@ -26,6 +26,10 @@ _LOGIN_MAX_FAILED = int(os.getenv("FLOWBOARD_LOGIN_MAX_FAILED", "5"))
 _LOGIN_LOCKOUT_MIN = int(os.getenv("FLOWBOARD_LOGIN_LOCKOUT_MIN", "15"))
 _MIN_PASSWORD_LEN = int(os.getenv("FLOWBOARD_MIN_PASSWORD_LEN", "8"))
 
+# SSO-provisioned accounts have no usable password: this sentinel can never
+# verify (it isn't a valid pbkdf2 string), so they can only sign in via Google.
+SSO_PASSWORD_SENTINEL = "!sso"
+
 
 class UserError(RuntimeError):
     pass
@@ -321,7 +325,7 @@ def get_or_create_sso_user(email: str, display_name: Optional[str] = None) -> Us
         u = User(
             username=email,
             email=email,
-            password_hash="!sso",  # sentinel — never matches verify_password
+            password_hash=SSO_PASSWORD_SENTINEL,  # never matches verify_password
             role="user",
             status="active",
             display_name=(display_name or None),
@@ -433,4 +437,7 @@ def public_dict(u: User) -> dict:
         "last_login": u.last_login.isoformat() if getattr(u, "last_login", None) else None,
         "email": getattr(u, "email", None),
         "must_change_password": bool(getattr(u, "must_change_password", False)),
+        # False for Google-SSO accounts — the UI must not offer "change password"
+        # to someone who has none.
+        "has_password": u.password_hash != SSO_PASSWORD_SENTINEL,
     }
