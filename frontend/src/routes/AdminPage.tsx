@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 
 import { useAuthStore } from "../store/auth";
 import { parseServerTimeMs } from "../utils/serverTime";
+import { ConfirmDialog, PromptDialog } from "../components/Modals";
+import { toast } from "../store/toast";
 
 interface AdminUser {
   id: string;
@@ -116,6 +118,11 @@ export function AdminPage() {
   const [auditRows, setAuditRows] = useState<AuditEntry[]>([]);
   const [auditLoading, setAuditLoading] = useState(false);
 
+  // Which action modal is open (replaces window.prompt / confirm).
+  const [modal, setModal] = useState<
+    { kind: "password" | "budget" | "delete"; user: AdminUser } | null
+  >(null);
+
   async function openAudit() {
     setAuditOpen(true);
     setAuditLoading(true);
@@ -206,7 +213,7 @@ export function AdminPage() {
     }
   }
 
-  async function patchUser(id: string, body: Record<string, unknown>) {
+  async function patchUser(id: string, body: Record<string, unknown>, successMsg?: string) {
     setError(null);
     try {
       await jsonOrThrow(
@@ -217,38 +224,24 @@ export function AdminPage() {
         }),
       );
       await refresh();
+      if (successMsg) toast(successMsg);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "update failed");
+      const msg = e instanceof Error ? e.message : "update failed";
+      setError(msg);
+      toast(msg, "error");
     }
   }
 
-  function resetPassword(u: AdminUser) {
-    const pw = window.prompt(`Mật khẩu mới cho "${u.username}":`);
-    if (pw) void patchUser(u.id, { password: pw });
-  }
-
-  function setBudget(u: AdminUser) {
-    const cur = typeof u.budget_usd === "number" ? u.budget_usd : 0;
-    const raw = window.prompt(`Ngân sách $ cho "${u.username}" (tổng):`, String(cur));
-    if (raw === null) return;
-    const v = Number(raw);
-    if (!Number.isFinite(v) || v < 0) return;
-    void patchUser(u.id, { budget_usd: v });
-  }
-
-  async function deleteUser(u: AdminUser) {
-    const ok = window.confirm(
-      `Xoá tài khoản "${u.username}"?\n\n` +
-        "Project của họ sẽ được GỠ chủ sở hữu (KHÔNG xoá dữ liệu đã gen). " +
-        "Hành động này không hoàn tác.",
-    );
-    if (!ok) return;
+  async function doDelete(u: AdminUser) {
     setError(null);
     try {
       await jsonOrThrow(await fetch(`/api/admin/users/${u.id}`, { method: "DELETE" }));
       await refresh();
+      toast(`Đã xoá tài khoản "${u.username}"`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "delete failed");
+      const msg = e instanceof Error ? e.message : "delete failed";
+      setError(msg);
+      toast(msg, "error");
     }
   }
 
@@ -314,8 +307,14 @@ export function AdminPage() {
                   {u.email ? <span className="admin-uname"> · {u.email}</span> : null}
                   <span className="admin-uname"> · đăng nhập: {fmtTime(u.last_login)}</span>
                 </td>
-                <td>{u.role}</td>
-                <td>{u.status}</td>
+                <td>
+                  <span className={`admin-badge admin-badge--role-${u.role}`}>{u.role}</span>
+                </td>
+                <td>
+                  <span className={`admin-badge admin-badge--${u.status}`}>
+                    {u.status === "active" ? "hoạt động" : "đã khoá"}
+                  </span>
+                </td>
                 <td>
                   {typeof u.budget_usd === "number" ? `$${u.budget_usd.toFixed(2)}` : "—"}
                   {typeof u.spent_usd === "number" ? (
@@ -325,26 +324,44 @@ export function AdminPage() {
                 <td>{typeof u.available_usd === "number" ? `$${u.available_usd.toFixed(2)}` : "—"}</td>
                 <td className="admin-actions">
                   <button onClick={() => openActivity(u)}>Hoạt động</button>
-                  <button onClick={() => setBudget(u)}>Ngân sách</button>
+                  <button onClick={() => setModal({ kind: "budget", user: u })}>Ngân sách</button>
                   {u.id === me?.id ? (
                     <span className="admin-self">(bạn)</span>
                   ) : (
                     <>
                       {u.status === "active" ? (
-                        <button onClick={() => patchUser(u.id, { status: "suspended" })}>Khoá</button>
+                        <button
+                          onClick={() =>
+                            patchUser(u.id, { status: "suspended" }, `Đã khoá "${u.username}"`)
+                          }
+                        >
+                          Khoá
+                        </button>
                       ) : (
-                        <button onClick={() => patchUser(u.id, { status: "active" })}>Mở</button>
+                        <button
+                          onClick={() =>
+                            patchUser(u.id, { status: "active" }, `Đã mở khoá "${u.username}"`)
+                          }
+                        >
+                          Mở
+                        </button>
                       )}
                       <button
                         onClick={() =>
-                          patchUser(u.id, { role: u.role === "admin" ? "user" : "admin" })
+                          patchUser(
+                            u.id,
+                            { role: u.role === "admin" ? "user" : "admin" },
+                            `Đã đổi vai trò "${u.username}"`,
+                          )
                         }
                         title="Đổi vai trò"
                       >
                         {u.role === "admin" ? "→ user" : "→ admin"}
                       </button>
-                      <button onClick={() => resetPassword(u)}>Đổi mật khẩu</button>
-                      <button className="admin-del" onClick={() => deleteUser(u)}>
+                      <button onClick={() => setModal({ kind: "password", user: u })}>
+                        Đổi mật khẩu
+                      </button>
+                      <button className="admin-del" onClick={() => setModal({ kind: "delete", user: u })}>
                         Xoá
                       </button>
                     </>
@@ -412,6 +429,65 @@ export function AdminPage() {
             )}
           </div>
         </div>
+      )}
+
+      {modal?.kind === "password" && (
+        <PromptDialog
+          title={`Đổi mật khẩu — ${modal.user.username}`}
+          label="Mật khẩu mới (≥ 8 ký tự)"
+          type="password"
+          submitLabel="Đặt mật khẩu"
+          validate={(v) => (v.length < 8 ? "Mật khẩu tối thiểu 8 ký tự" : null)}
+          onSubmit={(v) => {
+            void patchUser(
+              modal.user.id,
+              { password: v },
+              `Đã đặt mật khẩu tạm cho "${modal.user.username}" — họ phải đổi khi đăng nhập`,
+            );
+            setModal(null);
+          }}
+          onClose={() => setModal(null)}
+        />
+      )}
+      {modal?.kind === "budget" && (
+        <PromptDialog
+          title={`Ngân sách — ${modal.user.username}`}
+          label="Ngân sách $ (tổng)"
+          type="number"
+          initial={String(modal.user.budget_usd ?? 0)}
+          submitLabel="Lưu"
+          validate={(v) => {
+            const n = Number(v);
+            return !Number.isFinite(n) || n < 0 ? "Số tiền không hợp lệ" : null;
+          }}
+          onSubmit={(v) => {
+            void patchUser(
+              modal.user.id,
+              { budget_usd: Number(v) },
+              `Đã đặt ngân sách $${Number(v).toFixed(2)} cho "${modal.user.username}"`,
+            );
+            setModal(null);
+          }}
+          onClose={() => setModal(null)}
+        />
+      )}
+      {modal?.kind === "delete" && (
+        <ConfirmDialog
+          title={`Xoá tài khoản "${modal.user.username}"?`}
+          danger
+          confirmLabel="Xoá"
+          message={
+            <>
+              Project của họ sẽ được <b>gỡ chủ sở hữu</b> (KHÔNG xoá dữ liệu đã gen). Hành
+              động này không hoàn tác.
+            </>
+          }
+          onConfirm={() => {
+            void doDelete(modal.user);
+            setModal(null);
+          }}
+          onClose={() => setModal(null)}
+        />
       )}
 
       {activityUser && (

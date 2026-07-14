@@ -3,6 +3,7 @@ import { useShotWorkflowStore } from "../store/shotWorkflow";
 import { useChatStore } from "../store/chat";
 import { useGenerationStore } from "../store/generation";
 import { usePipelineStore } from "../store/pipeline";
+import { useToastStore } from "../store/toast";
 
 export function Toaster() {
   const boardError = useShotWorkflowStore((s) => s.error);
@@ -17,10 +18,13 @@ export function Toaster() {
   // Phase 8.4 — non-error info/success notice (e.g. "Frame extracted").
   const notice = useGenerationStore((s) => s.notice);
   const clearNotice = useGenerationStore((s) => s.clearNotice);
+  // App-wide explicit toast (admin actions, etc.).
+  const toastMsg = useToastStore((s) => s.message);
+  const toastKind = useToastStore((s) => s.kind);
+  const clearToast = useToastStore((s) => s.clear);
 
-  // Priority: chat > pipeline > generation > board
-  const error = chatError ?? pipelineError ?? genError ?? boardError;
-  const clearError =
+  const storeError = chatError ?? pipelineError ?? genError ?? boardError;
+  const clearStoreError =
     chatError !== null
       ? clearChatError
       : pipelineError !== null
@@ -29,10 +33,23 @@ export function Toaster() {
       ? clearGenError
       : clearBoardError;
 
-  // Errors take precedence over the info notice.
-  const isError = Boolean(error);
-  const message = error ?? notice;
-  const dismiss = isError ? clearError : clearNotice;
+  // Priority: explicit toast > store error > info notice.
+  let message: string | null;
+  let isError: boolean;
+  let dismiss: () => void;
+  if (toastMsg) {
+    message = toastMsg;
+    isError = toastKind === "error";
+    dismiss = clearToast;
+  } else if (storeError) {
+    message = storeError;
+    isError = true;
+    dismiss = clearStoreError;
+  } else {
+    message = notice;
+    isError = false;
+    dismiss = clearNotice;
+  }
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 

@@ -7498,6 +7498,35 @@ button:disabled {
   background: rgba(0, 0, 0, 0.62);
 }
 
+/* Reusable action modal (ConfirmDialog / PromptDialog) */
+.modal-card {
+  width: 360px; max-width: 92vw; padding: 22px; border-radius: 14px;
+  background: #16161c; border: 1px solid #26262e;
+  display: flex; flex-direction: column; gap: 14px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+.modal-card__title { margin: 0; font-size: 1.05rem; color: #f0f0f4; }
+.modal-card__msg { margin: 0; font-size: 0.88rem; color: #b6b6c0; line-height: 1.5; }
+.modal-card__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+.modal-btn {
+  padding: 8px 14px; border-radius: 8px; border: none;
+  background: #6c5cff; color: #fff; font-size: 0.88rem; font-weight: 600; cursor: pointer;
+}
+.modal-btn:hover { filter: brightness(1.08); }
+.modal-btn--ghost { background: transparent; border: 1px solid #2c2c36; color: #b6b6c0; font-weight: 500; }
+.modal-btn--ghost:hover { border-color: #3a3a46; color: #f0f0f4; }
+.modal-btn--danger { background: #d64545; }
+
+/* Status / role badges (admin table) */
+.admin-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 999px;
+  font-size: 0.72rem; font-weight: 600; letter-spacing: 0.2px;
+}
+.admin-badge--role-admin { background: rgba(124, 92, 255, 0.18); color: #b3a6ff; }
+.admin-badge--role-user { background: rgba(255, 255, 255, 0.08); color: #c9c9d2; }
+.admin-badge--active { background: rgba(52, 199, 89, 0.16); color: #6ee787; }
+.admin-badge--suspended { background: rgba(214, 69, 69, 0.18); color: #ff8f8f; }
+
 /* Account menu (top-right) */
 .account-menu {
   position: fixed; top: 14px; right: 18px; z-index: 40;
