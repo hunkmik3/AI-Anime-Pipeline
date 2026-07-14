@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 
 import { useAuthStore } from "../store/auth";
 
@@ -48,7 +49,10 @@ export function ChangePasswordDialog({
     }
   }
 
-  return (
+  // Portal to <body>: a transformed ancestor (e.g. the account menu) would make
+  // position:fixed resolve against IT instead of the viewport, pinning the
+  // modal into that corner instead of centering it full-screen.
+  return createPortal(
     <div className="cpw-backdrop" role="dialog" aria-modal="true" aria-label="Đổi mật khẩu">
       <form className="login-card" onSubmit={submit}>
         <h1 className="login-title">Đổi mật khẩu</h1>
@@ -111,6 +115,7 @@ export function ChangePasswordDialog({
           )
         )}
       </form>
-    </div>
+    </div>,
+    document.body,
   );
 }

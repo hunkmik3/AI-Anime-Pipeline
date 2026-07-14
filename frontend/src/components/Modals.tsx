@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 
-/** Shared overlay: fixed backdrop, ESC to close, click-outside to close. */
+/**
+ * Shared overlay: fixed backdrop, ESC to close, click-outside to close.
+ * Portaled to <body> — rendering inside a transformed ancestor would scope
+ * position:fixed to that ancestor and pin the modal into its corner.
+ */
 function Backdrop({
   onClose,
   label,
@@ -17,7 +22,7 @@ function Backdrop({
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
-  return (
+  return createPortal(
     <div
       className="cpw-backdrop"
       role="dialog"
@@ -28,7 +33,8 @@ function Backdrop({
       }}
     >
       {children}
-    </div>
+    </div>,
+    document.body,
   );
 }
 
