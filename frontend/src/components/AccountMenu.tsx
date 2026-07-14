@@ -1,11 +1,14 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 
 import { useAuthStore } from "../store/auth";
+import { ChangePasswordDialog } from "./ChangePasswordDialog";
 
 /** Top-right account widget: who's logged in, an admin link, and logout. */
 export function AccountMenu() {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
+  const [pwOpen, setPwOpen] = useState(false);
   if (!user) return null;
   const available =
     user.available_usd ??
@@ -31,9 +34,13 @@ export function AccountMenu() {
         {user.display_name || user.username}
         {user.role === "admin" ? <span className="account-menu__badge">admin</span> : null}
       </span>
+      <button className="account-menu__link" onClick={() => setPwOpen(true)}>
+        Đổi mật khẩu
+      </button>
       <button className="account-menu__logout" onClick={() => logout()}>
         Đăng xuất
       </button>
+      {pwOpen ? <ChangePasswordDialog onClose={() => setPwOpen(false)} /> : null}
     </div>
   );
 }

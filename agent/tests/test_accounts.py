@@ -29,8 +29,8 @@ def _login(client, username, password):
 
 
 def test_login_and_me(client):
-    user_service.create_user("alice", "pw12345", role="user")
-    r = _login(client, "alice", "pw12345")
+    user_service.create_user("alice", "pw123456", role="user")
+    r = _login(client, "alice", "pw123456")
     assert r.status_code == 200
     token = r.json()["token"]
     me = client.get("/api/account/me", headers={"Authorization": f"Bearer {token}"})
@@ -41,19 +41,19 @@ def test_login_and_me(client):
 
 
 def test_suspended_account_cannot_login(client):
-    u = user_service.create_user("bob", "pw12345")
+    u = user_service.create_user("bob", "pw123456")
     user_service.set_status(u.id, "suspended")
-    assert _login(client, "bob", "pw12345").status_code == 401
+    assert _login(client, "bob", "pw123456").status_code == 401
 
 
 # ── admin gating ─────────────────────────────────────────────────────────
 
 
 def test_admin_endpoints_require_admin(client):
-    user_service.create_user("root", "pw12345", role="admin")
-    user_service.create_user("joe", "pw12345", role="user")
-    admin_t = _login(client, "root", "pw12345").json()["token"]
-    user_t = _login(client, "joe", "pw12345").json()["token"]
+    user_service.create_user("root", "pw123456", role="admin")
+    user_service.create_user("joe", "pw123456", role="user")
+    admin_t = _login(client, "root", "pw123456").json()["token"]
+    user_t = _login(client, "joe", "pw123456").json()["token"]
 
     assert client.get("/api/admin/users", headers={"Authorization": f"Bearer {user_t}"}).status_code == 403
     assert client.get("/api/admin/users", headers={"Authorization": f"Bearer {admin_t}"}).status_code == 200
@@ -61,13 +61,13 @@ def test_admin_endpoints_require_admin(client):
     r = client.post(
         "/api/admin/users",
         headers={"Authorization": f"Bearer {admin_t}"},
-        json={"username": "newbie", "password": "pw12345", "role": "user"},
+        json={"username": "newbie", "password": "pw123456", "role": "user"},
     )
     assert r.status_code == 200 and r.json()["username"] == "newbie"
     dup = client.post(
         "/api/admin/users",
         headers={"Authorization": f"Bearer {admin_t}"},
-        json={"username": "newbie", "password": "pw12345"},
+        json={"username": "newbie", "password": "pw123456"},
     )
     assert dup.status_code == 409
 
@@ -76,10 +76,10 @@ def test_admin_endpoints_require_admin(client):
 
 
 def test_projects_scoped_to_owner(client):
-    user_service.create_user("u1", "pw12345")
-    user_service.create_user("u2", "pw12345")
-    t1 = _login(client, "u1", "pw12345").json()["token"]
-    t2 = _login(client, "u2", "pw12345").json()["token"]
+    user_service.create_user("u1", "pw123456")
+    user_service.create_user("u2", "pw123456")
+    t1 = _login(client, "u1", "pw123456").json()["token"]
+    t2 = _login(client, "u2", "pw123456").json()["token"]
     h1 = {"Authorization": f"Bearer {t1}"}
     h2 = {"Authorization": f"Bearer {t2}"}
 
@@ -97,8 +97,8 @@ def test_projects_scoped_to_owner(client):
 
 def test_projects_unscoped_without_token(client):
     """Auth off (no token) -> unscoped: behaves like the single-user app."""
-    user_service.create_user("solo", "pw12345")
-    t = _login(client, "solo", "pw12345").json()["token"]
+    user_service.create_user("solo", "pw123456")
+    t = _login(client, "solo", "pw123456").json()["token"]
     client.post("/api/projects", json={"name": "Owned"}, headers={"Authorization": f"Bearer {t}"})
     client.post("/api/projects", json={"name": "Orphan"})  # no token -> owner NULL
     names = {p["name"] for p in client.get("/api/projects").json()}  # no token -> all
@@ -109,16 +109,16 @@ def test_projects_unscoped_without_token(client):
 
 
 def test_admin_delete_user(client):
-    user_service.create_user("delroot", "pw12345", role="admin")
-    target = user_service.create_user("delme", "pw12345")
-    h = {"Authorization": f"Bearer {_login(client, 'delroot', 'pw12345').json()['token']}"}
+    user_service.create_user("delroot", "pw123456", role="admin")
+    target = user_service.create_user("delme", "pw123456")
+    h = {"Authorization": f"Bearer {_login(client, 'delroot', 'pw123456').json()['token']}"}
     assert client.delete(f"/api/admin/users/{target.id}", headers=h).status_code == 200
     assert user_service.get_by_id(target.id) is None
 
 
 def test_admin_cannot_delete_self(client):
-    me = user_service.create_user("delself", "pw12345", role="admin")
-    h = {"Authorization": f"Bearer {_login(client, 'delself', 'pw12345').json()['token']}"}
+    me = user_service.create_user("delself", "pw123456", role="admin")
+    h = {"Authorization": f"Bearer {_login(client, 'delself', 'pw123456').json()['token']}"}
     assert client.delete(f"/api/admin/users/{me.id}", headers=h).status_code == 400
     assert user_service.get_by_id(me.id) is not None  # still there
 
@@ -127,15 +127,15 @@ def test_admin_delete_orphans_projects(client):
     from flowboard.db import get_session
     from flowboard.db.models import Project
 
-    user_service.create_user("delowner_admin", "pw12345", role="admin")
-    owner = user_service.create_user("delowner", "pw12345")
+    user_service.create_user("delowner_admin", "pw123456", role="admin")
+    owner = user_service.create_user("delowner", "pw123456")
     with get_session() as s:
         p = Project(name="Owned", owner_user_id=owner.id)
         s.add(p)
         s.commit()
         s.refresh(p)
         pid = p.id
-    h = {"Authorization": f"Bearer {_login(client, 'delowner_admin', 'pw12345').json()['token']}"}
+    h = {"Authorization": f"Bearer {_login(client, 'delowner_admin', 'pw123456').json()['token']}"}
     assert client.delete(f"/api/admin/users/{owner.id}", headers=h).status_code == 200
     with get_session() as s:
         survived = s.get(Project, pid)
@@ -144,7 +144,7 @@ def test_admin_delete_orphans_projects(client):
 
 
 def test_delete_user_requires_admin(client):
-    user_service.create_user("plain_del", "pw12345")
-    target = user_service.create_user("victim", "pw12345")
-    h = {"Authorization": f"Bearer {_login(client, 'plain_del', 'pw12345').json()['token']}"}
+    user_service.create_user("plain_del", "pw123456")
+    target = user_service.create_user("victim", "pw123456")
+    h = {"Authorization": f"Bearer {_login(client, 'plain_del', 'pw123456').json()['token']}"}
     assert client.delete(f"/api/admin/users/{target.id}", headers=h).status_code == 403

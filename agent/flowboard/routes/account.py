@@ -24,6 +24,11 @@ class LoginBody(BaseModel):
     password: str
 
 
+class ChangePasswordBody(BaseModel):
+    current_password: str
+    new_password: str
+
+
 @router.post("/login")
 def login(body: LoginBody) -> dict:
     user = user_service.get_by_username(body.username.strip())
@@ -41,6 +46,22 @@ def login(body: LoginBody) -> dict:
     # Success: clear lockout, stamp last_login, upgrade the hash if it's below
     # the current cost, then issue a token stamped with the account's tv.
     user_service.register_successful_login(user.id, rehash_password=body.password)
+    fresh = user_service.get_by_id(user.id) or user
+    return {
+        "token": auth.make_token(str(fresh.id), fresh.token_version),
+        "user": user_service.public_dict(fresh),
+    }
+
+
+@router.post("/change-password")
+def change_password(body: ChangePasswordBody, user: User = Depends(get_current_user)) -> dict:
+    """Self-service password change. Verifies the current password, enforces the
+    strength policy, clears the force-change flag, and returns a FRESH token so
+    the current session stays signed in (other sessions are revoked)."""
+    try:
+        user_service.change_own_password(user.id, body.current_password, body.new_password)
+    except user_service.UserError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     fresh = user_service.get_by_id(user.id) or user
     return {
         "token": auth.make_token(str(fresh.id), fresh.token_version),

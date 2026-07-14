@@ -23,12 +23,16 @@ class CreateUserBody(BaseModel):
     password: str
     role: str = "user"  # "admin" | "user"
     display_name: Optional[str] = None
+    email: Optional[str] = None
 
 
 class UpdateUserBody(BaseModel):
     status: Optional[str] = None         # "active" | "suspended"
-    password: Optional[str] = None       # reset password
+    password: Optional[str] = None       # reset password (forces change on next login)
     display_name: Optional[str] = None
+    email: Optional[str] = None
+    role: Optional[str] = None           # "admin" | "user" (last-admin guarded)
+    must_change_password: Optional[bool] = None
     budget_usd: Optional[float] = None       # set absolute $ budget
     add_budget_usd: Optional[float] = None   # top-up (+/-) $ budget
 
@@ -55,6 +59,9 @@ def create_user(body: CreateUserBody) -> dict:
             body.password,
             role=body.role,
             display_name=body.display_name,
+            email=body.email,
+            # Admin-provisioned password is a temp — force a change on first login.
+            must_change_password=True,
         )
     except user_service.UsernameTaken:
         raise HTTPException(status_code=409, detail="username already exists")
@@ -103,10 +110,16 @@ def update_user(user_id: str, body: UpdateUserBody) -> dict:
             raise HTTPException(status_code=404, detail="user not found")
         if body.display_name is not None:
             user_service.set_display_name(user_id, body.display_name)
+        if body.email is not None:
+            user_service.set_email(user_id, body.email)
+        if body.role is not None:
+            user_service.set_role(user_id, body.role)
         if body.password:
             user_service.set_password(user_id, body.password)
         if body.status is not None:
             user_service.set_status(user_id, body.status)
+        if body.must_change_password is not None:
+            user_service.set_must_change_password(user_id, body.must_change_password)
         if body.budget_usd is not None:
             user_service.set_budget(user_id, body.budget_usd)
         if body.add_budget_usd is not None:

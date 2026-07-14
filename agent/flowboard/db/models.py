@@ -264,6 +264,12 @@ class User(SQLModel, table=True):
     failed_attempts: int = Field(default=0)
     locked_until: Optional[datetime] = None
     last_login: Optional[datetime] = None
+    # Phase 1 account lifecycle:
+    #  - email: optional identifier (also the link key for Google SSO in P2).
+    #  - must_change_password: admin-provisioned temp passwords force a change
+    #    on first login; cleared once the user sets their own.
+    email: Optional[str] = Field(default=None, index=True)
+    must_change_password: bool = Field(default=False)
     created_at: datetime = Field(default_factory=_utcnow)
 
 

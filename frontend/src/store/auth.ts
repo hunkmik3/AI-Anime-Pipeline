@@ -8,6 +8,8 @@ export interface AuthUser {
   role: string;          // "admin" | "user"
   status: string;
   display_name?: string | null;
+  email?: string | null;
+  must_change_password?: boolean;
   budget_usd?: number;
   spent_usd?: number;
   available_usd?: number;
@@ -19,6 +21,7 @@ interface AuthState {
   error: string | null;
   isAdmin: () => boolean;
   login(username: string, password: string): Promise<void>;
+  changePassword(currentPassword: string, newPassword: string): Promise<void>;
   logout(): void;
   loadMe(): Promise<void>;
 }
@@ -44,6 +47,29 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const data = (await res.json()) as { token: string; user: AuthUser };
     setToken(data.token);
     set({ user: data.user, error: null, ready: true });
+  },
+
+  // Self-service password change. On success the backend revokes other
+  // sessions and returns a FRESH token for this one, which we store.
+  async changePassword(currentPassword, newPassword) {
+    const res = await fetch("/api/account/change-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    });
+    if (!res.ok) {
+      let msg = `Đổi mật khẩu lỗi (${res.status})`;
+      try {
+        const j = await res.json();
+        if (j?.detail) msg = String(j.detail);
+      } catch {
+        /* ignore */
+      }
+      throw new Error(msg);
+    }
+    const data = (await res.json()) as { token: string; user: AuthUser };
+    setToken(data.token);
+    set({ user: data.user, error: null });
   },
 
   logout() {

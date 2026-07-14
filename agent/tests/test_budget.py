@@ -13,7 +13,7 @@ def test_estimate_video_usd():
 
 
 def test_reserve_settle_release_flow():
-    u = user_service.create_user("acct", "pw12345")
+    u = user_service.create_user("acct", "pw123456")
     user_service.set_budget(u.id, 10.0)
     assert budget_service.available_usd(u.id) == pytest.approx(10.0)
 
@@ -32,18 +32,18 @@ def test_reserve_settle_release_flow():
 
 
 def test_reserve_refused_over_budget():
-    u = user_service.create_user("tight", "pw12345")
+    u = user_service.create_user("tight", "pw123456")
     user_service.set_budget(u.id, 2.0)
     assert budget_service.reserve(u.id, request_id=200, estimated_usd=5.0, model="m") is False
     assert budget_service.available_usd(u.id) == pytest.approx(2.0)  # unchanged
 
 
-def _login(client, username, password="pw12345"):
+def _login(client, username, password="pw123456"):
     return client.post("/api/account/login", json={"username": username, "password": password}).json()["token"]
 
 
 def test_gen_video_blocked_when_over_budget(client):
-    u = user_service.create_user("poor", "pw12345")
+    u = user_service.create_user("poor", "pw123456")
     user_service.set_budget(u.id, 1.0)
     h = {"Authorization": f"Bearer {_login(client, 'poor')}"}
     r = client.post(
@@ -57,7 +57,7 @@ def test_gen_video_blocked_when_over_budget(client):
 def test_cancel_releases_budget_hold(client):
     """Cancelling a queued gen_video must give the reserved estimate back —
     the worker skips canceled rows, so it never settles/releases them."""
-    u = user_service.create_user("canceller", "pw12345")
+    u = user_service.create_user("canceller", "pw123456")
     user_service.set_budget(u.id, 20.0)
     h = {"Authorization": f"Bearer {_login(client, 'canceller')}"}
     r = client.post(
@@ -81,7 +81,7 @@ def test_worker_backstop_releases_drifted_hold():
     canceled) must still be freed by the worker's _settle_budget backstop."""
     from flowboard.worker.processor import _settle_budget
 
-    u = user_service.create_user("backstop", "pw12345")
+    u = user_service.create_user("backstop", "pw123456")
     user_service.set_budget(u.id, 20.0)
     assert budget_service.reserve(u.id, request_id=99001, estimated_usd=6.30, model="m") is True
     assert budget_service.available_usd(u.id) == pytest.approx(13.70)
@@ -95,7 +95,7 @@ def test_worker_backstop_releases_drifted_hold():
 def test_double_release_is_idempotent():
     """cancel (Fix 1) and the worker backstop (Fix 2) can both fire for one
     request — the second release must not double-refund."""
-    u = user_service.create_user("idem", "pw12345")
+    u = user_service.create_user("idem", "pw123456")
     user_service.set_budget(u.id, 20.0)
     budget_service.reserve(u.id, request_id=99002, estimated_usd=6.30, model="m")
     budget_service.release(99002)
@@ -104,7 +104,7 @@ def test_double_release_is_idempotent():
 
 
 def test_gen_video_reserves_within_budget(client):
-    u = user_service.create_user("rich", "pw12345")
+    u = user_service.create_user("rich", "pw123456")
     user_service.set_budget(u.id, 20.0)
     h = {"Authorization": f"Bearer {_login(client, 'rich')}"}
     r = client.post(
@@ -120,9 +120,9 @@ def test_gen_video_reserves_within_budget(client):
 
 def test_admin_user_activity(client):
     """Admin can see a user's generation ledger joined to request output/cost."""
-    user_service.create_user("act_admin", "pw12345", role="admin")
+    user_service.create_user("act_admin", "pw123456", role="admin")
     h = {"Authorization": f"Bearer {_login(client, 'act_admin')}"}
-    u = user_service.create_user("act_target", "pw12345")
+    u = user_service.create_user("act_target", "pw123456")
     user_service.set_budget(u.id, 50.0)
 
     from flowboard.db import get_session
@@ -164,8 +164,8 @@ def test_admin_user_activity(client):
 
 
 def test_admin_user_activity_requires_admin(client):
-    user_service.create_user("act_plain", "pw12345")
-    target = user_service.create_user("act_other", "pw12345")
+    user_service.create_user("act_plain", "pw123456")
+    target = user_service.create_user("act_other", "pw123456")
     h = {"Authorization": f"Bearer {_login(client, 'act_plain')}"}
     r = client.get(f"/api/admin/users/{target.id}/activity", headers=h)
     assert r.status_code == 403

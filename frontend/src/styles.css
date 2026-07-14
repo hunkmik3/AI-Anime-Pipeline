@@ -7481,6 +7481,15 @@ button:disabled {
   background: #6c5cff; color: #fff; font-size: 0.92rem; font-weight: 600; cursor: pointer;
 }
 .login-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.login-btn--ghost { background: transparent; border: 1px solid #2c2c36; color: #b6b6c0; font-weight: 500; }
+.login-btn--ghost:hover { border-color: #3a3a46; color: #f0f0f4; }
+
+/* Change-password overlay (forced first-login + self-service) */
+.cpw-backdrop {
+  position: fixed; inset: 0; z-index: 1200;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.62);
+}
 
 /* Account menu (top-right) */
 .account-menu {

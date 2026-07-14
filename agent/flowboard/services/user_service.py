@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # Login brute-force lockout (Phase 0). Env-tunable.
 _LOGIN_MAX_FAILED = int(os.getenv("FLOWBOARD_LOGIN_MAX_FAILED", "5"))
 _LOGIN_LOCKOUT_MIN = int(os.getenv("FLOWBOARD_LOGIN_LOCKOUT_MIN", "15"))
+_MIN_PASSWORD_LEN = int(os.getenv("FLOWBOARD_MIN_PASSWORD_LEN", "8"))
 
 
 class UserError(RuntimeError):
@@ -70,18 +71,25 @@ def count_users() -> int:
         return int(s.exec(select(func.count()).select_from(User)).one())
 
 
+def _check_password_policy(password: str) -> None:
+    """Minimum password strength (length). Tunable via FLOWBOARD_MIN_PASSWORD_LEN."""
+    if not password or len(password) < _MIN_PASSWORD_LEN:
+        raise UserError(f"password must be at least {_MIN_PASSWORD_LEN} characters")
+
+
 def create_user(
     username: str,
     password: str,
     *,
     role: str = "user",
     display_name: Optional[str] = None,
+    email: Optional[str] = None,
+    must_change_password: bool = False,
 ) -> User:
     username = (username or "").strip()
     if not username:
         raise UserError("username required")
-    if not password:
-        raise UserError("password required")
+    _check_password_policy(password)
     if role not in ("admin", "user"):
         raise UserError(f"bad role: {role!r}")
     with get_session() as s:
@@ -92,6 +100,8 @@ def create_user(
             password_hash=auth.hash_password(password),
             role=role,
             display_name=(display_name or None),
+            email=(email or None),
+            must_change_password=bool(must_change_password),
         )
         s.add(u)
         s.commit()
@@ -132,15 +142,80 @@ def set_display_name(user_id, display_name: Optional[str]) -> None:
 
 
 def set_password(user_id, password: str) -> None:
-    if not password:
-        raise UserError("password required")
+    """Admin password reset. Sets a temp password the user must change on next
+    login (must_change_password) and revokes their existing sessions."""
+    _check_password_policy(password)
     uid = _coerce_uuid(user_id)
     with get_session() as s:
         u = s.get(User, uid) if uid else None
         if u is None:
             raise UserNotFound(str(user_id))
         u.password_hash = auth.hash_password(password)
-        # A password change revokes every existing session (force re-login).
+        u.must_change_password = True
+        # A password reset revokes every existing session (force re-login).
+        u.token_version = int(u.token_version or 0) + 1
+        s.add(u)
+        s.commit()
+
+
+def set_role(user_id, role: str) -> User:
+    """Change a user's role. Guards against demoting the last remaining admin."""
+    if role not in ("admin", "user"):
+        raise UserError(f"bad role: {role!r}")
+    uid = _coerce_uuid(user_id)
+    with get_session() as s:
+        u = s.get(User, uid) if uid else None
+        if u is None:
+            raise UserNotFound(str(user_id))
+        if u.role == "admin" and role != "admin":
+            admins = int(
+                s.exec(select(func.count()).select_from(User).where(User.role == "admin")).one()
+            )
+            if admins <= 1:
+                raise UserError("cannot demote the last admin")
+        u.role = role
+        s.add(u)
+        s.commit()
+        s.refresh(u)
+        return u
+
+
+def set_email(user_id, email: Optional[str]) -> None:
+    uid = _coerce_uuid(user_id)
+    with get_session() as s:
+        u = s.get(User, uid) if uid else None
+        if u is None:
+            raise UserNotFound(str(user_id))
+        u.email = (email or None)
+        s.add(u)
+        s.commit()
+
+
+def set_must_change_password(user_id, value: bool) -> None:
+    uid = _coerce_uuid(user_id)
+    with get_session() as s:
+        u = s.get(User, uid) if uid else None
+        if u is None:
+            raise UserNotFound(str(user_id))
+        u.must_change_password = bool(value)
+        s.add(u)
+        s.commit()
+
+
+def change_own_password(user_id, current_password: str, new_password: str) -> None:
+    """Self-service password change: verify current password, enforce policy on
+    the new one, clear must_change_password, and bump token_version (logs out
+    other sessions — the caller issues a fresh token for the current one)."""
+    _check_password_policy(new_password)
+    uid = _coerce_uuid(user_id)
+    with get_session() as s:
+        u = s.get(User, uid) if uid else None
+        if u is None:
+            raise UserNotFound(str(user_id))
+        if not auth.verify_password(current_password, u.password_hash):
+            raise UserError("current password is incorrect")
+        u.password_hash = auth.hash_password(new_password)
+        u.must_change_password = False
         u.token_version = int(u.token_version or 0) + 1
         s.add(u)
         s.commit()
@@ -276,7 +351,11 @@ def ensure_bootstrap_admin() -> None:
             "set them to bootstrap the first admin"
         )
         return
-    u = create_user(username, password, role="admin", display_name="Admin")
+    try:
+        u = create_user(username, password, role="admin", display_name="Admin")
+    except UserError as exc:
+        logger.warning("could not bootstrap admin (%s) — fix FLOWBOARD_ADMIN_PASSWORD", exc)
+        return
     claimed = claim_orphan_projects(u.id)
     logger.info("bootstrapped admin account %r (claimed %d existing project(s))", username, claimed)
 
@@ -314,4 +393,6 @@ def public_dict(u: User) -> dict:
         "spent_usd": round(float(u.spent_usd), 4),
         "created_at": u.created_at.isoformat() if u.created_at else None,
         "last_login": u.last_login.isoformat() if getattr(u, "last_login", None) else None,
+        "email": getattr(u, "email", None),
+        "must_change_password": bool(getattr(u, "must_change_password", False)),
     }

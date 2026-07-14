@@ -13,6 +13,7 @@ import { GenerationDialog } from "./components/GenerationDialog";
 import { ResultViewer } from "./components/ResultViewer";
 import { ForcedSetupGate } from "./components/ForcedSetupGate";
 import { AccountMenu } from "./components/AccountMenu";
+import { ChangePasswordDialog } from "./components/ChangePasswordDialog";
 
 import { ProjectListPage } from "./routes/ProjectListPage";
 import { SceneView } from "./routes/SceneView";
@@ -88,6 +89,9 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   const user = useAuthStore((s) => s.user);
   if (!ready) return <div className="app-booting">Đang tải…</div>;
   if (!user) return <Navigate to="/login" replace />;
+  // Admin-provisioned temp password → block the app until the user sets a new
+  // one. The dialog clears must_change_password on success and the gate lifts.
+  if (user.must_change_password) return <ChangePasswordDialog forced />;
   return <>{children}</>;
 }
 

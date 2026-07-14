@@ -10,6 +10,9 @@ interface AdminUser {
   role: string;
   status: string;
   display_name?: string | null;
+  email?: string | null;
+  last_login?: string | null;
+  must_change_password?: boolean;
   created_at?: string | null;
   budget_usd?: number;
   spent_usd?: number;
@@ -88,6 +91,7 @@ export function AdminPage() {
   const [nu, setNu] = useState("");
   const [np, setNp] = useState("");
   const [nrole, setNrole] = useState("user");
+  const [nemail, setNemail] = useState("");
   const [busy, setBusy] = useState(false);
 
   // activity modal
@@ -154,12 +158,18 @@ export function AdminPage() {
         await fetch("/api/admin/users", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: nu.trim(), password: np, role: nrole }),
+          body: JSON.stringify({
+            username: nu.trim(),
+            password: np,
+            role: nrole,
+            email: nemail.trim() || undefined,
+          }),
         }),
       );
       setNu("");
       setNp("");
       setNrole("user");
+      setNemail("");
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "create failed");
@@ -232,6 +242,13 @@ export function AdminPage() {
           onChange={(e) => setNp(e.target.value)}
           disabled={busy}
         />
+        <input
+          placeholder="Email (tuỳ chọn)"
+          type="email"
+          value={nemail}
+          onChange={(e) => setNemail(e.target.value)}
+          disabled={busy}
+        />
         <select value={nrole} onChange={(e) => setNrole(e.target.value)} disabled={busy}>
           <option value="user">user</option>
           <option value="admin">admin</option>
@@ -263,6 +280,8 @@ export function AdminPage() {
                 <td>
                   {u.display_name || u.username}
                   {u.username !== (u.display_name || u.username) ? <span className="admin-uname"> ({u.username})</span> : null}
+                  {u.email ? <span className="admin-uname"> · {u.email}</span> : null}
+                  <span className="admin-uname"> · đăng nhập: {fmtTime(u.last_login)}</span>
                 </td>
                 <td>{u.role}</td>
                 <td>{u.status}</td>
@@ -285,6 +304,14 @@ export function AdminPage() {
                       ) : (
                         <button onClick={() => patchUser(u.id, { status: "active" })}>Mở</button>
                       )}
+                      <button
+                        onClick={() =>
+                          patchUser(u.id, { role: u.role === "admin" ? "user" : "admin" })
+                        }
+                        title="Đổi vai trò"
+                      >
+                        {u.role === "admin" ? "→ user" : "→ admin"}
+                      </button>
                       <button onClick={() => resetPassword(u)}>Đổi mật khẩu</button>
                       <button className="admin-del" onClick={() => deleteUser(u)}>
                         Xoá
