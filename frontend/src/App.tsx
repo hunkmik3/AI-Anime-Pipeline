@@ -28,6 +28,7 @@ import { AdminPage } from "./routes/AdminPage";
 import { useProjectStore } from "./store/project";
 import { useReferencesStore } from "./store/references";
 import { useAuthStore } from "./store/auth";
+import { setToken } from "./api/authFetch";
 import { migrateLegacyLocalStorage } from "./store/shot";
 
 /**
@@ -41,7 +42,14 @@ export function App() {
   useEffect(() => {
     if (booted.current) return;
     booted.current = true;
-    void loadMe(); // validate a persisted token on boot
+    // Google SSO lands back at /login#sso_token=<token> — capture it before
+    // validating, then strip it from the URL so it isn't left in history.
+    const m = window.location.hash.match(/sso_token=([^&]+)/);
+    if (m) {
+      setToken(decodeURIComponent(m[1]));
+      history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+    void loadMe(); // validate the (persisted or just-captured) token on boot
   }, [loadMe]);
 
   return (

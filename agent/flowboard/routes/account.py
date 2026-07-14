@@ -8,11 +8,12 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from flowboard.db.models import User
 from flowboard.routes.deps import get_current_user
-from flowboard.services import auth, budget_service, user_service
+from flowboard.services import auth, budget_service, sso, user_service
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,46 @@ def change_password(body: ChangePasswordBody, user: User = Depends(get_current_u
         "token": auth.make_token(str(fresh.id), fresh.token_version),
         "user": user_service.public_dict(fresh),
     }
+
+
+def _sso_redirect(fragment: str) -> RedirectResponse:
+    """Send the browser back to the SPA login page with the result in the URL
+    fragment (fragments aren't sent to servers / logged). The SPA reads it."""
+    base = sso.frontend_url() or ""
+    return RedirectResponse(f"{base}/login#{fragment}", status_code=302)
+
+
+@router.get("/sso/google/start")
+def sso_google_start() -> RedirectResponse:
+    if not sso.is_configured():
+        raise HTTPException(status_code=404, detail="SSO not configured")
+    return RedirectResponse(sso.authorization_url(sso.sign_state()), status_code=302)
+
+
+@router.get("/sso/google/callback")
+async def sso_google_callback(
+    code: str = "", state: str = "", error: str = ""
+) -> RedirectResponse:
+    if not sso.is_configured():
+        raise HTTPException(status_code=404, detail="SSO not configured")
+    if error or not code:
+        return _sso_redirect("sso_error=google_denied")
+    if not sso.verify_state(state):
+        return _sso_redirect("sso_error=bad_state")
+    try:
+        claims = await sso.exchange_code(code)
+    except sso.SSOError as exc:
+        logger.warning("SSO exchange failed: %s", exc)
+        return _sso_redirect("sso_error=exchange_failed")
+    email = (claims.get("email") or "").lower()
+    if not sso.email_allowed(email, email_verified=bool(claims.get("email_verified"))):
+        return _sso_redirect("sso_error=domain_not_allowed")
+    try:
+        user = user_service.get_or_create_sso_user(email, claims.get("name"))
+    except user_service.UserError:
+        return _sso_redirect("sso_error=account_disabled")
+    token = auth.make_token(str(user.id), user.token_version)
+    return _sso_redirect(f"sso_token={token}")
 
 
 @router.get("/me")

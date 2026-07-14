@@ -295,6 +295,44 @@ def register_successful_login(user_id, *, rehash_password: Optional[str] = None)
         s.commit()
 
 
+def get_or_create_sso_user(email: str, display_name: Optional[str] = None) -> User:
+    """Find (by email, then username) or auto-provision an account for a
+    verified SSO identity. SSO users have no usable password (a sentinel hash
+    that never verifies) — they sign in via Google only, unless an admin later
+    sets a password. Suspended accounts are refused."""
+    email = (email or "").strip().lower()
+    if not email:
+        raise UserError("email required")
+    with get_session() as s:
+        u = s.exec(select(User).where(User.email == email)).first()
+        if u is None:
+            u = s.exec(select(User).where(User.username == email)).first()
+        if u is not None:
+            if u.status != "active":
+                raise UserError("account suspended")
+            u.email = email
+            if display_name and not u.display_name:
+                u.display_name = display_name
+            u.last_login = datetime.now(timezone.utc)
+            s.add(u)
+            s.commit()
+            s.refresh(u)
+            return u
+        u = User(
+            username=email,
+            email=email,
+            password_hash="!sso",  # sentinel — never matches verify_password
+            role="user",
+            status="active",
+            display_name=(display_name or None),
+            last_login=datetime.now(timezone.utc),
+        )
+        s.add(u)
+        s.commit()
+        s.refresh(u)
+        return u
+
+
 def count_admins() -> int:
     with get_session() as s:
         return int(

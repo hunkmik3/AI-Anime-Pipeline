@@ -7483,6 +7483,13 @@ button:disabled {
 .login-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .login-btn--ghost { background: transparent; border: 1px solid #2c2c36; color: #b6b6c0; font-weight: 500; }
 .login-btn--ghost:hover { border-color: #3a3a46; color: #f0f0f4; }
+.login-btn--google {
+  display: block; text-align: center; text-decoration: none;
+  background: #fff; color: #1f1f1f; border: 1px solid #dadce0;
+}
+.login-btn--google:hover { background: #f4f5f6; }
+.login-divider { display: flex; align-items: center; gap: 10px; color: #6a6a73; font-size: 0.78rem; margin: 2px 0; }
+.login-divider::before, .login-divider::after { content: ""; flex: 1; height: 1px; background: #2c2c36; }
 
 /* Change-password overlay (forced first-login + self-service) */
 .cpw-backdrop {

@@ -11,11 +11,27 @@ export function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [ssoError, setSsoError] = useState<string | null>(null);
 
   // Already signed in → bounce to the app.
   useEffect(() => {
     if (user) navigate("/projects", { replace: true });
   }, [user, navigate]);
+
+  // Surface an SSO failure passed back in the URL fragment (#sso_error=...).
+  useEffect(() => {
+    const m = window.location.hash.match(/sso_error=([^&]+)/);
+    if (!m) return;
+    const msgs: Record<string, string> = {
+      domain_not_allowed: "Email không thuộc tổ chức được phép.",
+      bad_state: "Phiên đăng nhập hết hạn — thử lại.",
+      exchange_failed: "Xác thực Google lỗi — thử lại.",
+      google_denied: "Bạn đã huỷ đăng nhập Google.",
+      account_disabled: "Tài khoản đã bị khoá.",
+    };
+    setSsoError(msgs[m[1]] ?? "Đăng nhập Google lỗi.");
+    history.replaceState(null, "", window.location.pathname + window.location.search);
+  }, []);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -60,10 +76,18 @@ export function LoginPage() {
         </label>
 
         {error ? <div className="login-error">{error}</div> : null}
+        {ssoError ? <div className="login-error">{ssoError}</div> : null}
 
         <button className="login-btn" type="submit" disabled={busy || !username || !password}>
           {busy ? "Đang đăng nhập…" : "Đăng nhập"}
         </button>
+
+        <div className="login-divider"><span>hoặc</span></div>
+
+        {/* Full-page navigation (server-side OAuth redirect flow), not a fetch. */}
+        <a className="login-btn login-btn--google" href="/api/account/sso/google/start">
+          Đăng nhập bằng Google
+        </a>
       </form>
     </div>
   );
