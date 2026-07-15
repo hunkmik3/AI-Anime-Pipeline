@@ -20,6 +20,7 @@ import { BriefHint } from "./shared/BriefHint";
 import { RefLabelFields } from "./shared/RefLabelFields";
 import { saveTileToLibrary } from "./shared/saveTileToLibrary";
 import { uploadVariantToNode } from "./shared/uploadVariant";
+import { LibraryPicker } from "../../components/LibraryPicker";
 
 function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }) {
   const mediaId = data.mediaId;
@@ -36,6 +37,7 @@ function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData
   const [refMediaId, setRefMediaId] = useState<string | null>(null);
   const [linkMode, setLinkMode] = useState(false);
   const [linkValue, setLinkValue] = useState("");
+  const [libraryOpen, setLibraryOpen] = useState(false);
   // Phase 8.4 — "use as continuity" target-shot picker (extracted frames only).
   const [continuityOpen, setContinuityOpen] = useState(false);
   const isExtractedFrame = data.source_type === "extracted_frame";
@@ -273,6 +275,18 @@ function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData
                 className="visual-asset__action"
                 onClick={() => {
                   setError(null);
+                  setLibraryOpen(true);
+                }}
+                disabled={uploading}
+                title="Pick a material already saved to this project's library"
+              >
+                Library
+              </button>
+              <button
+                type="button"
+                className="visual-asset__action"
+                onClick={() => {
+                  setError(null);
                   setLinkMode(true);
                 }}
                 disabled={uploading}
@@ -303,6 +317,15 @@ function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData
         />
         <RefLabelFields rfId={rfId} data={data} />
         {error && <p className="visual-asset__error">{error}</p>}
+        {libraryOpen && (
+          <LibraryPicker
+            onClose={() => setLibraryOpen(false)}
+            onPick={(ref) => {
+              persistMedia(ref.mediaId, ref.aspectRatio ?? undefined);
+              setLibraryOpen(false);
+            }}
+          />
+        )}
       </div>
     );
   }

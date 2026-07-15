@@ -24,6 +24,8 @@ import { useProjectStore } from "../store/project";
 import { useSceneStore } from "../store/scene";
 import { useShotStore } from "../store/shot";
 import { useShotWorkflowStore, type FlowNode, type NodeType } from "../store/shotWorkflow";
+import { useAuthStore } from "../store/auth";
+import { useReferencesStore } from "../store/references";
 
 const edgeTypes = { default: VariantEdge };
 
@@ -78,6 +80,7 @@ function buildRfNodes(
   sceneLabel: string,
   onDeleteShot: (shotId: string) => void,
   onResize: () => void,
+  canDelete: boolean = true,
 ): FlowNode[] {
   const byShot = groupChildren(storeNodes);
   const out: FlowNode[] = [];
@@ -102,7 +105,7 @@ function buildRfNodes(
         sceneLabel,
         collapsed: g.collapsed,
         childCount: children.length,
-        onDelete: () => onDeleteShot(g.shot_id),
+        onDelete: canDelete ? () => onDeleteShot(g.shot_id) : undefined,
         onResize,
       } as unknown as FlowNode["data"],
       style: { width: w, height: h },
@@ -137,6 +140,9 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
   const currentScene = useSceneStore((s) => s.currentScene);
   const selectScene = useSceneStore((s) => s.selectScene);
   const createShot = useShotStore((s) => s.createShot);
+  // Phase 9.1: creating/deleting shots is structural → admin-only. The user
+  // still works inside each shot (nodes, prompts, generations, downloads).
+  const isAdmin = useAuthStore((s) => s.isAdmin());
 
   const storeNodes = useShotWorkflowStore((s) => s.nodes);
   const edges = useShotWorkflowStore((s) => s.edges);
@@ -182,7 +188,7 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
     async (type: NodeType, fx: number, fy: number) => {
       const hit = getShotAtFlow(fx, fy);
       if (!hit) {
-        useGenerationStore.setState({ error: "Click inside a shot frame to add a node." });
+        useGenerationStore.setState({ error: "Click inside a sequence frame to add a node." });
         return;
       }
       await useShotWorkflowStore
@@ -214,9 +220,11 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
   }
 
   // Load scene + canvas on mount / scene change.
+  const loadReferences = useReferencesStore((s) => s.load);
   useEffect(() => {
     if (projectId && projectId !== currentProjectId) void selectProject(projectId);
-  }, [projectId, currentProjectId, selectProject]);
+    if (projectId) void loadReferences(projectId); // scope the library
+  }, [projectId, currentProjectId, selectProject, loadReferences]);
 
   useEffect(() => {
     migrateAttempted.current = null;
@@ -272,11 +280,11 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
   // then reload + reflow the remaining shots up so no gap is left behind.
   const handleDeleteShot = useCallback(
     async (shotId: string) => {
-      if (!window.confirm("Delete this shot and all its nodes? This can't be undone.")) return;
+      if (!window.confirm("Delete this sequence and all its nodes? This can't be undone.")) return;
       try {
         await deleteShotApi(shotId);
       } catch {
-        useGenerationStore.setState({ error: "Failed to delete shot" });
+        useGenerationStore.setState({ error: "Failed to delete sequence" });
         return;
       }
       await loadSceneCanvas(sceneId);
@@ -297,8 +305,10 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
 
   const [rfNodes, setRfNodes] = useState<FlowNode[]>([]);
   useEffect(() => {
-    setRfNodes(buildRfNodes(storeNodes, shotGroups, sceneLabel, handleDeleteShot, reflowStack));
-  }, [storeNodes, shotGroups, sceneLabel, handleDeleteShot, reflowStack]);
+    setRfNodes(
+      buildRfNodes(storeNodes, shotGroups, sceneLabel, handleDeleteShot, reflowStack, isAdmin),
+    );
+  }, [storeNodes, shotGroups, sceneLabel, handleDeleteShot, reflowStack, isAdmin]);
 
   // When auto-fit changes a group's height (child added/removed, or any size
   // recompute), the next group's y can drift out of the constant-gap layout.
@@ -467,7 +477,7 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
       // stride; the new frame lands exactly where we computed.
       await patchShotGroup(shot.id, {
         position: pos,
-        label: `Shot ${groups.length + 1}`,
+        label: `Sequence ${groups.length + 1}`,
         collapsed: false,
         order: groups.length,
       }).catch(() => {});
@@ -489,29 +499,31 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
           <span aria-hidden="true">/</span>
           <span>{currentScene?.name ?? "Scene"}</span>
         </nav>
-        <button
-          type="button"
-          className="btn btn--primary"
-          onClick={() => void handleNewShot()}
-          disabled={creatingShot}
-        >
-          {creatingShot ? "Adding…" : "+ New Shot"}
-        </button>
+        {isAdmin && (
+          <button
+            type="button"
+            className="btn btn--primary"
+            onClick={() => void handleNewShot()}
+            disabled={creatingShot}
+          >
+            {creatingShot ? "Adding…" : "+ New Sequence"}
+          </button>
+        )}
       </header>
 
       {migrating && (
         <div className="scene-canvas__banner" role="status">
-          ⏳ Migrating to multi-shot canvas…
+          ⏳ Migrating to multi-sequence canvas…
         </div>
       )}
 
       {jumpOpen && (
         <div className="jump-modal-backdrop" role="presentation" onClick={() => setJumpOpen(false)}>
-          <div className="jump-modal" role="dialog" aria-label="Jump to shot" onClick={(e) => e.stopPropagation()}>
+          <div className="jump-modal" role="dialog" aria-label="Jump to sequence" onClick={(e) => e.stopPropagation()}>
             <input
               className="jump-modal__input"
               autoFocus
-              placeholder="Jump to shot… (type a shot name)"
+              placeholder="Jump to sequence… (type a sequence name)"
               value={jumpFilter}
               onChange={(e) => setJumpFilter(e.target.value)}
             />
@@ -532,7 +544,7 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
                   </li>
                 ))}
               {shotGroups.length === 0 && (
-                <li className="jump-modal__empty">No shots in this scene.</li>
+                <li className="jump-modal__empty">No sequences in this episode.</li>
               )}
             </ul>
           </div>
@@ -542,7 +554,13 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
       <div className="scene-canvas__flow" onContextMenu={onWrapperContextMenu}>
         {!loading && !migrating && shotGroups.length === 0 && (
           <div className="scene-canvas__empty">
-            No shots yet. Use <strong>+ New Shot</strong> to create your first shot.
+            {isAdmin ? (
+              <>
+                No sequences yet. Use <strong>+ New Sequence</strong> to create your first sequence.
+              </>
+            ) : (
+              "No sequences in this episode yet. An admin will create sequences for you to work in."
+            )}
           </div>
         )}
         <SceneCanvasToolbar onAdd={handleAddFromPalette} />
@@ -594,7 +612,7 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
               <span aria-hidden="true">{t.icon}</span> Add {t.label}
             </button>
           ))}
-          {ctxMenu.shotId && (
+          {isAdmin && ctxMenu.shotId && (
             <>
               <div className="canvas-ctx-menu__divider" />
               <button
@@ -607,7 +625,7 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
                   void handleDeleteShot(sid);
                 }}
               >
-                ✕ Delete shot
+                ✕ Delete sequence
               </button>
             </>
           )}

@@ -9,6 +9,7 @@ Two engines are supported:
   ``SQLModel.metadata`` on first run. Called from app startup when the URL is
   SQLite (see ``main.py``).
 """
+import os
 from contextlib import contextmanager
 
 from sqlmodel import Session, SQLModel, create_engine
@@ -24,7 +25,15 @@ _engine_kwargs: dict = {"echo": False}
 if _IS_SQLITE:
     _engine_kwargs["connect_args"] = {"check_same_thread": False}
 else:
+    # Multi-user: the worker runs many generations concurrently. Each job holds
+    # a connection only briefly (mark running / write result — the long provider
+    # poll runs with the session CLOSED), but a burst of finishing jobs can grab
+    # many at once, so give the pool real headroom. Overridable via env.
     _engine_kwargs["pool_pre_ping"] = True
+    _engine_kwargs["pool_size"] = int(os.getenv("FLOWBOARD_DB_POOL_SIZE", "20"))
+    _engine_kwargs["max_overflow"] = int(os.getenv("FLOWBOARD_DB_MAX_OVERFLOW", "40"))
+    _engine_kwargs["pool_timeout"] = 30
+    _engine_kwargs["pool_recycle"] = 1800
 
 engine = create_engine(DATABASE_URL, **_engine_kwargs)
 

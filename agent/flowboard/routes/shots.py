@@ -13,15 +13,33 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from flowboard.db import get_session
+from flowboard.routes.deps import (
+    get_optional_user,
+    owner_scope,
+    require_structure_admin,
+)
 from flowboard.schemas import ShotCreate, ShotUpdate
+from flowboard.services import project_service as ps
 from flowboard.services import scene_service as scenes
 from flowboard.services import shot_service as ss
 
 router = APIRouter(tags=["shots"])
+
+
+def _gate_scene(s, scene_id, user) -> None:
+    """Owner gate on a scene → its project. 404 for a non-owner; no-op for
+    admins and the no-auth path."""
+    scene = scenes.get_scene(s, scene_id)
+    ps.get_project(s, scene.project_id, owner_user_id=owner_scope(user))
+
+
+def _gate_shot(s, shot, user) -> None:
+    """Owner gate on a shot (resolves shot → scene → project)."""
+    _gate_scene(s, shot.scene_id, user)
 
 
 class ShotGroupPatch(BaseModel):
@@ -64,26 +82,31 @@ class WorkflowSnapshot(BaseModel):
 
 
 @router.get("/api/scenes/{scene_id}/shots")
-def list_shots(scene_id: uuid.UUID):
+def list_shots(scene_id: uuid.UUID, user=Depends(get_optional_user)):
     with get_session() as s:
         try:
+            _gate_scene(s, scene_id, user)
             shots = ss.list_shots(s, scene_id)
-        except ss.SceneNotFound:
+        except (ss.SceneNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "scene not found")
         return [_shot_dict(sh) for sh in shots]
 
 
 @router.post("/api/scenes/{scene_id}/shots")
-def create_shot(scene_id: uuid.UUID, body: ShotCreate):
+def create_shot(
+    scene_id: uuid.UUID, body: ShotCreate, user=Depends(require_structure_admin)
+):
+    # Admin-only. Creating a shot is provisioning structure on a user's behalf.
     with get_session() as s:
         try:
+            _gate_scene(s, scene_id, user)
             shot = ss.create_shot(
                 s,
                 scene_id,
                 order_index=body.order_index,
                 script_text=body.script_text,
             )
-        except ss.SceneNotFound:
+        except (ss.SceneNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "scene not found")
         return _shot_dict(shot)
 
@@ -92,43 +115,53 @@ def create_shot(scene_id: uuid.UUID, body: ShotCreate):
 
 
 @router.get("/api/shots/{shot_id}")
-def get_shot(shot_id: uuid.UUID):
+def get_shot(shot_id: uuid.UUID, user=Depends(get_optional_user)):
     with get_session() as s:
         try:
             shot = ss.get_shot(s, shot_id)
-        except ss.ShotNotFound:
+            _gate_shot(s, shot, user)
+        except (ss.ShotNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "shot not found")
         return _shot_dict(shot)
 
 
 @router.patch("/api/shots/{shot_id}")
-def update_shot(shot_id: uuid.UUID, body: ShotUpdate):
+def update_shot(shot_id: uuid.UUID, body: ShotUpdate, user=Depends(get_optional_user)):
+    # Editing a shot's script / status is "working inside" your own shot →
+    # owner-scoped (the owner + admins), NOT structural.
     patch = body.model_dump(exclude_unset=True)
     if not patch:
         # Nothing to update — return current state without a write.
         with get_session() as s:
             try:
                 shot = ss.get_shot(s, shot_id)
-            except ss.ShotNotFound:
+                _gate_shot(s, shot, user)
+            except (ss.ShotNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
                 raise HTTPException(404, "shot not found")
             return _shot_dict(shot)
     with get_session() as s:
         try:
+            shot = ss.get_shot(s, shot_id)
+            _gate_shot(s, shot, user)
             shot = ss.update_shot(s, shot_id, patch=patch)
-        except ss.ShotNotFound:
+        except (ss.ShotNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "shot not found")
         return _shot_dict(shot)
 
 
 @router.patch("/api/shots/{shot_id}/group")
-def update_shot_group(shot_id: uuid.UUID, body: ShotGroupPatch):
+def update_shot_group(
+    shot_id: uuid.UUID, body: ShotGroupPatch, user=Depends(get_optional_user)
+):
     """Phase 8.3: update a shot's SceneCanvas group metadata (position,
-    collapsed, label, order) inside its parent scene's canvas_state."""
+    collapsed, label, order) inside its parent scene's canvas_state. Owner-
+    scoped: arranging your own canvas is user work, not structural."""
     patch = body.model_dump(exclude_unset=True)
     with get_session() as s:
         try:
             shot = ss.get_shot(s, shot_id)
-        except ss.ShotNotFound:
+            _gate_shot(s, shot, user)
+        except (ss.ShotNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "shot not found")
         return scenes.update_shot_group(
             s,
@@ -143,11 +176,14 @@ def update_shot_group(shot_id: uuid.UUID, body: ShotGroupPatch):
 
 
 @router.delete("/api/shots/{shot_id}")
-def delete_shot(shot_id: uuid.UUID):
+def delete_shot(shot_id: uuid.UUID, user=Depends(require_structure_admin)):
+    # Admin-only — deleting a shot is a structural change.
     with get_session() as s:
         try:
+            shot = ss.get_shot(s, shot_id)
+            _gate_shot(s, shot, user)
             ss.delete_shot(s, shot_id)
-        except ss.ShotNotFound:
+        except (ss.ShotNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "shot not found")
         return {"deleted": str(shot_id)}
 
@@ -156,21 +192,25 @@ def delete_shot(shot_id: uuid.UUID):
 
 
 @router.get("/api/shots/{shot_id}/workflow")
-def get_workflow(shot_id: uuid.UUID):
+def get_workflow(shot_id: uuid.UUID, user=Depends(get_optional_user)):
     with get_session() as s:
         try:
+            _gate_shot(s, ss.get_shot(s, shot_id), user)
             graph = ss.get_workflow(s, shot_id)
-        except ss.ShotNotFound:
+        except (ss.ShotNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "shot not found")
         return graph
 
 
 @router.put("/api/shots/{shot_id}/workflow")
-def put_workflow(shot_id: uuid.UUID, body: WorkflowSnapshot):
+def put_workflow(shot_id: uuid.UUID, body: WorkflowSnapshot, user=Depends(get_optional_user)):
+    # Editing the node graph is the core "work inside your shot" action →
+    # owner-scoped.
     with get_session() as s:
         try:
+            _gate_shot(s, ss.get_shot(s, shot_id), user)
             graph = ss.put_workflow(s, shot_id, nodes=body.nodes, edges=body.edges)
-        except ss.ShotNotFound:
+        except (ss.ShotNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "shot not found")
         except ValueError as exc:
             raise HTTPException(400, str(exc))
@@ -181,7 +221,7 @@ def put_workflow(shot_id: uuid.UUID, body: WorkflowSnapshot):
 
 
 @router.post("/api/shots/{shot_id}/run")
-def run_shot(shot_id: uuid.UUID):
+def run_shot(shot_id: uuid.UUID, user=Depends(get_optional_user)):
     """Phase 2: flips status to ``running`` and returns the shot.
 
     The workflow engine (DAG walk + approval-gate pause/resume) lands in
@@ -190,26 +230,29 @@ def run_shot(shot_id: uuid.UUID):
     """
     with get_session() as s:
         try:
+            _gate_shot(s, ss.get_shot(s, shot_id), user)
             shot = ss.run_shot(s, shot_id)
-        except ss.ShotNotFound:
+        except (ss.ShotNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "shot not found")
         return _shot_dict(shot)
 
 
 @router.post("/api/shots/{shot_id}/cancel")
-def cancel_shot(shot_id: uuid.UUID):
+def cancel_shot(shot_id: uuid.UUID, user=Depends(get_optional_user)):
     with get_session() as s:
         try:
+            _gate_shot(s, ss.get_shot(s, shot_id), user)
             shot = ss.cancel_shot(s, shot_id)
-        except ss.ShotNotFound:
+        except (ss.ShotNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "shot not found")
         return _shot_dict(shot)
 
 
 @router.get("/api/shots/{shot_id}/jobs")
-def list_jobs(shot_id: uuid.UUID):
+def list_jobs(shot_id: uuid.UUID, user=Depends(get_optional_user)):
     with get_session() as s:
         try:
+            _gate_shot(s, ss.get_shot(s, shot_id), user)
             return ss.list_shot_jobs(s, shot_id)
-        except ss.ShotNotFound:
+        except (ss.ShotNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "shot not found")

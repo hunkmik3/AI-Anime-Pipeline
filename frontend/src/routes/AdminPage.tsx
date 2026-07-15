@@ -86,19 +86,19 @@ function fmtTime(iso?: string | null): string {
   return ms ? new Date(ms).toLocaleString() : "—";
 }
 
-/** "vừa xong" / "3 giờ trước" / "2 ngày trước" — friendlier than a raw stamp. */
+/** "just now" / "3h ago" / "2d ago" — friendlier than a raw stamp. */
 function relTime(iso?: string | null): string {
-  if (!iso) return "chưa đăng nhập";
+  if (!iso) return "never logged in";
   const ms = parseServerTimeMs(iso);
   if (!ms) return "—";
   const diff = Math.max(0, Date.now() - ms);
   const m = Math.floor(diff / 60000);
-  if (m < 1) return "vừa xong";
-  if (m < 60) return `${m} phút trước`;
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h} giờ trước`;
+  if (h < 24) return `${h}h ago`;
   const d = Math.floor(h / 24);
-  if (d < 30) return `${d} ngày trước`;
+  if (d < 30) return `${d}d ago`;
   return new Date(ms).toLocaleDateString();
 }
 
@@ -125,8 +125,41 @@ async function jsonOrThrow(res: Response) {
   return res.json();
 }
 
+/** Minimal inline icon set for the sidebar nav (keeps the console self-
+ *  contained — no icon-font dependency). Stroke inherits currentColor. */
+function NavIcon({ name }: { name: string }) {
+  const p: Record<string, string> = {
+    overview: "M4 13h6V4H4v9Zm0 7h6v-5H4v5Zm10 0h6V11h-6v9Zm0-16v5h6V4h-6Z",
+    members:
+      "M16 11a4 4 0 1 0-4-4 4 4 0 0 0 4 4Zm-8 0a4 4 0 1 0-4-4 4 4 0 0 0 4 4Zm0 2c-2.7 0-8 1.3-8 4v3h9v-3c0-1 .4-1.9 1.1-2.7C6.9 13.1 8 13 8 13Zm8 0c-.3 0-.7 0-1.2.1 1.3 1 2.2 2.3 2.2 3.9v3h7v-3c0-2.7-5.3-4-8-4Z",
+    cost: "M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6",
+    projects:
+      "M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2Z",
+    audit:
+      "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6ZM14 2v6h6M8 13h8M8 17h5",
+  };
+  const fill = name === "overview" || name === "projects";
+  return (
+    <svg
+      className="dash__ico"
+      viewBox="0 0 24 24"
+      width="20"
+      height="20"
+      fill={fill ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={p[name] ?? p.overview} />
+    </svg>
+  );
+}
+
 export function AdminPage() {
   const me = useAuthStore((s) => s.user);
+  const logout = useAuthStore((s) => s.logout);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -218,7 +251,7 @@ export function AdminPage() {
         ),
       );
       setPoolOpen(false);
-      toast(`Đã cập nhật quỹ Avis: $${v.toFixed(2)}`);
+      toast(`Updated Avis pool: $${v.toFixed(2)}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "pool update failed";
       setError(msg);
@@ -244,7 +277,7 @@ export function AdminPage() {
       );
       setCreateOpen(false);
       await refresh();
-      toast(`Đã tạo tài khoản "${nu.username}"`);
+      toast(`Created account "${nu.username}"`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "create failed";
       setError(msg);
@@ -278,7 +311,7 @@ export function AdminPage() {
     try {
       await jsonOrThrow(await fetch(`/api/admin/users/${u.id}`, { method: "DELETE" }));
       await refresh();
-      toast(`Đã xoá tài khoản "${u.username}"`);
+      toast(`Deleted account "${u.username}"`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "delete failed";
       setError(msg);
@@ -300,49 +333,85 @@ export function AdminPage() {
   const suspendedCount = users.length - activeCount;
 
   const TABS = [
-    ["overview", "Tổng quan"],
-    ["members", "Thành viên"],
-    ["cost", "Chi phí & Lãng phí"],
-    ["projects", "Dự án"],
-    ["audit", "Nhật ký"],
+    ["overview", "Overview", "overview"],
+    ["members", "Members", "members"],
+    ["cost", "Cost per sequence", "cost"],
+    ["projects", "Projects", "projects"],
+    ["audit", "Audit log", "audit"],
   ] as const;
+  const SUBTITLES: Record<string, string> = {
+    overview: "Pool and real spend at a glance — straight from the Avis bill.",
+    members: "Provision accounts, budgets and roles for your team.",
+    cost: "How much each sequence spent generating — click a row for every generation.",
+    projects: "Create and assign projects to members — only admins can build the structure.",
+    audit: "Security log: logins, SSO, and every admin action.",
+  };
+  const curLabel = TABS.find(([k]) => k === tab)?.[1] ?? "Dashboard";
 
   return (
-    <div className="admin2">
-      <header className="admin2__head">
-        <div>
-          <h1 className="admin2__title">Bảng điều khiển</h1>
-          <p className="admin2__sub">
-            Thành viên, chi phí thật và lãng phí — lấy thẳng từ hoá đơn Avis.
-          </p>
-        </div>
-        <div className="admin2__head-actions">
-          <Link className="btn2 btn2--ghost" to="/projects">
-            ← Projects
-          </Link>
-          {tab === "members" ? (
-            <button className="btn2 btn2--primary" onClick={() => setCreateOpen(true)}>
-              + Thêm thành viên
+    <div className="dash">
+      {/* ── left sidebar nav (Dasher) ── */}
+      <aside className="dash__side">
+        <Link to="/projects" className="dash__brand">
+          <img src="/favicon.png" alt="" width={30} height={30} />
+          <span className="dash__brand-txt">
+            Giant Studio
+            <small>Admin console</small>
+          </span>
+        </Link>
+
+        <nav className="dash__nav" role="tablist" aria-label="Admin sections">
+          {TABS.map(([k, label, icon]) => (
+            <button
+              key={k}
+              role="tab"
+              aria-selected={tab === k}
+              className={`dash__nav-item${tab === k ? " is-active" : ""}`}
+              onClick={() => setTab(k)}
+            >
+              <NavIcon name={icon} />
+              <span>{label}</span>
             </button>
-          ) : null}
-        </div>
-      </header>
+          ))}
+        </nav>
 
-      <nav className="tabs" role="tablist">
-        {TABS.map(([k, label]) => (
-          <button
-            key={k}
-            role="tab"
-            aria-selected={tab === k}
-            className={`tabs__btn${tab === k ? " is-active" : ""}`}
-            onClick={() => setTab(k)}
-          >
-            {label}
+        <div className="dash__side-foot">
+          <div className="dash__me">
+            <span className="dash__me-avatar" aria-hidden="true">
+              {initials({ display_name: me?.display_name, username: me?.username ?? "?" })}
+            </span>
+            <span className="dash__me-txt">
+              <b>{me?.display_name || me?.username}</b>
+              <small>Admin</small>
+            </span>
+          </div>
+          <Link to="/projects" className="dash__side-link">
+            ← Back to app
+          </Link>
+          <button className="dash__side-link" onClick={() => logout()}>
+            Sign out
           </button>
-        ))}
-      </nav>
+        </div>
+      </aside>
 
-      {error ? <div className="admin-error">{error}</div> : null}
+      {/* ── main column ── */}
+      <div className="dash__main">
+        <header className="dash__topbar">
+          <div>
+            <h1 className="dash__title">{curLabel}</h1>
+            <p className="dash__sub">{SUBTITLES[tab]}</p>
+          </div>
+          <div className="dash__topbar-actions">
+            {tab === "members" ? (
+              <button className="btn2 btn2--primary" onClick={() => setCreateOpen(true)}>
+                + Add member
+              </button>
+            ) : null}
+          </div>
+        </header>
+
+        <main className="dash__content">
+          {error ? <div className="admin-error">{error}</div> : null}
 
       {/* ───────────────── TỔNG QUAN ───────────────── */}
       {tab === "overview" ? (
@@ -353,30 +422,31 @@ export function AdminPage() {
             className={`pool${pool?.exhausted ? " pool--danger" : pool?.over_allocated ? " pool--warn" : ""}`}
           >
             <div className="pool__head">
-              <span className="pool__title">Quỹ Avis (số dư thật của API key)</span>
+              <span className="pool__title">Avis pool (real API-key balance)</span>
               <button className="btn2 btn2--ghost pool__edit" onClick={() => setPoolOpen(true)}>
-                {pool?.configured ? "Cập nhật số dư" : "Nhập số dư"}
+                {pool?.configured ? "Update balance" : "Enter balance"}
               </button>
             </div>
 
             {!pool?.configured ? (
               <p className="pool__hint">
-                Avis không có API xem số dư — mở <b>dashboard Avis</b>, copy số dư hiện tại và
-                nhập vào đây. Hệ thống sẽ tự trừ dần theo <b>chi phí thật</b> của mỗi lần gen.
+                Avis has no balance API — open the <b>Avis dashboard</b>, copy the current
+                balance and enter it here. The system draws it down by the <b>real cost</b> of
+                each generation.
               </p>
             ) : (
               <>
                 <div className="pool__nums">
                   <span>
-                    <b>${pool.pool_usd.toFixed(2)}</b> đã nạp
+                    <b>${pool.pool_usd.toFixed(2)}</b> topped up
                   </span>
                   <span className="pool__sep">·</span>
-                  <span>${pool.spent_usd.toFixed(2)} đã tiêu</span>
+                  <span>${pool.spent_usd.toFixed(2)} spent</span>
                   <span className="pool__sep">·</span>
-                  <span>${pool.reserved_usd.toFixed(2)} đang giữ chỗ</span>
+                  <span>${pool.reserved_usd.toFixed(2)} on hold</span>
                   <span className="pool__sep">·</span>
                   <span className="pool__avail">
-                    còn lại <b>${pool.available_usd.toFixed(2)}</b>
+                    <b>${pool.available_usd.toFixed(2)}</b> left
                   </span>
                 </div>
                 <div className="pool__bar">
@@ -388,19 +458,19 @@ export function AdminPage() {
                 </div>
                 {pool.exhausted ? (
                   <p className="pool__alert">
-                    🚫 <b>Quỹ đã cạn</b> — mọi yêu cầu gen mới sẽ bị từ chối. Nạp thêm trên Avis
-                    rồi cập nhật số dư ở đây.
+                    🚫 <b>Pool exhausted</b> — every new generation request will be rejected.
+                    Top up on Avis, then update the balance here.
                   </p>
                 ) : pool.over_allocated ? (
                   <p className="pool__alert">
-                    ⚠️ <b>Cấp vượt quỹ</b>: user còn có thể tiêu tổng{" "}
-                    <b>${pool.user_remaining_usd.toFixed(2)}</b> nhưng quỹ chỉ còn{" "}
-                    <b>${pool.available_usd.toFixed(2)}</b>. Hãy nạp thêm hoặc giảm budget.
+                    ⚠️ <b>Over-allocated</b>: users can still spend a total of{" "}
+                    <b>${pool.user_remaining_usd.toFixed(2)}</b> but the pool only has{" "}
+                    <b>${pool.available_usd.toFixed(2)}</b> left. Top up or lower the budgets.
                   </p>
                 ) : (
                   <p className="pool__ok">
-                    ✓ An toàn — user còn có thể tiêu tổng ${pool.user_remaining_usd.toFixed(2)},
-                    nằm trong quỹ còn lại.
+                    ✓ Healthy — users can still spend ${pool.user_remaining_usd.toFixed(2)} in
+                    total, within the remaining pool.
                   </p>
                 )}
               </>
@@ -416,21 +486,21 @@ export function AdminPage() {
         <>
           <section className="admin2__stats">
             <div className="stat">
-              <span className="stat__label">Thành viên</span>
+              <span className="stat__label">Members</span>
               <span className="stat__value">{users.length}</span>
             </div>
             <div className="stat">
-              <span className="stat__label">Đang hoạt động</span>
+              <span className="stat__label">Active</span>
               <span className="stat__value stat__value--good">{activeCount}</span>
             </div>
             <div className="stat">
-              <span className="stat__label">Đã khoá</span>
+              <span className="stat__label">Suspended</span>
               <span className={`stat__value${suspendedCount ? " stat__value--warn" : ""}`}>
                 {suspendedCount}
               </span>
             </div>
             <div className="stat">
-              <span className="stat__label">Ngân sách còn lại</span>
+              <span className="stat__label">Budget remaining</span>
               <span className="stat__value">${totalAvailable.toFixed(2)}</span>
             </div>
           </section>
@@ -438,12 +508,12 @@ export function AdminPage() {
           <div className="admin2__toolbar">
             <input
               className="admin2__search"
-              placeholder="Tìm theo tên, tài khoản hoặc email…"
+              placeholder="Search by name, username or email…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
             <span className="admin2__count">
-              {shown.length}/{users.length} thành viên
+              {shown.length}/{users.length} members
             </span>
           </div>
 
@@ -457,19 +527,19 @@ export function AdminPage() {
             ) : shown.length === 0 ? (
               <div className="admin2__empty">
                 {users.length === 0
-                  ? "Chưa có thành viên nào — bấm “+ Thêm thành viên” để bắt đầu."
-                  : "Không tìm thấy thành viên phù hợp."}
+                  ? "No members yet — click “+ Add member” to get started."
+                  : "No matching members found."}
               </div>
             ) : (
               <table className="admin2__table">
                 <thead>
                   <tr>
-                    <th>Thành viên</th>
-                    <th>Vai trò</th>
-                    <th>Trạng thái</th>
-                    <th>Ngân sách</th>
-                    <th>Đăng nhập gần nhất</th>
-                    <th className="admin2__th-actions" aria-label="Thao tác" />
+                    <th>Member</th>
+                    <th>Role</th>
+                    <th>Status</th>
+                    <th>Budget</th>
+                    <th>Last login</th>
+                    <th className="admin2__th-actions" aria-label="Actions" />
                   </tr>
                 </thead>
                 <tbody>
@@ -492,7 +562,7 @@ export function AdminPage() {
                             <span className="admin2__user-txt">
                               <span className="admin2__name">
                                 {u.display_name || u.username}
-                                {isMe ? <span className="admin2__you">bạn</span> : null}
+                                {isMe ? <span className="admin2__you">you</span> : null}
                               </span>
                               <span className="admin2__email">{u.email || u.username}</span>
                             </span>
@@ -504,13 +574,13 @@ export function AdminPage() {
                         </td>
                         <td>
                           <span className={`chip chip--${u.status}`}>
-                            {u.status === "active" ? "Hoạt động" : "Đã khoá"}
+                            {u.status === "active" ? "Active" : "Suspended"}
                           </span>
                         </td>
                         <td>
                           <div className="admin2__budget">
                             <span className="admin2__budget-nums">
-                              <b>{usd(u.available_usd)}</b> còn / {usd(budget)}
+                              <b>{usd(u.available_usd)}</b> left / {usd(budget)}
                             </span>
                             <span className="admin2__bar">
                               <span style={{ width: `${pct}%` }} />
@@ -521,9 +591,9 @@ export function AdminPage() {
                         <td className="admin2__row-actions">
                           <KebabMenu
                             items={[
-                              { label: "Xem hoạt động", onSelect: () => void openActivity(u) },
+                              { label: "View activity", onSelect: () => void openActivity(u) },
                               {
-                                label: "Đặt ngân sách",
+                                label: "Set budget",
                                 onSelect: () => setModal({ kind: "budget", user: u }),
                               },
                               ...(isMe
@@ -531,7 +601,7 @@ export function AdminPage() {
                                 : [
                                     {
                                       label:
-                                        u.status === "active" ? "Khoá tài khoản" : "Mở khoá",
+                                        u.status === "active" ? "Suspend account" : "Reactivate",
                                       onSelect: () =>
                                         void patchUser(
                                           u.id,
@@ -540,26 +610,26 @@ export function AdminPage() {
                                               u.status === "active" ? "suspended" : "active",
                                           },
                                           u.status === "active"
-                                            ? `Đã khoá "${u.username}"`
-                                            : `Đã mở khoá "${u.username}"`,
+                                            ? `Suspended "${u.username}"`
+                                            : `Reactivated "${u.username}"`,
                                         ),
                                     },
                                     {
                                       label:
-                                        u.role === "admin" ? "Hạ xuống user" : "Nâng lên admin",
+                                        u.role === "admin" ? "Demote to user" : "Promote to admin",
                                       onSelect: () =>
                                         void patchUser(
                                           u.id,
                                           { role: u.role === "admin" ? "user" : "admin" },
-                                          `Đã đổi vai trò "${u.username}"`,
+                                          `Changed role for "${u.username}"`,
                                         ),
                                     },
                                     {
-                                      label: isSso ? "Đặt mật khẩu" : "Đặt lại mật khẩu",
+                                      label: isSso ? "Set password" : "Reset password",
                                       onSelect: () => setModal({ kind: "password", user: u }),
                                     },
                                     {
-                                      label: "Xoá tài khoản",
+                                      label: "Delete account",
                                       danger: true,
                                       onSelect: () => setModal({ kind: "delete", user: u }),
                                     },
@@ -581,6 +651,7 @@ export function AdminPage() {
       {tab === "cost" ? <CostTab /> : null}
       {tab === "projects" ? <ProjectsTab /> : null}
       {tab === "audit" ? <AuditTab fmtTime={fmtTime} /> : null}
+        </main>
 
       {createOpen ? (
         <CreateUserDialog
@@ -592,15 +663,15 @@ export function AdminPage() {
 
       {poolOpen ? (
         <PromptDialog
-          title="Số dư quỹ Avis"
-          label="Số dư hiện tại trên dashboard Avis ($)"
+          title="Avis pool balance"
+          label="Current balance on the Avis dashboard ($)"
           type="number"
           initial={String(pool?.pool_usd ?? 0)}
-          placeholder="vd 444.32"
-          submitLabel="Lưu"
+          placeholder="e.g. 444.32"
+          submitLabel="Save"
           validate={(v) => {
             const n = Number(v);
-            return !Number.isFinite(n) || n < 0 ? "Số tiền không hợp lệ" : null;
+            return !Number.isFinite(n) || n < 0 ? "Invalid amount" : null;
           }}
           onSubmit={(v) => void savePool(Number(v))}
           onClose={() => setPoolOpen(false)}
@@ -610,16 +681,16 @@ export function AdminPage() {
 
       {modal?.kind === "password" && (
         <PromptDialog
-          title={`Đổi mật khẩu — ${modal.user.username}`}
-          label="Mật khẩu mới (≥ 8 ký tự)"
+          title={`Change password — ${modal.user.username}`}
+          label="New password (≥ 8 characters)"
           type="password"
-          submitLabel="Đặt mật khẩu"
-          validate={(v) => (v.length < 8 ? "Mật khẩu tối thiểu 8 ký tự" : null)}
+          submitLabel="Set password"
+          validate={(v) => (v.length < 8 ? "Password must be at least 8 characters" : null)}
           onSubmit={(v) => {
             void patchUser(
               modal.user.id,
               { password: v },
-              `Đã đặt mật khẩu tạm cho "${modal.user.username}" — họ phải đổi khi đăng nhập`,
+              `Set a temporary password for "${modal.user.username}" — they must change it on next login`,
             );
             setModal(null);
           }}
@@ -628,20 +699,20 @@ export function AdminPage() {
       )}
       {modal?.kind === "budget" && (
         <PromptDialog
-          title={`Ngân sách — ${modal.user.username}`}
-          label="Ngân sách $ (tổng)"
+          title={`Budget — ${modal.user.username}`}
+          label="Budget $ (total)"
           type="number"
           initial={String(modal.user.budget_usd ?? 0)}
-          submitLabel="Lưu"
+          submitLabel="Save"
           validate={(v) => {
             const n = Number(v);
-            return !Number.isFinite(n) || n < 0 ? "Số tiền không hợp lệ" : null;
+            return !Number.isFinite(n) || n < 0 ? "Invalid amount" : null;
           }}
           onSubmit={(v) => {
             void patchUser(
               modal.user.id,
               { budget_usd: Number(v) },
-              `Đã đặt ngân sách $${Number(v).toFixed(2)} cho "${modal.user.username}"`,
+              `Set budget $${Number(v).toFixed(2)} for "${modal.user.username}"`,
             );
             setModal(null);
           }}
@@ -650,13 +721,13 @@ export function AdminPage() {
       )}
       {modal?.kind === "delete" && (
         <ConfirmDialog
-          title={`Xoá tài khoản "${modal.user.username}"?`}
+          title={`Delete account "${modal.user.username}"?`}
           danger
-          confirmLabel="Xoá"
+          confirmLabel="Delete"
           message={
             <>
-              Project của họ sẽ được <b>gỡ chủ sở hữu</b> (KHÔNG xoá dữ liệu đã gen). Hành
-              động này không hoàn tác.
+              Their projects will be <b>un-owned</b> (generated data is NOT deleted). This
+              action cannot be undone.
             </>
           }
           onConfirm={() => {
@@ -678,61 +749,61 @@ export function AdminPage() {
           <div className="admin-activity" role="dialog" aria-label="User activity">
             <div className="admin-activity__head">
               <h2>
-                Hoạt động — {activityUser.display_name || activityUser.username}
+                Activity — {activityUser.display_name || activityUser.username}
               </h2>
               <button
                 className="admin-activity__close"
                 onClick={closeActivity}
-                aria-label="Đóng"
+                aria-label="Close"
               >
                 ×
               </button>
             </div>
 
             {activityLoading ? (
-              <div className="admin-loading">Đang tải…</div>
+              <div className="admin-loading">Loading…</div>
             ) : activityError ? (
               <div className="admin-error">{activityError}</div>
             ) : activity ? (
               <>
                 <div className="admin-activity__summary">
                   <div>
-                    <span>Ngân sách</span>
+                    <span>Budget</span>
                     <b>${activity.summary.budget_usd.toFixed(2)}</b>
                   </div>
                   <div>
-                    <span>Đã tiêu</span>
+                    <span>Spent</span>
                     <b className="admin-activity__spent">
                       ${activity.summary.spent_usd.toFixed(2)}
                     </b>
                   </div>
                   <div>
-                    <span>Đang giữ</span>
+                    <span>On hold</span>
                     <b>${activity.summary.reserved_usd.toFixed(2)}</b>
                   </div>
                   <div>
-                    <span>Còn lại</span>
+                    <span>Available</span>
                     <b>${activity.summary.available_usd.toFixed(2)}</b>
                   </div>
                   <div>
-                    <span>Số lần gen</span>
+                    <span>Generations</span>
                     <b>{activity.summary.gen_count}</b>
                   </div>
                 </div>
 
                 {activity.items.length === 0 ? (
-                  <div className="admin-activity__empty">Chưa có lần gen nào.</div>
+                  <div className="admin-activity__empty">No generations yet.</div>
                 ) : (
                   <div className="admin-activity__scroll">
                     <table className="admin-activity__table">
                       <thead>
                         <tr>
-                          <th>Thời gian</th>
-                          <th>Loại / Model</th>
-                          <th>Thông số</th>
-                          <th>Chi phí</th>
-                          <th>Trạng thái</th>
-                          <th>Chi tiết</th>
+                          <th>Time</th>
+                          <th>Type / Model</th>
+                          <th>Params</th>
+                          <th>Cost</th>
+                          <th>Status</th>
+                          <th>Details</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -787,7 +858,7 @@ export function AdminPage() {
                                     onClick={() => toggleExpand(i)}
                                     aria-expanded={isOpen}
                                   >
-                                    {isOpen ? "▾ Ẩn" : "▶ Xem"}
+                                    {isOpen ? "▾ Hide" : "▶ View"}
                                     {it.media_ids.length ? ` (${it.media_ids.length})` : ""}
                                   </button>
                                 </td>
@@ -801,7 +872,7 @@ export function AdminPage() {
                                         <b>{it.request_id ?? "—"}</b>
                                       </div>
                                       <div className="admin-activity__kv">
-                                        <span>Loại / Kind</span>
+                                        <span>Type / Kind</span>
                                         <b>
                                           {it.request_type ?? "—"} · {it.kind ?? "—"}
                                         </b>
@@ -811,7 +882,7 @@ export function AdminPage() {
                                         <b>{it.model ?? "—"}</b>
                                       </div>
                                       <div className="admin-activity__kv">
-                                        <span>Thông số</span>
+                                        <span>Params</span>
                                         <b>
                                           {it.duration_seconds
                                             ? `${it.duration_seconds}s`
@@ -820,26 +891,26 @@ export function AdminPage() {
                                         </b>
                                       </div>
                                       <div className="admin-activity__kv">
-                                        <span>Ước lượng</span>
+                                        <span>Estimated</span>
                                         <b>{usd(it.estimated_usd)}</b>
                                       </div>
                                       <div className="admin-activity__kv">
-                                        <span>Thực trả</span>
+                                        <span>Actual</span>
                                         <b>{usd(it.actual_usd)}</b>
                                       </div>
                                       <div className="admin-activity__kv">
-                                        <span>Ví</span>
-                                        <b>{it.ledger_status ?? "không tính phí"}</b>
+                                        <span>Wallet</span>
+                                        <b>{it.ledger_status ?? "not charged"}</b>
                                       </div>
                                       <div className="admin-activity__kv">
-                                        <span>Kết thúc</span>
+                                        <span>Finished</span>
                                         <b>{fmtTime(it.finished_at)}</b>
                                       </div>
                                     </div>
 
                                     {it.inputs && it.inputs.length ? (
                                       <div className="admin-activity__block">
-                                        <span>Ảnh input / Reference ({it.inputs.length})</span>
+                                        <span>Input / Reference images ({it.inputs.length})</span>
                                         <div className="admin-activity__media">
                                           {it.inputs.map((inp) => (
                                             <a
@@ -848,7 +919,7 @@ export function AdminPage() {
                                               href={`/media/${inp.id}`}
                                               target="_blank"
                                               rel="noopener noreferrer"
-                                              title={`${inp.label} — bấm để xem full`}
+                                              title={`${inp.label} — click to view full size`}
                                             >
                                               <img
                                                 src={`/media/${inp.id}`}
@@ -874,7 +945,7 @@ export function AdminPage() {
 
                                     {it.params && Object.keys(it.params).length ? (
                                       <div className="admin-activity__block">
-                                        <span>Tham số đầy đủ</span>
+                                        <span>Full parameters</span>
                                         <div className="admin-activity__params">
                                           {Object.entries(it.params).map(([k, v]) => (
                                             <div key={k} className="admin-activity__kv">
@@ -888,7 +959,7 @@ export function AdminPage() {
 
                                     {it.error ? (
                                       <div className="admin-activity__block admin-activity__block--err">
-                                        <span>Lỗi</span>
+                                        <span>Error</span>
                                         <p>{it.error}</p>
                                       </div>
                                     ) : null}
@@ -913,7 +984,7 @@ export function AdminPage() {
                                                 href={`/media/${m}`}
                                                 target="_blank"
                                                 rel="noopener noreferrer"
-                                                title="Bấm để xem full"
+                                                title="Click to view full size"
                                               >
                                                 <img
                                                   src={`/media/${m}`}
@@ -932,7 +1003,7 @@ export function AdminPage() {
                                             target="_blank"
                                             rel="noopener noreferrer"
                                           >
-                                            ↗ Link gốc (Avis)
+                                            ↗ Original link (Avis)
                                           </a>
                                         ) : null}
                                       </div>
@@ -952,6 +1023,7 @@ export function AdminPage() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

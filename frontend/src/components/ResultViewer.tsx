@@ -48,22 +48,22 @@ function formatAspectRatio(value: string | undefined): string {
   }
 }
 
-/** Format an ISO timestamp as a Vietnamese relative time string —
- *  "vừa xong", "5 phút trước", "2 giờ trước", "3 ngày trước". Falls
- *  back to "—" when the timestamp is missing or unparseable. */
+/** Format an ISO timestamp as an English relative time string —
+ *  "just now", "5m ago", "2h ago", "3d ago". Falls back to "—"
+ *  when the timestamp is missing or unparseable. */
 function formatRelativeTime(iso: string | undefined): string {
   if (!iso) return "—";
   const t = parseServerTimeMs(iso);
   if (isNaN(t)) return "—";
   const diffSec = Math.max(0, (Date.now() - t) / 1000);
-  if (diffSec < 60) return "vừa xong";
+  if (diffSec < 60) return "just now";
   const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin} phút trước`;
+  if (diffMin < 60) return `${diffMin}m ago`;
   const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr} giờ trước`;
+  if (diffHr < 24) return `${diffHr}h ago`;
   const diffDay = Math.floor(diffHr / 24);
-  if (diffDay < 7) return `${diffDay} ngày trước`;
-  return new Date(t).toLocaleDateString("vi-VN");
+  if (diffDay < 7) return `${diffDay}d ago`;
+  return new Date(t).toLocaleDateString("en-US");
 }
 
 export function ResultViewer() {

@@ -96,6 +96,25 @@ def update_scene(
     return scene
 
 
+def set_scene_cover(
+    session: Session, scene_id: uuid.UUID, media_id: Optional[str]
+) -> Scene:
+    """Set (or clear, when media_id is None) the scene's cover thumbnail.
+    Stored in canvas_state.cover_media_id — cosmetic, not structural."""
+    scene = get_scene(session, scene_id)
+    state = dict(scene.canvas_state or {})
+    if media_id:
+        state["cover_media_id"] = str(media_id)
+    else:
+        state.pop("cover_media_id", None)
+    scene.canvas_state = state
+    flag_modified(scene, "canvas_state")
+    session.add(scene)
+    session.commit()
+    session.refresh(scene)
+    return scene
+
+
 def delete_scene(session: Session, scene_id: uuid.UUID) -> None:
     """FK CASCADE handles Shots → Nodes → Edges. Plan rows hang off
     Shot.id and CASCADE through too."""
@@ -300,7 +319,7 @@ def auto_migrate_canvas(session: Session, scene_id: uuid.UUID) -> dict[str, Any]
             "shot_id": sid,
             "position": {"x": _GROUP_STACK_X, "y": _GROUP_STACK_Y0 + next_slot * _GROUP_STACK_DY},
             "collapsed": False,
-            "label": f"Shot {sh.order_index + 1}",
+            "label": f"Sequence {sh.order_index + 1}",
             "order": sh.order_index,
         })
         next_slot += 1

@@ -359,16 +359,22 @@ export function GenerationDialog() {
       if (openNodeType === "character") {
         nextAspect = "IMAGE_ASPECT_RATIO_SQUARE";
       } else {
+        const stored = (openNode?.data as { aspect_ratio?: unknown } | undefined)
+          ?.aspect_ratio;
         const inherited = pickDefaultAspect(
           rfId,
           openNodeType,
           nodes,
           useShotWorkflowStore.getState().edges,
         );
-        if (inherited !== null) {
+        if (openNodeType === "video" && (stored === "9:16" || stored === "16:9")) {
+          // Honor a per-node stored aspect (e.g. scaffolded shots).
+          nextAspect = stored;
+        } else if (inherited !== null) {
           nextAspect = inherited;
         } else if (openNodeType === "video") {
-          nextAspect = "16:9";
+          // Vertical-first default for video (the studio works in 9:16).
+          nextAspect = "9:16";
         } else {
           nextAspect = "IMAGE_ASPECT_RATIO_LANDSCAPE";
         }
@@ -544,7 +550,7 @@ export function GenerationDialog() {
     }
     if (isStoryboard) {
       // For Storyboard, the prompt textarea is the narrative seed
-      // ("đi du lich + show off áo", "unbox + try-on at home", …).
+      // ("travel + show off outfit", "unbox + try-on at home", …).
       // The planner LLM expands it into N per-shot beats with
       // continuity hints. Empty seed is allowed — planner will improvise
       // from upstream refs alone.
@@ -584,7 +590,7 @@ export function GenerationDialog() {
         ? prompt.trim()
         : buildCharacterPrompt(charGender, charCountry, charVibe, charExtras);
       // Stamp the picker selections directly onto the node so the detail
-      // panel can show "Country: Nhật Bản · Vibe: Douyin" later. These
+      // panel can show "Country: Japan · Vibe: Douyin" later. These
       // choices don't round-trip through the backend params (they're
       // baked into the prompt text), so we persist them here at dispatch
       // time. patchNode merges, so this fires alongside the generation
@@ -814,8 +820,8 @@ export function GenerationDialog() {
             </div>
             <p className="gen-dialog__hint">
               <strong>Manual</strong> = paste full prompt (refs · visual style ·
-              shot beats · dialogue · SFX) gửi nguyên văn, không LLM synth,
-              không Bible inject. <strong>Automation</strong> = auto-synth
+              shot beats · dialogue · SFX) sent verbatim, no LLM synth,
+              no Bible inject. <strong>Automation</strong> = auto-synth
               motion prompt + Bible (Phase 6).
             </p>
           </div>
@@ -884,20 +890,20 @@ export function GenerationDialog() {
               }}
               placeholder={
                 isManualVideo
-                  ? "Paste full Seedance prompt — References (@image1 = …), Visual Style, Shot N (Xs-Ys), Dialogue, SFX. Gửi nguyên văn."
+                  ? "Paste full Seedance prompt — References (@image1 = …), Visual Style, Shot N (Xs-Ys), Dialogue, SFX. Sent verbatim."
                   : isVideo
-                  ? "Bỏ trống để tự sinh motion prompt từ source image ✨"
+                  ? "Leave empty to auto-generate a motion prompt from the source image ✨"
                   : isPrompt
-                  ? "Nhập prompt mồi để feed cho downstream image / video…"
-                  : "Bỏ trống để tự generate prompt từ upstream nodes ✨"
+                  ? "Enter a seed prompt to feed the downstream image / video…"
+                  : "Leave empty to auto-generate a prompt from upstream nodes ✨"
               }
               disabled={isWorking}
             />
             {isWorking && (
               <p className="gen-dialog__hint">
                 {node?.data.aiBriefStatus === "pending"
-                  ? "✨ Đang phân tích image…"
-                  : "✨ Đang dựng prompt từ upstream context…"}
+                  ? "✨ Analyzing image…"
+                  : "✨ Building prompt from upstream context…"}
               </p>
             )}
           </div>
@@ -945,7 +951,7 @@ export function GenerationDialog() {
             </div>
 
             <div className="gen-dialog__field">
-              <span className="gen-dialog__label">Quốc gia</span>
+              <span className="gen-dialog__label">Country</span>
               <div className="aspect-chip-row">
                 {CHARACTER_COUNTRIES.map((c) => (
                   <button
@@ -979,7 +985,7 @@ export function GenerationDialog() {
             <div className="gen-dialog__field">
               <div className="gen-dialog__label-row">
                 <label className="gen-dialog__label" htmlFor="gen-char-extras">
-                  Mô tả thêm (tuỳ chọn)
+                  Extra description (optional)
                 </label>
                 <span className="gen-dialog__char-count">{charExtras.length}/200</span>
               </div>
@@ -991,11 +997,11 @@ export function GenerationDialog() {
                 maxLength={200}
                 value={charExtras}
                 onChange={(e) => setCharExtras(e.target.value)}
-                placeholder="Tuổi, kiểu tóc, trang phục, biểu cảm…"
+                placeholder="Age, hairstyle, outfit, expression…"
               />
               <p className="gen-dialog__hint">
-                Prompt được auto-build: portrait headshot · vibe styling ·
-                photorealistic — tối ưu cho character reference.
+                Prompt is auto-built: portrait headshot · vibe styling ·
+                photorealistic — optimized for a character reference.
               </p>
             </div>
               </>
@@ -1022,7 +1028,7 @@ export function GenerationDialog() {
                   placeholder="Paste full character sheet / turnaround / style prompt..."
                 />
                 <p className="gen-dialog__hint">
-                  Flowboard sẽ gửi nguyên prompt này, không ghép preset headshot.
+                  Flowboard sends this prompt verbatim, without adding the headshot preset.
                 </p>
               </div>
             )}
@@ -1110,15 +1116,15 @@ export function GenerationDialog() {
                 <p className="gen-dialog__hint">
                   {selectedSourceIdx.size === 0 ? (
                     <span style={{ color: "#ef4444" }}>
-                      Chọn ít nhất 1 variant để gen video.
+                      Select at least 1 variant to generate video.
                     </span>
                   ) : (
                     <>
-                      Sẽ gen <strong>{selectedSourceIdx.size} video</strong>
+                      Will generate <strong>{selectedSourceIdx.size} video</strong>
                       {selectedSourceIdx.size === sourceMediaIds.length
-                        ? " (tất cả variants)"
+                        ? " (all variants)"
                         : ` (${selectedSourceIdx.size}/${sourceMediaIds.length} variants)`}
-                      — cùng prompt + camera setting.
+                      — same prompt + camera setting.
                     </>
                   )}
                 </p>
@@ -1291,9 +1297,9 @@ export function GenerationDialog() {
               ))}
             </div>
             <p className="gen-dialog__hint">
-              <strong>Static</strong> = locked-off, không zoom/pan — phù hợp
-              e-commerce product shot. <strong>Dynamic</strong> = để auto-prompt
-              tự quyết camera move (dolly / micro-shift / …).
+              <strong>Static</strong> = locked-off, no zoom/pan — good for an
+              e-commerce product shot. <strong>Dynamic</strong> = let auto-prompt
+              decide the camera move (dolly / micro-shift / …).
             </p>
           </div>
         )}

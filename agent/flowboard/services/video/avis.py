@@ -37,6 +37,7 @@ import base64
 import logging
 import os
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -64,11 +65,26 @@ BASE_URL = "https://api.avis.xyz/api/v1"
 # Local poll cadence + ceiling for a running video task. Seedance 2.0 at
 # 1080p / 15s / multi-ref (or person-driven) can take well over 7.5 min, so
 # the ceiling is generous (default 160 × 15s = 40 min) and env-overridable.
-AVIS_POLL_INTERVAL_S = float(os.getenv("FLOWBOARD_AVIS_POLL_INTERVAL_S", "15"))
-AVIS_POLL_MAX_CYCLES = int(os.getenv("FLOWBOARD_AVIS_POLL_MAX_CYCLES", "160"))
+# Poll cadence. We poll fast early (short/low-res clips finish quickly) and back
+# off to this cap for long ones — cuts the "clip is done on Avis but the UI
+# hasn't noticed yet" tail latency (was a flat 15s). Env-tunable.
+AVIS_POLL_INTERVAL_S = float(os.getenv("FLOWBOARD_AVIS_POLL_INTERVAL_S", "5"))
+AVIS_POLL_FIRST_S = float(os.getenv("FLOWBOARD_AVIS_POLL_FIRST_S", "3"))
+AVIS_POLL_MAX_CYCLES = int(os.getenv("FLOWBOARD_AVIS_POLL_MAX_CYCLES", "300"))
 
-# Process-local concurrency cap (mirrors the Dreamina-direct provider).
-_CONCURRENCY_SEM = asyncio.Semaphore(3)
+# Process-local throttle on concurrent SUBMIT posts (released as soon as the
+# POST returns a taskId — polling runs unbounded, so this does NOT cap how many
+# generations run at once, only how many submit calls are in flight). Bumped for
+# multi-user: Avis tolerates 20+ concurrent requests fine (measured), so a low
+# cap here just needlessly staggers many users submitting at once. Env-tunable.
+def _avis_submit_concurrency() -> int:
+    try:
+        return max(1, int(os.getenv("FLOWBOARD_AVIS_SUBMIT_CONCURRENCY", "12")))
+    except ValueError:
+        return 12
+
+
+_CONCURRENCY_SEM = asyncio.Semaphore(_avis_submit_concurrency())
 
 
 # Avis Seedance 2.0 (`dreamina-seedance-2-0`). supportedParameters from
@@ -121,9 +137,15 @@ _INLINE_MAX_DIM = 1280
 _INLINE_JPEG_Q = 85
 
 
+@lru_cache(maxsize=64)
 def _encode_local_image_inline(path: Path) -> tuple[str, str]:
     """Return (base64, mediaType) for a local image, shrunk to <=_INLINE_MAX_DIM
-    on the longest side and re-encoded as JPEG."""
+    on the longest side and re-encoded as JPEG.
+
+    Cached by path: media-cache files are content-addressed (immutable uuid
+    names), so re-using the same reference across many generations skips the
+    expensive open→resize→JPEG→base64 work. CPU-bound — call it off the event
+    loop via asyncio.to_thread so it never blocks concurrent gens/polls."""
     from io import BytesIO
 
     from PIL import Image
@@ -488,13 +510,28 @@ class AvisVideoProvider:
         # Images are sent inline as base64 when they're local media_ids (no R2);
         # public URLs pass through. See _image_content_part.
         content: list[dict] = [{"type": "text", "text": motion_prompt}]
+        # Encode image parts OFF the event loop (Pillow resize + base64 is CPU-
+        # bound and would otherwise block every other concurrent gen/poll) and
+        # in parallel. Cached, so repeat refs across gens are near-instant.
         if mode == "i2v":
-            content.append(_image_content_part(first_frame_url, "firstFrame"))
+            jobs = [(first_frame_url, "firstFrame")]
             if last_frame_url:
-                content.append(_image_content_part(last_frame_url, "lastFrame"))
+                jobs.append((last_frame_url, "lastFrame"))
+            content.extend(
+                await asyncio.gather(
+                    *[asyncio.to_thread(_image_content_part, r, role) for r, role in jobs]
+                )
+            )
         else:
-            for ref in reference_images:
-                content.append(_image_content_part(ref, "referenceImage"))
+            if reference_images:
+                content.extend(
+                    await asyncio.gather(
+                        *[
+                            asyncio.to_thread(_image_content_part, ref, "referenceImage")
+                            for ref in reference_images
+                        ]
+                    )
+                )
             for vref in reference_videos:
                 # Avis has no inline video upload — reference videos must be a
                 # public URL. Drop bare media_ids with a warning.
@@ -735,7 +772,11 @@ class AvisVideoProvider:
         job_id = submit_result["external_job_id"]
         attempts = 0
         while attempts < AVIS_POLL_MAX_CYCLES:
-            await asyncio.sleep(AVIS_POLL_INTERVAL_S)
+            # Ramp: start at AVIS_POLL_FIRST_S, add ~1s each cycle, cap at
+            # AVIS_POLL_INTERVAL_S. Fast early → detects short clips quickly;
+            # backs off so long renders don't hammer the API.
+            delay = min(AVIS_POLL_INTERVAL_S, AVIS_POLL_FIRST_S + attempts * 1.0)
+            await asyncio.sleep(delay)
             attempts += 1
             poll = await self.poll(job_id)
             if poll.get("status") in {"succeeded", "failed", "cancelled"}:

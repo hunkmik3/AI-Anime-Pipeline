@@ -10,12 +10,14 @@ owned by Asset and never touched on reference DELETE.
 import uuid
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlmodel import select, or_
 
 from flowboard.db import get_session
 from flowboard.db.models import Reference
+from flowboard.routes.deps import get_optional_user, owner_scope
+from flowboard.services import project_service as ps
 
 router = APIRouter(prefix="/api/references", tags=["references"])
 
@@ -31,6 +33,7 @@ class ReferenceCreate(BaseModel):
     ai_brief: Optional[str] = None
     aspect_ratio: Optional[str] = None
     url: Optional[str] = None
+    project_id: Optional[uuid.UUID] = None  # library is scoped per-project
     source_shot_id: Optional[uuid.UUID] = None
     source_node_short_id: Optional[str] = None
     tags: Optional[list[str]] = None
@@ -67,6 +70,7 @@ def _row_dict(row: Reference) -> dict[str, Any]:
         "kind": row.kind,
         "ai_brief": row.ai_brief,
         "aspect_ratio": row.aspect_ratio,
+        "project_id": str(row.project_id) if row.project_id else None,
         "tags": list(row.tags or []),
         "pinned": row.pinned,
         "position": row.position,
@@ -106,6 +110,7 @@ def create_reference(body: ReferenceCreate):
             ai_brief=body.ai_brief,
             aspect_ratio=body.aspect_ratio,
             url=body.url,
+            project_id=body.project_id,
             source_shot_id=body.source_shot_id,
             source_node_short_id=body.source_node_short_id,
             tags=list(body.tags or []),
@@ -119,17 +124,29 @@ def create_reference(body: ReferenceCreate):
 @router.get("")
 def list_references(
     q: Optional[str] = None,
+    project_id: Optional[uuid.UUID] = None,
     pinned_first: bool = True,
     limit: int = 200,
+    user=Depends(get_optional_user),
 ):
     """List references, sorted (pinned DESC, position ASC, created_at DESC).
 
+    ``project_id``: scope the library to one project (the normal case). When a
+    project is given we owner-gate it (non-owner → empty, don't leak). Omitting
+    it returns the unscoped set (admin/dev — legacy behaviour).
     ``q``: case-insensitive substring match against label OR ai_brief.
-    ``pinned_first``: when False, drop pinned from the ORDER BY so
-    raw insertion order surfaces (debug / testing convenience).
     """
     with get_session() as s:
+        if project_id is not None:
+            # Owner gate: a non-owner asking for someone else's project sees
+            # nothing rather than an error.
+            try:
+                ps.get_project(s, project_id, owner_user_id=owner_scope(user))
+            except ps.ProjectNotFound:
+                return []
         stmt = select(Reference)
+        if project_id is not None:
+            stmt = stmt.where(Reference.project_id == project_id)
         if q:
             needle = f"%{q.lower()}%"
             # SQLite's LIKE is case-insensitive for ASCII by default but

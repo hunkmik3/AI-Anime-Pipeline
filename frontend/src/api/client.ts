@@ -446,6 +446,14 @@ export function mediaUrl(mediaId: string): string {
   return `/media/${encodeURIComponent(clean)}`;
 }
 
+/** Downscaled thumbnail (cached WEBP) — use for grids/pickers so we don't ship
+ *  multi-MB full-res images for tiny tiles. Falls back to the original on the
+ *  server for non-images. */
+export function thumbUrl(mediaId: string, w = 256): string {
+  const clean = mediaId.replace(/^media\//, "");
+  return `/api/media/${encodeURIComponent(clean)}/thumb?w=${w}`;
+}
+
 // ── Upload ───────────────────────────────────────────────────────────────────
 
 export interface UploadResponse {
@@ -854,6 +862,7 @@ export interface ReferenceItem {
   // spawn skip the re-vision call entirely.
   aiBrief: string | null;
   aspectRatio: string | null;
+  projectId: string | null;
   tags: string[];
   pinned: boolean;
   position: number;
@@ -870,6 +879,7 @@ export interface ReferenceCreateInput {
   ai_brief?: string | null;
   aspect_ratio?: string | null;
   url?: string | null;
+  project_id?: string | null;
   source_shot_id?: string | null;
   source_node_short_id?: string | null;
   tags?: string[];
@@ -891,6 +901,7 @@ interface ReferenceRowWire {
   kind: string;
   ai_brief: string | null;
   aspect_ratio: string | null;
+  project_id?: string | null;
   tags: string[] | null;
   pinned: boolean;
   position: number;
@@ -921,6 +932,7 @@ function mapReferenceRow(row: ReferenceRowWire): ReferenceItem {
     kind,
     aiBrief: row.ai_brief,
     aspectRatio: row.aspect_ratio,
+    projectId: row.project_id ?? null,
     tags: Array.isArray(row.tags) ? row.tags : [],
     pinned: row.pinned,
     position: row.position,
@@ -932,11 +944,13 @@ function mapReferenceRow(row: ReferenceRowWire): ReferenceItem {
 
 export async function listReferences(params?: {
   q?: string;
+  project_id?: string;
   pinned_first?: boolean;
   limit?: number;
 }): Promise<ReferenceItem[]> {
   const search = new URLSearchParams();
   if (params?.q) search.set("q", params.q);
+  if (params?.project_id) search.set("project_id", params.project_id);
   if (params?.pinned_first !== undefined) {
     search.set("pinned_first", String(params.pinned_first));
   }
@@ -1009,6 +1023,28 @@ export interface ProjectDTO {
   project_bible: Partial<ProjectBible>;
   settings: Record<string, unknown>;
   created_at: string | null;
+  /** Cover thumbnail media id (admin override else latest image); null if none. */
+  thumb_media_id?: string | null;
+  owner_user_id?: string | null;
+  owner_name?: string | null;
+}
+
+export interface ProjectImage {
+  media_id: string;
+  url: string;
+}
+
+export function listProjectImages(projectId: string): Promise<{ images: ProjectImage[] }> {
+  return api<{ images: ProjectImage[] }>(`/api/projects/${projectId}/images`);
+}
+
+/** Set (media id) or clear (null) a project's cover thumbnail. Owner-scoped. */
+export function setProjectCover(projectId: string, mediaId: string | null): Promise<ProjectDTO> {
+  return api<ProjectDTO>(`/api/projects/${projectId}/cover`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ media_id: mediaId }),
+  });
 }
 
 export interface ProjectDetailDTO extends ProjectDTO {
@@ -1040,7 +1076,18 @@ export interface SceneDTO {
   // Phase 8.3: Scene Bible removed; multi-shot layout lives here.
   canvas_state: SceneCanvasState;
   master_establishing_asset_id: number | null;
+  /** Cover thumbnail media id (user/admin-set); null → gradient placeholder. */
+  thumb_media_id?: string | null;
   created_at: string | null;
+}
+
+/** Set (media id) or clear (null) a scene's cover thumbnail. Owner-scoped. */
+export function setSceneCover(sceneId: string, mediaId: string | null): Promise<SceneDTO> {
+  return api<SceneDTO>(`/api/scenes/${sceneId}/cover`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ media_id: mediaId }),
+  });
 }
 
 export interface SceneDetailDTO extends SceneDTO {

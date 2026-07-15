@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { useAuthStore } from "../store/auth";
+import { PasswordInput } from "../components/PasswordInput";
 
 export function LoginPage() {
   const login = useAuthStore((s) => s.login);
@@ -23,13 +24,13 @@ export function LoginPage() {
     const m = window.location.hash.match(/sso_error=([^&]+)/);
     if (!m) return;
     const msgs: Record<string, string> = {
-      domain_not_allowed: "Email không thuộc tổ chức được phép.",
-      bad_state: "Phiên đăng nhập hết hạn — thử lại.",
-      exchange_failed: "Xác thực Google lỗi — thử lại.",
-      google_denied: "Bạn đã huỷ đăng nhập Google.",
-      account_disabled: "Tài khoản đã bị khoá.",
+      domain_not_allowed: "Email is not in an allowed organization.",
+      bad_state: "Login session expired — try again.",
+      exchange_failed: "Google sign-in failed — try again.",
+      google_denied: "You cancelled Google sign-in.",
+      account_disabled: "This account is suspended.",
     };
-    setSsoError(msgs[m[1]] ?? "Đăng nhập Google lỗi.");
+    setSsoError(msgs[m[1]] ?? "Google sign-in failed.");
     history.replaceState(null, "", window.location.pathname + window.location.search);
   }, []);
 
@@ -52,10 +53,10 @@ export function LoginPage() {
       <form className="login-card" onSubmit={onSubmit}>
         <img className="login-logo" src="/giantstudio-512.png" alt="Giant Studio" />
         <h1 className="login-title">Giant Studio</h1>
-        <p className="login-sub">Đăng nhập để tiếp tục</p>
+        <p className="login-sub">Sign in to continue</p>
 
         <label className="login-field">
-          <span>Tài khoản</span>
+          <span>Username</span>
           <input
             autoFocus
             autoComplete="username"
@@ -65,12 +66,11 @@ export function LoginPage() {
           />
         </label>
         <label className="login-field">
-          <span>Mật khẩu</span>
-          <input
-            type="password"
+          <span>Password</span>
+          <PasswordInput
             autoComplete="current-password"
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={setPassword}
             disabled={busy}
           />
         </label>
@@ -79,14 +79,14 @@ export function LoginPage() {
         {ssoError ? <div className="login-error">{ssoError}</div> : null}
 
         <button className="login-btn" type="submit" disabled={busy || !username || !password}>
-          {busy ? "Đang đăng nhập…" : "Đăng nhập"}
+          {busy ? "Signing in…" : "Sign in"}
         </button>
 
-        <div className="login-divider"><span>hoặc</span></div>
+        <div className="login-divider"><span>or</span></div>
 
         {/* Full-page navigation (server-side OAuth redirect flow), not a fetch. */}
         <a className="login-btn login-btn--google" href="/api/account/sso/google/start">
-          Đăng nhập bằng Google
+          Sign in with Google
         </a>
       </form>
     </div>

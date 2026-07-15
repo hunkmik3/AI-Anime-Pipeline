@@ -76,30 +76,50 @@ def test_admin_endpoints_require_admin(client):
 
 
 def test_projects_scoped_to_owner(client):
-    user_service.create_user("u1", "pw123456")
-    user_service.create_user("u2", "pw123456")
+    # Phase 9.1: only an admin creates projects, assigning each to a user.
+    u1 = user_service.create_user("u1", "pw123456")
+    u2 = user_service.create_user("u2", "pw123456")
+    user_service.create_user("padmin", "pw123456", role="admin")
     t1 = _login(client, "u1", "pw123456").json()["token"]
     t2 = _login(client, "u2", "pw123456").json()["token"]
+    ah = {"Authorization": f"Bearer {_login(client, 'padmin', 'pw123456').json()['token']}"}
     h1 = {"Authorization": f"Bearer {t1}"}
     h2 = {"Authorization": f"Bearer {t2}"}
 
-    client.post("/api/projects", json={"name": "P1"}, headers=h1)
-    p2 = client.post("/api/projects", json={"name": "P2"}, headers=h2).json()["id"]
+    client.post("/api/projects", json={"name": "P1", "owner_user_id": str(u1.id)}, headers=ah)
+    p2 = client.post(
+        "/api/projects", json={"name": "P2", "owner_user_id": str(u2.id)}, headers=ah
+    ).json()["id"]
 
+    # each user sees only the project assigned to them
     assert [p["name"] for p in client.get("/api/projects", headers=h1).json()] == ["P1"]
     assert [p["name"] for p in client.get("/api/projects", headers=h2).json()] == ["P2"]
 
     # cross-user access is a 404 (don't leak existence)
     assert client.get(f"/api/projects/{p2}", headers=h1).status_code == 404
-    assert client.delete(f"/api/projects/{p2}", headers=h1).status_code == 404
     assert client.get(f"/api/projects/{p2}", headers=h2).status_code == 200
+    # a non-admin cannot delete even their own project (structural → admin only)
+    assert client.delete(f"/api/projects/{p2}", headers=h2).status_code == 403
+    # ...but the admin can, and sees every project
+    assert {"P1", "P2"} <= {p["name"] for p in client.get("/api/projects", headers=ah).json()}
+    assert client.delete(f"/api/projects/{p2}", headers=ah).status_code == 200
+
+
+def test_non_admin_cannot_create_project(client):
+    """Phase 9.1: a normal authenticated user is forbidden from creating
+    project structure — that is admin-only."""
+    user_service.create_user("plebe", "pw123456")
+    h = {"Authorization": f"Bearer {_login(client, 'plebe', 'pw123456').json()['token']}"}
+    assert client.post("/api/projects", json={"name": "Nope"}, headers=h).status_code == 403
 
 
 def test_projects_unscoped_without_token(client):
-    """Auth off (no token) -> unscoped: behaves like the single-user app."""
-    user_service.create_user("solo", "pw123456")
-    t = _login(client, "solo", "pw123456").json()["token"]
-    client.post("/api/projects", json={"name": "Owned"}, headers={"Authorization": f"Bearer {t}"})
+    """Auth off (no token) -> unscoped: behaves like the single-user app.
+    The no-auth path must still create + list freely (dev / test parity)."""
+    u = user_service.create_user("solo", "pw123456")
+    user_service.create_user("uadmin", "pw123456", role="admin")
+    ah = {"Authorization": f"Bearer {_login(client, 'uadmin', 'pw123456').json()['token']}"}
+    client.post("/api/projects", json={"name": "Owned", "owner_user_id": str(u.id)}, headers=ah)
     client.post("/api/projects", json={"name": "Orphan"})  # no token -> owner NULL
     names = {p["name"] for p in client.get("/api/projects").json()}  # no token -> all
     assert {"Owned", "Orphan"} <= names

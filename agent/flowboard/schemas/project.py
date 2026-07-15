@@ -60,6 +60,10 @@ class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     project_bible: Optional[ProjectBible] = None
     settings: Optional[dict[str, Any]] = None
+    # Phase 9.1: an admin provisions a project *for* a user — this is the
+    # account it belongs to. Ignored on the no-auth path; when a normal user
+    # somehow reaches create, the route overrides it with their own id.
+    owner_user_id: Optional[uuid.UUID] = None
 
     @field_validator("settings")
     @classmethod
@@ -72,6 +76,8 @@ class ProjectUpdate(BaseModel):
 
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     settings: Optional[dict[str, Any]] = None
+    # Phase 9.1: admin may reassign the project to a different user.
+    owner_user_id: Optional[uuid.UUID] = None
 
     @field_validator("settings")
     @classmethod

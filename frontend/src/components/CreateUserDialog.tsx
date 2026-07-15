@@ -8,7 +8,7 @@ export interface NewUser {
   role: string;
 }
 
-/** "Thêm thành viên" modal — replaces the bare inline create form. */
+/** "Add member" modal — replaces the bare inline create form. */
 export function CreateUserDialog({
   busy,
   onSubmit,
@@ -36,11 +36,11 @@ export function CreateUserDialog({
     e.preventDefault();
     setErr(null);
     if (!username.trim()) {
-      setErr("Nhập tên tài khoản");
+      setErr("Enter a username");
       return;
     }
     if (password.length < 8) {
-      setErr("Mật khẩu tạm tối thiểu 8 ký tự");
+      setErr("Temporary password must be at least 8 characters");
       return;
     }
     onSubmit({
@@ -56,30 +56,30 @@ export function CreateUserDialog({
       className="cpw-backdrop"
       role="dialog"
       aria-modal="true"
-      aria-label="Thêm thành viên"
+      aria-label="Add member"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
       <form className="modal-card" onSubmit={submit}>
-        <h2 className="modal-card__title">Thêm thành viên</h2>
+        <h2 className="modal-card__title">Add member</h2>
         <p className="modal-card__msg">
-          Họ sẽ được yêu cầu đổi mật khẩu tạm ngay lần đăng nhập đầu tiên.
+          They'll be asked to change this temporary password on their first login.
         </p>
         <label className="login-field">
-          <span>Tên tài khoản</span>
+          <span>Username</span>
           <input value={username} autoFocus onChange={(e) => setUsername(e.target.value)} />
         </label>
         <label className="login-field">
-          <span>Mật khẩu tạm (≥ 8 ký tự)</span>
+          <span>Temporary password (≥ 8 characters)</span>
           <input type="text" value={password} onChange={(e) => setPassword(e.target.value)} />
         </label>
         <label className="login-field">
-          <span>Email (tuỳ chọn)</span>
+          <span>Email (optional)</span>
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
         </label>
         <label className="login-field">
-          <span>Vai trò</span>
+          <span>Role</span>
           <select value={role} onChange={(e) => setRole(e.target.value)}>
             <option value="user">user</option>
             <option value="admin">admin</option>
@@ -88,10 +88,10 @@ export function CreateUserDialog({
         {err ? <div className="login-error">{err}</div> : null}
         <div className="modal-card__actions">
           <button type="button" className="modal-btn modal-btn--ghost" onClick={onClose}>
-            Huỷ
+            Cancel
           </button>
           <button type="submit" className="modal-btn" disabled={busy}>
-            {busy ? "Đang tạo…" : "Tạo tài khoản"}
+            {busy ? "Creating…" : "Create account"}
           </button>
         </div>
       </form>

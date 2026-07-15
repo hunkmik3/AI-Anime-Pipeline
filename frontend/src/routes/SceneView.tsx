@@ -1,12 +1,32 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 
-import { EMPTY_PROJECT_BIBLE, type ProjectBible, type SceneDTO } from "../api/client";
+import {
+  EMPTY_PROJECT_BIBLE,
+  thumbUrl,
+  setSceneCover,
+  uploadImage,
+  type ProjectBible,
+  type SceneDTO,
+} from "../api/client";
 import { ReferencesPanel } from "../components/ReferencesPanel";
 import { useProjectStore } from "../store/project";
 import { useSceneStore } from "../store/scene";
+import { useAuthStore } from "../store/auth";
+import { useReferencesStore } from "../store/references";
 
 const EMPTY_SCENES: SceneDTO[] = [];
+
+/** Open a native file picker and resolve with the chosen image (or null). */
+function pickImageFile(): Promise<File | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/png,image/jpeg,image/webp";
+    input.onchange = () => resolve(input.files?.[0] ?? null);
+    input.click();
+  });
+}
 
 // Project Bible editor is hidden for now (not needed yet). Flip to true to
 // restore it — all the state/handlers below stay wired so this is reversible.
@@ -22,7 +42,6 @@ const SHOW_PROJECT_BIBLE = false;
  */
 export function SceneView() {
   const { projectId } = useParams<{ projectId: string }>();
-  const navigate = useNavigate();
 
   const currentProject = useProjectStore((s) => s.currentProject);
   const currentProjectId = useProjectStore((s) => s.currentProjectId);
@@ -38,6 +57,8 @@ export function SceneView() {
   const createScene = useSceneStore((s) => s.createScene);
   const deleteScene = useSceneStore((s) => s.deleteScene);
   const resetScenes = useSceneStore((s) => s.resetForProject);
+  // Phase 9.1: scenes are structural — only admins create/delete them.
+  const isAdmin = useAuthStore((s) => s.isAdmin());
 
   const [bibleDraft, setBibleDraft] = useState<ProjectBible>(EMPTY_PROJECT_BIBLE);
   const [bibleSaving, setBibleSaving] = useState(false);
@@ -45,7 +66,26 @@ export function SceneView() {
 
   const [sceneName, setSceneName] = useState("");
   const [creatingScene, setCreatingScene] = useState(false);
+  const [newSceneOpen, setNewSceneOpen] = useState(false);
+  // scene cover upload (per-card)
+  const [coverBusy, setCoverBusy] = useState<string | null>(null);
 
+  async function handleSceneCover(sceneId: string, file: File) {
+    if (!projectId) return;
+    setCoverBusy(sceneId);
+    try {
+      const { media_id } = await uploadImage(file, projectId);
+      await setSceneCover(sceneId, media_id);
+      await loadScenes(projectId);
+    } catch (e) {
+      // eslint-disable-next-line no-alert
+      alert(e instanceof Error ? e.message : "Upload failed");
+    } finally {
+      setCoverBusy(null);
+    }
+  }
+
+  const loadReferences = useReferencesStore((s) => s.load);
   useEffect(() => {
     if (!projectId) return;
     if (projectId !== currentProjectId) {
@@ -53,7 +93,8 @@ export function SceneView() {
       void selectProject(projectId);
     }
     void loadScenes(projectId);
-  }, [projectId, currentProjectId, selectProject, loadScenes, resetScenes]);
+    void loadReferences(projectId); // library is scoped to this project
+  }, [projectId, currentProjectId, selectProject, loadScenes, resetScenes, loadReferences]);
 
   useEffect(() => {
     if (projectBible) {
@@ -85,10 +126,11 @@ export function SceneView() {
     const name = sceneName.trim() || `Episode ${sceneCount + 1}`;
     setCreatingScene(true);
     try {
-      const scene = await createScene(projectId, name);
+      await createScene(projectId, name);
+      // Stay on the episodes list (the new card appears in the grid); the user
+      // opens the canvas by clicking the episode when they're ready.
       setSceneName("");
-      // Open the new scene's multi-shot canvas straight away.
-      if (scene) navigate(`/projects/${projectId}/scenes/${scene.id}`);
+      setNewSceneOpen(false);
     } finally {
       setCreatingScene(false);
     }
@@ -124,7 +166,7 @@ export function SceneView() {
           <h1 className="page-title">{currentProject?.name ?? "…"}</h1>
           <p className="page-subtitle">
             {currentProject
-              ? `${currentProject.scene_count} scenes · ${currentProject.asset_count} assets`
+              ? `${currentProject.scene_count} episode${currentProject.scene_count === 1 ? "" : "s"} · ${currentProject.asset_count} asset${currentProject.asset_count === 1 ? "" : "s"}`
               : "Loading…"}
           </p>
         </div>
@@ -132,85 +174,153 @@ export function SceneView() {
           <Link to={`/projects/${projectId}/library`} className="btn">
             Asset library
           </Link>
-          <Link to={`/projects/${projectId}/cost`} className="btn">
-            Cost
-          </Link>
         </div>
       </header>
 
-      <div className="scene-hub-grid">
-        {/* Left: project-level shared references (reused across episodes). */}
-        <aside className="scene-hub-refs" aria-label="Project references">
-          <ReferencesPanel />
-        </aside>
+      {/* Project-level shared references — a floating drawer (its own toggle
+          tab), so it no longer reserves an empty left column. */}
+      <ReferencesPanel />
 
-        {/* Right: scenes (episodes) + create + Project Bible (collapsible). */}
+      <div className="scene-hub">
+        {/* Scenes (episodes) + create + Project Bible (collapsible). */}
         <section className="scene-hub-main">
           <header className="dashboard-section__header">
-            <h2>Scenes</h2>
+            <h2>Episodes</h2>
             <p className="dashboard-section__hint">
-              Each scene is an episode with its own multi-shot canvas.
+              Each episode has its own multi-sequence canvas.
             </p>
           </header>
 
-          <form
-            className="scene-create"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void handleCreateScene();
-            }}
-          >
-            <input
-              type="text"
-              value={sceneName}
-              onChange={(e) => setSceneName(e.target.value)}
-              placeholder={`Episode ${sceneCount + 1}`}
-              disabled={creatingScene}
-              maxLength={120}
-            />
-            <button type="submit" className="btn btn--primary" disabled={creatingScene}>
-              {creatingScene ? "Adding…" : "+ New Scene"}
-            </button>
-          </form>
+          {isAdmin && (
+            <div className="scene-create">
+              <button
+                type="button"
+                className="btn btn--primary"
+                onClick={() => {
+                  setSceneName("");
+                  setNewSceneOpen(true);
+                }}
+              >
+                + New Episode
+              </button>
+            </div>
+          )}
 
           {scenes.length === 0 ? (
             <div className="page-empty">
-              No scenes yet. Add the first scene to start storyboarding.
+              {isAdmin
+                ? "No episodes yet. Add the first episode to start storyboarding."
+                : "No episodes yet. An admin will create episodes for this project."}
             </div>
           ) : (
             <ol className="scene-grid">
               {sortedScenes.map((scene) => {
                 const shotCount = scene.canvas_state?.shot_groups?.length ?? 0;
+                // Deterministic thumbnail gradient per scene (until a real
+                // establishing frame is wired) — stable across renders.
+                const hue = (scene.order_index * 47 + 200) % 360;
                 return (
                   <li key={scene.id} className="scene-card">
                     <Link
                       to={`/projects/${projectId}/scenes/${scene.id}`}
                       className="scene-card__body"
                     >
-                      <div className="scene-card__order">#{scene.order_index + 1}</div>
+                      <div
+                        className="scene-card__thumb"
+                        style={{
+                          background: `linear-gradient(135deg, hsl(${hue} 42% 26%), hsl(${(hue + 40) % 360} 46% 16%))`,
+                        }}
+                      >
+                        {scene.thumb_media_id ? (
+                          <img
+                            className="scene-card__img"
+                            src={thumbUrl(scene.thumb_media_id, 400)}
+                            alt=""
+                            loading="lazy"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLImageElement).style.display = "none";
+                            }}
+                          />
+                        ) : (
+                          <svg
+                            className="scene-card__glyph"
+                            viewBox="0 0 24 24"
+                            width="40"
+                            height="40"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.4"
+                            aria-hidden="true"
+                          >
+                            <rect x="2" y="7" width="20" height="14" rx="2" />
+                            <path d="M2 7l3-4h4l-3 4M9 7l3-4h4l-3 4M16 7l3-4h4l-3 4" />
+                          </svg>
+                        )}
+                        <span className="scene-card__badge">EP {scene.order_index + 1}</span>
+
+                        {/* hover-to-upload cover — a button (not a nav link) that
+                            opens a file picker in JS, so it never navigates. */}
+                        <button
+                          type="button"
+                          className={`scene-card__upload${coverBusy === scene.id ? " is-busy" : ""}`}
+                          title="Upload a cover thumbnail"
+                          disabled={coverBusy === scene.id}
+                          onClick={async (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const f = await pickImageFile();
+                            if (f) void handleSceneCover(scene.id, f);
+                          }}
+                        >
+                          {coverBusy === scene.id ? (
+                            "Uploading…"
+                          ) : (
+                            <>
+                              <svg
+                                viewBox="0 0 24 24"
+                                width="14"
+                                height="14"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.8"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                aria-hidden="true"
+                              >
+                                <path d="M12 16V4M6 10l6-6 6 6M4 20h16" />
+                              </svg>
+                              {scene.thumb_media_id ? "Change" : "Thumbnail"}
+                            </>
+                          )}
+                        </button>
+                      </div>
                       <div className="scene-card__meta">
-                        <div className="scene-card__name">{scene.name}</div>
+                        <div className="scene-card__name" title={scene.name}>
+                          {scene.name}
+                        </div>
                         <div className="scene-card__hint">
-                          {shotCount} shot{shotCount === 1 ? "" : "s"}
+                          {shotCount} sequence{shotCount === 1 ? "" : "s"}
                         </div>
                       </div>
                     </Link>
-                    <button
-                      type="button"
-                      className="scene-card__delete"
-                      onClick={() => {
-                        if (
-                          window.confirm(
-                            `Delete scene "${scene.name}"? All shots inside will also be deleted.`,
-                          )
-                        ) {
-                          void deleteScene(scene.id);
-                        }
-                      }}
-                      aria-label={`Delete ${scene.name}`}
-                    >
-                      ✕
-                    </button>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        className="scene-card__delete"
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `Delete episode "${scene.name}"? All sequences inside will also be deleted.`,
+                            )
+                          ) {
+                            void deleteScene(scene.id);
+                          }
+                        }}
+                        aria-label={`Delete ${scene.name}`}
+                      >
+                        ✕
+                      </button>
+                    )}
                   </li>
                 );
               })}
@@ -291,6 +401,54 @@ export function SceneView() {
           )}
         </section>
       </div>
+
+      {newSceneOpen && (
+        <div
+          className="project-modal-backdrop"
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !creatingScene) setNewSceneOpen(false);
+          }}
+        >
+          <div className="project-modal" role="dialog" aria-modal="true">
+            <h2 className="project-modal__title">New episode</h2>
+            <p className="project-modal__hint">
+              Name the episode. Once created it shows up in the list — click it to open the canvas.
+            </p>
+            <input
+              type="text"
+              className="project-modal__input"
+              autoFocus
+              maxLength={120}
+              value={sceneName}
+              placeholder={`Episode ${sceneCount + 1}`}
+              onChange={(e) => setSceneName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleCreateScene();
+                if (e.key === "Escape" && !creatingScene) setNewSceneOpen(false);
+              }}
+            />
+            <div className="project-modal__actions">
+              <button
+                type="button"
+                className="project-modal__btn"
+                onClick={() => setNewSceneOpen(false)}
+                disabled={creatingScene}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="project-modal__btn project-modal__btn--primary"
+                onClick={() => void handleCreateScene()}
+                disabled={creatingScene}
+              >
+                {creatingScene ? "Creating…" : "Create episode"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

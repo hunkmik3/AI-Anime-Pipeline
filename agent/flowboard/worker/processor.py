@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
@@ -902,8 +903,24 @@ _DEFAULT_HANDLERS: dict[str, Handler] = {
 }
 
 
+# How many generations may run at once. A single video gen polls for minutes;
+# processing serially meant one running node blocked every other queued job.
+# The worker is I/O-bound — the long provider poll runs with the DB session
+# CLOSED (see _process_one) and the actual GPU work happens on Avis, not here —
+# so we can run many in parallel cheaply. Default 32 covers a multi-user team
+# (10+ people generating at once) without forming a queue. Tune via env; the
+# real ceilings are the Avis account's concurrency and the shared budget pool.
+def _worker_concurrency() -> int:
+    try:
+        return max(1, int(os.getenv("FLOWBOARD_WORKER_CONCURRENCY", "32")))
+    except ValueError:
+        return 32
+
+
 class WorkerController:
-    """Single-consumer async queue worker."""
+    """Async queue worker — processes up to N jobs concurrently (N =
+    FLOWBOARD_WORKER_CONCURRENCY, default 32) so a long-running generation
+    doesn't block others and many users can generate at the same time."""
 
     def __init__(self, handlers: Optional[dict[str, Handler]] = None) -> None:
         self._queue: asyncio.Queue[int] = asyncio.Queue()
@@ -911,6 +928,8 @@ class WorkerController:
         self._shutdown = asyncio.Event()
         self._active = 0
         self._started_at: Optional[float] = None
+        self._sem = asyncio.Semaphore(_worker_concurrency())
+        self._tasks: set[asyncio.Task] = set()
 
     # ── enqueue ────────────────────────────────────────────────────────────
     def enqueue(self, request_id: int) -> None:
@@ -919,19 +938,29 @@ class WorkerController:
     # ── lifecycle ──────────────────────────────────────────────────────────
     async def start(self) -> None:
         self._started_at = time.time()
-        logger.info("worker started")
+        logger.info("worker started (concurrency=%d)", _worker_concurrency())
         while not self._shutdown.is_set():
             try:
                 rid = await asyncio.wait_for(self._queue.get(), timeout=0.5)
             except asyncio.TimeoutError:
                 continue
+            # Fire-and-track: process concurrently (bounded by the semaphore)
+            # instead of blocking the consumer loop until this job finishes.
+            task = asyncio.create_task(self._run_guarded(rid))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+
+    async def _run_guarded(self, rid: int) -> None:
+        async with self._sem:
             await self._process_one(rid)
 
     def request_shutdown(self) -> None:
         self._shutdown.set()
 
     async def drain(self) -> None:
-        # Wait for any in-flight task to finish.
+        # Wait for any in-flight tasks to finish.
+        while self._tasks:
+            await asyncio.gather(*list(self._tasks), return_exceptions=True)
         while self._active > 0:
             await asyncio.sleep(0.05)
 

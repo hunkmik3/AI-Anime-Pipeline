@@ -88,6 +88,154 @@ def _project_of(node, shots, scenes, projects):
     return (projects.get(sc.project_id) if sc else None), sc
 
 
+def _shot_label(shot, scenes) -> str:
+    """Friendly shot name: the SceneCanvas group label if set, else 'Shot N'."""
+    sc = scenes.get(shot.scene_id) if shot else None
+    if sc:
+        for g in (sc.canvas_state or {}).get("shot_groups", []):
+            if str(g.get("shot_id")) == str(shot.id) and g.get("label"):
+                return str(g["label"])
+    return f"Sequence {(shot.order_index + 1) if shot else '?'}"
+
+
+# ── per shot (admin oversight: what each shot spent + every gen) ──────────────
+
+
+def project_shots(project_id) -> list[dict]:
+    """Per-shot cost within a project. Every shot is listed (even $0 ones) so the
+    admin sees the full picture; each shot aggregates all its nodes' takes."""
+    with get_session() as s:
+        _u, reqs, nodes, shots, scenes, _p, paid, dl_nodes = _load(s)
+    by_node, _ = _group_by_node(paid, reqs)
+
+    agg: dict = defaultdict(
+        lambda: {"kept": 0.0, "wasted": 0.0, "takes": 0, "clips": 0, "dl": 0}
+    )
+    for nid, recs in by_node.items():
+        n = nodes.get(nid)
+        if n is None or n.shot_id is None:
+            continue
+        sh = shots.get(n.shot_id)
+        sc = scenes.get(sh.scene_id) if sh else None
+        if sc is None or str(sc.project_id) != str(project_id):
+            continue
+        kept, wasted, takes = _split(recs)
+        a = agg[sh.id]
+        a["kept"] += kept
+        a["wasted"] += wasted
+        a["takes"] += takes
+        a["clips"] += 1
+        if nid in dl_nodes:
+            a["dl"] += 1
+
+    out = []
+    for sh in shots.values():
+        sc = scenes.get(sh.scene_id)
+        if sc is None or str(sc.project_id) != str(project_id):
+            continue
+        a = agg.get(sh.id, {"kept": 0.0, "wasted": 0.0, "takes": 0, "clips": 0, "dl": 0})
+        total = a["kept"] + a["wasted"]
+        out.append(
+            {
+                "shot_id": str(sh.id),
+                "shot_label": _shot_label(sh, scenes),
+                "order_index": sh.order_index,
+                "scene_id": str(sc.id),
+                "scene_name": sc.name,
+                "scene_order": sc.order_index,
+                "total_usd": round(total, 4),
+                "kept_usd": round(a["kept"], 4),
+                "wasted_usd": round(a["wasted"], 4),
+                "clips": a["clips"],
+                "takes": a["takes"],
+                "downloaded_clips": a["dl"],
+                "waste_pct": round((a["wasted"] / total * 100) if total else 0.0, 1),
+            }
+        )
+    out.sort(key=lambda r: (r["scene_order"], r["order_index"]))
+    return out
+
+
+def all_shots() -> list[dict]:
+    """Flat list of every shot that spent money, across all projects, sorted by
+    total spend (priciest first). Total-only — no kept/wasted split. This is the
+    'how much did each shot cost' oversight view."""
+    with get_session() as s:
+        _u, reqs, nodes, shots, scenes, projects, paid, _d = _load(s)
+
+    agg: dict = defaultdict(lambda: {"usd": 0.0, "gens": 0, "nodes": set()})
+    for r in paid:
+        req = reqs.get(r.request_id)
+        n = nodes.get(req.node_id) if (req and req.node_id) else None
+        if n is None or n.shot_id is None:
+            continue
+        sh = shots.get(n.shot_id)
+        if sh is None:
+            continue
+        a = agg[sh.id]
+        a["usd"] += float(r.actual_usd or 0.0)
+        a["gens"] += 1
+        a["nodes"].add(n.id)
+
+    out = []
+    for shid, a in agg.items():
+        sh = shots.get(shid)
+        sc = scenes.get(sh.scene_id) if sh else None
+        pr = projects.get(sc.project_id) if sc else None
+        out.append(
+            {
+                "shot_id": str(shid),
+                "shot_label": _shot_label(sh, scenes) if sh else "?",
+                "scene_name": sc.name if sc else None,
+                "project_id": str(pr.id) if pr else None,
+                "project_name": pr.name if pr else "(no project)",
+                "total_usd": round(a["usd"], 4),
+                "gens": a["gens"],
+                "clips": len(a["nodes"]),
+            }
+        )
+    out.sort(key=lambda r: r["total_usd"], reverse=True)
+    return out
+
+
+def shot_gens(shot_id) -> list[dict]:
+    """Every generation in one shot — one row per take (settled UsageRecord):
+    what node, model, resolution, the real cost, whether it was kept or a
+    re-rolled/wasted take, WHICH member ran it, and when."""
+    with get_session() as s:
+        users, reqs, nodes, shots, scenes, _p, paid, _d = _load(s)
+    by_node, _ = _group_by_node(paid, reqs)
+
+    out = []
+    for nid, recs in by_node.items():
+        n = nodes.get(nid)
+        if n is None or str(n.shot_id) != str(shot_id):
+            continue
+        title = (n.data or {}).get("title") or f"node {nid}"
+        last = len(recs) - 1
+        for i, r in enumerate(recs):
+            req = reqs.get(r.request_id)
+            res = (req.params or {}).get("resolution") if req else None
+            u = users.get(r.user_id)
+            out.append(
+                {
+                    "node_id": nid,
+                    "node_title": title,
+                    "node_type": n.type,
+                    "kind": r.kind,  # image | video
+                    "model": r.model,
+                    "resolution": res,
+                    "cost_usd": round(float(r.actual_usd or 0.0), 4),
+                    "kept": i == last,  # last take on the node = the kept one
+                    "user_id": str(r.user_id) if r.user_id else None,
+                    "user_name": (u.display_name or u.username) if u else "(deleted)",
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+            )
+    out.sort(key=lambda x: (x["created_at"] or ""))
+    return out
+
+
 # ── per user ────────────────────────────────────────────────────────────────
 
 
@@ -131,7 +279,7 @@ def user_costs() -> list[dict]:
         out.append(
             {
                 "user_id": str(uid) if uid else None,
-                "username": (u.username if u else "(đã xoá)"),
+                "username": (u.username if u else "(deleted)"),
                 "display_name": (u.display_name if u else None),
                 "budget_usd": round(float(u.budget_usd), 4) if u else 0.0,
                 "spent_usd": round(total, 4),
@@ -207,7 +355,7 @@ def project_costs() -> list[dict]:
         a["takes"] += takes
         if nid in dl_nodes:
             a["downloaded"] += 1
-        a["name"] = pr.name if pr else "(không thuộc project)"
+        a["name"] = pr.name if pr else "(no project)"
 
     out = []
     for key, a in agg.items():

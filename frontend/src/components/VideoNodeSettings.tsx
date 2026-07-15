@@ -212,8 +212,8 @@ export function VideoNodeSettings({ rfId }: Props) {
             onChange={(e) => persist({ kycMode: e.target.checked })}
           />
           <span>
-            Người thật (KYC) — portrait→video / lip-sync
-            <span className="video-settings-hint"> cần KYC + ảnh người thật</span>
+            Real person (KYC) — portrait→video / lip-sync
+            <span className="video-settings-hint"> needs KYC + a real-person photo</span>
           </span>
         </label>
       ) : null}

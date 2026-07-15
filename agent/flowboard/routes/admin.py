@@ -106,6 +106,26 @@ def stats_projects() -> list[dict]:
     return stats_service.project_costs()
 
 
+@router.get("/stats/shots")
+def stats_all_shots() -> list[dict]:
+    """Every shot that spent money (all projects), priciest first — total-only."""
+    return stats_service.all_shots()
+
+
+@router.get("/stats/projects/{project_id}/shots")
+def stats_project_shots(project_id: str) -> list[dict]:
+    """Per-shot spend inside a project (grouped by scene) — every shot, even
+    the $0 ones, so admin sees which shot cost what."""
+    return stats_service.project_shots(project_id)
+
+
+@router.get("/stats/shots/{shot_id}/gens")
+def stats_shot_gens(shot_id: str) -> list[dict]:
+    """Drill-down: every generation in a shot — model, resolution, real cost,
+    kept vs re-rolled, which member ran it, and when."""
+    return stats_service.shot_gens(shot_id)
+
+
 @router.get("/stats/models")
 def stats_models() -> list[dict]:
     return stats_service.model_costs()

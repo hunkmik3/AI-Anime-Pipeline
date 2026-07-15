@@ -85,6 +85,41 @@ def get_media_status(media_id: str):
     return media_service.status(media_id)
 
 
+@api_router.get("/{media_id}/thumb")
+async def get_media_thumb(media_id: str, w: int = 256):
+    """Downscaled WEBP thumbnail for grids/pickers — avoids shipping full-res
+    (multi-MB) images for tiny tiles. Cached on disk after the first request.
+    Falls back to the original bytes for non-images / resize failures."""
+    media_id = media_service.normalize_media_id(media_id)
+    if not media_service.is_valid_media_id(media_id):
+        raise HTTPException(status_code=400, detail="invalid media_id")
+    w = max(48, min(int(w), 640))
+
+    thumb_path = media_service.MEDIA_CACHE_DIR / f"thumb_{w}_{media_id}.webp"
+    if thumb_path.exists():
+        return FileResponse(str(thumb_path), media_type="image/webp")
+
+    src = media_service.cached_path(media_id)
+    if src is None:
+        result = await media_service.fetch_and_cache(media_id)
+        if result is None:
+            return JSONResponse(status_code=404, content=media_service.status(media_id))
+        src = result[2]
+
+    try:
+        from PIL import Image
+
+        with Image.open(src) as im:
+            im = im.convert("RGB")
+            im.thumbnail((w, w * 4))  # cap width; allow tall portraits
+            im.save(thumb_path, "WEBP", quality=80, method=4)
+        return FileResponse(str(thumb_path), media_type="image/webp")
+    except Exception:  # noqa: BLE001 — non-image or decode error → serve original
+        return FileResponse(
+            str(src), media_type=media_service._mime_from_ext(src.suffix)
+        )
+
+
 class ExtractFrameBody(BaseModel):
     # Lower bound here; the dynamic upper bound (video duration) is checked in
     # the service so it can 422 with the real range in the message.

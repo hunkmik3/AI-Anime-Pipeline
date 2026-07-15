@@ -115,7 +115,7 @@ export function ScriptInputDialog({ sceneId, onClose }: Props) {
               value={text}
               onChange={(e) => setText(e.target.value)}
               placeholder={
-                "Cảnh 1: An đứng giữa quảng trường, máy quay ngang vai…\n\nMây đi tới, An quay lại…"
+                "Scene 1: An stands in the middle of the square, camera at shoulder height…\n\nClouds roll in, An turns back…"
               }
               disabled={parsing}
             />

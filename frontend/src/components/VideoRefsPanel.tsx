@@ -123,8 +123,8 @@ export function VideoRefsPanel({ rfId, customRefs, onCustomRefsChange }: Props) 
 
       {refNodes.length === 0 && videoRefNodes.length === 0 && customRefs.length === 0 && (
         <p className="gen-dialog__hint">
-          Nối Character / Visual asset / Video ref node vào Video node, hoặc
-          thêm custom bên dưới.
+          Wire a Character / Visual asset / Video ref node into the Video node, or
+          add a custom one below.
         </p>
       )}
 
@@ -292,7 +292,7 @@ export function VideoRefsPanel({ rfId, customRefs, onCustomRefsChange }: Props) 
               />
               {c.kind !== "image" && (
                 <span className="video-ref-row__manual-hint">
-                  Manual: tự gõ nhãn này vào prompt — {c.kind} ref chưa có @-binding tự động
+                  Manual: type this label into your prompt yourself — {c.kind} refs have no automatic @-binding yet
                 </span>
               )}
             </div>

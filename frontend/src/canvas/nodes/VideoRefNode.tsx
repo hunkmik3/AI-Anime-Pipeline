@@ -63,7 +63,7 @@ function VideoRefBody({ rfId, data }: { rfId: string; data: FlowboardNodeData })
     setDragOver(false);
     const f = e.dataTransfer.files?.[0];
     if (f && f.type.startsWith("video/")) void upload(f);
-    else if (f) setError("Chỉ nhận file video");
+    else if (f) setError("Video files only");
   }
   function onDragOver(e: React.DragEvent) {
     e.preventDefault();
@@ -103,7 +103,7 @@ function VideoRefBody({ rfId, data }: { rfId: string; data: FlowboardNodeData })
       ) : (
         <div className={`video-ref__empty${dragOver ? " video-ref__empty--over" : ""}`}>
           {dragOver ? (
-            <span className="video-ref__hint">Thả video vào đây</span>
+            <span className="video-ref__hint">Drop a video here</span>
           ) : (
             <>
               <button
@@ -114,7 +114,7 @@ function VideoRefBody({ rfId, data }: { rfId: string; data: FlowboardNodeData })
               >
                 {uploading ? "Uploading…" : "Upload video (mp4)"}
               </button>
-              <span className="video-ref__hint">Kéo video vào, hoặc tham chiếu chuyển động / phong cách</span>
+              <span className="video-ref__hint">Drag a video in, or reference its motion / style</span>
             </>
           )}
         </div>

@@ -28,8 +28,9 @@ export interface ReferencesState {
   error: string | null;
   panelOpen: boolean;
   query: string;
+  projectId: string | null;   // library is scoped to this project
 
-  load(): Promise<void>;
+  load(projectId?: string | null): Promise<void>;
   save(input: ReferenceCreateInput): Promise<ReferenceItem>;
   remove(id: number): Promise<void>;
   rename(id: number, label: string): Promise<void>;
@@ -82,12 +83,19 @@ export const useReferencesStore = create<ReferencesState>((set, get) => ({
   error: null,
   panelOpen: loadPersistedPanelOpen(),
   query: "",
+  projectId: null,
 
-  async load() {
-    if (get().loading) return;
-    set({ loading: true, error: null });
+  async load(projectId?: string | null) {
+    // Remember the scope so mutations (save) can attach the right project and
+    // reloads stay scoped. Passing undefined keeps the current scope.
+    const scope = projectId !== undefined ? projectId : get().projectId;
+    if (get().loading && scope === get().projectId) return;
+    set({ loading: true, error: null, projectId: scope });
     try {
-      const items = await listReferences({ limit: 200 });
+      const items = await listReferences({
+        limit: 200,
+        project_id: scope ?? undefined,
+      });
       set({ items, loading: false });
     } catch (err) {
       set({
@@ -101,7 +109,11 @@ export const useReferencesStore = create<ReferencesState>((set, get) => ({
     // POST is idempotent on media_id server-side: if the user re-saves
     // the same variant, the backend returns the existing row. We then
     // upsert into local state — replace if present, prepend otherwise.
-    const row = await createReference(input);
+    // Default the project scope to the currently-loaded library.
+    const row = await createReference({
+      ...input,
+      project_id: input.project_id ?? get().projectId ?? undefined,
+    });
     const existing = get().items.find((r) => r.id === row.id);
     const next = existing
       ? get().items.map((r) => (r.id === row.id ? row : r))

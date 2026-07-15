@@ -192,6 +192,11 @@ function nodeFromDto(n: RawNode): FlowNode {
     type: n.type,
     position: { x: n.x, y: n.y },
     data: {
+      // Round-trip ALL persisted data fields first (duration_seconds,
+      // resolution, generate_audio, videoModelId, reference_label/description,
+      // kycMode, videoRefMediaId, audioMediaId, …). Without this, any field not
+      // explicitly re-listed below silently reverts to its default on reload.
+      ...(n.data as Partial<FlowboardNodeData>),
       type: n.type,
       shortId: n.short_id,
       title: (n.data["title"] as string | undefined) ?? TYPE_TITLE[n.type],

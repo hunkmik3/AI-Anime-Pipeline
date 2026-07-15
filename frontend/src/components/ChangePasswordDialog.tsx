@@ -2,6 +2,7 @@ import { useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useAuthStore } from "../store/auth";
+import { PasswordInput } from "./PasswordInput";
 
 /**
  * Self-service password change. Two modes:
@@ -31,11 +32,11 @@ export function ChangePasswordDialog({
     e.preventDefault();
     setErr(null);
     if (next.length < 8) {
-      setErr("Mật khẩu mới tối thiểu 8 ký tự");
+      setErr("New password must be at least 8 characters");
       return;
     }
     if (next !== confirm) {
-      setErr("Xác nhận mật khẩu không khớp");
+      setErr("Password confirmation doesn't match");
       return;
     }
     setBusy(true);
@@ -43,7 +44,7 @@ export function ChangePasswordDialog({
       await changePassword(current, next);
       if (!forced) onClose?.();
     } catch (e2) {
-      setErr(e2 instanceof Error ? e2.message : "Đổi mật khẩu lỗi");
+      setErr(e2 instanceof Error ? e2.message : "Failed to change password");
     } finally {
       setBusy(false);
     }
@@ -53,45 +54,45 @@ export function ChangePasswordDialog({
   // position:fixed resolve against IT instead of the viewport, pinning the
   // modal into that corner instead of centering it full-screen.
   return createPortal(
-    <div className="cpw-backdrop" role="dialog" aria-modal="true" aria-label="Đổi mật khẩu">
+    <div className="cpw-backdrop" role="dialog" aria-modal="true" aria-label="Change password">
       <form className="login-card" onSubmit={submit}>
-        <h1 className="login-title">Đổi mật khẩu</h1>
+        <h1 className="login-title">Change password</h1>
         <p className="login-sub">
           {forced
-            ? "Đây là mật khẩu tạm do admin cấp — hãy đặt mật khẩu mới để tiếp tục."
-            : "Cập nhật mật khẩu của bạn."}
+            ? "This is a temporary password set by an admin — set a new one to continue."
+            : "Update your password."}
         </p>
         <label className="login-field">
-          Mật khẩu hiện tại
-          <input
-            type="password"
+          Current password
+          <PasswordInput
             value={current}
             autoFocus
-            onChange={(e) => setCurrent(e.target.value)}
+            autoComplete="current-password"
+            onChange={setCurrent}
             required
           />
         </label>
         <label className="login-field">
-          Mật khẩu mới (≥ 8 ký tự)
-          <input
-            type="password"
+          New password (≥ 8 characters)
+          <PasswordInput
             value={next}
-            onChange={(e) => setNext(e.target.value)}
+            autoComplete="new-password"
+            onChange={setNext}
             required
           />
         </label>
         <label className="login-field">
-          Xác nhận mật khẩu mới
-          <input
-            type="password"
+          Confirm new password
+          <PasswordInput
             value={confirm}
-            onChange={(e) => setConfirm(e.target.value)}
+            autoComplete="new-password"
+            onChange={setConfirm}
             required
           />
         </label>
         {err && <div className="login-error">{err}</div>}
         <button className="login-btn" type="submit" disabled={busy}>
-          {busy ? "Đang lưu…" : "Đổi mật khẩu"}
+          {busy ? "Saving…" : "Change password"}
         </button>
         {forced ? (
           <button
@@ -100,7 +101,7 @@ export function ChangePasswordDialog({
             onClick={() => logout()}
             disabled={busy}
           >
-            Đăng xuất
+            Sign out
           </button>
         ) : (
           onClose && (
@@ -110,7 +111,7 @@ export function ChangePasswordDialog({
               onClick={onClose}
               disabled={busy}
             >
-              Huỷ
+              Cancel
             </button>
           )
         )}

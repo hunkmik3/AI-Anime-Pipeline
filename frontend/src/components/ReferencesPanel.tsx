@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { mediaUrl, type ReferenceItem } from "../api/client";
+import { thumbUrl, type ReferenceItem } from "../api/client";
 import { useShotWorkflowStore } from "../store/shotWorkflow";
 import { filterReferences, useReferencesStore } from "../store/references";
 
@@ -258,8 +258,10 @@ function ReferenceCard({
           </div>
         ) : (
           <img
-            src={mediaUrl(item.mediaId)}
+            src={thumbUrl(item.mediaId, 128)}
             alt=""
+            loading="lazy"
+            decoding="async"
             onError={() => setThumbBroken(true)}
             draggable={false}
           />

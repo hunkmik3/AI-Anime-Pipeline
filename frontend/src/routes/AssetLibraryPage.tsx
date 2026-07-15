@@ -1,11 +1,31 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { mediaUrl, type ReferenceItem } from "../api/client";
+import { mediaUrl, thumbUrl, uploadImage, type ReferenceItem } from "../api/client";
+import { BreakableName } from "../components/BreakableName";
 import { useProjectStore } from "../store/project";
 import { useReferencesStore, filterReferences } from "../store/references";
 
 type KindFilter = "all" | ReferenceItem["kind"];
+
+const IMG_RE = /^image\/(png|jpe?g|webp|gif)$/i;
+
+/** Open a native picker (multi-file, or a whole folder) and return the files. */
+function pickFiles(opts: { multiple?: boolean; directory?: boolean }): Promise<File[]> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/png,image/jpeg,image/webp,image/gif";
+    if (opts.multiple) input.multiple = true;
+    if (opts.directory) {
+      // Non-standard but supported in Chrome/Edge/Safari — picks a folder and
+      // returns every file inside (we filter to images).
+      (input as unknown as { webkitdirectory: boolean }).webkitdirectory = true;
+    }
+    input.onchange = () => resolve(input.files ? Array.from(input.files) : []);
+    input.click();
+  });
+}
 
 /**
  * Cross-project saved-reference library. Phase 3 keeps filtering
@@ -22,6 +42,7 @@ export function AssetLibraryPage() {
   const items = useReferencesStore((s) => s.items);
   const loading = useReferencesStore((s) => s.loading);
   const loadReferences = useReferencesStore((s) => s.load);
+  const saveRef = useReferencesStore((s) => s.save);
   const removeRef = useReferencesStore((s) => s.remove);
   const renameRef = useReferencesStore((s) => s.rename);
   const togglePin = useReferencesStore((s) => s.togglePin);
@@ -31,13 +52,71 @@ export function AssetLibraryPage() {
   const [pinnedOnly, setPinnedOnly] = useState(false);
   const [renameTarget, setRenameTarget] = useState<{ id: number; label: string } | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  // full-size image preview (lightbox)
+  const [preview, setPreview] = useState<{ mediaId: string; label: string } | null>(null);
 
   useEffect(() => {
     if (projectId && projectId !== useProjectStore.getState().currentProjectId) {
       void selectProject(projectId);
     }
-    void loadReferences();
+    // Scope the library to this project.
+    void loadReferences(projectId ?? null);
   }, [projectId, selectProject, loadReferences]);
+
+  useEffect(() => {
+    if (!preview) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPreview(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [preview]);
+
+  async function handleUploadMany(files: File[]) {
+    if (!projectId) return;
+    const imgs = files.filter((f) => IMG_RE.test(f.type));
+    if (imgs.length === 0) {
+      // eslint-disable-next-line no-alert
+      alert("No image files found (png / jpg / webp / gif).");
+      return;
+    }
+    setUploading(true);
+    setProgress({ done: 0, total: imgs.length });
+    let failures = 0;
+    // Small concurrency pool so a big folder uploads quickly without hammering.
+    const queue = [...imgs];
+    let done = 0;
+    async function worker() {
+      for (;;) {
+        const f = queue.shift();
+        if (!f) return;
+        try {
+          const { media_id, aspect_ratio } = await uploadImage(f, projectId!);
+          await saveRef({
+            media_id,
+            kind: "image",
+            label: f.name.replace(/\.[^.]+$/, "").slice(0, 80) || "Upload",
+            aspect_ratio: aspect_ratio ?? null,
+            project_id: projectId,
+          });
+        } catch {
+          failures++;
+        } finally {
+          done++;
+          setProgress({ done, total: imgs.length });
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(4, imgs.length) }, worker));
+    setUploading(false);
+    setProgress(null);
+    if (failures > 0) {
+      // eslint-disable-next-line no-alert
+      alert(`${failures} of ${imgs.length} file(s) failed to upload.`);
+    }
+  }
 
   const filtered = useMemo(() => {
     let base = filterReferences(items, search);
@@ -78,10 +157,37 @@ export function AssetLibraryPage() {
           <h1 className="page-title">Asset library</h1>
           <p className="page-subtitle">
             {filtered.length} of {items.length} references
-            <span className="page-pill" title="Phase 4 will scope refs by project on the server side">
-              Scope: all projects
+            <span className="page-pill" title="This library belongs to this project only">
+              {currentProject ? currentProject.name : "This project"}
             </span>
           </p>
+        </div>
+        <div className="page-header__actions">
+          <button
+            type="button"
+            className="btn btn--primary"
+            disabled={uploading}
+            onClick={async () => {
+              const fs = await pickFiles({ multiple: true });
+              if (fs.length) void handleUploadMany(fs);
+            }}
+          >
+            {uploading && progress
+              ? `Uploading ${progress.done}/${progress.total}…`
+              : "⬆ Upload files"}
+          </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={uploading}
+            title="Upload every image inside a folder"
+            onClick={async () => {
+              const fs = await pickFiles({ directory: true });
+              if (fs.length) void handleUploadMany(fs);
+            }}
+          >
+            📁 Upload folder
+          </button>
         </div>
       </header>
 
@@ -119,7 +225,7 @@ export function AssetLibraryPage() {
       ) : filtered.length === 0 ? (
         <div className="page-empty">
           {items.length === 0
-            ? "No references saved yet. Star a generated variant or upload to add one."
+            ? "No materials in this project's library yet. Use “⬆ Upload files” or “📁 Upload folder” to add some, or ★ a generated variant."
             : "No references match the current filters."}
         </div>
       ) : (
@@ -135,21 +241,24 @@ export function AssetLibraryPage() {
               >
                 {ref.pinned ? "★" : "☆"}
               </button>
-              <div className="reference-card__thumb">
-                {/* Backend serves the media bytes — thumbs are full-res
-                    today; Phase 5/6 will introduce a thumbnail variant. */}
-                <img src={mediaUrl(ref.mediaId)} alt={ref.label} loading="lazy" />
-              </div>
+              <button
+                type="button"
+                className="reference-card__thumb"
+                onClick={() => setPreview({ mediaId: ref.mediaId, label: ref.label })}
+                title="Click to view full size"
+                aria-label={`View ${ref.label} full size`}
+              >
+                <img
+                  src={thumbUrl(ref.mediaId, 480)}
+                  alt={ref.label}
+                  loading="lazy"
+                  decoding="async"
+                />
+              </button>
               <div className="reference-card__meta">
-                <div className="reference-card__label">{ref.label}</div>
-                <div className="reference-card__hint">
-                  {ref.kind} · {ref.aspectRatio ?? "—"}
+                <div className="reference-card__label" title={ref.label}>
+                  <BreakableName text={ref.label} />
                 </div>
-                {ref.aiBrief && (
-                  <div className="reference-card__brief">
-                    {ref.aiBrief.slice(0, 140)}
-                  </div>
-                )}
               </div>
               <div className="reference-card__actions">
                 <button
@@ -214,6 +323,31 @@ export function AssetLibraryPage() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {preview && (
+        <div
+          className="lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label={preview.label}
+          onClick={() => setPreview(null)}
+        >
+          <button
+            className="lightbox__close"
+            onClick={() => setPreview(null)}
+            aria-label="Close"
+          >
+            ×
+          </button>
+          <img
+            className="lightbox__img"
+            src={mediaUrl(preview.mediaId)}
+            alt={preview.label}
+            onClick={(e) => e.stopPropagation()}
+          />
+          <div className="lightbox__caption">{preview.label}</div>
         </div>
       )}
     </div>

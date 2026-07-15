@@ -14,6 +14,7 @@ import { BriefHint } from "./shared/BriefHint";
 import { RefLabelFields } from "./shared/RefLabelFields";
 import { saveTileToLibrary } from "./shared/saveTileToLibrary";
 import { uploadVariantToNode } from "./shared/uploadVariant";
+import { LibraryPicker } from "../../components/LibraryPicker";
 
 const ACCEPT_MIME = "image/png,image/jpeg,image/webp,image/gif";
 
@@ -27,6 +28,7 @@ function CharacterBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const variantInputRef = useRef<HTMLInputElement>(null);
 
@@ -241,6 +243,18 @@ function CharacterBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
             <button
               type="button"
               className="visual-asset__action"
+              onClick={() => {
+                setError(null);
+                setLibraryOpen(true);
+              }}
+              disabled={uploading}
+              title="Pick a material already saved to this project's library"
+            >
+              Library
+            </button>
+            <button
+              type="button"
+              className="visual-asset__action"
               onClick={openGenerate}
               disabled={uploading}
             >
@@ -258,6 +272,16 @@ function CharacterBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
         onChange={onChange}
       />
       {error && <p className="character-drop__error" role="alert">{error}</p>}
+      {libraryOpen && (
+        <LibraryPicker
+          kinds={["character", "image", "visual_asset"]}
+          onClose={() => setLibraryOpen(false)}
+          onPick={(ref) => {
+            persistMedia(ref.mediaId, ref.aspectRatio ?? undefined);
+            setLibraryOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 }

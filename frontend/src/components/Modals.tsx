@@ -42,7 +42,7 @@ function Backdrop({
 export function ConfirmDialog({
   title,
   message,
-  confirmLabel = "Xác nhận",
+  confirmLabel = "Confirm",
   danger = false,
   onConfirm,
   onClose,
@@ -61,7 +61,7 @@ export function ConfirmDialog({
         <div className="modal-card__msg">{message}</div>
         <div className="modal-card__actions">
           <button className="modal-btn modal-btn--ghost" onClick={onClose}>
-            Huỷ
+            Cancel
           </button>
           <button
             className={`modal-btn${danger ? " modal-btn--danger" : ""}`}
@@ -83,7 +83,7 @@ export function PromptDialog({
   type = "text",
   initial = "",
   placeholder,
-  submitLabel = "Lưu",
+  submitLabel = "Save",
   validate,
   onSubmit,
   onClose,
@@ -129,7 +129,7 @@ export function PromptDialog({
         {err ? <div className="login-error">{err}</div> : null}
         <div className="modal-card__actions">
           <button type="button" className="modal-btn modal-btn--ghost" onClick={onClose}>
-            Huỷ
+            Cancel
           </button>
           <button type="submit" className="modal-btn">
             {submitLabel}

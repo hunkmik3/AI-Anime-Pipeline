@@ -21,12 +21,10 @@ import { SceneCanvas } from "./routes/SceneCanvas";
 import { LegacySceneRedirect } from "./routes/LegacySceneRedirect";
 import { ShotEditor } from "./routes/ShotEditor";
 import { AssetLibraryPage } from "./routes/AssetLibraryPage";
-import { CostDashboard } from "./routes/CostDashboard";
 import { LoginPage } from "./routes/LoginPage";
 import { AdminPage } from "./routes/AdminPage";
 
 import { useProjectStore } from "./store/project";
-import { useReferencesStore } from "./store/references";
 import { useAuthStore } from "./store/auth";
 import { setToken } from "./api/authFetch";
 import { migrateLegacyLocalStorage } from "./store/shot";
@@ -56,6 +54,20 @@ export function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+
+        {/* Admin is a STANDALONE console — deliberately outside AppLayout so it
+            has no project sidebar / canvas chrome. Its own shell, full width. */}
+        <Route
+          path="/admin"
+          element={
+            <RequireAuth>
+              <RequireAdmin>
+                <AdminShell />
+              </RequireAdmin>
+            </RequireAuth>
+          }
+        />
+
         <Route
           element={
             <RequireAuth>
@@ -71,17 +83,11 @@ export function App() {
             path="/projects/:projectId/library"
             element={<AssetLibraryPage />}
           />
-          <Route
-            path="/projects/:projectId/cost"
-            element={<CostDashboard />}
-          />
           {/* Phase 8.3: multi-shot canvas, nested under its project. */}
           <Route
             path="/projects/:projectId/scenes/:sceneId"
             element={<SceneCanvas />}
           />
-          {/* Phase 9: admin-only account management. */}
-          <Route path="/admin" element={<RequireAdmin><AdminPage /></RequireAdmin>} />
           {/* Legacy redirects → new nested routes. */}
           <Route path="/scenes/:sceneId" element={<LegacySceneRedirect />} />
           <Route path="/shots/:shotId" element={<ShotEditor />} />
@@ -95,7 +101,7 @@ export function App() {
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const ready = useAuthStore((s) => s.ready);
   const user = useAuthStore((s) => s.user);
-  if (!ready) return <div className="app-booting">Đang tải…</div>;
+  if (!ready) return <div className="app-booting">Loading…</div>;
   if (!user) return <Navigate to="/login" replace />;
   // Admin-provisioned temp password → block the app until the user sets a new
   // one. The dialog clears must_change_password on success and the gate lifts.
@@ -109,9 +115,23 @@ function RequireAdmin({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+/**
+ * Standalone admin console — a Dasher-style dashboard (light theme, left
+ * sidebar nav + topbar) that lives OUTSIDE AppLayout, so none of the project
+ * sidebar / canvas chrome bleeds in. AdminPage renders the whole Dasher frame;
+ * this wrapper just carries the Toaster so admin actions still get feedback.
+ */
+function AdminShell() {
+  return (
+    <>
+      <AdminPage />
+      <Toaster />
+    </>
+  );
+}
+
 function AppLayout() {
   const loadProjects = useProjectStore((s) => s.loadProjects);
-  const loadReferences = useReferencesStore((s) => s.load);
   const ran = useRef(false);
 
   useEffect(() => {
@@ -119,8 +139,9 @@ function AppLayout() {
     ran.current = true;
     migrateLegacyLocalStorage();
     void loadProjects();
-    void loadReferences();
-  }, [loadProjects, loadReferences]);
+    // References are loaded per-project (scoped) by the pages that show them —
+    // SceneView / SceneCanvas / AssetLibrary — not unscoped at app mount.
+  }, [loadProjects]);
 
   return (
     <div className="app">

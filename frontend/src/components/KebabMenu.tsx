@@ -34,7 +34,7 @@ export function KebabMenu({ items }: { items: KebabItem[] }) {
         className="kebab__btn"
         aria-haspopup="menu"
         aria-expanded={open}
-        title="Thao tác"
+        title="Actions"
         onClick={() => setOpen((o) => !o)}
       >
         ⋯

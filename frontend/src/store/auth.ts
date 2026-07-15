@@ -41,7 +41,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       body: JSON.stringify({ username, password }),
     });
     if (!res.ok) {
-      const msg = res.status === 401 ? "Sai tài khoản hoặc mật khẩu" : `Đăng nhập lỗi (${res.status})`;
+      const msg = res.status === 401 ? "Wrong username or password" : `Login failed ()`;
       set({ error: msg });
       throw new Error(msg);
     }
@@ -59,7 +59,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
     });
     if (!res.ok) {
-      let msg = `Đổi mật khẩu lỗi (${res.status})`;
+      let msg = `Failed to change password ()`;
       try {
         const j = await res.json();
         if (j?.detail) msg = String(j.detail);

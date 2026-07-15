@@ -34,7 +34,7 @@ def test_auto_migrate_creates_one_group_per_shot(client):
     ys = [g["position"]["y"] for g in groups]
     assert ys[0] < ys[1]
     assert all(g["collapsed"] is False for g in groups)
-    assert {g["label"] for g in groups} == {"Shot 1", "Shot 2"}
+    assert {g["label"] for g in groups} == {"Sequence 1", "Sequence 2"}
 
 
 def test_auto_migrate_idempotent(client):

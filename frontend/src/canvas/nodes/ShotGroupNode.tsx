@@ -13,7 +13,8 @@ export interface ShotGroupData extends Record<string, unknown> {
   sceneLabel: string;
   collapsed: boolean;
   childCount: number;
-  onDelete: () => void;
+  /** Absent for non-admins — deleting a shot is admin-only (Phase 9.1). */
+  onDelete?: () => void;
   /** Fired after a manual resize persists → parent canvas reflows the stack
    *  so the gap below this group stays constant. */
   onResize?: () => void;
@@ -99,18 +100,20 @@ export function ShotGroupNode({ data, selected }: NodeProps) {
           </span>
         )}
         <span className="shot-group__badge">{d.childCount} node{d.childCount === 1 ? "" : "s"}</span>
-        <button
-          type="button"
-          className="shot-group__delete"
-          title="Delete this shot (and its nodes)"
-          aria-label="Delete shot"
-          onClick={(e) => {
-            e.stopPropagation();
-            d.onDelete();
-          }}
-        >
-          ✕
-        </button>
+        {d.onDelete ? (
+          <button
+            type="button"
+            className="shot-group__delete"
+            title="Delete this sequence (and its nodes)"
+            aria-label="Delete sequence"
+            onClick={(e) => {
+              e.stopPropagation();
+              d.onDelete?.();
+            }}
+          >
+            ✕
+          </button>
+        ) : null}
       </div>
       {d.collapsed && (
         <div className="shot-group__collapsed-body">collapsed</div>

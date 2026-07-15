@@ -92,6 +92,42 @@ def test_one_shot_one_take_zero_waste(client):
     assert r["wasted_usd"] == 0.0 and r["kept_usd"] == 2.5 and r["waste_pct"] == 0.0
 
 
+def test_project_shots_and_shot_gens(client):
+    """Per-shot cost tracking: a shot aggregates its nodes' takes; the gen
+    drill-down lists every take with cost + kept/wasted + who ran it."""
+    u = user_service.create_user("shotter", "shotterpw1")
+    b = make_shot(client)  # → {id: shot uuid, project_id, scene_id}
+    shot_id, project_id = b["id"], b["project_id"]
+    node = client.post(
+        "/api/nodes",
+        json={"shot_id": shot_id, "type": "video", "x": 0, "y": 0, "data": {"title": "Clip A"}},
+    ).json()["id"]
+    _gen(client, u.id, node, 3.0)  # take 1 — re-rolled (wasted)
+    _gen(client, u.id, node, 2.0)  # take 2 — kept
+
+    shots = stats_service.project_shots(project_id)
+    row = next(r for r in shots if r["shot_id"] == shot_id)
+    assert row["total_usd"] == 5.0
+    assert row["wasted_usd"] == 3.0
+    assert row["kept_usd"] == 2.0
+    assert row["clips"] == 1 and row["takes"] == 2
+
+    gens = stats_service.shot_gens(shot_id)
+    assert len(gens) == 2
+    assert round(sum(g["cost_usd"] for g in gens), 2) == 5.0
+    assert [g["kept"] for g in gens].count(True) == 1
+    assert gens[-1]["kept"] is True  # last take on the node = kept
+    assert all(g["user_name"] == "shotter" for g in gens)
+
+
+def test_project_shots_lists_zero_cost_shots(client):
+    """Every shot appears, even ones that never generated (spend $0)."""
+    b = make_shot(client)
+    rows = stats_service.project_shots(b["project_id"])
+    assert len(rows) == 1
+    assert rows[0]["total_usd"] == 0.0 and rows[0]["clips"] == 0
+
+
 def test_per_clip_drilldown(client):
     u = user_service.create_user("driller", "drillpw12")
     node = _video_node(client)

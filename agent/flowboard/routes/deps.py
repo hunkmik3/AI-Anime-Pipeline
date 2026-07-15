@@ -6,6 +6,7 @@ with ``Depends(...)``; a missing/invalid token yields 401, a non-admin 403.
 """
 from __future__ import annotations
 
+import uuid
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, Request
@@ -50,3 +51,41 @@ def get_optional_user(
     if not authorization or not authorization.lower().startswith("bearer "):
         return None
     return user_service.authenticate_token(authorization[7:].strip())
+
+
+# ── project-structure policy (Phase 9.1) ────────────────────────────────────
+# Only an admin may CREATE / RENAME / REORDER / DELETE a Project, Scene or Shot.
+# Admins provision the whole structure on behalf of a user; a normal user only
+# works *inside* a shot they own (nodes, prompts, generations, downloads).
+
+
+def owner_scope(user: Optional[User]) -> Optional[uuid.UUID]:
+    """The owner id a caller's reads/mutations are confined to.
+
+    ``None`` means *unscoped* — it applies to admins (who see and manage every
+    user's projects) and to the no-auth dev/test path (REQUIRE_AUTH off), which
+    must keep behaving like the original single-user app. A normal user is
+    confined to their own id.
+    """
+    if user is None or user.role == "admin":
+        return None
+    return user.id
+
+
+def require_structure_admin(
+    user: Optional[User] = Depends(get_optional_user),
+) -> Optional[User]:
+    """Gate structural writes (create/rename/reorder/delete of project·scene·
+    shot) to admins.
+
+    When there is no authenticated user (REQUIRE_AUTH off — dev and the whole
+    existing test suite) the operation stays permitted, exactly as before; the
+    rule is strictly "an authenticated *non-admin* is denied", never "no user
+    is denied".
+    """
+    if user is not None and user.role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="only an admin can create or modify project structure",
+        )
+    return user

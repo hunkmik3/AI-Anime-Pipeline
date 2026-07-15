@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { useProjectStore } from "../store/project";
+import { useAuthStore } from "../store/auth";
+import { BreakableName } from "./BreakableName";
 
 /**
  * Phase 3 project-aware sidebar. Reads from ``useProjectStore`` (post-
@@ -14,6 +16,9 @@ export function ProjectSidebar() {
   const createProject = useProjectStore((s) => s.createProject);
   const deleteProject = useProjectStore((s) => s.deleteProject);
   const renameProject = useProjectStore((s) => s.renameProject);
+  // Phase 9.1: only admins create/rename/delete project structure. A normal
+  // user just opens the projects assigned to them.
+  const isAdmin = useAuthStore((s) => s.isAdmin());
 
   const location = useLocation();
   const navigate = useNavigate();
@@ -160,13 +165,15 @@ export function ProjectSidebar() {
       </div>
       {!collapsed && (
         <>
-          <button
-            type="button"
-            className="project-sidebar__new"
-            onClick={handleNew}
-          >
-            <span aria-hidden="true">+</span> New project
-          </button>
+          {isAdmin && (
+            <button
+              type="button"
+              className="project-sidebar__new"
+              onClick={handleNew}
+            >
+              <span aria-hidden="true">+</span> New project
+            </button>
+          )}
           <ul className="project-sidebar__list">
             {projects.map((p) => {
               const isActive = p.id === activeId;
@@ -195,19 +202,21 @@ export function ProjectSidebar() {
                         className="project-sidebar__name"
                         title={p.name}
                       >
-                        {p.name || "Untitled"}
+                        <BreakableName text={p.name || "Untitled"} />
                       </Link>
-                      <button
-                        type="button"
-                        className="project-sidebar__kebab"
-                        onClick={() =>
-                          setOpenMenuId((cur) => (cur === p.id ? null : p.id))
-                        }
-                        aria-label="Project actions"
-                      >
-                        ⋯
-                      </button>
-                      {openMenuId === p.id && (
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          className="project-sidebar__kebab"
+                          onClick={() =>
+                            setOpenMenuId((cur) => (cur === p.id ? null : p.id))
+                          }
+                          aria-label="Project actions"
+                        >
+                          ⋯
+                        </button>
+                      )}
+                      {isAdmin && openMenuId === p.id && (
                         <div className="project-sidebar__menu" role="menu">
                           <button
                             type="button"
@@ -230,7 +239,11 @@ export function ProjectSidebar() {
               );
             })}
             {projects.length === 0 && (
-              <li className="project-sidebar__empty">No projects yet</li>
+              <li className="project-sidebar__empty">
+                {isAdmin
+                  ? "No projects yet"
+                  : "No projects assigned to you yet."}
+              </li>
             )}
           </ul>
         </>
@@ -254,9 +267,9 @@ export function ProjectSidebar() {
               Delete project?
             </h2>
             <p className="project-modal__hint">
-              <strong>"{deleteTarget.name}"</strong> sẽ bị xoá vĩnh viễn cùng
-              với tất cả scenes, shots, nodes, edges và assets bên trong.
-              Không thể khôi phục.
+              <strong>"{deleteTarget.name}"</strong> will be permanently deleted
+              along with all episodes, sequences, nodes, edges and assets inside it.
+              This cannot be undone.
             </p>
             <div className="project-modal__actions">
               <button
@@ -299,7 +312,7 @@ export function ProjectSidebar() {
               New project
             </h2>
             <p className="project-modal__hint">
-              Tên project hiển thị trong sidebar. Có thể đổi sau.
+              The project name shown in the sidebar. You can change it later.
             </p>
             <input
               ref={newDialogInputRef}

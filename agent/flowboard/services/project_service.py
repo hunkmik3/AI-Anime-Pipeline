@@ -84,18 +84,25 @@ def get_project(
     return project
 
 
+_UNSET = object()
+
+
 def update_project(
     session: Session,
     project_id: uuid.UUID,
     *,
     name: Optional[str] = None,
     settings: Optional[dict[str, Any]] = None,
+    owner_user_id: Any = _UNSET,
 ) -> Project:
     project = get_project(session, project_id)
     if name is not None:
         project.name = name
     if settings is not None:
         project.settings = dict(settings)
+    # Sentinel-guarded so "not provided" differs from "reassign to unowned".
+    if owner_user_id is not _UNSET:
+        project.owner_user_id = owner_user_id
     session.add(project)
     session.commit()
     session.refresh(project)
@@ -173,6 +180,64 @@ def project_asset_count(session: Session, project_id: uuid.UUID) -> int:
     if isinstance(n, tuple):
         n = n[0]
     return int(n or 0)
+
+
+# ── cover / thumbnail ───────────────────────────────────────────────────────
+
+
+def project_images(
+    session: Session, project_id: uuid.UUID, *, limit: int = 24
+) -> list[dict[str, Any]]:
+    """Recent image assets in a project (newest first) — the pool the admin
+    picks a cover from. Each item: {media_id, url}."""
+    rows = session.exec(
+        select(Asset)
+        .where(
+            Asset.project_id == project_id,
+            Asset.kind == "image",
+            Asset.uuid_media_id.is_not(None),
+        )
+        .order_by(Asset.created_at.desc(), Asset.id.desc())
+        .limit(max(1, min(limit, 100)))
+    ).all()
+    return [{"media_id": a.uuid_media_id, "url": f"/media/{a.uuid_media_id}"} for a in rows]
+
+
+def set_project_cover(session: Session, project_id: uuid.UUID, media_id: Optional[str]):
+    """Set (or clear, when media_id is None) a project's cover thumbnail,
+    stored in settings.cover_media_id. Cosmetic — not structural."""
+    project = get_project(session, project_id)
+    settings = dict(project.settings or {})
+    if media_id:
+        settings["cover_media_id"] = str(media_id)
+    else:
+        settings.pop("cover_media_id", None)
+    project.settings = settings
+    session.add(project)
+    session.commit()
+    session.refresh(project)
+    return project
+
+
+def project_thumb_media_id(session: Session, project) -> Optional[str]:
+    """The media id to show as the project's cover: an admin-set override
+    (``settings.cover_media_id``) wins; otherwise the newest image asset."""
+    override = (project.settings or {}).get("cover_media_id")
+    if override:
+        return str(override)
+    latest = session.exec(
+        select(Asset.uuid_media_id)
+        .where(
+            Asset.project_id == project.id,
+            Asset.kind == "image",
+            Asset.uuid_media_id.is_not(None),
+        )
+        .order_by(Asset.created_at.desc(), Asset.id.desc())
+        .limit(1)
+    ).first()
+    if isinstance(latest, tuple):
+        latest = latest[0]
+    return str(latest) if latest else None
 
 
 def project_cost_usd(session: Session, project_id: uuid.UUID) -> float:
