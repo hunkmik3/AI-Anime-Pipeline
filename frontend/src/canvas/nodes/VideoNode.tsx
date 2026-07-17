@@ -8,6 +8,7 @@ import {
   type FlowboardNodeData,
 } from "../../store/shotWorkflow";
 import { BaseNodeShell } from "./BaseNodeShell";
+import { NodeHistoryButton } from "./shared/NodeHistory";
 import { VideoTile } from "./shared/VideoTile";
 import { VideoScrubber } from "./shared/VideoScrubber";
 
@@ -128,6 +129,7 @@ export function VideoNode(props: NodeProps<FlowNode>) {
         useGenerationStore.getState().openGenerationDialog(props.id, data.prompt ?? "")
       }
       onDownload={() => downloadAllVideoVariants(data, props.id)}
+      extraHeader={<NodeHistoryButton rfId={props.id} title={data.title} />}
     >
       <VideoBody rfId={props.id} data={data} />
     </BaseNodeShell>

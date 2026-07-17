@@ -283,6 +283,83 @@ def cost_tree() -> list[dict]:
     return out
 
 
+def node_history(node_id) -> list[dict]:
+    """Every generation ever run on ONE node — newest first.
+
+    The per-node "what did I already try, and what did each attempt cost?"
+    view. Unlike ``shot_gens`` (admin oversight, settled money only) this shows
+    the whole story: failed and in-flight attempts too, since "it errored" is
+    exactly what you're looking for when you re-open the history.
+
+    ``kept`` marks the take whose output the node is currently showing; a
+    ``cost_usd`` of None means the attempt was never billed (failed → released,
+    or still running).
+    """
+    with get_session() as s:
+        node = s.get(Node, int(node_id)) if str(node_id).isdigit() else None
+        if node is None:
+            return []
+        reqs = s.exec(
+            select(Request)
+            .where(Request.node_id == node.id)
+            .order_by(Request.created_at.desc(), Request.id.desc())
+        ).all()
+        if not reqs:
+            return []
+        rec_by_req: dict[int, UsageRecord] = {}
+        for r in s.exec(
+            select(UsageRecord).where(
+                UsageRecord.request_id.in_([q.id for q in reqs])  # type: ignore[attr-defined]
+            )
+        ).all():
+            rec_by_req[r.request_id] = r
+        users = {u.id: u for u in s.exec(select(User)).all()}
+        node_media = (node.data or {}).get("mediaIds") or []
+        current = (node.data or {}).get("mediaId")
+
+    out = []
+    for q in reqs:
+        rec = rec_by_req.get(q.id)
+        params = q.params or {}
+        result = q.result or {}
+        media = [m for m in (result.get("media_ids") or []) if isinstance(m, str)]
+        u = users.get(rec.user_id) if rec else None
+        # Only a settled record represents money actually taken; a reserved or
+        # released one must not be shown as a charge.
+        cost = (
+            round(float(rec.actual_usd or 0.0), 4)
+            if rec is not None and rec.status == "settled"
+            else None
+        )
+        out.append(
+            {
+                "request_id": q.id,
+                "status": q.status,          # queued | running | done | failed
+                "error": q.error,
+                "created_at": q.created_at.isoformat() if q.created_at else None,
+                "finished_at": q.finished_at.isoformat() if q.finished_at else None,
+                "duration_ms": (
+                    int((q.finished_at - q.created_at).total_seconds() * 1000)
+                    if q.finished_at and q.created_at
+                    else None
+                ),
+                "model": (rec.model if rec else None) or params.get("video_model_id"),
+                "resolution": params.get("resolution"),
+                "duration_seconds": params.get("duration_seconds"),
+                "prompt": params.get("prompt") or params.get("motion_prompt"),
+                "cost_usd": cost,
+                "ledger_status": rec.status if rec else None,
+                "user_name": (u.display_name or u.username) if u else None,
+                "media_ids": media,
+                # The take the node is showing right now (its output survived).
+                "kept": bool(media) and (
+                    current in media or any(m in node_media for m in media)
+                ),
+            }
+        )
+    return out
+
+
 def shot_gens(shot_id) -> list[dict]:
     """Every generation in one shot — one row per take (settled UsageRecord):
     what node, model, resolution, the real cost, whether it was kept or a

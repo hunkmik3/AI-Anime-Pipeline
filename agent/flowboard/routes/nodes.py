@@ -1,12 +1,14 @@
 import uuid
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlmodel import select
 
 from flowboard.db import get_session
-from flowboard.db.models import Edge, Node, Shot
+from flowboard.db.models import Edge, Node, Project, Scene, Shot
+from flowboard.routes.deps import get_optional_user, owner_scope
+from flowboard.services import stats_service
 from flowboard.short_id import generate_unique_short_id
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
@@ -146,3 +148,27 @@ def delete_node(node_id: int):
         s.delete(node)
         s.commit()
         return {"ok": True, "deleted_edges": [e.id for e in edges]}
+
+
+@router.get("/{node_id}/history")
+def node_history(node_id: int, user=Depends(get_optional_user)):
+    """Every generation ever run on this node — newest first.
+
+    Owner-gated by walking node → shot → scene → project, because this exposes
+    what each attempt cost. A caller who can't see the project gets 404 rather
+    than 403, matching the rest of the structure (ids must not leak).
+    """
+    with get_session() as s:
+        node = s.get(Node, node_id)
+        if node is None:
+            raise HTTPException(404, "node not found")
+        scope = owner_scope(user)
+        if scope is not None:
+            # Resolve the owning project; a node with no shot (scene-level or
+            # orphaned) has nothing to gate on, so it stays admin/no-auth only.
+            shot = s.get(Shot, node.shot_id) if node.shot_id else None
+            scene = s.get(Scene, shot.scene_id) if shot else None
+            project = s.get(Project, scene.project_id) if scene else None
+            if project is None or project.owner_user_id != scope:
+                raise HTTPException(404, "node not found")
+    return stats_service.node_history(node_id)

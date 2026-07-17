@@ -33,8 +33,15 @@ const edgeTypes = { default: VariantEdge };
 const NODE_W = 260;
 const NODE_H = 240;
 const PAD = 48;
-const MIN_W = 600; // new/empty shots get a usable ~3-4-node-wide frame
+// Floor for a MANUAL resize — how small you're allowed to drag a frame.
+const MIN_W = 600;
 const MIN_H = 300;
+// What a NEW / never-resized sequence starts at. Kept separate from MIN_*:
+// the old code used the minimum as the default too, so every new sequence
+// opened barely two nodes wide and had to be dragged out by hand. 16:9, sized
+// to hold a real shot's worth of nodes without touching a corner handle.
+const DEFAULT_W = 1920;
+const DEFAULT_H = 1080;
 const COLLAPSED_W = 280;
 const COLLAPSED_H = 120;
 
@@ -49,11 +56,13 @@ type ShotGroup = ReturnType<typeof useShotWorkflowStore.getState>["shotGroups"][
  * to the child nodes' bbox. Both min-clamped. */
 function groupSize(g: ShotGroup, children: FlowNode[]): { w: number; h: number } {
   if (g.collapsed) return { w: COLLAPSED_W, h: COLLAPSED_H };
+  // Hand-set size wins over auto-fit; MIN_* (not DEFAULT_*) is the floor here,
+  // otherwise deliberately shrinking a frame would snap straight back.
   if (g.size) {
     return { w: Math.max(MIN_W, g.size.w), h: Math.max(MIN_H, g.size.h) };
   }
-  let w = MIN_W;
-  let h = MIN_H;
+  let w = DEFAULT_W;
+  let h = DEFAULT_H;
   for (const c of children) {
     w = Math.max(w, c.position.x + NODE_W + PAD);
     h = Math.max(h, c.position.y + NODE_H + PAD);
@@ -272,6 +281,20 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
       y += h + SHOT_VERTICAL_GAP;
     }
   }, []);
+
+  // Group positions are PERSISTED, so any change to how tall a frame renders
+  // (a new default, a child added) leaves the stored y's describing the old
+  // layout and the frames overlap. Re-flow once per scene after load to settle
+  // them. reflowStack only writes groups whose position actually moved, so
+  // this costs nothing once a scene's layout already agrees.
+  const reflowedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (loading || migrating) return;
+    if (shotGroups.length === 0) return;
+    if (reflowedFor.current === sceneId) return;
+    reflowedFor.current = sceneId;
+    reflowStack();
+  }, [loading, migrating, shotGroups.length, sceneId, reflowStack]);
 
   // RF-controlled local node array, seeded from the store (flat scene nodes
   // + shot_groups → group containers + parented children). Re-seed whenever

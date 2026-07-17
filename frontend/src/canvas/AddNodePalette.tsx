@@ -2,56 +2,7 @@ import { useState } from "react";
 import { useReactFlow } from "@xyflow/react";
 
 import { useShotWorkflowStore, type NodeType } from "../store/shotWorkflow";
-
-interface Chip {
-  type: NodeType;
-  icon: string;
-  label: string;
-}
-
-interface Group {
-  label: string;
-  chips: Chip[];
-}
-
-// Icon set kept inline (existing convention — no icon-font dependency).
-// The bible_ref / script glyphs are the existing emoji set from Phase 4;
-// the rest are box-drawing / unicode symbols already shipped.
-const GROUPS: Group[] = [
-  {
-    label: "Refs",
-    chips: [
-      { type: "character", icon: "◎", label: "Character" },
-      { type: "visual_asset", icon: "◇", label: "Visual" },
-      { type: "master_shot", icon: "★", label: "Master" },
-      { type: "bible_ref", icon: "📖", label: "Bible" },
-      { type: "audio_ref", icon: "🔊", label: "Audio" },
-      { type: "video_ref", icon: "🎬", label: "Video ref" },
-    ],
-  },
-  {
-    label: "Generation",
-    chips: [
-      { type: "image", icon: "▣", label: "Image" },
-      { type: "video", icon: "▶", label: "Video" },
-    ],
-  },
-  {
-    label: "Logic",
-    chips: [
-      { type: "script", icon: "📝", label: "Script" },
-      { type: "prompt", icon: "✦", label: "Prompt" },
-      { type: "approval_gate", icon: "⏸", label: "Approval" },
-    ],
-  },
-  {
-    label: "Misc",
-    chips: [
-      { type: "note", icon: "✎", label: "Note" },
-      { type: "storyboard", icon: "▦", label: "Storyboard" },
-    ],
-  },
-];
+import { NODE_GROUPS as GROUPS } from "./nodePalette";
 
 export function AddNodePalette() {
   const { screenToFlowPosition } = useReactFlow();

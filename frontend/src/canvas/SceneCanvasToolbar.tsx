@@ -1,55 +1,7 @@
 import { useState } from "react";
 
 import type { NodeType } from "../store/shotWorkflow";
-
-interface Chip {
-  type: NodeType;
-  icon: string;
-  label: string;
-}
-interface Group {
-  label: string;
-  chips: Chip[];
-}
-
-// Phase 8.3b-3: restored the original AddNodePalette design (grouped chips,
-// collapsible) for the multi-shot SceneCanvas. Same classes/markup → identical
-// look; placement is scene-aware (handled by the parent).
-const GROUPS: Group[] = [
-  {
-    label: "Refs",
-    chips: [
-      { type: "character", icon: "◎", label: "Character" },
-      { type: "visual_asset", icon: "◇", label: "Visual" },
-      { type: "master_shot", icon: "★", label: "Master" },
-      { type: "bible_ref", icon: "📖", label: "Bible" },
-      { type: "audio_ref", icon: "🔊", label: "Audio" },
-      { type: "video_ref", icon: "🎬", label: "Video ref" },
-    ],
-  },
-  {
-    label: "Generation",
-    chips: [
-      { type: "image", icon: "▣", label: "Image" },
-      { type: "video", icon: "▶", label: "Video" },
-    ],
-  },
-  {
-    label: "Logic",
-    chips: [
-      { type: "script", icon: "📝", label: "Script" },
-      { type: "prompt", icon: "✦", label: "Prompt" },
-      { type: "approval_gate", icon: "⏸", label: "Approval" },
-    ],
-  },
-  {
-    label: "Misc",
-    chips: [
-      { type: "note", icon: "✎", label: "Note" },
-      { type: "storyboard", icon: "▦", label: "Storyboard" },
-    ],
-  },
-];
+import { NODE_GROUPS as GROUPS, type Chip } from "./nodePalette";
 
 // Flattened list for the right-click context menu (same types as the palette).
 export const SCENE_NODE_TYPES: Chip[] = GROUPS.flatMap((g) => g.chips);
