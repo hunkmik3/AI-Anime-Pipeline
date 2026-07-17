@@ -198,6 +198,91 @@ def all_shots() -> list[dict]:
     return out
 
 
+def cost_tree() -> list[dict]:
+    """Nested spend breakdown for the admin 'Cost' tab: project → episode
+    (scene) → sequence (shot), each carrying its own rolled-up total. Only
+    branches that actually spent money appear. Projects are ordered by spend
+    (biggest first); episodes and sequences keep their natural story order."""
+    with get_session() as s:
+        _u, reqs, nodes, shots, scenes, projects, paid, _d = _load(s)
+
+    # settled spend + gen/clip counts per shot (a clip == one node)
+    shot_agg: dict = defaultdict(lambda: {"usd": 0.0, "gens": 0, "nodes": set()})
+    for r in paid:
+        req = reqs.get(r.request_id)
+        n = nodes.get(req.node_id) if (req and req.node_id) else None
+        if n is None or n.shot_id is None:
+            continue
+        sh = shots.get(n.shot_id)
+        if sh is None:
+            continue
+        a = shot_agg[sh.id]
+        a["usd"] += float(r.actual_usd or 0.0)
+        a["gens"] += 1
+        a["nodes"].add(n.id)
+
+    # fold each spending shot up into project → episode buckets
+    proj_map: dict = {}
+    for shid, a in shot_agg.items():
+        if a["usd"] <= 0:
+            continue
+        sh = shots.get(shid)
+        sc = scenes.get(sh.scene_id) if sh else None
+        pr = projects.get(sc.project_id) if sc else None
+        pid = str(pr.id) if pr else "—"
+        scid = str(sc.id) if sc else "—"
+        p = proj_map.setdefault(
+            pid,
+            {"project_id": pid, "name": pr.name if pr else "(no project)",
+             "total_usd": 0.0, "gens": 0, "clips": 0, "_ep": {}},
+        )
+        e = p["_ep"].setdefault(
+            scid,
+            {"scene_id": scid, "name": sc.name if sc else "(no episode)",
+             "_order": sc.order_index if sc else 0,
+             "total_usd": 0.0, "gens": 0, "clips": 0, "sequences": []},
+        )
+        clips = len(a["nodes"])
+        e["sequences"].append(
+            {
+                "shot_id": str(shid),
+                "shot_label": _shot_label(sh, scenes) if sh else "?",
+                "_order": sh.order_index if sh else 0,
+                "total_usd": round(a["usd"], 4),
+                "gens": a["gens"],
+                "clips": clips,
+            }
+        )
+        for bucket in (e, p):
+            bucket["total_usd"] += a["usd"]
+            bucket["gens"] += a["gens"]
+            bucket["clips"] += clips
+
+    out = []
+    for p in proj_map.values():
+        episodes = list(p["_ep"].values())
+        for e in episodes:
+            e["sequences"].sort(key=lambda x: x["_order"])
+            for seq in e["sequences"]:
+                seq.pop("_order", None)
+            e["total_usd"] = round(e["total_usd"], 4)
+        episodes.sort(key=lambda e: e["_order"])
+        for e in episodes:
+            e.pop("_order", None)
+        out.append(
+            {
+                "project_id": p["project_id"],
+                "name": p["name"],
+                "total_usd": round(p["total_usd"], 4),
+                "gens": p["gens"],
+                "clips": p["clips"],
+                "episodes": episodes,
+            }
+        )
+    out.sort(key=lambda r: r["total_usd"], reverse=True)
+    return out
+
+
 def shot_gens(shot_id) -> list[dict]:
     """Every generation in one shot — one row per take (settled UsageRecord):
     what node, model, resolution, the real cost, whether it was kept or a

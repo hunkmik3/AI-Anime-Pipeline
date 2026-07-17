@@ -75,8 +75,30 @@ Fill:
 - `R2_*` — only if you want KYC (person-driven) video; normal Seedance video
   works without R2. See [docs/r2_setup.md](docs/r2_setup.md).
 
+**Signup approval emails** (a member requests an account on the login page; you
+approve it in the admin console and they get their password by email):
+```
+FLOWBOARD_SMTP_HOST=smtp.gmail.com
+FLOWBOARD_SMTP_PORT=587
+FLOWBOARD_SMTP_USER=you@sleepygiant.studio
+FLOWBOARD_SMTP_PASSWORD=<16-char Google App Password>
+FLOWBOARD_SMTP_FROM=Giant Studio <noreply@sleepygiant.studio>
+FLOWBOARD_APP_URL=https://giantstudio.reelmind.co
+```
+- `FLOWBOARD_SMTP_PASSWORD` is a Google **App Password** (Google Account →
+  Security → 2-Step Verification → App passwords), NOT the login password.
+- `FLOWBOARD_SMTP_FROM` must be the `SMTP_USER` itself or an alias that account
+  owns, otherwise Gmail silently rewrites the From back to `SMTP_USER`.
+- ⚠️ `FLOWBOARD_APP_URL` is the "Sign in" link printed in that email — it must be
+  the **public URL of this host**, not `localhost`, or new members get a dead link.
+- Leave SMTP blank and approvals still work: the console shows the generated
+  password for you to send by hand.
+
 `FLOWBOARD_REQUIRE_AUTH=1`, `FLOWBOARD_DISABLE_BRIDGE=1`, and
 `FLOWBOARD_DEFAULT_VIDEO_MODEL=seedance-2-0` are already set in the template.
+
+> `.env` is machine-local and git-ignored — it does **not** come across with
+> `git pull`. Every value above has to be set on this Windows box itself.
 
 ## 4. One-command setup
 ```powershell

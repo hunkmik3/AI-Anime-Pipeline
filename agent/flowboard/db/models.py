@@ -341,3 +341,29 @@ class AuditLog(SQLModel, table=True):
     target_label: Optional[str] = None
     ip: Optional[str] = None
     detail: Optional[str] = None                   # short human-readable context
+
+
+class Registration(SQLModel, table=True):
+    """A self-service signup waiting on admin approval.
+
+    Deliberately NOT an ``app_user`` row: a pending request has no password,
+    must not reserve a username, and must not be able to log in. On approval we
+    mint a real User (temp password + must_change_password) and email the
+    credentials; the row survives as an auditable record of the decision.
+
+    ``email`` is indexed but NOT unique — one *pending* request per email is
+    enforced in the service, so a rejected applicant can apply again later.
+    """
+
+    __tablename__ = "registration"  # type: ignore[assignment]
+
+    id: uuid.UUID = Field(default_factory=_uuid_pk, primary_key=True)
+    email: str = Field(index=True)
+    display_name: Optional[str] = None
+    note: Optional[str] = None                     # free text: why they want access
+    status: str = Field(default="pending", index=True)  # pending | approved | rejected
+    created_at: datetime = Field(default_factory=_utcnow, index=True)
+    decided_at: Optional[datetime] = None
+    decided_by: Optional[str] = None               # admin username at decision time
+    # Stamped on approval so the admin can relay the login if the email bounced.
+    created_username: Optional[str] = None

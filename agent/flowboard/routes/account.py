@@ -6,6 +6,7 @@ extension's Google profile). These are the app's own admin-provisioned logins.
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -13,7 +14,14 @@ from pydantic import BaseModel
 
 from flowboard.db.models import User
 from flowboard.routes.deps import get_current_user
-from flowboard.services import audit_service, auth, budget_service, sso, user_service
+from flowboard.services import (
+    audit_service,
+    auth,
+    budget_service,
+    registration_service,
+    sso,
+    user_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +36,37 @@ class LoginBody(BaseModel):
 class ChangePasswordBody(BaseModel):
     current_password: str
     new_password: str
+
+
+class RegisterBody(BaseModel):
+    email: str
+    display_name: Optional[str] = None
+    note: Optional[str] = None
+
+
+@router.post("/register")
+def register(body: RegisterBody, request: Request) -> dict:
+    """Public self-service signup — lands in the admin's approval queue.
+
+    Answers identically whether the email is new, already queued, or already
+    has an account, so this can't be used to enumerate who has access. The only
+    4xx is a malformed address.
+    """
+    ip = audit_service.client_ip(request)
+    try:
+        registration_service.request_access(body.email, body.display_name, body.note)
+    except registration_service.RegistrationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    audit_service.record(
+        "signup.requested", target_label=(body.email or "").strip().lower(), ip=ip
+    )
+    return {
+        "ok": True,
+        "message": (
+            "Request submitted — an admin will review it. "
+            "You'll get an email if it's approved."
+        ),
+    }
 
 
 @router.post("/login")

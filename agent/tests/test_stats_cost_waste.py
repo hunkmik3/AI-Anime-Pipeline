@@ -52,6 +52,13 @@ def _video_node(client) -> int:
     return r.json()["id"]
 
 
+def _node_on_shot(client, shot_id, title="Clip") -> int:
+    return client.post(
+        "/api/nodes",
+        json={"shot_id": shot_id, "type": "video", "x": 0, "y": 0, "data": {"title": title}},
+    ).json()["id"]
+
+
 # ── the core split ──────────────────────────────────────────────────────────
 
 
@@ -193,6 +200,59 @@ def test_admin_stats_endpoints(client):
     assert client.get("/api/admin/stats/projects", headers=h).status_code == 200
     models = client.get("/api/admin/stats/models", headers=h).json()
     assert any(m["takes"] == 2 for m in models)
+
+
+# ── cost tree: project → episode → sequence ──────────────────────────────────
+
+
+def test_cost_tree_project_episode_sequence(client):
+    """The admin Cost tab tree rolls settled Avis spend up at every level:
+    project total → per-episode total → per-sequence spend."""
+    proj = client.post("/api/projects", json={"name": "Anime P1"}).json()
+    e1 = client.post(f"/api/projects/{proj['id']}/scenes", json={"name": "Episode 1"}).json()
+    e2 = client.post(f"/api/projects/{proj['id']}/scenes", json={"name": "Episode 2"}).json()
+    s1 = client.post(f"/api/scenes/{e1['id']}/shots", json={}).json()
+    s2 = client.post(f"/api/scenes/{e2['id']}/shots", json={}).json()
+
+    u = user_service.create_user("tree", "treepw123")
+    n1 = _node_on_shot(client, s1["id"])
+    n2 = _node_on_shot(client, s2["id"])
+    _gen(client, u.id, n1, 6.0)   # take 1 on episode-1 / sequence-1
+    _gen(client, u.id, n1, 2.0)   # take 2 on same node → 1 clip, 2 gens
+    _gen(client, u.id, n2, 3.0)   # episode-2 / sequence-1
+
+    p = next(x for x in stats_service.cost_tree() if x["project_id"] == proj["id"])
+    assert p["total_usd"] == 11.0
+    assert len(p["episodes"]) == 2
+    # episodes keep story order (E1 before E2)
+    assert [e["scene_id"] for e in p["episodes"]] == [e1["id"], e2["id"]]
+
+    ep1 = next(e for e in p["episodes"] if e["scene_id"] == e1["id"])
+    ep2 = next(e for e in p["episodes"] if e["scene_id"] == e2["id"])
+    assert ep1["total_usd"] == 8.0 and ep2["total_usd"] == 3.0
+
+    seq1 = ep1["sequences"][0]
+    assert seq1["shot_id"] == s1["id"]
+    assert seq1["total_usd"] == 8.0 and seq1["gens"] == 2 and seq1["clips"] == 1
+    assert "_order" not in seq1  # internal sort key is stripped from the payload
+
+
+def test_cost_tree_skips_zero_spend_branches(client):
+    """A project with shots but no generations doesn't clutter the cost tree."""
+    make_shot(client)
+    assert stats_service.cost_tree() == []
+
+
+def test_admin_cost_tree_route(client):
+    user_service.create_user("boss", "bosspw123", role="admin")
+    u = user_service.create_user("hand", "handpw123")
+    _gen(client, u.id, _video_node(client), 4.0)
+    h = _h(client, "boss", "bosspw123")
+    r = client.get("/api/admin/stats/cost-tree", headers=h)
+    assert r.status_code == 200
+    tree = r.json()
+    assert len(tree) == 1 and tree[0]["total_usd"] == 4.0
+    assert tree[0]["episodes"][0]["sequences"][0]["total_usd"] == 4.0
 
 
 def test_stats_require_admin(client):

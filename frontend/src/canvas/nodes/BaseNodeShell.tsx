@@ -54,7 +54,7 @@ export function BaseNodeShell({
     <div
       className={`node-card${variant ? ` node-card--${variant}` : ""}${
         selected ? " node-card--selected" : ""
-      }${llmBusy ? " node-card--llm-busy" : ""}`}
+      }`}
     >
       <StatusStrip status={data.status} />
       {showTargetHandle && (
@@ -64,12 +64,6 @@ export function BaseNodeShell({
       <div className="node-header">
         <span className="node-icon" aria-hidden="true">{ICON[data.type] ?? "□"}</span>
         <span className="node-title">{data.title}</span>
-        {llmBusy && (
-          <span className="node-header__llm-pill" aria-live="polite">
-            <span className="node-header__llm-spinner" aria-hidden="true" />
-            {data.autoPromptStatus === "pending" ? "Composing…" : "Analyzing…"}
-          </span>
-        )}
         {extraHeader}
         <div className="node-header__actions">
           {isDownloadable && onDownload && (

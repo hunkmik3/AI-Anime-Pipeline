@@ -170,10 +170,11 @@ from fastapi.responses import JSONResponse as _JSONResponse  # noqa: E402
 from flowboard.services import auth as _auth  # noqa: E402,F401
 from flowboard.services import user_service as _user_service  # noqa: E402
 
-# Login + health + the SSO handshake are open; everything else under /api
-# requires a valid session when REQUIRE_AUTH is on.
+# Login + signup + health + the SSO handshake are open; everything else under
+# /api requires a valid session when REQUIRE_AUTH is on.
 _AUTH_OPEN_PATHS = {
     "/api/account/login",
+    "/api/account/register",  # self-service signup → admin approval queue
     "/api/health",
     "/api/account/sso/google/start",
     "/api/account/sso/google/callback",

@@ -2,7 +2,6 @@ import { useRef, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 
 import { markDownloaded, mediaUrl, patchNode, uploadImage } from "../../api/client";
-import { requestAutoBrief } from "../../api/autoBrief";
 import { useGenerationStore } from "../../store/generation";
 import {
   useShotWorkflowStore,
@@ -64,7 +63,6 @@ function ImageBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }) {
         },
       }).catch(() => {});
     }
-    requestAutoBrief(rfId, newMediaId);
   }
 
   async function uploadOwn(file: File) {

@@ -7754,6 +7754,32 @@ button:disabled {
 .password-input__toggle:disabled { opacity: 0.4; cursor: not-allowed; }
 .password-input__toggle svg { width: 18px; height: 18px; display: block; }
 .login-error { font-size: 0.82rem; color: #ff6b6b; background: #2a1414; padding: 7px 10px; border-radius: 7px; }
+.login-ok {
+  font-size: 0.84rem; line-height: 1.55; color: #6ee787;
+  background: rgba(0,167,111,0.10); border: 1px solid rgba(0,167,111,0.35);
+  padding: 11px 13px; border-radius: 8px;
+}
+/* sign in / sign up switcher */
+.login-form { display: flex; flex-direction: column; gap: 14px; }
+.login-tabs {
+  display: flex; gap: 4px; padding: 3px; border-radius: 10px;
+  background: #0e0e13; border: 1px solid #26262e;
+}
+.login-tab {
+  flex: 1; padding: 8px 10px; border: none; border-radius: 7px; cursor: pointer;
+  background: transparent; color: #8a8a93; font: inherit; font-size: 0.86rem; font-weight: 600;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.login-tab:hover { color: #d0d0d8; }
+.login-tab.is-active { background: #00a76f; color: #fff; }
+.login-sub--tight { margin: 0; text-align: left; line-height: 1.55; }
+.login-textarea {
+  padding: 9px 11px; border-radius: 8px; border: 1px solid #2c2c36;
+  background: #0e0e13; color: #f0f0f4; font: inherit; font-size: 0.88rem;
+  outline: none; resize: vertical; min-height: 64px;
+}
+.login-textarea:focus { border-color: #00a76f; }
+.login-textarea::placeholder { color: #5f5f68; }
 .login-btn {
   margin-top: 4px; padding: 10px; border: none; border-radius: 8px;
   background: #00a76f; color: #fff; font-size: 0.92rem; font-weight: 600; cursor: pointer;
@@ -8053,6 +8079,12 @@ button:disabled {
 .dash__nav-item.is-active { background: var(--d-primary-subtle); color: var(--d-primary-bright); }
 .dash__ico { flex: 0 0 20px; opacity: 0.9; }
 .dash__nav-item.is-active .dash__ico { opacity: 1; }
+/* unread-style count (e.g. sign-ups waiting for approval) */
+.dash__nav-badge {
+  margin-left: auto; min-width: 20px; padding: 1px 6px; border-radius: 999px;
+  background: var(--d-danger); color: #fff;
+  font-size: 0.7rem; font-weight: 800; line-height: 1.5; text-align: center;
+}
 
 .dash__side-foot { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--d-border); display: flex; flex-direction: column; gap: 4px; }
 .dash__me { display: flex; align-items: center; gap: 10px; padding: 6px 8px 10px; }
@@ -8606,6 +8638,45 @@ button:disabled {
 .dash .sbar__seg:only-child { border-radius: 999px; }
 .dash .sbar__seg:hover { filter: brightness(1.2); }
 .dash .sbar__val { font-size: 0.82rem; color: var(--d-ink); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+/* ── sign-ups: relay card shown when the approval email failed ──────────────── */
+.dash .relay { border-left: 3px solid var(--d-warning); margin-bottom: 14px; }
+.dash .relay__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.dash .relay__head b { color: var(--d-ink); }
+.dash .relay__hint { margin: 8px 0 12px; font-size: 0.82rem; line-height: 1.55; color: var(--d-muted); }
+.dash .relay__creds {
+  display: flex; flex-wrap: wrap; gap: 8px 22px; margin-bottom: 12px;
+  padding: 10px 12px; border-radius: 8px; background: var(--d-surface-2);
+  font-family: ui-monospace, monospace; font-size: 0.84rem; color: var(--d-body);
+}
+.dash .relay__creds b { color: var(--d-primary-bright); }
+.dash .reg__note { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── cost tree: project → episode → sequence (Cost tab) ─────────────────────── */
+.dash .ctree, .dash .ctree__group { display: flex; flex-direction: column; }
+.dash .ctree__row {
+  display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px;
+  width: 100%; text-align: left; font: inherit; color: var(--d-ink);
+  background: none; border: none; border-top: 1px solid var(--d-border-soft);
+  padding: 11px 16px; cursor: pointer;
+}
+.dash .ctree > .ctree__group:first-child > .ctree__row { border-top: none; }
+.dash .ctree__row:hover { background: var(--d-hover); }
+.dash .ctree__main { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.dash .ctree__chev { flex: 0 0 12px; width: 12px; color: var(--d-faint); font-size: 0.72rem; }
+.dash .ctree__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash .ctree__meta { flex: 0 0 auto; color: var(--d-faint); font-size: 0.76rem; font-weight: 400; }
+.dash .ctree__val { font-weight: 700; color: var(--d-ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* level styling: bold at project, lighter + indented deeper */
+.dash .ctree__row--project { font-size: 0.95rem; font-weight: 700; }
+.dash .ctree__row--project .ctree__val { color: var(--d-primary-bright); }
+.dash .ctree__row--episode { padding-left: 40px; font-weight: 600; }
+.dash .ctree__row--sequence { padding-left: 64px; font-weight: 500; }
+.dash .ctree__row--sequence .ctree__name { color: var(--d-body); }
+/* nested tint deepens with depth */
+.dash .ctree__kids--episode { background: rgba(0,0,0,0.14); }
+.dash .ctree__kids--sequence { background: rgba(0,0,0,0.18); }
+.dash .ctree__gens { padding: 2px 16px 10px 64px; background: var(--d-surface); }
 
 /* responsive: collapse the sidebar to a top strip on narrow screens */
 @media (max-width: 820px) {

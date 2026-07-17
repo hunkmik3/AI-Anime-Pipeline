@@ -8,7 +8,6 @@ import {
   uploadImage,
   uploadImageFromUrl,
 } from "../../api/client";
-import { requestAutoBrief } from "../../api/autoBrief";
 import { resolvePrimaryMediaId, useGenerationStore } from "../../store/generation";
 import {
   useShotWorkflowStore,
@@ -90,7 +89,6 @@ function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData
         },
       }).catch(() => {});
     }
-    requestAutoBrief(rfId, newMediaId);
   }
 
   async function uploadOwn(file: File) {

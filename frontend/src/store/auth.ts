@@ -21,6 +21,7 @@ interface AuthState {
   ready: boolean;        // finished the boot-time token validation
   error: string | null;
   isAdmin: () => boolean;
+  clearError(): void;
   login(username: string, password: string): Promise<void>;
   changePassword(currentPassword: string, newPassword: string): Promise<void>;
   logout(): void;
@@ -32,6 +33,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   ready: false,
   error: null,
   isAdmin: () => get().user?.role === "admin",
+  clearError: () => set({ error: null }),
 
   async login(username, password) {
     set({ error: null });

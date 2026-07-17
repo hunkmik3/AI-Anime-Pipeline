@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { thumbUrl, listProjectImages, uploadImage, type ProjectImage } from "../../api/client";
+import { toast } from "../../store/toast";
 import { HBars } from "./Charts";
 import { ProjectShots, ShotGens } from "./ProjectShots";
 
@@ -157,70 +158,137 @@ interface AllShotRow {
   clips: number;
 }
 
+// Nested spend: project → episode → sequence (GET /api/admin/stats/cost-tree).
+interface CostSeq {
+  shot_id: string;
+  shot_label: string;
+  total_usd: number;
+  gens: number;
+  clips: number;
+}
+interface CostEpisode {
+  scene_id: string;
+  name: string;
+  total_usd: number;
+  gens: number;
+  clips: number;
+  sequences: CostSeq[];
+}
+interface CostProject {
+  project_id: string;
+  name: string;
+  total_usd: number;
+  gens: number;
+  clips: number;
+  episodes: CostEpisode[];
+}
+
+/** Immutable toggle of an id inside a Set (for the expand/collapse state). */
+function toggleId(set: Set<string>, id: string): Set<string> {
+  const next = new Set(set);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  return next;
+}
+
 export function CostTab() {
-  const { data, err, loading } = useFetch<AllShotRow[]>("/api/admin/stats/shots");
-  const [open, setOpen] = useState<string | null>(null);
+  const { data, err, loading } = useFetch<CostProject[]>("/api/admin/stats/cost-tree");
+  const [openP, setOpenP] = useState<Set<string>>(new Set());
+  const [openE, setOpenE] = useState<Set<string>>(new Set());
+  const [openS, setOpenS] = useState<Set<string>>(new Set());
 
   if (loading) return <Skeleton />;
   if (err) return <div className="admin-error">{err}</div>;
-  const rows = data ?? [];
-  const total = rows.reduce((s, r) => s + r.total_usd, 0);
+  const projects = data ?? [];
+  const total = projects.reduce((s, p) => s + p.total_usd, 0);
 
   return (
     <div className="admin2__card">
       <p className="tab-note">
-        Money spent generating on each <b>sequence</b>, priciest first — straight from the Avis
-        bill. Click a sequence to see every generation (who, model, cost). Total: <b>{usd(total)}</b>.
+        Total spend broken down <b>Project → Episode → Sequence</b>, straight from the Avis bill.
+        Click a row to drill in; opening a sequence lists every generation (who, model, cost).
+        Total: <b>{usd(total)}</b>.
       </p>
-      {rows.length === 0 ? (
-        <div className="admin2__empty">No sequence has spent anything yet.</div>
+      {projects.length === 0 ? (
+        <div className="admin2__empty">No project has spent anything yet.</div>
       ) : (
-        <table className="admin2__table">
-          <thead>
-            <tr>
-              <th className="pshots__th-ex" />
-              <th>Sequence</th>
-              <th>Project · Episode</th>
-              <th>Total spent</th>
-              <th>Gens</th>
-              <th>Clips</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((sh) => {
-              const isOpen = open === sh.shot_id;
-              return (
-                <Fragment key={sh.shot_id}>
-                  <tr
-                    className="row-click"
-                    onClick={() => setOpen(isOpen ? null : sh.shot_id)}
-                  >
-                    <td className="admin2__muted">{isOpen ? "▾" : "▸"}</td>
-                    <td>
-                      <b>{sh.shot_label}</b>
-                    </td>
-                    <td className="admin2__muted">
-                      {sh.project_name}
-                      {sh.scene_name ? ` · ${sh.scene_name}` : ""}
-                    </td>
-                    <td>
-                      <b>{usd(sh.total_usd)}</b>
-                    </td>
-                    <td className="admin2__muted">{sh.gens}</td>
-                    <td className="admin2__muted">{sh.clips}</td>
-                  </tr>
-                  {isOpen ? (
-                    <tr>
-                      <td colSpan={6} className="drill">
-                        <ShotGens shotId={sh.shot_id} />
-                      </td>
-                    </tr>
-                  ) : null}
-                </Fragment>
-              );
-            })}
-          </tbody>
-        </table>
+        <div className="ctree">
+          {projects.map((p) => {
+            const pOpen = openP.has(p.project_id);
+            return (
+              <div key={p.project_id} className="ctree__group">
+                <button
+                  className="ctree__row ctree__row--project"
+                  onClick={() => setOpenP((s) => toggleId(s, p.project_id))}
+                >
+                  <span className="ctree__main">
+                    <span className="ctree__chev">{pOpen ? "▾" : "▸"}</span>
+                    <span className="ctree__name">{p.name || "Untitled"}</span>
+                    <span className="ctree__meta">
+                      {p.episodes.length} episode{p.episodes.length === 1 ? "" : "s"} · {p.gens} gens
+                    </span>
+                  </span>
+                  <span className="ctree__val">{usd(p.total_usd)}</span>
+                </button>
+
+                {pOpen ? (
+                  <div className="ctree__kids ctree__kids--episode">
+                    {p.episodes.map((e) => {
+                      const eOpen = openE.has(e.scene_id);
+                      return (
+                        <div key={e.scene_id} className="ctree__group">
+                          <button
+                            className="ctree__row ctree__row--episode"
+                            onClick={() => setOpenE((s) => toggleId(s, e.scene_id))}
+                          >
+                            <span className="ctree__main">
+                              <span className="ctree__chev">{eOpen ? "▾" : "▸"}</span>
+                              <span className="ctree__name">{e.name || "Untitled episode"}</span>
+                              <span className="ctree__meta">
+                                {e.sequences.length} sequence{e.sequences.length === 1 ? "" : "s"}
+                              </span>
+                            </span>
+                            <span className="ctree__val">{usd(e.total_usd)}</span>
+                          </button>
+
+                          {eOpen ? (
+                            <div className="ctree__kids ctree__kids--sequence">
+                              {e.sequences.map((sq) => {
+                                const sOpen = openS.has(sq.shot_id);
+                                return (
+                                  <div key={sq.shot_id} className="ctree__group">
+                                    <button
+                                      className="ctree__row ctree__row--sequence"
+                                      onClick={() => setOpenS((s) => toggleId(s, sq.shot_id))}
+                                    >
+                                      <span className="ctree__main">
+                                        <span className="ctree__chev">{sOpen ? "▾" : "▸"}</span>
+                                        <span className="ctree__name">{sq.shot_label}</span>
+                                        <span className="ctree__meta">
+                                          {sq.gens} gens · {sq.clips} clip{sq.clips === 1 ? "" : "s"}
+                                        </span>
+                                      </span>
+                                      <span className="ctree__val">{usd(sq.total_usd)}</span>
+                                    </button>
+                                    {sOpen ? (
+                                      <div className="ctree__gens">
+                                        <ShotGens shotId={sq.shot_id} />
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );
@@ -679,5 +747,205 @@ export function AuditTab({ fmtTime }: { fmtTime: (iso?: string | null) => string
         </table>
       )}
     </div>
+  );
+}
+
+// ── Registrations: self-service signups awaiting approval ────────────────────
+
+interface RegRow {
+  id: string;
+  email: string;
+  display_name: string | null;
+  note: string | null;
+  status: string;                 // pending | approved | rejected
+  created_at: string | null;
+  decided_at: string | null;
+  decided_by: string | null;
+  created_username: string | null;
+}
+
+interface ApproveResult {
+  username: string;
+  email: string;
+  temp_password: string;
+  email_sent: boolean;
+}
+
+function fmtWhen(iso?: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? "—" : d.toLocaleString();
+}
+
+export function RegistrationsTab({ onChanged }: { onChanged?: () => void }) {
+  const [show, setShow] = useState<"pending" | "all">("pending");
+  const { data, err, loading, reload } = useFetch<RegRow[]>(
+    show === "pending" ? "/api/admin/registrations?status=pending" : "/api/admin/registrations",
+  );
+  const [busy, setBusy] = useState<string | null>(null);
+  // Approval returns the temp password; keep it on screen so the admin can
+  // relay it by hand when the email didn't go out.
+  const [relay, setRelay] = useState<ApproveResult | null>(null);
+
+  async function decide(r: RegRow, action: "approve" | "reject") {
+    if (busy) return;
+    setBusy(r.id);
+    try {
+      const res = await fetch(`/api/admin/registrations/${r.id}/${action}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        let detail = `${res.status}`;
+        try {
+          detail = (await res.json()).detail ?? detail;
+        } catch {
+          /* keep status */
+        }
+        throw new Error(String(detail));
+      }
+      const out = await res.json();
+      if (action === "approve") {
+        if (out.email_sent) {
+          toast(`Approved ${out.username} — credentials emailed to ${out.email}`);
+        } else {
+          // Mail failed: do NOT let the password vanish with a toast.
+          toast("Approved, but the email failed to send — copy the password below", "error");
+          setRelay(out as ApproveResult);
+        }
+      } else {
+        toast(`Rejected ${r.email}`);
+      }
+      await reload();
+      onChanged?.();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "action failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (loading) return <Skeleton />;
+  if (err) return <div className="admin-error">{err}</div>;
+  const rows = data ?? [];
+
+  return (
+    <>
+      {relay ? (
+        <section className="admin2__card admin2__pad relay">
+          <div className="relay__head">
+            <b>Send these credentials to {relay.email} manually</b>
+            <button className="btn2 btn2--ghost" onClick={() => setRelay(null)}>
+              Dismiss
+            </button>
+          </div>
+          <p className="relay__hint">
+            The account was created, but the email didn't go out (check the SMTP
+            settings). This password is shown once — it won't be recoverable after
+            you dismiss this.
+          </p>
+          <div className="relay__creds">
+            <span>Username: <b>{relay.username}</b></span>
+            <span>Password: <b>{relay.temp_password}</b></span>
+          </div>
+          <button
+            className="btn2 btn2--primary"
+            onClick={() => {
+              void navigator.clipboard.writeText(
+                `Username: ${relay.username}\nPassword: ${relay.temp_password}`,
+              );
+              toast("Copied to clipboard");
+            }}
+          >
+            Copy
+          </button>
+        </section>
+      ) : null}
+
+      <div className="admin2__toolbar">
+        <span className="admin2__count">
+          {rows.length} {show === "pending" ? "pending" : "total"}
+        </span>
+        <button
+          className="btn2 btn2--ghost"
+          onClick={() => setShow(show === "pending" ? "all" : "pending")}
+        >
+          {show === "pending" ? "Show all" : "Show pending only"}
+        </button>
+      </div>
+
+      <div className="admin2__card">
+        {rows.length === 0 ? (
+          <div className="admin2__empty">
+            {show === "pending"
+              ? "No one is waiting for approval."
+              : "No signup requests yet."}
+          </div>
+        ) : (
+          <table className="admin2__table">
+            <thead>
+              <tr>
+                <th>Applicant</th>
+                <th>Requested</th>
+                <th>Reason</th>
+                <th>Status</th>
+                <th className="admin2__th-actions" aria-label="Actions" />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id}>
+                  <td>
+                    <div className="admin2__user-txt">
+                      <span className="admin2__name">{r.display_name || r.email}</span>
+                      <span className="admin2__email">{r.email}</span>
+                    </div>
+                  </td>
+                  <td className="admin2__muted">{fmtWhen(r.created_at)}</td>
+                  <td className="admin2__muted reg__note" title={r.note ?? ""}>
+                    {r.note || "—"}
+                  </td>
+                  <td>
+                    {r.status === "pending" ? (
+                      <span className="chip chip--suspended">pending</span>
+                    ) : r.status === "approved" ? (
+                      // username == the email in the Applicant column, so don't repeat it
+                      <span className="chip chip--active">approved</span>
+                    ) : (
+                      <span className="chip chip--role-user">rejected</span>
+                    )}
+                  </td>
+                  <td className="admin2__row-actions admin-proj__actions">
+                    {r.status === "pending" ? (
+                      <>
+                        <button
+                          className="btn2 btn2--primary"
+                          disabled={busy === r.id}
+                          onClick={() => void decide(r, "approve")}
+                        >
+                          {busy === r.id ? "…" : "Approve"}
+                        </button>
+                        <button
+                          className="btn2 btn2--ghost admin-proj__del"
+                          disabled={busy === r.id}
+                          onClick={() => void decide(r, "reject")}
+                        >
+                          Reject
+                        </button>
+                      </>
+                    ) : (
+                      <span className="admin2__muted">
+                        {r.decided_by ? `by ${r.decided_by}` : "—"}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </>
   );
 }

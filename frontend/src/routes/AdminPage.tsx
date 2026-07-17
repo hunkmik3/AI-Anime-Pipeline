@@ -7,7 +7,13 @@ import { ConfirmDialog, PromptDialog } from "../components/Modals";
 import { KebabMenu } from "../components/KebabMenu";
 import { CreateUserDialog, type NewUser } from "../components/CreateUserDialog";
 import { toast } from "../store/toast";
-import { OverviewTab, CostTab, ProjectsTab, AuditTab } from "../components/admin/AdminTabs";
+import {
+  OverviewTab,
+  CostTab,
+  ProjectsTab,
+  AuditTab,
+  RegistrationsTab,
+} from "../components/admin/AdminTabs";
 
 interface AdminUser {
   id: string;
@@ -133,6 +139,8 @@ function NavIcon({ name }: { name: string }) {
     members:
       "M16 11a4 4 0 1 0-4-4 4 4 0 0 0 4 4Zm-8 0a4 4 0 1 0-4-4 4 4 0 0 0 4 4Zm0 2c-2.7 0-8 1.3-8 4v3h9v-3c0-1 .4-1.9 1.1-2.7C6.9 13.1 8 13 8 13Zm8 0c-.3 0-.7 0-1.2.1 1.3 1 2.2 2.3 2.2 3.9v3h7v-3c0-2.7-5.3-4-8-4Z",
     cost: "M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6",
+    signups:
+      "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM19 8v6M22 11h-6",
     projects:
       "M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2Z",
     audit:
@@ -181,9 +189,20 @@ export function AdminPage() {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
   // which tab is showing
-  const [tab, setTab] = useState<"overview" | "members" | "cost" | "projects" | "audit">(
-    "overview",
-  );
+  const [tab, setTab] = useState<
+    "overview" | "members" | "signups" | "cost" | "projects" | "audit"
+  >("overview");
+
+  // pending signup count → sidebar badge (so a request isn't missed)
+  const [pendingSignups, setPendingSignups] = useState(0);
+  const refreshPending = useCallback(async () => {
+    try {
+      const r = await jsonOrThrow(await fetch("/api/admin/registrations/pending-count"));
+      setPendingSignups(r.count ?? 0);
+    } catch {
+      /* badge is best-effort */
+    }
+  }, []);
 
   // Which action modal is open (replaces window.prompt / confirm).
   const [modal, setModal] = useState<
@@ -261,7 +280,8 @@ export function AdminPage() {
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+    void refreshPending();
+  }, [refresh, refreshPending]);
 
   async function createUser(nu: NewUser) {
     if (busy) return;
@@ -335,14 +355,17 @@ export function AdminPage() {
   const TABS = [
     ["overview", "Overview", "overview"],
     ["members", "Members", "members"],
-    ["cost", "Cost per sequence", "cost"],
+    ["signups", "Sign-ups", "signups"],
+    ["cost", "Cost", "cost"],
     ["projects", "Projects", "projects"],
     ["audit", "Audit log", "audit"],
   ] as const;
   const SUBTITLES: Record<string, string> = {
     overview: "Pool and real spend at a glance — straight from the Avis bill.",
     members: "Provision accounts, budgets and roles for your team.",
-    cost: "How much each sequence spent generating — click a row for every generation.",
+    signups:
+      "People who requested an account. Approving one emails them a temporary password.",
+    cost: "Total spend per project, broken down into episodes and sequences.",
     projects: "Create and assign projects to members — only admins can build the structure.",
     audit: "Security log: logins, SSO, and every admin action.",
   };
@@ -371,6 +394,11 @@ export function AdminPage() {
             >
               <NavIcon name={icon} />
               <span>{label}</span>
+              {k === "signups" && pendingSignups > 0 ? (
+                <span className="dash__nav-badge" aria-label={`${pendingSignups} waiting`}>
+                  {pendingSignups}
+                </span>
+              ) : null}
             </button>
           ))}
         </nav>
@@ -648,6 +676,14 @@ export function AdminPage() {
       ) : null}
 
       {/* ───────────────── CHI PHÍ / DỰ ÁN / NHẬT KÝ ───────────────── */}
+      {tab === "signups" ? (
+        <RegistrationsTab
+          onChanged={() => {
+            void refreshPending();
+            void refresh();
+          }}
+        />
+      ) : null}
       {tab === "cost" ? <CostTab /> : null}
       {tab === "projects" ? <ProjectsTab /> : null}
       {tab === "audit" ? <AuditTab fmtTime={fmtTime} /> : null}

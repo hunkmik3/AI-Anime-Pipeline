@@ -11,7 +11,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from flowboard.routes.deps import require_admin
-from flowboard.services import audit_service, budget_service, stats_service, user_service
+from flowboard.services import (
+    audit_service,
+    budget_service,
+    registration_service,
+    stats_service,
+    user_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +110,13 @@ def stats_user_clips(user_id: str) -> list[dict]:
 @router.get("/stats/projects")
 def stats_projects() -> list[dict]:
     return stats_service.project_costs()
+
+
+@router.get("/stats/cost-tree")
+def stats_cost_tree() -> list[dict]:
+    """Nested spend: project → episode → sequence, each with its rolled-up
+    total. Powers the admin 'Cost' tab (drill-down accordion)."""
+    return stats_service.cost_tree()
 
 
 @router.get("/stats/shots")
@@ -232,3 +245,72 @@ def update_user(user_id: str, body: UpdateUserBody, request: Request, caller=Dep
         raise HTTPException(status_code=404, detail="user not found")
     except user_service.UserError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ── self-service signup approval queue ───────────────────────────────────────
+
+
+class ApproveBody(BaseModel):
+    budget_usd: Optional[float] = None    # optional starting $ budget
+
+
+class RejectBody(BaseModel):
+    notify: bool = False                  # email the applicant that it was declined
+
+
+@router.get("/registrations")
+def list_registrations(status: Optional[str] = None) -> list[dict]:
+    """Signup requests. `?status=pending` for the approval queue."""
+    return registration_service.list_registrations(status)
+
+
+@router.get("/registrations/pending-count")
+def pending_registrations_count() -> dict:
+    """Cheap poll for the sidebar badge."""
+    return {"count": registration_service.pending_count()}
+
+
+@router.post("/registrations/{reg_id}/approve")
+def approve_registration(
+    reg_id: str, body: ApproveBody, request: Request, caller=Depends(require_admin)
+) -> dict:
+    """Create the account, email the temp password, close the request.
+
+    The response carries `temp_password` and `email_sent` — when the mail
+    fails, the admin can still relay the credentials by hand.
+    """
+    try:
+        res = registration_service.approve(
+            reg_id, admin_label=caller.username, budget_usd=(body.budget_usd or 0.0)
+        )
+    except registration_service.RegistrationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except user_service.UserError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    audit_service.record(
+        "signup.approved",
+        actor=caller,
+        target_label=res["email"],
+        ip=audit_service.client_ip(request),
+        detail=f"username={res['username']} email_sent={res['email_sent']}",
+    )
+    return res
+
+
+@router.post("/registrations/{reg_id}/reject")
+def reject_registration(
+    reg_id: str, body: RejectBody, request: Request, caller=Depends(require_admin)
+) -> dict:
+    try:
+        res = registration_service.reject(
+            reg_id, admin_label=caller.username, notify=body.notify
+        )
+    except registration_service.RegistrationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    audit_service.record(
+        "signup.rejected",
+        actor=caller,
+        target_label=res["email"],
+        ip=audit_service.client_ip(request),
+    )
+    return res
