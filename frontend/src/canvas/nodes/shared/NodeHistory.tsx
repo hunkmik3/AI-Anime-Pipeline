@@ -32,6 +32,17 @@ export interface HistoryRow {
 
 const usd = (v: number | null) => (v != null ? `$${v.toFixed(2)}` : "—");
 
+/** Save one clip. mediaUrl is same-origin, so a plain download anchor works. */
+function downloadClip(mediaId: string, base: string, i: number, total: number) {
+  const a = document.createElement("a");
+  a.href = mediaUrl(mediaId);
+  const suffix = total > 1 ? `-${i + 1}` : "";
+  a.download = `${(base || "clip").replace(/[^A-Za-z0-9_-]+/g, "_")}${suffix}.mp4`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 function fmtWhen(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -55,12 +66,19 @@ export function NodeHistoryModal({
 }) {
   const [rows, setRows] = useState<HistoryRow[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Which take is open in the big player (its clip ids + a label for filenames).
+  const [viewer, setViewer] = useState<{ ids: string[]; label: string } | null>(null);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      // Esc closes the player first, the whole modal second.
+      if (viewer) setViewer(null);
+      else onClose();
+    };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, viewer]);
 
   useEffect(() => {
     let alive = true;
@@ -120,8 +138,14 @@ export function NodeHistoryModal({
                 key={r.request_id}
                 className={`nhist__row${r.kept ? " nhist__row--kept" : ""}`}
               >
-                <div className="nhist__thumb">
-                  {r.media_ids[0] ? (
+                {r.media_ids[0] ? (
+                  <button
+                    className="nhist__thumb nhist__thumb--play"
+                    title="Play"
+                    onClick={() =>
+                      setViewer({ ids: r.media_ids, label: title || "clip" })
+                    }
+                  >
                     <video
                       src={mediaUrl(r.media_ids[0])}
                       preload="metadata"
@@ -132,12 +156,18 @@ export function NodeHistoryModal({
                         e.currentTarget.currentTime = 0;
                       }}
                     />
-                  ) : (
+                    <span className="nhist__play-badge" aria-hidden>▶</span>
+                    {r.media_ids.length > 1 ? (
+                      <span className="nhist__variant-count">{r.media_ids.length}</span>
+                    ) : null}
+                  </button>
+                ) : (
+                  <div className="nhist__thumb">
                     <span className="nhist__thumb-empty" aria-hidden>
                       {r.status === "failed" ? "⚠" : "…"}
                     </span>
-                  )}
-                </div>
+                  </div>
+                )}
 
                 <div className="nhist__meta">
                   <div className="nhist__line1">
@@ -164,13 +194,36 @@ export function NodeHistoryModal({
                   ) : null}
                 </div>
 
-                <div className="nhist__cost">
-                  <b>{usd(r.cost_usd)}</b>
-                  {/* A blank cost is not $0 — say why nothing was charged. */}
-                  {r.cost_usd == null ? (
-                    <span className="nhist__cost-note">
-                      {r.ledger_status === "reserved" ? "on hold" : "not charged"}
-                    </span>
+                <div className="nhist__right">
+                  <div className="nhist__cost">
+                    <b>{usd(r.cost_usd)}</b>
+                    {/* A blank cost is not $0 — say why nothing was charged. */}
+                    {r.cost_usd == null ? (
+                      <span className="nhist__cost-note">
+                        {r.ledger_status === "reserved" ? "on hold" : "not charged"}
+                      </span>
+                    ) : null}
+                  </div>
+                  {r.media_ids.length ? (
+                    <div className="nhist__actions">
+                      <button
+                        className="nhist__act"
+                        onClick={() => setViewer({ ids: r.media_ids, label: title || "clip" })}
+                      >
+                        View
+                      </button>
+                      <button
+                        className="nhist__act"
+                        title="Download this take"
+                        onClick={() =>
+                          r.media_ids.forEach((m, i) =>
+                            downloadClip(m, title || "clip", i, r.media_ids.length),
+                          )
+                        }
+                      >
+                        ⬇ Download
+                      </button>
+                    </div>
                   ) : null}
                 </div>
               </div>
@@ -178,6 +231,43 @@ export function NodeHistoryModal({
           </div>
         )}
       </div>
+
+      {/* Full-size player for a chosen take — correct aspect, controls, download.
+          Every clip renders (4:3 / 16:9 / 9:16 all fit via object-fit: contain). */}
+      {viewer ? (
+        <div
+          className="nhist-viewer"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Play generation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setViewer(null);
+          }}
+        >
+          <button className="nhist-viewer__close" onClick={() => setViewer(null)} aria-label="Close">
+            ×
+          </button>
+          <div className="nhist-viewer__stage">
+            {viewer.ids.map((m, i) => (
+              <div key={m} className="nhist-viewer__item">
+                <video
+                  src={mediaUrl(m)}
+                  controls
+                  autoPlay={i === 0}
+                  playsInline
+                  className="nhist-viewer__video"
+                />
+                <button
+                  className="nhist__act nhist-viewer__dl"
+                  onClick={() => downloadClip(m, viewer.label, i, viewer.ids.length)}
+                >
+                  ⬇ Download{viewer.ids.length > 1 ? ` #${i + 1}` : ""}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>,
     document.body,
   );
