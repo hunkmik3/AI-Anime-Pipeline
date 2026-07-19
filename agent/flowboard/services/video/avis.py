@@ -25,10 +25,12 @@ Envelope: every 2xx response wraps the payload in ``{data, success, status,
 timestamp}``; 4xx errors come back as ``{errors:[...], success:false,
 status}``.
 
-Audio reference (``audioInput``) is a supported Avis parameter but its wire
-format is undocumented, so v1 drops audio refs with a warning
-(``supports_audio_ref=False``). ``generateAudio`` (synthesized track) is fully
-supported.
+Audio reference (a voice/audio the clip should follow) is wired per the Avis
+contract: a content part ``{type:"audioUrl", url, role:"referenceAudio"}`` for a
+public wav/mp3, or ``{type:"audioBase64", data, mediaType}`` for a local media_id
+(inlined, so it works in the no-R2 desktop build). Avis rejects audio sent
+alone, so the part is only attached alongside an image/video reference. This is
+distinct from ``generateAudio`` (a synthesized track, also supported).
 """
 from __future__ import annotations
 
@@ -90,12 +92,13 @@ _CONCURRENCY_SEM = asyncio.Semaphore(_avis_submit_concurrency())
 # Avis Seedance 2.0 (`dreamina-seedance-2-0`). supportedParameters from
 # GET /ai/models: duration, resolution, ratio, seed, watermark, generateAudio,
 # audioInput, kycAssetInput. inputModalities: image, video, audio, text.
-# audioInput wire-format is undocumented → supports_audio_ref=False in v1.
+# audioInput is now wired (audioUrl role="referenceAudio" / audioBase64) per the
+# published Avis contract → supports_audio_ref=True.
 AVIS_SEEDANCE_2_0_CAPABILITY = VideoProviderCapability(
     supports_multi_ref=True,
     supports_last_frame=True,
     supports_audio_toggle=True,
-    supports_audio_ref=False,
+    supports_audio_ref=True,
     supports_video_ref=True,
     supports_kyc=True,
     max_refs=9,
@@ -185,6 +188,77 @@ def _image_content_part(ref: str, role: str) -> dict:
         data = base64.b64encode(p.read_bytes()).decode("ascii")
         mime = _MIME_BY_EXT.get(p.suffix.lower(), "image/png")
     return {"type": "imageBase64", "data": data, "mediaType": mime, "role": role}
+
+
+_AUDIO_MIME_BY_EXT = {
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+}
+# Exactly the formats Avis reports as accepted for a Seedance 2.0 reference-audio
+# input — GET /ai/models → capabilities.video.inputs.audio.mediaTypes (probed
+# 2026-07-20). m4a/aac/ogg are NOT accepted, so we drop them with an actionable
+# warning instead of letting the whole (paid) generation 400 downstream.
+_SEEDANCE_AUDIO_MIMES = {
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/wave",
+}
+
+_AUDIO_UNSUPPORTED = (
+    "Audio reference dropped: {fmt} isn't a format Seedance 2.0 accepts — "
+    "re-upload the voice as mp3 or wav."
+)
+
+
+def _audio_content_part(ref: str) -> tuple[Optional[dict], Optional[str]]:
+    """Build an Avis reference-audio content block for Seedance 2.0.
+
+    - public URL → ``{type:"audioUrl", url, role:"referenceAudio"}``
+    - data: URL  → ``{type:"audioBase64", data, mediaType}`` (mime from the URL)
+    - media_id   → read the local cache and inline as ``audioBase64`` (no R2
+      needed — parity with the base64 image path, so audio works in the
+      self-contained desktop build).
+
+    Returns ``(part, warning)``. ``part`` is ``None`` when the ref can't be used
+    (missing cache, or a format Avis rejects — m4a/aac/ogg) so the caller drops
+    it with the returned warning rather than failing the whole generation. Only
+    mp3/wav pass through; the model won't take anything else (verified against
+    the live capability catalog).
+    """
+    if ref.startswith(("http://", "https://")):
+        mime = _AUDIO_MIME_BY_EXT.get(Path(ref.split("?", 1)[0]).suffix.lower())
+        # A known-but-rejected extension → drop; an unknown/absent extension →
+        # trust the caller's URL (it may be a signed link with no suffix).
+        if mime is not None and mime not in _SEEDANCE_AUDIO_MIMES:
+            return None, _AUDIO_UNSUPPORTED.format(fmt=mime)
+        return {"type": "audioUrl", "url": ref, "role": "referenceAudio"}, None
+    if ref.startswith("data:"):
+        # data:<mime>;base64,<payload>
+        header = ref[5:].split(",", 1)[0]
+        mime = header.split(";", 1)[0].strip() or None
+        if not mime:
+            return None, "Audio reference dropped: data URL has no media type."
+        if mime not in _SEEDANCE_AUDIO_MIMES:
+            return None, _AUDIO_UNSUPPORTED.format(fmt=mime)
+        return {"type": "audioBase64", "data": ref, "mediaType": mime}, None
+    # bare Flowboard media_id → inline base64 from the local cache
+    path = media_service.cached_path(ref)
+    if path is None:
+        return None, f"Audio reference dropped: no local cache for {ref!r} — re-upload it."
+    p = Path(path)
+    mime = _AUDIO_MIME_BY_EXT.get(p.suffix.lower())
+    if mime is None or mime not in _SEEDANCE_AUDIO_MIMES:
+        return None, _AUDIO_UNSUPPORTED.format(fmt=(mime or p.suffix or "this format"))
+    try:
+        data = base64.b64encode(p.read_bytes()).decode("ascii")
+    except OSError as exc:
+        return None, f"Audio reference dropped: could not read cached file ({exc})."
+    return {"type": "audioBase64", "data": data, "mediaType": mime}, None
 
 
 # ── KYC assets (person-driven video) ────────────────────────────────────────
@@ -431,8 +505,8 @@ class AvisVideoProvider:
 
         if audio_ref_url and not self.capabilities.supports_audio_ref:
             warnings.append(
-                "Dropped audio reference: the Avis adapter doesn't wire "
-                "audioInput yet (use generateAudio for a synthesized track)."
+                f"Dropped audio reference: {self.entry.display_name} doesn't "
+                "accept a reference-audio input (Seedance 2.0 only)."
             )
             audio_ref_url = None
 
@@ -542,6 +616,37 @@ class AvisVideoProvider:
                         "Dropped a local reference video: Avis needs a public "
                         "video URL (no inline video upload)."
                     )
+
+        # ── audio reference (Seedance 2.0 referenceAudio) ───────────────
+        # Attached last. Avis 400s on audio-alone, so it must ride with an
+        # image/video part — the i2v/r2v validation above guarantees one, but we
+        # re-check (content still holds only the text part ⇒ nothing to pair it
+        # with). Encoded off the event loop (file read + base64 is blocking).
+        if audio_ref_url and self.capabilities.supports_audio_ref:
+            if len(content) <= 1:
+                warnings.append(
+                    "Dropped audio reference: it needs at least one image or "
+                    "video reference in the same clip."
+                )
+            else:
+                audio_part, audio_warn = await asyncio.to_thread(
+                    _audio_content_part, audio_ref_url
+                )
+                if audio_warn:
+                    warnings.append(audio_warn)
+                if audio_part is not None:
+                    content.append(audio_part)
+                    # Seedance 2.0 takes exactly one audio track per clip (the
+                    # capability catalog lists no `max` for audio, unlike images
+                    # /videos). If the user wired several voices, say so plainly.
+                    n = int(params.get("audio_ref_count") or 0)
+                    if n > 1:
+                        warnings.append(
+                            f"{n} audio references are wired but Seedance 2.0 uses "
+                            "one voice track per clip — used the connected one. For "
+                            "multiple character voices, render per-character clips "
+                            "or supply a single pre-mixed track."
+                        )
 
         body: dict = {
             "model": self.upstream_model_id,

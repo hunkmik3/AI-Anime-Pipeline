@@ -370,6 +370,7 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
             "reference_videos": resolved_videos,
             "last_frame_url": last_frame if isinstance(last_frame, str) else None,
             "audio_ref_url": resolved_audio,
+            "audio_ref_count": int(params.get("audio_ref_count") or 0),
             "duration_seconds": int(params.get("duration_seconds") or 5),
             "aspect_ratio": params.get("aspect_ratio") or "1:1",
             "resolution": params.get("resolution") or "720p",

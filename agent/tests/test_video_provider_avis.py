@@ -161,8 +161,13 @@ async def test_local_media_id_sent_as_downscaled_jpeg_base64(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_audio_ref_dropped_with_warning():
+async def test_audio_ref_url_emits_reference_audio_block():
+    """A public wav/mp3 audio ref → an audioUrl block with role referenceAudio,
+    riding alongside the image refs (Avis 400s on audio-alone). No warning."""
+    seen: list[dict] = []
+
     def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
         return httpx.Response(200, json={"data": {"taskId": "cgt-a"}, "success": True})
 
     avis.set_http_client_factory(_factory(handler))
@@ -174,7 +179,151 @@ async def test_audio_ref_dropped_with_warning():
         "aspect_ratio": "16:9",
         "resolution": "720p",
     })
-    assert any("audio" in w.lower() for w in res["warnings"])
+    blocks = seen[0]["content"]
+    aud = [b for b in blocks if b["type"] == "audioUrl"]
+    assert aud == [{"type": "audioUrl", "url": "https://e/voice.mp3", "role": "referenceAudio"}]
+    # image refs still present → audio is not sent alone
+    assert any(b["type"] == "imageUrl" for b in blocks)
+    assert not any("audio" in w.lower() for w in res["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_i2v_with_audio_keeps_first_frame_and_attaches_audio():
+    """Audio + a single start frame is valid on Avis (firstFrame counts as the
+    accompanying image) — we keep the firstFrame block and add the audio."""
+    seen: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        return httpx.Response(200, json={"data": {"taskId": "cgt-i2va"}, "success": True})
+
+    avis.set_http_client_factory(_factory(handler))
+    await _provider().submit({
+        "first_frame_url": "https://e/frame.png",
+        "audio_ref_url": "https://e/voice.wav",
+        "motion_prompt": "she speaks",
+        "duration_seconds": 5,
+        "aspect_ratio": "9:16",
+        "resolution": "720p",
+    })
+    blocks = seen[0]["content"]
+    assert any(b.get("role") == "firstFrame" for b in blocks)
+    assert any(b["type"] == "audioUrl" and b["role"] == "referenceAudio" for b in blocks)
+
+
+@pytest.mark.asyncio
+async def test_audio_media_id_inlined_as_base64(monkeypatch, tmp_path):
+    """A bare media_id (local cache, no R2) is inlined as audioBase64 with the
+    mime derived from the cached file's extension — so audio works in the
+    self-contained desktop build exactly like image refs do."""
+    import base64 as _b
+
+    from flowboard.services.video import avis as avis_mod
+
+    voice = tmp_path / "voice.mp3"
+    voice.write_bytes(b"ID3\x04fake-mp3-bytes")
+    monkeypatch.setattr(
+        avis_mod.media_service, "cached_path",
+        lambda mid: str(voice) if mid == "aud-mid-1" else None,
+    )
+
+    seen: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        return httpx.Response(200, json={"data": {"taskId": "cgt-audb64"}, "success": True})
+
+    avis.set_http_client_factory(_factory(handler))
+    res = await _provider().submit({
+        "first_frame_url": "https://e/frame.png",
+        "audio_ref_url": "aud-mid-1",
+        "motion_prompt": "x",
+        "duration_seconds": 5,
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
+    })
+    b64 = next(b for b in seen[0]["content"] if b["type"] == "audioBase64")
+    assert b64["mediaType"] == "audio/mpeg"
+    assert _b.b64decode(b64["data"]) == b"ID3\x04fake-mp3-bytes"
+    assert not res["warnings"]
+
+
+@pytest.mark.asyncio
+async def test_audio_alone_is_dropped_with_warning():
+    """Audio with no image/video to pair it with must NOT be sent (Avis 400s on
+    audio-alone) — here reference_videos is a bare media_id Avis can't inline, so
+    it drops out and only text + audio would remain."""
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"taskId": "cgt-x"}, "success": True})
+
+    avis.set_http_client_factory(_factory(handler))
+    res = await _provider().submit({
+        "reference_videos": ["local-video-mid"],  # bare id → dropped (no inline video)
+        "audio_ref_url": "https://e/voice.mp3",
+        "motion_prompt": "x",
+        "duration_seconds": 5,
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
+    })
+    assert any("audio" in w.lower() and "reference" in w.lower() for w in res["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_unsupported_audio_format_is_dropped_with_warning(monkeypatch, tmp_path):
+    """m4a/aac/ogg aren't in Avis's accepted set — drop the audio (video still
+    generates) with an actionable warning rather than 400 the whole clip."""
+    from flowboard.services.video import avis as avis_mod
+
+    voice = tmp_path / "voice.m4a"
+    voice.write_bytes(b"\x00\x00\x00\x20ftypM4A ")
+    monkeypatch.setattr(
+        avis_mod.media_service, "cached_path",
+        lambda mid: str(voice) if mid == "aud-m4a" else None,
+    )
+
+    seen: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        return httpx.Response(200, json={"data": {"taskId": "cgt-m4a"}, "success": True})
+
+    avis.set_http_client_factory(_factory(handler))
+    res = await _provider().submit({
+        "first_frame_url": "https://e/frame.png",
+        "audio_ref_url": "aud-m4a",
+        "motion_prompt": "x",
+        "duration_seconds": 5,
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
+    })
+    # no audio block sent, image still there, and an mp3/wav hint surfaced
+    assert not any(b["type"].startswith("audio") for b in seen[0]["content"])
+    assert any(b.get("role") == "firstFrame" for b in seen[0]["content"])
+    assert any("mp3 or wav" in w.lower() for w in res["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_multiple_wired_voices_warns_but_uses_one():
+    """Seedance 2.0 is one-voice-per-clip; when the user wires several, we attach
+    the chosen one and say so (audio_ref_count carries the wired total)."""
+    seen: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        return httpx.Response(200, json={"data": {"taskId": "cgt-multi"}, "success": True})
+
+    avis.set_http_client_factory(_factory(handler))
+    res = await _provider().submit({
+        "first_frame_url": "https://e/frame.png",
+        "audio_ref_url": "https://e/voice.mp3",
+        "audio_ref_count": 2,
+        "motion_prompt": "x",
+        "duration_seconds": 5,
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
+    })
+    assert any(b["type"] == "audioUrl" for b in seen[0]["content"])  # one attached
+    assert any("one voice track per clip" in w.lower() for w in res["warnings"])
 
 
 @pytest.mark.asyncio

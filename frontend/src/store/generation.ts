@@ -128,6 +128,24 @@ function collectUpstreamAudioMediaId(targetRfId: string): string | undefined {
 }
 
 /**
+ * How many loaded AudioRefNodes feed this VideoNode. Seedance 2.0 uses exactly
+ * one voice track per clip; when this is >1 the backend attaches the connected
+ * one and warns so the user knows the extras were not used.
+ */
+function collectUpstreamAudioCount(targetRfId: string): number {
+  const { nodes, edges } = useShotWorkflowStore.getState();
+  let n = 0;
+  for (const e of edges) {
+    if (e.target !== targetRfId) continue;
+    const src = nodes.find((x) => x.id === e.source);
+    if (src?.data.type === "audio_ref" && typeof src.data.audioMediaId === "string" && src.data.audioMediaId) {
+      n += 1;
+    }
+  }
+  return n;
+}
+
+/**
  * Reference VIDEOS feeding a VideoNode (Seedance 2.0 r2v). Returns connected
  * VideoRefNode media_ids in edge order (deduped). Only honored by models with
  * `supports_video_ref`; the worker hoists each media_id → a public R2 URL on
@@ -514,6 +532,10 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
           collectUpstreamAudioMediaId(rfId);
         if (audioRef) {
           videoParams.audio_ref_url = audioRef;
+          // Tell the backend if several voices are wired so it can warn that
+          // Seedance uses one per clip (it still generates with the chosen one).
+          const audioCount = collectUpstreamAudioCount(rfId);
+          if (audioCount > 1) videoParams.audio_ref_count = audioCount;
         }
 
         if (hasMulti) {

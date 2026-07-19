@@ -99,13 +99,17 @@ class VideoGenSubmitParams(TypedDict, total=False):
     first_frame_url: str
     reference_images: list[str]
     last_frame_url: Optional[str]
-    # r2v+audio: a publicly-reachable HTTPS URL to a voice/audio reference
-    # (role="reference_audio"). Only honored on models with
-    # ``capabilities.supports_audio_ref``; dropped-with-warning otherwise.
-    # Contract §11.3: audio puts the request into "reference media mode",
-    # which forbids a first_frame block — the provider drops first_frame
-    # when audio is present.
+    # A voice/audio reference the clip should follow: a media_id, a data URL, or
+    # a publicly-reachable HTTPS URL. Only honored on models with
+    # ``capabilities.supports_audio_ref``; dropped-with-warning otherwise. On the
+    # BytePlus-direct path this forces "reference media mode" (no first_frame); on
+    # Avis it simply rides alongside the image/video (firstFrame counts as the
+    # accompanying image the API requires — audio cannot be sent alone).
     audio_ref_url: Optional[str]
+    # How many audio-ref nodes the user wired to this clip. Seedance 2.0 uses
+    # exactly one voice track per clip, so when this is >1 the provider attaches
+    # the chosen one and warns. Purely informational — never changes routing.
+    audio_ref_count: int
     # Phase 8.1.5d: reference video URLs (role="reference_video", §11.9).
     # Only honored when ``capabilities.supports_video_ref``; dropped-with-
     # warning otherwise. Reference media → r2v mode (no first_frame).

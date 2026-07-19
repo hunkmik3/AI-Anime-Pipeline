@@ -48,16 +48,16 @@ def test_seedance_1_5_pro_is_i2v_only():
 
 
 def test_seedance_2_0_routes_through_avis():
-    # Seedance 2.0 was repointed to the Avis gateway (see registry). It still
-    # advertises r2v + the generate-audio toggle, but NOT audio-reference
-    # (audioInput isn't wired in the Avis adapter yet).
+    # Seedance 2.0 was repointed to the Avis gateway (see registry). It
+    # advertises r2v, the generate-audio toggle, AND audio-reference (audioInput
+    # is now wired in the Avis adapter per the published contract).
     entry = get_video_model("seedance-2-0")
     assert entry.provider_name == "avis"
     assert entry.upstream_model_id == "dreamina-seedance-2-0"
     assert entry.capabilities.supports_multi_ref is True
     assert entry.capabilities.max_refs >= 1
     assert entry.capabilities.supports_audio_toggle is True
-    assert entry.capabilities.supports_audio_ref is False
+    assert entry.capabilities.supports_audio_ref is True
     # Person-driven (KYC) supported on Avis Seedance 2.0; not on the byteplus path.
     assert entry.capabilities.supports_kyc is True
     assert get_video_model("seedance-2-0-byteplus").capabilities.supports_kyc is False
