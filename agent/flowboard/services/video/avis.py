@@ -473,7 +473,12 @@ class AvisVideoProvider:
 
         first_frame_url = (params.get("first_frame_url") or "").strip()
         last_frame_url = params.get("last_frame_url")
-        audio_ref_url = (params.get("audio_ref_url") or "").strip() or None
+        # Multi-ref audio (@audioN, worker-ordered) with a single-field fallback.
+        audio_refs = [a for a in (params.get("audio_ref_urls") or []) if isinstance(a, str) and a]
+        if not audio_refs:
+            single = (params.get("audio_ref_url") or "").strip()
+            if single:
+                audio_refs = [single]
 
         # ── capability gate (drop-with-warning, never silent) ───────────
         reference_images = [
@@ -503,18 +508,64 @@ class AvisVideoProvider:
             )
             reference_videos = []
 
-        if audio_ref_url and not self.capabilities.supports_audio_ref:
+        if audio_refs and not self.capabilities.supports_audio_ref:
             warnings.append(
-                f"Dropped audio reference: {self.entry.display_name} doesn't "
-                "accept a reference-audio input (Seedance 2.0 only)."
+                f"Dropped {len(audio_refs)} audio reference(s): "
+                f"{self.entry.display_name} doesn't accept a reference-audio "
+                "input (Seedance 2.0 only)."
             )
-            audio_ref_url = None
+            audio_refs = []
+
+        # Resolve the audio parts up front — whether any attaches decides the
+        # request mode. Encode off the event loop (file read + base64 for a local
+        # media_id is blocking) and in parallel; order is preserved so @audio1
+        # (worker-sorted first) leads the referenceAudio blocks.
+        audio_parts: list[dict] = []
+        if audio_refs and self.capabilities.supports_audio_ref:
+            for part, audio_warn in await asyncio.gather(
+                *[asyncio.to_thread(_audio_content_part, a) for a in audio_refs]
+            ):
+                if audio_warn:
+                    warnings.append(audio_warn)
+                if part is not None:
+                    audio_parts.append(part)
+
+        # ── audio ⇒ reference-media mode ─────────────────────────────────
+        # Avis rejects an audio reference combined with a first/last-frame block
+        # ("first/last frame content cannot be mixed with reference media
+        # content", confirmed live). So a valid audio ref demotes the start image
+        # to a referenceImage and forces r2v — the same rule the BytePlus-direct
+        # path uses. Dropped audio (bad format) leaves the i2v path untouched.
+        audio_mode = bool(audio_parts)
+        if audio_mode:
+            if first_frame_url and first_frame_url not in reference_images:
+                reference_images.insert(0, first_frame_url)
+            first_frame_url = ""
+            if last_frame_url:
+                warnings.append(
+                    "Dropped last_frame: can't mix keyframe interpolation with an "
+                    "audio reference (audio counts as reference media)."
+                )
+                last_frame_url = None
+            # Images are always usable (inlined as base64); a reference video is
+            # only usable if it's a public URL (Avis has no inline video upload).
+            usable_video = any(
+                isinstance(v, str) and v.startswith(("http://", "https://"))
+                for v in reference_videos
+            )
+            if not reference_images and not usable_video:
+                raise VideoError(
+                    "bad_input",
+                    "An audio reference needs an accompanying image or video "
+                    "reference — audio can't drive a clip on its own.",
+                )
 
         # ── mode detection ──────────────────────────────────────────────
-        #   r2v : ≥2 reference images OR any reference video (reference media).
+        #   r2v : audio ref, ≥2 reference images, OR any reference video.
         #   i2v : single start frame (+ optional last frame).
-        if self.capabilities.supports_multi_ref and (
-            len(reference_images) > 1 or reference_videos
+        if audio_mode or (
+            self.capabilities.supports_multi_ref
+            and (len(reference_images) > 1 or reference_videos)
         ):
             mode = "r2v"
             if first_frame_url:
@@ -617,36 +668,12 @@ class AvisVideoProvider:
                         "video URL (no inline video upload)."
                     )
 
-        # ── audio reference (Seedance 2.0 referenceAudio) ───────────────
-        # Attached last. Avis 400s on audio-alone, so it must ride with an
-        # image/video part — the i2v/r2v validation above guarantees one, but we
-        # re-check (content still holds only the text part ⇒ nothing to pair it
-        # with). Encoded off the event loop (file read + base64 is blocking).
-        if audio_ref_url and self.capabilities.supports_audio_ref:
-            if len(content) <= 1:
-                warnings.append(
-                    "Dropped audio reference: it needs at least one image or "
-                    "video reference in the same clip."
-                )
-            else:
-                audio_part, audio_warn = await asyncio.to_thread(
-                    _audio_content_part, audio_ref_url
-                )
-                if audio_warn:
-                    warnings.append(audio_warn)
-                if audio_part is not None:
-                    content.append(audio_part)
-                    # Seedance 2.0 takes exactly one audio track per clip (the
-                    # capability catalog lists no `max` for audio, unlike images
-                    # /videos). If the user wired several voices, say so plainly.
-                    n = int(params.get("audio_ref_count") or 0)
-                    if n > 1:
-                        warnings.append(
-                            f"{n} audio references are wired but Seedance 2.0 uses "
-                            "one voice track per clip — used the connected one. For "
-                            "multiple character voices, render per-character clips "
-                            "or supply a single pre-mixed track."
-                        )
+        # ── audio references (Seedance 2.0 referenceAudio) ──────────────
+        # Resolved up front (they set the mode + demoted the start frame to a
+        # referenceImage above); appended after the image/video parts in @audioN
+        # order. Multiple tracks are sent as-is — the model decides how it maps
+        # them (Avis exposes no per-subject binding channel).
+        content.extend(audio_parts)
 
         body: dict = {
             "model": self.upstream_model_id,

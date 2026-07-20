@@ -318,12 +318,27 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
             except VideoError as exc:
                 logger.warning("video: skipped unreachable ref %s: %s", r, exc)
 
-        # Audio reference (Seedance 2.0 r2v+audio).
-        audio_ref = params.get("audio_ref_url") or params.get("audio_ref_media_id")
-        resolved_audio: Optional[str] = None
-        if isinstance(audio_ref, str) and audio_ref:
+        # Audio references (Seedance 2.0). Order by the per-node @audio label
+        # digit (parity with @image / @video) so @audio1 maps to the first
+        # referenceAudio block; unlabeled refs keep edge order. Accepts the
+        # multi-ref list (audio_ref_urls) or the legacy single field.
+        raw_audio_refs = [
+            a for a in (
+                params.get("audio_ref_urls")
+                or [params.get("audio_ref_url") or params.get("audio_ref_media_id")]
+            )
+            if isinstance(a, str) and a
+        ]
+        raw_audio_labels = params.get("audio_ref_labels")
+        if isinstance(raw_audio_labels, list) and raw_audio_refs:
+            from flowboard.services.video.ref_ordering import order_refs_by_label
+
+            alabels = [(lbl if isinstance(lbl, str) else None) for lbl in raw_audio_labels]
+            raw_audio_refs = order_refs_by_label(raw_audio_refs, alabels)
+        resolved_audio: list[str] = []
+        for a in raw_audio_refs:
             try:
-                resolved_audio = _resolve(audio_ref)
+                resolved_audio.append(_resolve(a))
             except VideoError as exc:
                 logger.warning("video: skipped unreachable audio ref: %s", exc)
 
@@ -369,8 +384,8 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
             "reference_images": resolved_refs,
             "reference_videos": resolved_videos,
             "last_frame_url": last_frame if isinstance(last_frame, str) else None,
-            "audio_ref_url": resolved_audio,
-            "audio_ref_count": int(params.get("audio_ref_count") or 0),
+            "audio_ref_url": resolved_audio[0] if resolved_audio else None,
+            "audio_ref_urls": resolved_audio,
             "duration_seconds": int(params.get("duration_seconds") or 5),
             "aspect_ratio": params.get("aspect_ratio") or "1:1",
             "resolution": params.get("resolution") or "720p",

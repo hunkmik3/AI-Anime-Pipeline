@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 
 import { patchNode, uploadAudio } from "../../api/client";
@@ -9,6 +9,7 @@ import {
   type FlowboardNodeData,
 } from "../../store/shotWorkflow";
 import { BaseNodeShell } from "./BaseNodeShell";
+import { RefLabelFields } from "./shared/RefLabelFields";
 
 /**
  * AudioRefNode (Phase 7) — 5th anime node type.
@@ -26,13 +27,7 @@ function AudioRefBody({ rfId, data }: { rfId: string; data: FlowboardNodeData })
   const audioMediaId = data.audioMediaId;
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [editingDesc, setEditingDesc] = useState(false);
-  const [descDraft, setDescDraft] = useState(data.voiceDescription ?? "");
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    setDescDraft(data.voiceDescription ?? "");
-  }, [data.voiceDescription]);
 
   function persist(patch: Partial<FlowboardNodeData>) {
     useShotWorkflowStore.getState().updateNodeData(rfId, patch);
@@ -59,13 +54,6 @@ function AudioRefBody({ rfId, data }: { rfId: string; data: FlowboardNodeData })
     } finally {
       setUploading(false);
     }
-  }
-
-  function saveDesc() {
-    if (descDraft !== (data.voiceDescription ?? "")) {
-      persist({ voiceDescription: descDraft });
-    }
-    setEditingDesc(false);
   }
 
   return (
@@ -99,28 +87,9 @@ function AudioRefBody({ rfId, data }: { rfId: string; data: FlowboardNodeData })
         </div>
       )}
 
-      {editingDesc ? (
-        <input
-          className="audio-ref__desc-input"
-          value={descDraft}
-          autoFocus
-          placeholder='Voice label — e.g. "Police Officer 1 — formal authority"'
-          onChange={(e) => setDescDraft(e.target.value)}
-          onBlur={saveDesc}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") saveDesc();
-            if (e.key === "Escape") setEditingDesc(false);
-          }}
-        />
-      ) : (
-        <div
-          className="audio-ref__desc"
-          onDoubleClick={() => setEditingDesc(true)}
-          title="Double-click to edit voice description"
-        >
-          {data.voiceDescription || "Double-click to add a voice description…"}
-        </div>
-      )}
+      {audioMediaId ? (
+        <RefLabelFields rfId={rfId} data={data} labelPlaceholder="@audio1" />
+      ) : null}
 
       <input
         ref={fileInputRef}

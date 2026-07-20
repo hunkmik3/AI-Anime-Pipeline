@@ -188,9 +188,10 @@ async def test_audio_ref_url_emits_reference_audio_block():
 
 
 @pytest.mark.asyncio
-async def test_i2v_with_audio_keeps_first_frame_and_attaches_audio():
-    """Audio + a single start frame is valid on Avis (firstFrame counts as the
-    accompanying image) — we keep the firstFrame block and add the audio."""
+async def test_audio_ref_demotes_start_frame_to_reference_image():
+    """Avis rejects a first/last-frame block mixed with reference media (audio):
+    'first/last frame content cannot be mixed with reference media content'. So a
+    start frame + audio must be sent as a referenceImage, not firstFrame."""
     seen: list[dict] = []
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -207,7 +208,10 @@ async def test_i2v_with_audio_keeps_first_frame_and_attaches_audio():
         "resolution": "720p",
     })
     blocks = seen[0]["content"]
-    assert any(b.get("role") == "firstFrame" for b in blocks)
+    # start frame demoted to referenceImage — no firstFrame/lastFrame block
+    assert not any(b.get("role") in ("firstFrame", "lastFrame") for b in blocks)
+    imgs = [b for b in blocks if b["type"] == "imageUrl"]
+    assert imgs == [{"type": "imageUrl", "url": "https://e/frame.png", "role": "referenceImage"}]
     assert any(b["type"] == "audioUrl" and b["role"] == "referenceAudio" for b in blocks)
 
 
@@ -249,23 +253,24 @@ async def test_audio_media_id_inlined_as_base64(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_audio_alone_is_dropped_with_warning():
-    """Audio with no image/video to pair it with must NOT be sent (Avis 400s on
-    audio-alone) — here reference_videos is a bare media_id Avis can't inline, so
-    it drops out and only text + audio would remain."""
+async def test_audio_alone_is_rejected():
+    """Audio with nothing usable to pair it with is a hard error (Avis 400s on
+    audio-alone). Here the only 'video' is a bare media_id Avis can't inline, so
+    there's no usable image/video to accompany the voice."""
     def handler(req: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"data": {"taskId": "cgt-x"}, "success": True})
 
     avis.set_http_client_factory(_factory(handler))
-    res = await _provider().submit({
-        "reference_videos": ["local-video-mid"],  # bare id → dropped (no inline video)
-        "audio_ref_url": "https://e/voice.mp3",
-        "motion_prompt": "x",
-        "duration_seconds": 5,
-        "aspect_ratio": "16:9",
-        "resolution": "720p",
-    })
-    assert any("audio" in w.lower() and "reference" in w.lower() for w in res["warnings"])
+    with pytest.raises(VideoError) as exc:
+        await _provider().submit({
+            "reference_videos": ["local-video-mid"],  # bare id → not a usable URL
+            "audio_ref_url": "https://e/voice.mp3",
+            "motion_prompt": "x",
+            "duration_seconds": 5,
+            "aspect_ratio": "16:9",
+            "resolution": "720p",
+        })
+    assert "audio" in str(exc.value).lower()
 
 
 @pytest.mark.asyncio
@@ -303,9 +308,10 @@ async def test_unsupported_audio_format_is_dropped_with_warning(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
-async def test_multiple_wired_voices_warns_but_uses_one():
-    """Seedance 2.0 is one-voice-per-clip; when the user wires several, we attach
-    the chosen one and say so (audio_ref_count carries the wired total)."""
+async def test_multiple_audio_refs_emit_ordered_reference_audio_blocks():
+    """@audioN multi-ref: every wired voice becomes its own referenceAudio block,
+    in the (already worker-sorted) order given, riding with the start frame as a
+    referenceImage."""
     seen: list[dict] = []
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -315,15 +321,21 @@ async def test_multiple_wired_voices_warns_but_uses_one():
     avis.set_http_client_factory(_factory(handler))
     res = await _provider().submit({
         "first_frame_url": "https://e/frame.png",
-        "audio_ref_url": "https://e/voice.mp3",
-        "audio_ref_count": 2,
-        "motion_prompt": "x",
+        "audio_ref_urls": ["https://e/voice1.mp3", "https://e/voice2.wav"],
+        "audio_ref_labels": ["@audio1", "@audio2"],
+        "motion_prompt": "two people talk",
         "duration_seconds": 5,
         "aspect_ratio": "16:9",
         "resolution": "720p",
     })
-    assert any(b["type"] == "audioUrl" for b in seen[0]["content"])  # one attached
-    assert any("one voice track per clip" in w.lower() for w in res["warnings"])
+    blocks = seen[0]["content"]
+    auds = [b for b in blocks if b["type"] == "audioUrl"]
+    assert [a["url"] for a in auds] == ["https://e/voice1.mp3", "https://e/voice2.wav"]
+    assert all(a["role"] == "referenceAudio" for a in auds)
+    # start frame demoted to referenceImage (reference-media mode), no firstFrame
+    assert not any(b.get("role") == "firstFrame" for b in blocks)
+    assert any(b["type"] == "imageUrl" and b["role"] == "referenceImage" for b in blocks)
+    assert not res["warnings"]
 
 
 @pytest.mark.asyncio

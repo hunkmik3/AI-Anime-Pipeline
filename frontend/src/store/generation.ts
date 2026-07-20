@@ -128,21 +128,27 @@ function collectUpstreamAudioMediaId(targetRfId: string): string | undefined {
 }
 
 /**
- * How many loaded AudioRefNodes feed this VideoNode. Seedance 2.0 uses exactly
- * one voice track per clip; when this is >1 the backend attaches the connected
- * one and warns so the user knows the extras were not used.
+ * Audio references feeding a VideoNode WITH each AudioRefNode's @audio label.
+ * The label drives positional ordering on the backend so the Nth referenceAudio
+ * block matches @audioN in the prompt (parity with @image / @video). Edge order
+ * is preserved; dedup keeps the first occurrence's label.
  */
-function collectUpstreamAudioCount(targetRfId: string): number {
+function collectUpstreamAudioRefsDetailed(
+  targetRfId: string,
+): { id: string; label: string | null }[] {
   const { nodes, edges } = useShotWorkflowStore.getState();
-  let n = 0;
+  const out: { id: string; label: string | null }[] = [];
   for (const e of edges) {
     if (e.target !== targetRfId) continue;
-    const src = nodes.find((x) => x.id === e.source);
-    if (src?.data.type === "audio_ref" && typeof src.data.audioMediaId === "string" && src.data.audioMediaId) {
-      n += 1;
-    }
+    const src = nodes.find((n) => n.id === e.source);
+    if (src?.data.type !== "audio_ref") continue;
+    const mid = src.data.audioMediaId;
+    if (typeof mid !== "string" || !mid || out.some((r) => r.id === mid)) continue;
+    const raw = src.data.reference_label;
+    const label = typeof raw === "string" && raw.trim() ? raw.trim() : null;
+    out.push({ id: mid, label });
   }
-  return n;
+  return out;
 }
 
 /**
@@ -479,12 +485,12 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         // wired to a node). Split by kind: image → reference_images (append
         // after canvas refs); audio → audio_ref_url; video → reference_videos.
         const customVideoRefs: string[] = [];
-        let customAudioRef: string | undefined;
+        const customAudioRefs: string[] = [];
         if (Array.isArray(opts.customRefs)) {
           for (const c of opts.customRefs) {
             if (!c.mediaId) continue;
             if (c.kind === "audio") {
-              if (!customAudioRef) customAudioRef = c.mediaId; // single audio (multi defer 8.2)
+              if (!customAudioRefs.includes(c.mediaId)) customAudioRefs.push(c.mediaId);
             } else if (c.kind === "video") {
               if (!customVideoRefs.includes(c.mediaId)) customVideoRefs.push(c.mediaId);
             } else if (!r2vRefs.includes(c.mediaId)) {
@@ -523,19 +529,27 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         if (typeof videoSettings.last_frame_asset_id === "string" && videoSettings.last_frame_asset_id) {
           videoParams.last_frame_url = videoSettings.last_frame_asset_id;
         }
-        // Audio reference (Seedance 2.0 r2v+audio): a freshly-uploaded custom
-        // audio wins; else explicit node setting; else the first connected
-        // AudioRefNode. Worker hoists the media_id → R2 public URL on submit.
-        const audioRef =
-          customAudioRef ||
-          (typeof videoSettings.audio_ref_media_id === "string" && videoSettings.audio_ref_media_id) ||
-          collectUpstreamAudioMediaId(rfId);
-        if (audioRef) {
-          videoParams.audio_ref_url = audioRef;
-          // Tell the backend if several voices are wired so it can warn that
-          // Seedance uses one per clip (it still generates with the chosen one).
-          const audioCount = collectUpstreamAudioCount(rfId);
-          if (audioCount > 1) videoParams.audio_ref_count = audioCount;
+        // Audio references (Seedance 2.0). Custom dialog uploads first (no
+        // label), then an explicit node setting, then connected AudioRefNode(s)
+        // carrying their @audio label. The worker orders by label digit so
+        // @audio1 = first referenceAudio block (parity with @image / @video).
+        const allAudioRefs: string[] = [];
+        const allAudioLabels: (string | null)[] = [];
+        const pushAudio = (id: string, label: string | null) => {
+          if (id && !allAudioRefs.includes(id)) {
+            allAudioRefs.push(id);
+            allAudioLabels.push(label);
+          }
+        };
+        for (const id of customAudioRefs) pushAudio(id, null);
+        if (typeof videoSettings.audio_ref_media_id === "string") {
+          pushAudio(videoSettings.audio_ref_media_id, null);
+        }
+        for (const a of collectUpstreamAudioRefsDetailed(rfId)) pushAudio(a.id, a.label);
+        if (allAudioRefs.length > 0) {
+          videoParams.audio_ref_urls = allAudioRefs;
+          videoParams.audio_ref_labels = allAudioLabels;
+          videoParams.audio_ref_url = allAudioRefs[0]; // back-compat single field
         }
 
         if (hasMulti) {
