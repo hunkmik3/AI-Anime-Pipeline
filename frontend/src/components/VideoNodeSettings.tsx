@@ -5,6 +5,22 @@ import { useShotWorkflowStore } from "../store/shotWorkflow";
 import { useProjectStore } from "../store/project";
 import { patchNode } from "../api/client";
 
+// USD-per-output-second by resolution — mirrors the backend budget estimate
+// (agent/.../budget_service.py _RATE_USD_PER_SEC, calibrated to real Avis
+// usdCost). This is a pre-gen ESTIMATE; the exact charge is settled after the
+// clip completes. Keep in sync with the backend rates.
+const USD_PER_SEC: Record<string, number> = {
+  "480p": 0.1,
+  "720p": 0.18,
+  "1080p": 0.42,
+  "4k": 1.7,
+};
+
+function estimateVideoUsd(duration: number, resolution: string): number {
+  const rate = USD_PER_SEC[resolution] ?? 0.42;
+  return Math.max(1, duration || 5) * rate;
+}
+
 /**
  * Per-node video settings rendered inside the Generation dialog when
  * the target is a VideoNode.
@@ -167,6 +183,16 @@ export function VideoNodeSettings({ rfId }: Props) {
             </option>
           ))}
         </select>
+      </div>
+
+      {/* Estimated cost before generating (calibrated to real Avis usdCost;
+          the exact charge is settled after the clip finishes). */}
+      <div className="video-settings-row" style={{ alignItems: "baseline" }}>
+        <span className="video-settings-label">Est. cost</span>
+        <span style={{ fontWeight: 600 }}>
+          ≈ ${estimateVideoUsd(duration, resolution).toFixed(2)}
+        </span>
+        <span className="video-settings-hint">final billed after gen</span>
       </div>
 
       {/* Phase 8.1.5d: the legacy manual multi-ref editor (media_id / URL

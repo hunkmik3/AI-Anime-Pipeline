@@ -171,7 +171,14 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
   const [jumpFilter, setJumpFilter] = useState("");
   // Right-click context menu (precise per-position add + shot actions).
   const [ctxMenu, setCtxMenu] = useState<
-    { clientX: number; clientY: number; flowX: number; flowY: number; shotId: string | null } | null
+    {
+      clientX: number;
+      clientY: number;
+      flowX: number;
+      flowY: number;
+      shotId: string | null;
+      nodeId?: string | null;
+    } | null
   >(null);
   const migrateAttempted = useRef<string | null>(null);
 
@@ -472,9 +479,39 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
       e.preventDefault();
       const f = screenToFlowPosition({ x: e.clientX, y: e.clientY });
       const hit = getShotAtFlow(f.x, f.y);
-      setCtxMenu({ clientX: e.clientX, clientY: e.clientY, flowX: f.x, flowY: f.y, shotId: hit?.shotId ?? null });
+      setCtxMenu({ clientX: e.clientX, clientY: e.clientY, flowX: f.x, flowY: f.y, shotId: hit?.shotId ?? null, nodeId: null });
     },
     [screenToFlowPosition, getShotAtFlow],
+  );
+
+  // Right-click ON a node → menu with "Duplicate node" (stopPropagation so the
+  // pane handler above doesn't overwrite it with the plain add-node menu).
+  const onNodeCtxMenu = useCallback(
+    (e: React.MouseEvent, node: FlowNode) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const f = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      setCtxMenu({
+        clientX: e.clientX,
+        clientY: e.clientY,
+        flowX: f.x,
+        flowY: f.y,
+        shotId: (node.data.shotId as string | undefined) ?? getShotAtFlow(f.x, f.y)?.shotId ?? null,
+        nodeId: node.id,
+      });
+    },
+    [screenToFlowPosition, getShotAtFlow],
+  );
+
+  const duplicateNode = useShotWorkflowStore((s) => s.duplicateNode);
+  const handleDuplicateShot = useCallback(
+    async (shotId: string) => {
+      const newShot = await createShot(sceneId);
+      if (!newShot) return;
+      await useShotWorkflowStore.getState().cloneShotContents(shotId, newShot.id);
+      await loadSceneCanvas(sceneId);
+    },
+    [createShot, sceneId, loadSceneCanvas],
   );
 
   // Close the context menu on any plain click.
@@ -595,10 +632,15 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
           onNodesChange={onNodesChange}
           onNodeDragStop={onNodeDragStop}
           onNodeDoubleClick={onNodeDoubleClick}
+          onNodeContextMenu={onNodeCtxMenu}
           onConnect={onConnect}
           onNodesDelete={onNodesDelete}
           onEdgesDelete={onEdgesDelete}
           connectionRadius={32}
+          // "Infinite" zoom range (default is 0.5–2): pull far out over a full
+          // episode of sequences, or push deep into one node.
+          minZoom={0.02}
+          maxZoom={16}
           defaultEdgeOptions={{ style: { stroke: "var(--border)", strokeWidth: 2 } }}
           // Backspace/Delete removes the selected node/edge (persisted via
           // onNodesDelete/onEdgesDelete). Shot frames are deletable:false →
@@ -622,6 +664,23 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
           role="menu"
           onClick={(e) => e.stopPropagation()}
         >
+          {/* Node-specific: right-clicked directly on a node → Duplicate. */}
+          {ctxMenu.nodeId && (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  const nid = ctxMenu.nodeId!;
+                  setCtxMenu(null);
+                  void duplicateNode(nid);
+                }}
+              >
+                <span aria-hidden="true">⧉</span> Duplicate node
+              </button>
+              <div className="canvas-ctx-menu__divider" />
+            </>
+          )}
           {SCENE_NODE_TYPES.map((t) => (
             <button
               key={t.type}
@@ -638,6 +697,17 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
           {isAdmin && ctxMenu.shotId && (
             <>
               <div className="canvas-ctx-menu__divider" />
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  const sid = ctxMenu.shotId!;
+                  setCtxMenu(null);
+                  void handleDuplicateShot(sid);
+                }}
+              >
+                <span aria-hidden="true">⧉</span> Duplicate sequence
+              </button>
               <button
                 type="button"
                 role="menuitem"

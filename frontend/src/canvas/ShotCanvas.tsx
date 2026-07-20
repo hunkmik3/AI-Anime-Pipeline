@@ -328,6 +328,10 @@ export function ShotCanvas() {
         // Larger connection-drop radius so users don't have to land
         // pixel-perfect on the handle to complete an edge.
         connectionRadius={32}
+        // "Infinite" zoom range — far past React Flow's 0.5–2 default so you can
+        // pull way out on a huge board or push deep into a single node.
+        minZoom={0.02}
+        maxZoom={16}
         fitView
         proOptions={{ hideAttribution: true }}
       >

@@ -44,6 +44,7 @@ export const NODE_GROUPS: Group[] = [
     chips: [
       { type: "image", icon: "▣", label: "Image" },
       { type: "video", icon: "▶", label: "Video" },
+      { type: "seed_audio", icon: "🎵", label: "Audio Gen" },
     ],
   },
 ];

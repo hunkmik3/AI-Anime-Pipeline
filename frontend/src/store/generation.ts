@@ -120,7 +120,11 @@ function collectUpstreamAudioMediaId(targetRfId: string): string | undefined {
   for (const e of edges) {
     if (e.target !== targetRfId) continue;
     const src = nodes.find((n) => n.id === e.source);
-    if (src?.data.type === "audio_ref" && typeof src.data.audioMediaId === "string" && src.data.audioMediaId) {
+    if (
+      (src?.data.type === "audio_ref" || src?.data.type === "seed_audio") &&
+      typeof src.data.audioMediaId === "string" &&
+      src.data.audioMediaId
+    ) {
       return src.data.audioMediaId;
     }
   }
@@ -141,7 +145,7 @@ function collectUpstreamAudioRefsDetailed(
   for (const e of edges) {
     if (e.target !== targetRfId) continue;
     const src = nodes.find((n) => n.id === e.source);
-    if (src?.data.type !== "audio_ref") continue;
+    if (src?.data.type !== "audio_ref" && src?.data.type !== "seed_audio") continue;
     const mid = src.data.audioMediaId;
     if (typeof mid !== "string" || !mid || out.some((r) => r.id === mid)) continue;
     const raw = src.data.reference_label;

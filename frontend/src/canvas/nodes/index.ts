@@ -7,6 +7,7 @@ import { MasterShotNode } from "./MasterShotNode";
 import { NoteNode } from "./NoteNode";
 import { PromptNode } from "./PromptNode";
 import { ScriptNode } from "./ScriptNode";
+import { SeedAudioNode } from "./SeedAudioNode";
 import { StoryboardNode } from "./StoryboardNode";
 import { ShotGroupNode } from "./ShotGroupNode";
 import { VideoNode } from "./VideoNode";
@@ -29,4 +30,5 @@ export const nodeTypes = {
   approval_gate: ApprovalGateNode,
   audio_ref: AudioRefNode,
   video_ref: VideoRefNode,
+  seed_audio: SeedAudioNode,
 };

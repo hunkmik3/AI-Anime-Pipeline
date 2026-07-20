@@ -123,7 +123,8 @@ export type NodeType =
   | "master_shot"
   | "approval_gate"
   | "audio_ref"
-  | "video_ref";
+  | "video_ref"
+  | "seed_audio";
 export type NodeStatus = "idle" | "queued" | "running" | "done" | "error" | "partial";
 
 export interface NodeDTO {
@@ -1403,6 +1404,37 @@ export interface VideoModelDTO {
 export interface VideoModelsResponse {
   default_model_id: string;
   models: VideoModelDTO[];
+}
+
+// ── Seed Audio 1.0 (BytePlus) — text → full audio scene (voice+music+SFX) ──
+export interface SeedAudioResult {
+  media_id: string;
+  mime: string;
+  duration: number | null;
+  size: number;
+}
+
+export interface SeedAudioParams {
+  prompt: string;
+  format?: string;          // wav | mp3 | pcm | ogg_opus
+  sample_rate?: number;
+  speech_rate?: number;     // -50..100 (0 = normal)
+  loudness_rate?: number;
+  pitch_rate?: number;      // -12..12
+  references?: string[];    // ≤3 audio media_ids / public URLs → @audio1..3
+  image_ref?: string;       // 1 image media_id / URL (mutually exclusive w/ audio)
+  node_id?: number;
+}
+
+export function seedAudioAvailable(): Promise<{ available: boolean }> {
+  return api<{ available: boolean }>("/api/audio/seed/available");
+}
+
+export function generateSeedAudio(body: SeedAudioParams): Promise<SeedAudioResult> {
+  return api<SeedAudioResult>("/api/audio/generate", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 export function listVideoModels(): Promise<VideoModelsResponse> {

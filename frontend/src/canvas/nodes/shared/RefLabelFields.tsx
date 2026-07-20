@@ -16,6 +16,7 @@ const PREFIX_BY_TYPE: Record<string, string> = {
   master_shot: "@image",
   image: "@image",
   audio_ref: "@audio",
+  seed_audio: "@audio",
   video_ref: "@video",
 };
 

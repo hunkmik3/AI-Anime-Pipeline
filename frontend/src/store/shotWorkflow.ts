@@ -76,6 +76,18 @@ export interface FlowboardNodeData extends Record<string, unknown> {
   audioMediaId?: string;
   audioMime?: string;
   voiceDescription?: string;
+  // SeedAudioNode (BytePlus Seed Audio 1.0): text → full audio scene. The
+  // generated clip lands in audioMediaId (so it plays/downloads and can feed a
+  // VideoNode's @audio like an AudioRefNode). These are its input settings.
+  seedPrompt?: string;
+  seedFormat?: string;          // wav | mp3 | pcm | ogg_opus
+  seedSampleRate?: number;
+  seedSpeechRate?: number;      // -50..100 (0 = normal)
+  seedLoudnessRate?: number;
+  seedPitchRate?: number;       // -12..12
+  seedAudioRefs?: string[];     // ≤3 URLs / media_ids → @audio1..3 (voice clone)
+  seedImageRef?: string;        // 1 image URL / media_id (mutually exclusive)
+  seedDuration?: number;        // output duration of the last generation (s)
   // VideoRefNode: an uploaded reference video (Seedance 2.0 r2v video ref).
   // Fed downstream to a connected VideoNode → reference_videos; the worker
   // hoists it to a public R2 URL on submit (Avis has no inline video upload).
@@ -160,6 +172,7 @@ const TYPE_TITLE: Record<NodeType, string> = {
   approval_gate: "Approval gate",
   audio_ref: "Audio ref",
   video_ref: "Video ref",
+  seed_audio: "Audio Gen",
 };
 
 const positionTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -262,6 +275,12 @@ interface ShotWorkflowState {
     type: NodeType,
     position: { x: number; y: number },
   ): Promise<string | null>;
+  // Duplicate one node (same shot, offset position, cloned data). Returns the
+  // new node id.
+  duplicateNode(id: string): Promise<string | null>;
+  // Clone every node + intra-shot edge of `srcShotId` into `destShotId` (used to
+  // duplicate a whole sequence; caller reloads the canvas to render the frame).
+  cloneShotContents(srcShotId: string, destShotId: string): Promise<void>;
   addReferenceNode(
     ref: {
       mediaId: string;
@@ -457,6 +476,80 @@ export const useShotWorkflowStore = create<ShotWorkflowState>((set, get) => ({
       return node.id;
     } catch {
       return null;
+    }
+  },
+
+  async duplicateNode(id) {
+    const src = get().nodes.find((n) => n.id === id);
+    if (!src) return null;
+    const shotId = (src.data.shotId as string | undefined) ?? get().shotId ?? undefined;
+    if (!shotId) return null;
+    // Clone all persisted data (mediaId, settings, prompt, audioMediaId, …);
+    // drop shortId (the server mints a fresh one).
+    const cloneData: Record<string, unknown> = { ...src.data };
+    delete cloneData.shortId;
+    try {
+      const dto = await createNode({
+        shot_id: shotId,
+        type: src.data.type,
+        x: Math.round(src.position.x + 48),
+        y: Math.round(src.position.y + 48),
+        data: cloneData,
+      });
+      const node = nodeFromDto({
+        id: dto.id, short_id: dto.short_id, type: dto.type,
+        x: dto.x, y: dto.y, data: dto.data, status: dto.status,
+      });
+      node.data.shotId = shotId;
+      // createNode always starts "idle"; carry the source's status so a copied
+      // finished node still shows its media (persist so a reload keeps it).
+      const st = src.data.status;
+      if (st && st !== "idle") {
+        node.data.status = st;
+        patchNode(dto.id, { status: st }).catch(() => {});
+      }
+      set((s) => ({ nodes: [...s.nodes, node] }));
+      return node.id;
+    } catch {
+      return null;
+    }
+  },
+
+  async cloneShotContents(srcShotId, destShotId) {
+    const srcNodes = get().nodes.filter((n) => n.data.shotId === srcShotId);
+    const idMap = new Map<string, string>(); // old node id → new node id
+    for (const src of srcNodes) {
+      const cloneData: Record<string, unknown> = { ...src.data };
+      delete cloneData.shortId;
+      try {
+        const dto = await createNode({
+          shot_id: destShotId,
+          type: src.data.type,
+          x: Math.round(src.position.x),
+          y: Math.round(src.position.y),
+          data: cloneData,
+        });
+        idMap.set(src.id, String(dto.id));
+        const st = src.data.status;
+        if (st && st !== "idle") patchNode(dto.id, { status: st }).catch(() => {});
+      } catch {
+        /* skip a node that fails to clone */
+      }
+    }
+    // Re-create edges whose BOTH ends were cloned (intra-shot wiring).
+    for (const e of get().edges) {
+      const ns = idMap.get(e.source);
+      const nt = idMap.get(e.target);
+      if (!ns || !nt) continue;
+      try {
+        await createEdge({
+          shot_id: destShotId,
+          source_id: parseInt(ns, 10),
+          target_id: parseInt(nt, 10),
+        });
+      } catch {
+        /* skip */
+      }
     }
   },
 

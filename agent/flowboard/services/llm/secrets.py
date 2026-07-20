@@ -65,6 +65,8 @@ _DEFAULT_PATH = Path.home() / ".flowboard" / "secrets.json"
 _PROVIDER_ENV_VARS: dict[str, tuple[str, ...]] = {
     "dreamina": ("BYTEPLUS_KEY", "DREAMINA_API_KEY"),
     "avis": ("AVIS_API_KEY",),
+    # BytePlus Seed Audio 1.0 (Seed Speech) — new single-key X-Api-Key method.
+    "byteplus_seed_speech": ("BYTEPLUS_SEED_SPEECH_API_KEY",),
 }
 
 

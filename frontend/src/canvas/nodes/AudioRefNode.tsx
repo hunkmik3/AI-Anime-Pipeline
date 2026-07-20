@@ -27,7 +27,14 @@ function AudioRefBody({ rfId, data }: { rfId: string; data: FlowboardNodeData })
   const audioMediaId = data.audioMediaId;
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  function pickAudio(files: FileList | null | undefined): File | undefined {
+    return Array.from(files ?? []).find(
+      (f) => f.type.startsWith("audio/") || /\.(mp3|wav|m4a|aac|ogg)$/i.test(f.name),
+    );
+  }
 
   function persist(patch: Partial<FlowboardNodeData>) {
     useShotWorkflowStore.getState().updateNodeData(rfId, patch);
@@ -57,17 +64,37 @@ function AudioRefBody({ rfId, data }: { rfId: string; data: FlowboardNodeData })
   }
 
   return (
-    <div className="node-body node-body--audio-ref">
+    <div
+      className="node-body node-body--audio-ref nodrag"
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!dragOver) setDragOver(true);
+      }}
+      onDragLeave={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragOver(false);
+        const f = pickAudio(e.dataTransfer.files);
+        if (f) void upload(f);
+        else setError("Drop an audio file (mp3/wav)");
+      }}
+      style={dragOver ? { outline: "2px dashed var(--accent, #4ea1ff)", outlineOffset: 2, borderRadius: 8 } : undefined}
+    >
       {audioMediaId ? (
         <div className="audio-ref__loaded">
           <audio
-            className="audio-ref__player"
+            className="audio-ref__player nodrag"
             controls
             src={`/media/${audioMediaId}`}
           />
           <button
             type="button"
-            className="audio-ref__action"
+            className="audio-ref__action nodrag"
             onClick={() => fileInputRef.current?.click()}
             disabled={uploading}
           >
@@ -78,12 +105,15 @@ function AudioRefBody({ rfId, data }: { rfId: string; data: FlowboardNodeData })
         <div className="audio-ref__empty">
           <button
             type="button"
-            className="audio-ref__action"
+            className="audio-ref__action nodrag"
             onClick={() => fileInputRef.current?.click()}
             disabled={uploading}
           >
             {uploading ? "Uploading…" : "Upload audio (mp3/wav)"}
           </button>
+          <div className="video-settings-hint" style={{ textAlign: "center", marginTop: 4 }}>
+            {dragOver ? "Drop to upload" : "…or drag a file here"}
+          </div>
         </div>
       )}
 

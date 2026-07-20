@@ -34,6 +34,8 @@ NodeType = Literal[
     "audio_ref",
     # Reference video for Seedance 2.0 r2v (hoisted to a public R2 URL).
     "video_ref",
+    # BytePlus Seed Audio 1.0 — text → full audio scene (voice+music+SFX).
+    "seed_audio",
 ]
 NodeStatus = Literal["idle", "queued", "running", "done", "error", "partial"]
 

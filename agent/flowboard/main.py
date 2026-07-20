@@ -37,6 +37,7 @@ from flowboard.routes import (
     account,
     activity,
     admin,
+    audio,
     auth,
     bibles,
     chat,
@@ -236,6 +237,7 @@ app.include_router(requests_route.router)
 app.include_router(media.bytes_router)
 app.include_router(media.api_router)
 app.include_router(upload.router)
+app.include_router(audio.router)
 app.include_router(plans.router)
 app.include_router(vision.router)
 app.include_router(prompt.router)
