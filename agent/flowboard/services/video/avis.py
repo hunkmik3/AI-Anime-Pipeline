@@ -261,6 +261,48 @@ def _audio_content_part(ref: str) -> tuple[Optional[dict], Optional[str]]:
     return {"type": "audioBase64", "data": data, "mediaType": mime}, None
 
 
+# Avis caps the *combined* referenceAudio duration at 15.2s for Seedance 2.0 in
+# r2v (confirmed live 2026-07-20: over-cap → 400 "audio total duration ... must
+# be ≤ 15.2"). We enforce a slightly tighter budget so a couple of voices fit
+# without brushing the wire limit.
+AVIS_MAX_AUDIO_TOTAL_S = 15.0
+
+
+def _audio_duration_seconds(ref: str) -> Optional[float]:
+    """Best-effort duration (seconds) of an audio ref, or ``None`` when unknown
+    (a public/data URL, or no probe tool). WAV goes through the stdlib ``wave``
+    module — always available, so the no-ffmpeg desktop build still enforces the
+    cap for the common voice-upload case; other local formats use ffprobe when
+    it's installed. ``None`` means "don't count it" — Avis's own limit backstops.
+    """
+    if ref.startswith(("http://", "https://", "data:")):
+        return None
+    path = media_service.cached_path(ref)
+    if path is None:
+        return None
+    p = Path(path)
+    if p.suffix.lower() == ".wav":
+        import wave
+
+        try:
+            with wave.open(str(p), "rb") as w:
+                rate = w.getframerate()
+                return w.getnframes() / float(rate) if rate else None
+        except (OSError, wave.Error, EOFError):
+            return None
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(p)],
+            capture_output=True, text=True, timeout=10,
+        )
+        return float(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
 # ── KYC assets (person-driven video) ────────────────────────────────────────
 # Portrait→video / lip-sync / video-reference need an identity-verified Avis
 # KYC asset. Unlike regular refs (base64 inline), a KYC asset is created from a
@@ -522,8 +564,34 @@ class AvisVideoProvider:
         # (worker-sorted first) leads the referenceAudio blocks.
         audio_parts: list[dict] = []
         if audio_refs and self.capabilities.supports_audio_ref:
+            # Enforce Avis's combined referenceAudio cap (~15s in r2v): keep
+            # voices in @audio order until the cumulative KNOWN duration would
+            # exceed it, then drop the overflow with a warning — fail-fast and
+            # graceful instead of a raw 400. Refs we can't measure (URLs, no
+            # probe) don't add to the running total; Avis's limit backstops them.
+            durations = await asyncio.gather(
+                *[asyncio.to_thread(_audio_duration_seconds, a) for a in audio_refs]
+            )
+            kept_refs: list[str] = []
+            total = 0.0
+            for a, dur in zip(audio_refs, durations):
+                if dur is not None and kept_refs and total + dur > AVIS_MAX_AUDIO_TOTAL_S:
+                    break  # this voice + the rest don't fit
+                kept_refs.append(a)
+                total += dur or 0.0
+            if len(kept_refs) < len(audio_refs):
+                warnings.append(
+                    f"Dropped {len(audio_refs) - len(kept_refs)} audio reference(s): "
+                    "Seedance 2.0 caps total voice duration at ~15s — kept the first "
+                    f"{len(kept_refs)} in @audio order. Trim or use fewer voices."
+                )
+            elif len(kept_refs) == 1 and (durations[0] or 0.0) > AVIS_MAX_AUDIO_TOTAL_S:
+                warnings.append(
+                    f"The audio reference is ~{durations[0]:.0f}s, over Seedance 2.0's "
+                    "~15s cap — it may be rejected; trim it to 15s or less."
+                )
             for part, audio_warn in await asyncio.gather(
-                *[asyncio.to_thread(_audio_content_part, a) for a in audio_refs]
+                *[asyncio.to_thread(_audio_content_part, a) for a in kept_refs]
             ):
                 if audio_warn:
                     warnings.append(audio_warn)

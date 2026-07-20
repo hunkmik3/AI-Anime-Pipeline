@@ -338,6 +338,82 @@ async def test_multiple_audio_refs_emit_ordered_reference_audio_blocks():
     assert not res["warnings"]
 
 
+def _write_wav(path, seconds: float, rate: int = 8000) -> None:
+    import wave
+
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"\x00\x00" * int(seconds * rate))
+
+
+@pytest.mark.asyncio
+async def test_total_audio_over_cap_drops_overflow(monkeypatch, tmp_path):
+    """Seedance 2.0 caps combined referenceAudio at ~15s. Two local voices whose
+    durations sum over the cap → keep the first (@audio order), drop the rest
+    with a warning instead of letting Avis 400."""
+    from flowboard.services.video import avis as avis_mod
+
+    a1, a2 = tmp_path / "v1.wav", tmp_path / "v2.wav"
+    _write_wav(a1, 10)   # 10s
+    _write_wav(a2, 8)    # +8s = 18s > 15 cap
+    files = {"aud1": str(a1), "aud2": str(a2)}
+    monkeypatch.setattr(avis_mod.media_service, "cached_path", lambda mid: files.get(mid))
+
+    seen: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        return httpx.Response(200, json={"data": {"taskId": "cgt-cap"}, "success": True})
+
+    avis.set_http_client_factory(_factory(handler))
+    res = await _provider().submit({
+        "first_frame_url": "https://e/frame.png",
+        "audio_ref_urls": ["aud1", "aud2"],
+        "audio_ref_labels": ["@audio1", "@audio2"],
+        "motion_prompt": "x",
+        "duration_seconds": 5,
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
+    })
+    auds = [b for b in seen[0]["content"] if b["type"].startswith("audio")]
+    assert len(auds) == 1  # only @audio1 (10s) fits
+    assert any("voice duration" in w.lower() or "~15s" in w for w in res["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_two_short_voices_under_cap_both_kept(monkeypatch, tmp_path):
+    """Two voices that together fit under ~15s are both attached, no warning."""
+    from flowboard.services.video import avis as avis_mod
+
+    a1, a2 = tmp_path / "s1.wav", tmp_path / "s2.wav"
+    _write_wav(a1, 7)
+    _write_wav(a2, 5)   # 12s total < 15
+    files = {"s1": str(a1), "s2": str(a2)}
+    monkeypatch.setattr(avis_mod.media_service, "cached_path", lambda mid: files.get(mid))
+
+    seen: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        return httpx.Response(200, json={"data": {"taskId": "cgt-ok"}, "success": True})
+
+    avis.set_http_client_factory(_factory(handler))
+    res = await _provider().submit({
+        "first_frame_url": "https://e/frame.png",
+        "audio_ref_urls": ["s1", "s2"],
+        "audio_ref_labels": ["@audio1", "@audio2"],
+        "motion_prompt": "x",
+        "duration_seconds": 5,
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
+    })
+    auds = [b for b in seen[0]["content"] if b["type"].startswith("audio")]
+    assert len(auds) == 2
+    assert not res["warnings"]
+
+
 @pytest.mark.asyncio
 async def test_submit_rejects_out_of_range_duration():
     with pytest.raises(VideoError) as exc:
