@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 
 import {
@@ -44,10 +44,15 @@ function SeedAudioBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
   const [addOpen, setAddOpen] = useState(false);
   const [urlDraft, setUrlDraft] = useState("");
   const [imgDraft, setImgDraft] = useState("");
+  const [promptDraft, setPromptDraft] = useState(data.seedPrompt ?? "");
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+  const [promptSize, setPromptSize] = useState({
+    w: typeof data.seedWidth === "number" ? data.seedWidth : 208,
+    h: typeof data.seedHeight === "number" ? data.seedHeight : 120,
+  });
   const audioFileRef = useRef<HTMLInputElement>(null);
   const imgFileRef = useRef<HTMLInputElement>(null);
 
-  const prompt = data.seedPrompt ?? "";
   const fmt = data.seedFormat ?? "mp3";
   const sr = data.seedSampleRate ?? 24000;
   const speed = data.seedSpeechRate ?? 0;
@@ -65,10 +70,52 @@ function SeedAudioBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
     setRates({ speech: speed, loud: volume, pitch });
   }, [speed, volume, pitch]);
 
+  // Prompt edits stay LOCAL until blur. Writing to the store on every keystroke
+  // rebuilds the node on SceneCanvas → the textarea loses focus (so pressing
+  // Enter "kicks you out"). Persist on blur / before generating instead.
+  useEffect(() => {
+    setPromptDraft(data.seedPrompt ?? "");
+  }, [data.seedPrompt]);
+
+  // Reactively track connected upstream Audio ref / Audio Gen nodes so the node
+  // SHOWS what it received the moment you wire one in (they become @audio1..3
+  // on generate, ahead of the node's own URL/upload slots).
+  const allNodes = useShotWorkflowStore((s) => s.nodes);
+  const allEdges = useShotWorkflowStore((s) => s.edges);
+  const connectedRefs = useMemo(() => {
+    const out: { id: string; from: string }[] = [];
+    for (const e of allEdges) {
+      if (e.target !== rfId) continue;
+      const src = allNodes.find((n) => n.id === e.source);
+      const mid = src?.data.audioMediaId;
+      if (
+        (src?.data.type === "audio_ref" || src?.data.type === "seed_audio") &&
+        typeof mid === "string" && mid && !out.some((r) => r.id === mid)
+      ) {
+        out.push({ id: mid, from: (src.data.shortId as string) ?? src.id });
+      }
+    }
+    return out;
+  }, [allNodes, allEdges, rfId]);
+
   function persist(patch: Partial<FlowboardNodeData>) {
     useShotWorkflowStore.getState().updateNodeData(rfId, patch);
     const dbId = parseInt(rfId, 10);
     if (!isNaN(dbId)) patchNode(dbId, { data: patch }).catch(() => {});
+  }
+
+  // After the user drags the textarea's resize corner, read its new size and
+  // persist it (border-box, so offsetWidth == the style width → stable). The
+  // card is fit-content, so the whole node grows to fit the bigger box.
+  function commitPromptSize() {
+    const el = promptRef.current;
+    if (!el) return;
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    if (w !== promptSize.w || h !== promptSize.h) {
+      setPromptSize({ w, h });
+      persist({ seedWidth: w, seedHeight: h });
+    }
   }
 
   function addRef(value: string) {
@@ -112,17 +159,17 @@ function SeedAudioBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
   }
 
   async function generate() {
-    if (!prompt.trim()) {
+    if (!promptDraft.trim()) {
       setError("Enter a prompt first");
       return;
     }
     setError(null);
     setBusy(true);
-    persist({ status: "running" });
+    persist({ status: "running", seedPrompt: promptDraft });
     try {
       const dbId = parseInt(rfId, 10);
       const body: SeedAudioParams = {
-        prompt: prompt.trim(),
+        prompt: promptDraft.trim(),
         format: fmt,
         sample_rate: sr,
         speech_rate: rates.speech,
@@ -130,8 +177,26 @@ function SeedAudioBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
         pitch_rate: rates.pitch,
         node_id: isNaN(dbId) ? undefined : dbId,
       };
+      // Voice-clone refs = connected upstream Audio ref / Audio Gen nodes +
+      // this node's own URL/upload slots (deduped, cap 3, @audio1..3 order).
+      const { nodes, edges } = useShotWorkflowStore.getState();
+      const upstream: string[] = [];
+      for (const e of edges) {
+        if (e.target !== rfId) continue;
+        const src = nodes.find((n) => n.id === e.source);
+        const mid = src?.data.audioMediaId;
+        if (
+          (src?.data.type === "audio_ref" || src?.data.type === "seed_audio") &&
+          typeof mid === "string" && mid && !upstream.includes(mid)
+        ) {
+          upstream.push(mid);
+        }
+      }
+      const allRefs = [...upstream, ...refs]
+        .filter((v, i, a) => a.indexOf(v) === i)
+        .slice(0, 3);
       if (imageSet) body.image_ref = imageRef.trim();
-      else if (refs.length) body.references = refs;
+      else if (allRefs.length) body.references = allRefs;
 
       const res = await generateSeedAudio(body);
       persist({
@@ -148,24 +213,39 @@ function SeedAudioBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
     }
   }
 
-  const overLimit = prompt.length > PROMPT_MAX;
+  const overLimit = promptDraft.length > PROMPT_MAX;
 
   return (
     <div className="node-body node-body--audio-ref">
-      {/* Prompt */}
+      {/* Prompt — drag its bottom-right corner (↔ / ↕) to expand; the card is
+          fit-content so the whole node grows to fit the bigger box. Size + text
+          persist. */}
       <textarea
+        ref={promptRef}
         className="audio-ref__desc-input nodrag nowheel"
-        style={{ minHeight: 66, resize: "vertical", width: "100%" }}
-        value={prompt}
+        style={{
+          boxSizing: "border-box",
+          minWidth: 208,
+          minHeight: 66,
+          width: promptSize.w,
+          height: promptSize.h,
+          resize: "both",
+        }}
+        value={promptDraft}
         placeholder="Describe the scene — narration, &quot;dialogue&quot;, voice traits (in parentheses), music &amp; SFX…"
         maxLength={PROMPT_MAX + 200}
-        onChange={(e) => persist({ seedPrompt: e.target.value })}
+        onChange={(e) => setPromptDraft(e.target.value)}
+        onMouseUp={commitPromptSize}
+        onBlur={() => {
+          commitPromptSize();
+          if (promptDraft !== (data.seedPrompt ?? "")) persist({ seedPrompt: promptDraft });
+        }}
       />
       <div
         className="video-settings-hint"
         style={{ textAlign: "right", color: overLimit ? "#e06c6c" : undefined }}
       >
-        {prompt.length}/{PROMPT_MAX}
+        {promptDraft.length}/{PROMPT_MAX}
       </div>
 
       {/* Result: player full-width, a small right-aligned download pill below */}
@@ -231,6 +311,13 @@ function SeedAudioBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
         {showAdvanced ? "Less ▲" : "More settings ▾"}
       </button>
 
+      {/* Always-visible "received" indicator when Audio refs are wired in. */}
+      {connectedRefs.length > 0 ? (
+        <div className="video-settings-hint" style={{ marginTop: 4, color: "var(--accent, #4ea1ff)" }}>
+          🔗 {connectedRefs.length} voice ref{connectedRefs.length > 1 ? "s" : ""} connected → @audio1–{connectedRefs.length}
+        </div>
+      ) : null}
+
       {showAdvanced ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
           {/* Speed / Volume / Pitch. nodrag = the thumb doesn't move the node.
@@ -269,8 +356,20 @@ function SeedAudioBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
             </div>
           ))}
 
-          {/* Audio refs (voice clone → @audio1..3): one add-slot, then "Add more" */}
+          {/* Audio refs (voice clone → @audio1..3): connected nodes first (read-
+              only), then this node's own URL/upload slots, then "Add more". */}
           <div className="video-settings-hint">Audio refs (@audio1–3) — voice clone</div>
+          {connectedRefs.map((r, i) => (
+            <div className="video-settings-row" key={`c-${r.id}`} style={{ gap: 6 }}>
+              <span
+                className="video-settings-label"
+                style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                title={`connected from #${r.from}`}
+              >
+                @audio{i + 1}: 🔗 connected (#{r.from})
+              </span>
+            </div>
+          ))}
           {refs.map((r, i) => (
             <div className="video-settings-row" key={i} style={{ gap: 6 }}>
               <span
@@ -278,17 +377,17 @@ function SeedAudioBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
                 style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                 title={r}
               >
-                @audio{i + 1}: {shortRef(r)}
+                @audio{connectedRefs.length + i + 1}: {shortRef(r)}
               </span>
               <button type="button" className="audio-ref__action nodrag" onClick={() => removeRef(i)} title="Remove">✕</button>
             </div>
           ))}
-          {!imageSet && refs.length < 3 ? (
-            addOpen || refs.length === 0 ? (
+          {!imageSet && connectedRefs.length + refs.length < 3 ? (
+            addOpen || connectedRefs.length + refs.length === 0 ? (
               <div className="video-settings-row" style={{ gap: 6 }}>
                 <input
                   className="video-settings-input nodrag"
-                  placeholder={`@audio${refs.length + 1} URL (wav/mp3)`}
+                  placeholder={`@audio${connectedRefs.length + refs.length + 1} URL (wav/mp3)`}
                   value={urlDraft}
                   onChange={(e) => setUrlDraft(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") addRef(urlDraft); }}
@@ -303,7 +402,7 @@ function SeedAudioBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
               </div>
             ) : (
               <button type="button" className="audio-ref__action nodrag" onClick={() => setAddOpen(true)}>
-                ＋ Add more ({refs.length}/3)
+                ＋ Add more ({connectedRefs.length + refs.length}/3)
               </button>
             )
           ) : null}
@@ -346,7 +445,7 @@ function SeedAudioBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
         className="audio-ref__action nodrag"
         style={{ marginTop: 6, width: "100%" }}
         onClick={generate}
-        disabled={busy || overLimit || !prompt.trim()}
+        disabled={busy || overLimit || !promptDraft.trim()}
       >
         {busy ? "Generating…" : audioMediaId ? "Regenerate" : "Generate audio"}
       </button>
@@ -380,7 +479,7 @@ export function SeedAudioNode(props: NodeProps<FlowNode>) {
     <BaseNodeShell
       data={props.data}
       selected={props.selected ?? false}
-      showTargetHandle={false}
+      showTargetHandle
     >
       <SeedAudioBody rfId={props.id} data={props.data} />
     </BaseNodeShell>

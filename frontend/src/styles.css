@@ -1514,6 +1514,18 @@ button:disabled {
   overflow: hidden;
 }
 
+/* Audio Gen node: the prompt textarea has its own resize handle, and the card
+   grows to fit it (fit-content) instead of the fixed 240px — so dragging the
+   prompt box bigger makes the whole node grow with it. */
+.react-flow__node-seed_audio .node-card {
+  width: fit-content;
+  min-width: 240px;
+  max-width: 900px;
+}
+.react-flow__node-seed_audio .node-body--audio-ref {
+  overflow: visible;
+}
+
 /* character */
 
 .thumbnail-circle {

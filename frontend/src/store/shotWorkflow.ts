@@ -88,6 +88,8 @@ export interface FlowboardNodeData extends Record<string, unknown> {
   seedAudioRefs?: string[];     // ≤3 URLs / media_ids → @audio1..3 (voice clone)
   seedImageRef?: string;        // 1 image URL / media_id (mutually exclusive)
   seedDuration?: number;        // output duration of the last generation (s)
+  seedWidth?: number;           // user-resized prompt-box size (card grows to fit)
+  seedHeight?: number;
   // VideoRefNode: an uploaded reference video (Seedance 2.0 r2v video ref).
   // Fed downstream to a connected VideoNode → reference_videos; the worker
   // hoists it to a public R2 URL on submit (Avis has no inline video upload).
@@ -200,7 +202,7 @@ interface RawNode {
 }
 
 function nodeFromDto(n: RawNode): FlowNode {
-  return {
+  const fn: FlowNode = {
     id: String(n.id),
     type: n.type,
     position: { x: n.x, y: n.y },
@@ -247,6 +249,7 @@ function nodeFromDto(n: RawNode): FlowNode {
       continuity_from_shot: n.data["continuity_from_shot"] as string | undefined,
     },
   };
+  return fn;
 }
 
 interface ShotWorkflowState {
