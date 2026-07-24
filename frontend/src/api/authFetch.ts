@@ -48,10 +48,16 @@ export function installAuthFetch(): void {
     const token = getToken();
 
     let nextInit = init;
-    if (api && token) {
+    if (api) {
       const headers = new Headers(init.headers ?? {});
-      if (!headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
-      nextInit = { ...init, headers };
+      if (token && !headers.has("Authorization")) {
+        headers.set("Authorization", `Bearer ${token}`);
+      }
+      // Data endpoints must never be served from the browser HTTP cache — a
+      // cached list is exactly why an admin edit (e.g. a member's budget) only
+      // showed up after F5. Media (thumbnails/clips) load via <img>/<video>
+      // element `src`, not fetch(), so this doesn't affect their caching.
+      nextInit = { ...init, headers, cache: init.cache ?? "no-store" };
     }
 
     const res = await orig(input, nextInit);

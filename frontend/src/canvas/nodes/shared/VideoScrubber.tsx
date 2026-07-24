@@ -28,19 +28,12 @@ export function VideoScrubber({
 }) {
   const [open, setOpen] = useState(false);
 
-  // Hidden: render a plain inline video preview (no extract affordance).
+  // While frame-extraction is disabled this component has no job to do — the
+  // Video node already shows the clip via its VideoTile thumbnail (click to
+  // play in the viewer). Rendering a second inline <video> here just duplicated
+  // the thumbnail and mounted an extra video decoder per node (canvas lag).
   if (!EXTRACT_FRAME_ENABLED) {
-    return (
-      <div className="video-scrubber nodrag" onClick={(e) => e.stopPropagation()}>
-        <video
-          className="video-scrubber__thumb"
-          src={mediaUrl(mediaId)}
-          controls
-          preload="metadata"
-          playsInline
-        />
-      </div>
-    );
+    return null;
   }
 
   return (

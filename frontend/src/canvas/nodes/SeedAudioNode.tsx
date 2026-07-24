@@ -15,6 +15,7 @@ import {
   type FlowboardNodeData,
 } from "../../store/shotWorkflow";
 import { BaseNodeShell } from "./BaseNodeShell";
+import { NodeHistoryButton, type HistoryRow } from "./shared/NodeHistory";
 import { RefLabelFields } from "./shared/RefLabelFields";
 
 /**
@@ -33,6 +34,87 @@ const SAMPLE_RATES = [8000, 16000, 24000, 32000, 44100, 48000] as const;
 
 function shortRef(r: string): string {
   return r.startsWith("http") ? (r.length > 26 ? r.slice(0, 26) + "…" : r) : "🔊 uploaded";
+}
+
+/**
+ * Slider + number box for one setting (Speed / Volume / Pitch), synced both
+ * ways: dragging moves the number, typing moves the slider. Live changes go to
+ * ``onLocal`` (smooth, no store write); the store/network write fires once on
+ * release / blur via ``onCommit``. A local text draft lets you type freely
+ * (including a leading "-" or a blank) without React snapping the field back;
+ * the value is clamped to [min, max] on blur.
+ */
+function NumSlider({
+  label,
+  value,
+  min,
+  max,
+  onLocal,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onLocal: (n: number) => void;
+  onCommit: (n: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  const [editing, setEditing] = useState(false);
+  // Keep the box in sync with the slider (and external changes) unless the user
+  // is actively typing in it.
+  useEffect(() => {
+    if (!editing) setDraft(String(value));
+  }, [value, editing]);
+
+  const clamp = (n: number) => Math.max(min, Math.min(max, n));
+
+  return (
+    <div className="video-settings-row">
+      <label className="video-settings-label">{label}</label>
+      <input
+        type="range"
+        className="video-settings-slider nodrag"
+        min={min}
+        max={max}
+        step={1}
+        value={value}
+        onChange={(e) => {
+          const n = parseInt(e.target.value, 10);
+          onLocal(n);
+          setDraft(String(n));
+        }}
+        onPointerUp={(e) => onCommit(parseInt((e.target as HTMLInputElement).value, 10))}
+        onKeyUp={(e) => onCommit(parseInt((e.target as HTMLInputElement).value, 10))}
+      />
+      <input
+        type="number"
+        className="video-settings-num nodrag nowheel"
+        min={min}
+        max={max}
+        step={1}
+        value={draft}
+        onFocus={() => setEditing(true)}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          const n = parseInt(e.target.value, 10);
+          if (!Number.isNaN(n)) onLocal(clamp(n)); // slider follows as you type
+        }}
+        onBlur={() => {
+          setEditing(false);
+          let n = parseInt(draft, 10);
+          if (Number.isNaN(n)) n = value; // blank / "-" → revert
+          n = clamp(n);
+          setDraft(String(n));
+          onLocal(n);
+          onCommit(n);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        }}
+      />
+    </div>
+  );
 }
 
 function SeedAudioBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }) {
@@ -340,20 +422,15 @@ function SeedAudioBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
               onCommit: (n: number) => persist({ seedPitchRate: n }),
             },
           ].map((s) => (
-            <div className="video-settings-row" key={s.label}>
-              <label className="video-settings-label">{s.label}: {s.val}</label>
-              <input
-                type="range"
-                className="video-settings-slider nodrag"
-                min={s.min}
-                max={s.max}
-                step={1}
-                value={s.val}
-                onChange={(e) => s.onLocal(parseInt(e.target.value, 10))}
-                onPointerUp={(e) => s.onCommit(parseInt((e.target as HTMLInputElement).value, 10))}
-                onKeyUp={(e) => s.onCommit(parseInt((e.target as HTMLInputElement).value, 10))}
-              />
-            </div>
+            <NumSlider
+              key={s.label}
+              label={s.label}
+              value={s.val}
+              min={s.min}
+              max={s.max}
+              onLocal={s.onLocal}
+              onCommit={s.onCommit}
+            />
           ))}
 
           {/* Audio refs (voice clone → @audio1..3): connected nodes first (read-
@@ -475,11 +552,42 @@ function SeedAudioBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
 }
 
 export function SeedAudioNode(props: NodeProps<FlowNode>) {
+  const addNodeToShotWithData = useShotWorkflowStore((s) => s.addNodeToShotWithData);
+
+  // Reuse a past take → spawn a fresh Audio Gen node in the same shot with that
+  // take's prompt + settings + material (voice refs / image ref), ready to
+  // tweak & regenerate. No result is carried over — it's a clean starting point.
+  async function reuse(row: HistoryRow) {
+    const newData: Record<string, unknown> = {
+      title: props.data.title,
+      seedPrompt: row.prompt ?? "",
+      seedFormat: row.audio_format ?? "mp3",
+      seedSampleRate: row.sample_rate ?? 24000,
+      seedSpeechRate: row.speech_rate ?? 0,
+      seedLoudnessRate: row.loudness_rate ?? 0,
+      seedPitchRate: row.pitch_rate ?? 0,
+      seedAudioRefs: row.references ?? [],
+      seedImageRef: row.image_ref ?? "",
+    };
+    const id = await addNodeToShotWithData(props.id, "seed_audio", newData);
+    useGenerationStore
+      .getState()
+      .setNotice(id ? "Reused into a new Audio Gen node" : "Couldn't create the node");
+  }
+
   return (
     <BaseNodeShell
       data={props.data}
       selected={props.selected ?? false}
       showTargetHandle
+      extraHeader={
+        <NodeHistoryButton
+          rfId={props.id}
+          title={props.data.title}
+          kind="audio"
+          onReuse={(row) => void reuse(row)}
+        />
+      }
     >
       <SeedAudioBody rfId={props.id} data={props.data} />
     </BaseNodeShell>

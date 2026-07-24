@@ -194,6 +194,11 @@ async def _auth_gate(request: FastAPIRequest, call_next):
             path.startswith("/api/")
             and path not in _AUTH_OPEN_PATHS
             and not path.startswith("/api/ext/")
+            # Thumbnails render in <img> tags, which cannot send the Bearer
+            # header, so they'd 401. The full-size /media/<id> bytes route is
+            # already public, so a downscaled thumb exposes nothing new.
+            # (Local patch for an upstream bug — thumb route sits under /api.)
+            and not (path.startswith("/api/media/") and path.endswith("/thumb"))
         ):
             authz = request.headers.get("authorization") or ""
             user = (

@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { mediaUrl } from "../../../api/client";
+import { thumbUrl } from "../../../api/client";
+
+// Node tiles are ~240px wide → a downscaled thumbnail (webp) is plenty and
+// paints far faster than the multi-megapixel original when a canvas shows many
+// image nodes at once. The full-res image still loads in the result viewer.
+const TILE_THUMB_W = 384;
 
 const MAX_IMG_RETRIES = 5;
 
@@ -47,7 +52,8 @@ export function ImageTile({
   }
 
   const givenUp = attempt >= MAX_IMG_RETRIES;
-  const src = attempt > 0 ? `${mediaUrl(mediaId)}?retry=${attempt}` : mediaUrl(mediaId);
+  const thumb = thumbUrl(mediaId, TILE_THUMB_W);
+  const src = attempt > 0 ? `${thumb}&retry=${attempt}` : thumb;
   const cls =
     `thumbnail-tile thumbnail-tile--filled` +
     (onClick ? " thumbnail-tile--clickable" : "");

@@ -66,6 +66,8 @@ const IMAGE_ASPECT_RATIOS = [
 const VIDEO_ASPECT_RATIOS = [
   { key: "16:9", label: "16:9 landscape" },
   { key: "9:16", label: "9:16 portrait" },
+  { key: "4:3", label: "4:3 classic" },
+  { key: "1:1", label: "1:1 square" },
 ] as const;
 
 // Camera movement presets for video.
@@ -367,7 +369,10 @@ export function GenerationDialog() {
           nodes,
           useShotWorkflowStore.getState().edges,
         );
-        if (openNodeType === "video" && (stored === "9:16" || stored === "16:9")) {
+        if (
+          openNodeType === "video" &&
+          (stored === "9:16" || stored === "16:9" || stored === "4:3" || stored === "1:1")
+        ) {
           // Honor a per-node stored aspect (e.g. scaffolded shots).
           nextAspect = stored;
         } else if (inherited !== null) {

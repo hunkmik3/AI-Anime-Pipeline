@@ -220,19 +220,49 @@ async def generate(
     except OSError as exc:
         raise SeedAudioError("internal", f"failed to cache generated audio ({exc})") from exc
 
+    duration = data.get("duration")
+    duration_val = float(duration) if isinstance(duration, (int, float)) else None
+
+    from datetime import datetime, timezone
+
     from flowboard.db import get_session
-    from flowboard.db.models import Asset
+    from flowboard.db.models import Asset, Request
 
     with get_session() as s:
         s.add(Asset(uuid_media_id=media_id, kind="audio", local_path=str(cache_path), mime=mime, node_id=node_id))
+        # Record the generation so the node's ⏱ history can replay it later with
+        # its prompt + settings (mirrors how video gens land in `request`). Only
+        # persisted (numeric) nodes get a row — ad-hoc gens have no node to attach
+        # the history to.
+        if node_id is not None:
+            s.add(
+                Request(
+                    node_id=node_id,
+                    type="gen_audio",
+                    status="done",
+                    params={
+                        "prompt": prompt,
+                        "format": fmt,
+                        "sample_rate": sr,
+                        "speech_rate": _clamp(speech_rate, _RATE_MIN, _RATE_MAX),
+                        "loudness_rate": _clamp(loudness_rate, _RATE_MIN, _RATE_MAX),
+                        "pitch_rate": _clamp(pitch_rate, _PITCH_MIN, _PITCH_MAX),
+                        # Store the actual material (voice refs / image ref) so the
+                        # node's ⏱ history can spawn a fresh node that reuses them.
+                        "references": list(refs),
+                        "image_ref": image_ref or None,
+                    },
+                    result={"media_ids": [media_id], "duration": duration_val},
+                    finished_at=datetime.now(timezone.utc),
+                )
+            )
         s.commit()
 
-    duration = data.get("duration")
     logger.info("seed-audio: media_id=%s dur=%s size=%d", media_id, duration, len(raw))
     return {
         "media_id": media_id,
         "mime": mime,
-        "duration": float(duration) if isinstance(duration, (int, float)) else None,
+        "duration": duration_val,
         "size": len(raw),
     }
 

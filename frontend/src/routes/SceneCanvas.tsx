@@ -464,6 +464,17 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
     [deleteEdgeByRfId],
   );
 
+  // Alt-click a connection to delete it — a quick shortcut instead of selecting
+  // the edge and pressing Delete.
+  const onEdgeClick = useCallback(
+    (event: { altKey: boolean; stopPropagation: () => void }, edge: { id: string }) => {
+      if (!event.altKey) return;
+      event.stopPropagation();
+      void deleteEdgeByRfId(edge.id);
+    },
+    [deleteEdgeByRfId],
+  );
+
   const onNodeDoubleClick = useCallback((_e: React.MouseEvent, node: Node) => {
     if (node.id.startsWith(GROUP_PREFIX)) return;
     const data = node.data as FlowNode["data"];
@@ -636,6 +647,7 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
           onConnect={onConnect}
           onNodesDelete={onNodesDelete}
           onEdgesDelete={onEdgesDelete}
+          onEdgeClick={onEdgeClick}
           connectionRadius={32}
           // "Infinite" zoom range (default is 0.5–2): pull far out over a full
           // episode of sequences, or push deep into one node.
@@ -647,6 +659,10 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
           // the key can't drop a shot; that stays on the header ✕.
           deleteKeyCode={["Backspace", "Delete"]}
           fitView
+          // Cull off-screen sequences/nodes so an episode with many sequences
+          // (each with video tiles) doesn't mount every node at once. shotGroup
+          // nodes carry explicit width/height, so bounds are known for culling.
+          onlyRenderVisibleElements
           colorMode="dark"
           proOptions={{ hideAttribution: true }}
         >

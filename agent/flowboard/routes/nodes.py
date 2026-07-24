@@ -8,7 +8,7 @@ from sqlmodel import select
 from flowboard.db import get_session
 from flowboard.db.models import Edge, Node, Project, Scene, Shot
 from flowboard.routes.deps import get_optional_user, owner_scope
-from flowboard.services import stats_service
+from flowboard.services import project_service, stats_service
 from flowboard.short_id import generate_unique_short_id
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
@@ -171,6 +171,9 @@ def node_history(node_id: int, user=Depends(get_optional_user)):
             shot = s.get(Shot, node.shot_id) if node.shot_id else None
             scene = s.get(Scene, shot.scene_id) if shot else None
             project = s.get(Project, scene.project_id) if scene else None
-            if project is None or project.owner_user_id != scope:
+            # Owner OR assigned member may see the history (mirrors get_project).
+            if project is None or not project_service.user_can_access_project(
+                s, project, scope
+            ):
                 raise HTTPException(404, "node not found")
     return stats_service.node_history(node_id)

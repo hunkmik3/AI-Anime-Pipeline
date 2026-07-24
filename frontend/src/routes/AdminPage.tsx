@@ -192,6 +192,8 @@ export function AdminPage() {
   const [tab, setTab] = useState<
     "overview" | "members" | "signups" | "cost" | "projects" | "audit"
   >("overview");
+  // mobile: is the nav drawer open?
+  const [navOpen, setNavOpen] = useState(false);
 
   // pending signup count → sidebar badge (so a request isn't missed)
   const [pendingSignups, setPendingSignups] = useState(0);
@@ -241,8 +243,10 @@ export function AdminPage() {
     setExpanded(new Set());
   }
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  // `quiet` = background refresh (focus / poll): don't toggle the spinner or
+  // surface transient errors, so the screen updates in place without flicker.
+  const refresh = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
     try {
       const [us, pl] = await Promise.all([
         jsonOrThrow(await fetch("/api/admin/users")),
@@ -252,9 +256,9 @@ export function AdminPage() {
       setPool(pl);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "load failed");
+      if (!quiet) setError(e instanceof Error ? e.message : "load failed");
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, []);
 
@@ -281,6 +285,26 @@ export function AdminPage() {
   useEffect(() => {
     void refresh();
     void refreshPending();
+  }, [refresh, refreshPending]);
+
+  // Keep the dashboard live: refetch (quietly) when the admin returns to the
+  // tab/window and on a light interval, so changes appear without a manual F5.
+  useEffect(() => {
+    const tick = () => {
+      void refresh(true);
+      void refreshPending();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    window.addEventListener("focus", tick);
+    document.addEventListener("visibilitychange", onVisible);
+    const id = window.setInterval(tick, 20000);
+    return () => {
+      window.removeEventListener("focus", tick);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.clearInterval(id);
+    };
   }, [refresh, refreshPending]);
 
   async function createUser(nu: NewUser) {
@@ -372,7 +396,7 @@ export function AdminPage() {
   const curLabel = TABS.find(([k]) => k === tab)?.[1] ?? "Dashboard";
 
   return (
-    <div className="dash">
+    <div className={`dash${navOpen ? " dash--nav-open" : ""}`}>
       {/* ── left sidebar nav (Dasher) ── */}
       <aside className="dash__side">
         <Link to="/projects" className="dash__brand">
@@ -380,6 +404,7 @@ export function AdminPage() {
           <span className="dash__brand-txt">
             Giant Studio
             <small>Admin console</small>
+            <span className="dash__brand-ver">v1.0.2</span>
           </span>
         </Link>
 
@@ -390,7 +415,10 @@ export function AdminPage() {
               role="tab"
               aria-selected={tab === k}
               className={`dash__nav-item${tab === k ? " is-active" : ""}`}
-              onClick={() => setTab(k)}
+              onClick={() => {
+                setTab(k);
+                setNavOpen(false);
+              }}
             >
               <NavIcon name={icon} />
               <span>{label}</span>
@@ -422,9 +450,19 @@ export function AdminPage() {
         </div>
       </aside>
 
+      {/* click-away backdrop for the mobile nav drawer */}
+      <div className="dash__backdrop" aria-hidden="true" onClick={() => setNavOpen(false)} />
+
       {/* ── main column ── */}
       <div className="dash__main">
         <header className="dash__topbar">
+          <button
+            className="dash__hamburger"
+            aria-label="Open menu"
+            onClick={() => setNavOpen(true)}
+          >
+            ☰
+          </button>
           <div>
             <h1 className="dash__title">{curLabel}</h1>
             <p className="dash__sub">{SUBTITLES[tab]}</p>
@@ -559,7 +597,7 @@ export function AdminPage() {
                   : "No matching members found."}
               </div>
             ) : (
-              <table className="admin2__table">
+              <table className="admin2__table admin2__table--cards">
                 <thead>
                   <tr>
                     <th>Member</th>
@@ -596,16 +634,16 @@ export function AdminPage() {
                             </span>
                           </div>
                         </td>
-                        <td>
+                        <td data-label="Role">
                           <span className={`chip chip--role-${u.role}`}>{u.role}</span>
                           {isSso ? <span className="chip chip--google">Google</span> : null}
                         </td>
-                        <td>
+                        <td data-label="Status">
                           <span className={`chip chip--${u.status}`}>
                             {u.status === "active" ? "Active" : "Suspended"}
                           </span>
                         </td>
-                        <td>
+                        <td data-label="Budget">
                           <div className="admin2__budget">
                             <span className="admin2__budget-nums">
                               <b>{usd(u.available_usd)}</b> left / {usd(budget)}
@@ -615,7 +653,7 @@ export function AdminPage() {
                             </span>
                           </div>
                         </td>
-                        <td className="admin2__muted">{relTime(u.last_login)}</td>
+                        <td className="admin2__muted" data-label="Last login">{relTime(u.last_login)}</td>
                         <td className="admin2__row-actions">
                           <KebabMenu
                             items={[

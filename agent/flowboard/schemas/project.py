@@ -64,6 +64,9 @@ class ProjectCreate(BaseModel):
     # account it belongs to. Ignored on the no-auth path; when a normal user
     # somehow reaches create, the route overrides it with their own id.
     owner_user_id: Optional[uuid.UUID] = None
+    # A project can be assigned to several people. When given, this is the full
+    # assigned set (the first becomes the primary owner, the rest members).
+    member_user_ids: Optional[list[uuid.UUID]] = None
 
     @field_validator("settings")
     @classmethod
@@ -78,6 +81,9 @@ class ProjectUpdate(BaseModel):
     settings: Optional[dict[str, Any]] = None
     # Phase 9.1: admin may reassign the project to a different user.
     owner_user_id: Optional[uuid.UUID] = None
+    # Full assigned set (owner + members). When provided, replaces the whole
+    # assignment: the first id becomes the primary owner, the rest are members.
+    member_user_ids: Optional[list[uuid.UUID]] = None
 
     @field_validator("settings")
     @classmethod

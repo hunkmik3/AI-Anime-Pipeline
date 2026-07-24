@@ -85,7 +85,7 @@ SEEDANCE_1_5_PRO_CAPABILITY = VideoProviderCapability(
     supports_audio_toggle=False,
     supports_audio_ref=False,
     max_refs=0,
-    aspect_ratios=("1:1", "16:9", "9:16"),
+    aspect_ratios=("1:1", "16:9", "9:16", "4:3"),
     resolutions=("480p", "720p", "1080p"),  # 1.5 Pro: no 4k (Seedance-2.0-only)
     durations=(5, 8, 10),
 )
@@ -102,8 +102,8 @@ SEEDANCE_2_0_CAPABILITY = VideoProviderCapability(
     supports_audio_ref=True,
     supports_video_ref=True,  # Phase 8.1.5d — reference_video probed OK (§11.9)
     max_refs=9,
-    aspect_ratios=("1:1", "16:9", "9:16"),
-    resolutions=("480p", "720p", "1080p", "4k"),  # 4k per BytePlus ModelArk (2.0-only)
+    aspect_ratios=("1:1", "16:9", "9:16", "4:3"),
+    resolutions=("480p", "720p", "1080p"),  # 4k disabled per request
     # Phase 8.1.5c: contiguous 4..15s range (Dreamina UI exposes a slider).
     # Only 5/8s are live-verified (contract §11); the rest are accepted by
     # the provider and gated by the live test — if the ARK API rejects a

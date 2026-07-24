@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { thumbUrl, listProjectImages, uploadImage, type ProjectImage } from "../../api/client";
@@ -313,6 +313,8 @@ interface AdminProject {
   name: string;
   owner_user_id: string | null;
   owner_name: string | null;
+  // Full assigned set (owner first, then members) — a project can be shared.
+  assignee_ids?: string[];
   created_at: string | null;
   thumb_media_id?: string | null;
   settings?: Record<string, unknown>;
@@ -344,13 +346,93 @@ async function sendJson(url: string, method: string, body?: unknown) {
   return res.status === 204 ? null : res.json();
 }
 
+/** Multi-select of users a project is assigned to — a button that opens a
+ *  checkbox list. Used both in the create form and per-row in the table. */
+function AssigneePicker({
+  users,
+  selected,
+  onChange,
+  placeholder,
+  disabled,
+}: {
+  users: AdminUserLite[];
+  selected: string[];
+  onChange: (ids: string[]) => void;
+  placeholder?: string;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const nameOf = (id: string) => {
+    const u = users.find((x) => x.id === id);
+    return u ? u.display_name || u.username : "unknown";
+  };
+  const label =
+    selected.length === 0
+      ? placeholder ?? "— Assign to… —"
+      : selected.length <= 2
+        ? selected.map(nameOf).join(", ")
+        : `${nameOf(selected[0])} +${selected.length - 1} more`;
+
+  function toggle(id: string) {
+    onChange(
+      selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id],
+    );
+  }
+
+  return (
+    <div className="assignee-picker" ref={ref}>
+      <button
+        type="button"
+        className="assignee-picker__btn"
+        onClick={() => !disabled && setOpen((o) => !o)}
+        disabled={disabled}
+        title={selected.length ? selected.map(nameOf).join(", ") : label}
+      >
+        <span className="assignee-picker__label">{label}</span>
+        <span className="assignee-picker__caret" aria-hidden>▾</span>
+      </button>
+      {open ? (
+        <div className="assignee-picker__menu">
+          {users.length === 0 ? (
+            <div className="assignee-picker__empty">No users</div>
+          ) : (
+            users.map((u) => (
+              <label key={u.id} className="assignee-picker__opt">
+                <input
+                  type="checkbox"
+                  checked={selected.includes(u.id)}
+                  onChange={() => toggle(u.id)}
+                />
+                <span>
+                  {u.display_name || u.username}
+                  {u.role === "admin" ? " (admin)" : ""}
+                </span>
+              </label>
+            ))
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function ProjectsTab() {
   const projects = useFetch<AdminProject[]>("/api/projects");
   const users = useFetch<AdminUserLite[]>("/api/admin/users");
   const costs = useFetch<ProjectCost[]>("/api/admin/stats/projects");
 
   const [name, setName] = useState("");
-  const [ownerId, setOwnerId] = useState("");
+  const [assigneeIds, setAssigneeIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -373,19 +455,22 @@ export function ProjectsTab() {
       setErr("Enter a project name.");
       return;
     }
-    if (!ownerId) {
-      setErr("Choose an owner for the project.");
+    if (assigneeIds.length === 0) {
+      setErr("Assign the project to at least one person.");
       return;
     }
     setBusy(true);
     setErr(null);
     setMsg(null);
     try {
-      await sendJson("/api/projects", "POST", { name: nm, owner_user_id: ownerId });
+      await sendJson("/api/projects", "POST", { name: nm, member_user_ids: assigneeIds });
       setName("");
-      setOwnerId("");
-      const who = members.find((u) => u.id === ownerId);
-      setMsg(`Created "${nm}" for ${who?.display_name || who?.username || "user"}.`);
+      setAssigneeIds([]);
+      setMsg(
+        `Created "${nm}" for ${assigneeIds.length} ${
+          assigneeIds.length === 1 ? "person" : "people"
+        }.`,
+      );
       await Promise.all([projects.reload(), costs.reload()]);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "failed to create project");
@@ -394,17 +479,29 @@ export function ProjectsTab() {
     }
   }
 
-  async function reassign(p: AdminProject, newOwner: string) {
-    if (!newOwner || newOwner === (p.owner_user_id ?? "")) return;
+  async function setAssignees(p: AdminProject, ids: string[]) {
+    const current = p.assignee_ids ?? (p.owner_user_id ? [p.owner_user_id] : []);
+    // No-op if the set is unchanged (ignoring order).
+    if (
+      ids.length === current.length &&
+      ids.every((x) => current.includes(x))
+    ) {
+      return;
+    }
     setErr(null);
     setMsg(null);
     try {
-      await sendJson(`/api/projects/${p.id}`, "PATCH", { owner_user_id: newOwner });
-      const who = members.find((u) => u.id === newOwner);
-      setMsg(`"${p.name}" reassigned to ${who?.display_name || who?.username}.`);
+      await sendJson(`/api/projects/${p.id}`, "PATCH", { member_user_ids: ids });
+      setMsg(
+        ids.length === 0
+          ? `"${p.name}" is now unassigned.`
+          : `"${p.name}" is now shared with ${ids.length} ${
+              ids.length === 1 ? "person" : "people"
+            }.`,
+      );
       await projects.reload();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "failed to reassign");
+      setErr(e instanceof Error ? e.message : "failed to update assignees");
     }
   }
 
@@ -488,19 +585,12 @@ export function ProjectsTab() {
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && void create()}
           />
-          <select
-            className="admin2__search"
-            value={ownerId}
-            onChange={(e) => setOwnerId(e.target.value)}
-          >
-            <option value="">— Assign to whom? —</option>
-            {members.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.display_name || u.username}
-                {u.role === "admin" ? " (admin)" : ""}
-              </option>
-            ))}
-          </select>
+          <AssigneePicker
+            users={members}
+            selected={assigneeIds}
+            onChange={setAssigneeIds}
+            placeholder="— Assign to whom? —"
+          />
           <button className="btn2 btn2--primary" onClick={() => void create()} disabled={busy}>
             {busy ? "Creating…" : "+ Create project"}
           </button>
@@ -518,12 +608,12 @@ export function ProjectsTab() {
             No projects yet. Create the first one for a member above.
           </div>
         ) : (
-          <table className="admin2__table">
+          <table className="admin2__table admin2__table--cards admin2__cards-proj">
             <thead>
               <tr>
                 <th className="admin-proj__thumb-col" aria-label="Cover" />
                 <th>Project</th>
-                <th>Owner</th>
+                <th>Assigned to</th>
                 <th>Total spent</th>
                 <th>Clips</th>
                 <th className="admin2__th-actions" aria-label="Actions" />
@@ -560,19 +650,13 @@ export function ProjectsTab() {
                         <b>{p.name || "Untitled"}</b>
                       </button>
                     </td>
-                    <td>
-                      <select
-                        className="admin-proj__owner"
-                        value={p.owner_user_id ?? ""}
-                        onChange={(e) => void reassign(p, e.target.value)}
-                      >
-                        {!p.owner_user_id ? <option value="">— unassigned —</option> : null}
-                        {members.map((u) => (
-                          <option key={u.id} value={u.id}>
-                            {u.display_name || u.username}
-                          </option>
-                        ))}
-                      </select>
+                    <td data-label="Assigned to">
+                      <AssigneePicker
+                        users={members}
+                        selected={p.assignee_ids ?? (p.owner_user_id ? [p.owner_user_id] : [])}
+                        onChange={(ids) => void setAssignees(p, ids)}
+                        placeholder="— unassigned —"
+                      />
                     </td>
                     <td>{c ? <b>{usd(c.total_usd)}</b> : <span className="admin2__muted">—</span>}</td>
                     <td className="admin2__muted">{c ? c.clips : 0}</td>
@@ -719,7 +803,7 @@ export function AuditTab({ fmtTime }: { fmtTime: (iso?: string | null) => string
       {rows.length === 0 ? (
         <div className="admin2__empty">No events yet.</div>
       ) : (
-        <table className="admin2__table">
+        <table className="admin2__table admin2__table--cards admin2__cards-audit">
           <thead>
             <tr>
               <th>Time</th>

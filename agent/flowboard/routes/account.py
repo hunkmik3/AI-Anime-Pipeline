@@ -18,6 +18,7 @@ from flowboard.services import (
     audit_service,
     auth,
     budget_service,
+    notifications as notif_service,
     registration_service,
     sso,
     user_service,
@@ -170,3 +171,9 @@ def me(user: User = Depends(get_current_user)) -> dict:
         d["available_usd"] = summ["available_usd"]
         d["reserved_usd"] = summ["reserved_usd"]
     return d
+
+
+@router.get("/notifications")
+def notifications(user: User = Depends(get_current_user)) -> dict:
+    """Header notification feed, filtered by role (admins see admin-only notices)."""
+    return {"releases": notif_service.list_releases(user.role == "admin")}

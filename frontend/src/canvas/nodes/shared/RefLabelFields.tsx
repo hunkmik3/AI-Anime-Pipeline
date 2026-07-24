@@ -66,9 +66,12 @@ export function RefLabelFields({
     PREFIX_BY_TYPE[data.type] ?? labelPlaceholder.replace(/\d+$/, "") ?? "@image";
 
   // One slot per ref feeding the same @-stream in this sequence: 10 image refs
-  // → @image1…@image10. Never fewer than one, so a lone ref can still be named.
+  // → @image1…@image10. Image streams always offer at least @image1…@image10 so
+  // a pasted Manual prompt can reference up to @image10 even before those refs
+  // are wired; audio/video keep "one slot per existing ref".
+  const minSlots = prefix === "@image" ? 10 : 1;
   const slots = Math.max(
-    1,
+    minSlots,
     nodes.filter(
       (n) => n.data.shotId === data.shotId && PREFIX_BY_TYPE[n.data.type] === prefix,
     ).length,

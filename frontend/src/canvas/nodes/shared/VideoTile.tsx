@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { mediaUrl } from "../../../api/client";
+import { mediaUrl, thumbUrl } from "../../../api/client";
 
 const MAX_VIDEO_RETRIES = 5;
 
 export function VideoTile({
   mediaId,
   posterMediaId,
+  aspectRatio,
   isProcessing,
   isError,
   slotError,
@@ -14,19 +15,32 @@ export function VideoTile({
 }: {
   mediaId: string | undefined;
   posterMediaId?: string | undefined;
+  /** Clip aspect ratio ("9:16", "16:9", "4:3", "1:1"…) so the tile shows the
+   *  full frame at its true shape instead of cropping to a fixed 16:9 box. */
+  aspectRatio?: string | undefined;
   isProcessing: boolean;
   isError: boolean;
   slotError?: string | null;
   alt: string;
   onClick?: () => void;
 }) {
+  // "9:16" → "9 / 16" for the CSS aspect-ratio; fall back to 16:9.
+  const tileStyle = {
+    aspectRatio: aspectRatio ? aspectRatio.replace(":", " / ") : undefined,
+  };
   const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState(false);
+  // Prefer a cheap server-side still (webp first frame) over mounting a live
+  // <video> per tile — dozens of <video preload="metadata"> elements are what
+  // make canvases with many sequences/videos lag. Only fall back to a real
+  // <video> if that thumbnail can't be produced.
+  const [videoFallback, setVideoFallback] = useState(false);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setLoaded(false);
     setAttempt(0);
+    setVideoFallback(false);
     return () => {
       if (retryTimerRef.current !== null) {
         clearTimeout(retryTimerRef.current);
@@ -64,6 +78,7 @@ export function VideoTile({
     return (
       <div
         className={cls}
+        style={tileStyle}
         role={onClick ? "button" : undefined}
         tabIndex={onClick ? 0 : undefined}
         aria-label={blockedTitle ?? (onClick ? `Open variant ${alt}` : undefined)}
@@ -91,6 +106,7 @@ export function VideoTile({
   return (
     <div
       className={cls}
+      style={tileStyle}
       role={onClick ? "button" : undefined}
       tabIndex={onClick ? 0 : undefined}
       aria-label={onClick ? `Open variant ${alt}` : undefined}
@@ -117,14 +133,28 @@ export function VideoTile({
             }, 2000);
           }}
         />
+      ) : !givenUp && !videoFallback ? (
+        // Phase 10: for r2v/custom-ref videos (no poster) show the server's
+        // first-frame webp thumbnail — a plain <img> is far cheaper than a
+        // live <video> element, so a canvas with many clips no longer mounts
+        // dozens of decoders. If the thumb can't be produced (older clip,
+        // ffmpeg miss → route serves the raw video → img errors) we fall back
+        // to the original <video> thumbnail behaviour below.
+        <img
+          className="video-tile__poster"
+          src={thumbUrl(mediaId)}
+          alt={alt}
+          loading="lazy"
+          decoding="async"
+          onLoad={() => setLoaded(true)}
+          onError={() => setVideoFallback(true)}
+        />
       ) : !givenUp ? (
-        // Phase 8.3b: when there's no poster (r2v + custom-ref videos), we
-        // rely on the <video> element itself to render its first frame as
-        // the thumbnail. `preload="metadata"` is required — without it the
+        // Phase 8.3b fallback: rely on the <video> element itself to render
+        // its first frame. `preload="metadata"` is required — without it the
         // browser fetches nothing and the user sees an empty player forever
         // (placeholder ▶/0:00 never gets replaced because onLoadedData never
-        // fires). `loadedmetadata` fires as soon as the first frame is known,
-        // which is what we want for a still thumb.
+        // fires). `loadedmetadata` fires as soon as the first frame is known.
         <video
           key={attempt}
           className="node-card__thumbnail"

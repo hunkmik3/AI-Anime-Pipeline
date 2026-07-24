@@ -247,6 +247,17 @@ export function ShotCanvas() {
     [deleteEdgeByRfId],
   );
 
+  // Alt-click a connection to delete it — a quick shortcut instead of selecting
+  // the edge and pressing Delete.
+  const onEdgeClick = useCallback(
+    (event: { altKey: boolean; stopPropagation: () => void }, edge: { id: string }) => {
+      if (!event.altKey) return;
+      event.stopPropagation();
+      void deleteEdgeByRfId(edge.id);
+    },
+    [deleteEdgeByRfId],
+  );
+
   const onNodeDoubleClick = useCallback(
     (_event: React.MouseEvent, node: FlowNode) => {
       const isGenerable = ["image", "prompt", "video", "visual_asset", "character"].includes(node.data.type);
@@ -322,6 +333,7 @@ export function ShotCanvas() {
         onConnectEnd={onConnectEnd}
         onNodesDelete={onNodesDelete}
         onEdgesDelete={onEdgesDelete}
+        onEdgeClick={onEdgeClick}
         onNodeDoubleClick={onNodeDoubleClick}
         deleteKeyCode={["Backspace", "Delete"]}
         defaultEdgeOptions={defaultEdgeOptions}
@@ -333,6 +345,9 @@ export function ShotCanvas() {
         minZoom={0.02}
         maxZoom={16}
         fitView
+        // Cull off-screen nodes so a sequence with many video nodes doesn't
+        // mount every tile at once.
+        onlyRenderVisibleElements
         proOptions={{ hideAttribution: true }}
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#2a2e38" />

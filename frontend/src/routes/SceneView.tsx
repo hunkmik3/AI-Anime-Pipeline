@@ -10,6 +10,7 @@ import {
   type SceneDTO,
 } from "../api/client";
 import { ReferencesPanel } from "../components/ReferencesPanel";
+import { ProjectVideoGallery } from "../components/ProjectVideoGallery";
 import { useProjectStore } from "../store/project";
 import { useSceneStore } from "../store/scene";
 import { useAuthStore } from "../store/auth";
@@ -326,6 +327,8 @@ export function SceneView() {
               })}
             </ol>
           )}
+
+          {projectId ? <ProjectVideoGallery projectId={projectId} /> : null}
 
           {SHOW_PROJECT_BIBLE && (
           <details className="project-bible-collapse">

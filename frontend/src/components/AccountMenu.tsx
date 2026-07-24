@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { useAuthStore } from "../store/auth";
 import { useProjectStore } from "../store/project";
 import { ChangePasswordDialog } from "./ChangePasswordDialog";
+import { NotificationBell } from "./NotificationBell";
 
 /** Top-right account widget: who's logged in, an admin link, and logout. */
 export function AccountMenu() {
@@ -20,6 +21,7 @@ export function AccountMenu() {
       : undefined);
   return (
     <div className="account-menu">
+      <NotificationBell />
       {currentProjectId ? (
         <Link
           className="account-menu__lib"

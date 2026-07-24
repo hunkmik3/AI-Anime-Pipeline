@@ -28,19 +28,47 @@ export interface HistoryRow {
   user_name: string | null;
   media_ids: string[];
   kept: boolean;
+  // Audio (Seed Audio) takes — render an <audio> element + these settings.
+  kind?: "video" | "audio";
+  audio_format?: string | null;
+  sample_rate?: number | null;
+  speech_rate?: number | null;
+  loudness_rate?: number | null;
+  pitch_rate?: number | null;
+  // Material used (voice refs / image ref) — so a take can be "reused" into a
+  // fresh node with the same prompt + settings + material.
+  references?: string[];
+  image_ref?: string | null;
 }
 
 const usd = (v: number | null) => (v != null ? `$${v.toFixed(2)}` : "—");
 
 /** Save one clip. mediaUrl is same-origin, so a plain download anchor works. */
-function downloadClip(mediaId: string, base: string, i: number, total: number) {
+function downloadClip(
+  mediaId: string,
+  base: string,
+  i: number,
+  total: number,
+  ext = "mp4",
+) {
   const a = document.createElement("a");
   a.href = mediaUrl(mediaId);
   const suffix = total > 1 ? `-${i + 1}` : "";
-  a.download = `${(base || "clip").replace(/[^A-Za-z0-9_-]+/g, "_")}${suffix}.mp4`;
+  a.download = `${(base || "clip").replace(/[^A-Za-z0-9_-]+/g, "_")}${suffix}.${ext}`;
   document.body.appendChild(a);
   a.click();
   a.remove();
+}
+
+/** Human-readable audio settings line (format · rate · speed/vol/pitch). */
+function audioSettings(r: HistoryRow): string {
+  const parts: string[] = [];
+  if (r.audio_format) parts.push(String(r.audio_format).toUpperCase());
+  if (r.sample_rate) parts.push(`${r.sample_rate} Hz`);
+  if (r.speech_rate) parts.push(`speed ${r.speech_rate > 0 ? "+" : ""}${r.speech_rate}`);
+  if (r.loudness_rate) parts.push(`vol ${r.loudness_rate > 0 ? "+" : ""}${r.loudness_rate}`);
+  if (r.pitch_rate) parts.push(`pitch ${r.pitch_rate > 0 ? "+" : ""}${r.pitch_rate}`);
+  return parts.join(" · ");
 }
 
 function fmtWhen(iso: string | null): string {
@@ -58,16 +86,26 @@ function fmtTook(ms: number | null): string {
 export function NodeHistoryModal({
   rfId,
   title,
+  kind = "video",
+  onReuse,
   onClose,
 }: {
   rfId: string;
   title?: string;
+  kind?: "video" | "audio";
+  // When given, each take shows a "Reuse" button that spawns a fresh node with
+  // this take's prompt + settings + material.
+  onReuse?: (row: HistoryRow) => void;
   onClose: () => void;
 }) {
+  const isAudio = kind === "audio";
+  const dlExt = (r: HistoryRow) => (isAudio ? r.audio_format || "mp3" : "mp4");
   const [rows, setRows] = useState<HistoryRow[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  // Which take is open in the big player (its clip ids + a label for filenames).
-  const [viewer, setViewer] = useState<{ ids: string[]; label: string } | null>(null);
+  // Which take is open in the big player (its clip ids + a label + download ext).
+  const [viewer, setViewer] = useState<{ ids: string[]; label: string; ext: string } | null>(
+    null,
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -143,19 +181,23 @@ export function NodeHistoryModal({
                     className="nhist__thumb nhist__thumb--play"
                     title="Play"
                     onClick={() =>
-                      setViewer({ ids: r.media_ids, label: title || "clip" })
+                      setViewer({ ids: r.media_ids, label: title || "clip", ext: dlExt(r) })
                     }
                   >
-                    <video
-                      src={mediaUrl(r.media_ids[0])}
-                      preload="metadata"
-                      muted
-                      onMouseEnter={(e) => void e.currentTarget.play().catch(() => {})}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.pause();
-                        e.currentTarget.currentTime = 0;
-                      }}
-                    />
+                    {isAudio ? (
+                      <span className="nhist__thumb-audio" aria-hidden>🔊</span>
+                    ) : (
+                      <video
+                        src={mediaUrl(r.media_ids[0])}
+                        preload="metadata"
+                        muted
+                        onMouseEnter={(e) => void e.currentTarget.play().catch(() => {})}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.pause();
+                          e.currentTarget.currentTime = 0;
+                        }}
+                      />
+                    )}
                     <span className="nhist__play-badge" aria-hidden>▶</span>
                     {r.media_ids.length > 1 ? (
                       <span className="nhist__variant-count">{r.media_ids.length}</span>
@@ -181,10 +223,24 @@ export function NodeHistoryModal({
                     ) : null}
                   </div>
                   <div className="nhist__line2">
-                    {r.model ?? "—"}
-                    {r.resolution ? ` · ${r.resolution}` : ""}
-                    {r.duration_seconds ? ` · ${r.duration_seconds}s` : ""}
-                    {r.user_name ? ` · ${r.user_name}` : ""}
+                    {isAudio ? (
+                      <>
+                        {audioSettings(r) || "audio"}
+                        {r.duration_seconds ? ` · ${r.duration_seconds.toFixed(1)}s` : ""}
+                        {r.references && r.references.length
+                          ? ` · 🔊 ${r.references.length} ref${r.references.length > 1 ? "s" : ""}`
+                          : ""}
+                        {r.image_ref ? " · 🖼 image" : ""}
+                        {r.user_name ? ` · ${r.user_name}` : ""}
+                      </>
+                    ) : (
+                      <>
+                        {r.model ?? "—"}
+                        {r.resolution ? ` · ${r.resolution}` : ""}
+                        {r.duration_seconds ? ` · ${r.duration_seconds}s` : ""}
+                        {r.user_name ? ` · ${r.user_name}` : ""}
+                      </>
+                    )}
                   </div>
                   {r.error ? <div className="nhist__err">{r.error}</div> : null}
                   {r.prompt ? (
@@ -204,25 +260,43 @@ export function NodeHistoryModal({
                       </span>
                     ) : null}
                   </div>
-                  {r.media_ids.length ? (
+                  {r.media_ids.length || onReuse ? (
                     <div className="nhist__actions">
-                      <button
-                        className="nhist__act"
-                        onClick={() => setViewer({ ids: r.media_ids, label: title || "clip" })}
-                      >
-                        View
-                      </button>
-                      <button
-                        className="nhist__act"
-                        title="Download this take"
-                        onClick={() =>
-                          r.media_ids.forEach((m, i) =>
-                            downloadClip(m, title || "clip", i, r.media_ids.length),
-                          )
-                        }
-                      >
-                        ⬇ Download
-                      </button>
+                      {r.media_ids.length ? (
+                        <button
+                          className="nhist__act"
+                          onClick={() =>
+                            setViewer({ ids: r.media_ids, label: title || "clip", ext: dlExt(r) })
+                          }
+                        >
+                          View
+                        </button>
+                      ) : null}
+                      {r.media_ids.length ? (
+                        <button
+                          className="nhist__act"
+                          title="Download this take"
+                          onClick={() =>
+                            r.media_ids.forEach((m, i) =>
+                              downloadClip(m, title || "clip", i, r.media_ids.length, dlExt(r)),
+                            )
+                          }
+                        >
+                          ⬇ Download
+                        </button>
+                      ) : null}
+                      {onReuse ? (
+                        <button
+                          className="nhist__act nhist__act--reuse"
+                          title="Create a new node with this take's prompt, settings & material"
+                          onClick={() => {
+                            onReuse(r);
+                            onClose();
+                          }}
+                        >
+                          ⧉ Reuse
+                        </button>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
@@ -250,16 +324,25 @@ export function NodeHistoryModal({
           <div className="nhist-viewer__stage">
             {viewer.ids.map((m, i) => (
               <div key={m} className="nhist-viewer__item">
-                <video
-                  src={mediaUrl(m)}
-                  controls
-                  autoPlay={i === 0}
-                  playsInline
-                  className="nhist-viewer__video"
-                />
+                {isAudio ? (
+                  <audio
+                    src={mediaUrl(m)}
+                    controls
+                    autoPlay={i === 0}
+                    className="nhist-viewer__audio"
+                  />
+                ) : (
+                  <video
+                    src={mediaUrl(m)}
+                    controls
+                    autoPlay={i === 0}
+                    playsInline
+                    className="nhist-viewer__video"
+                  />
+                )}
                 <button
                   className="nhist__act nhist-viewer__dl"
-                  onClick={() => downloadClip(m, viewer.label, i, viewer.ids.length)}
+                  onClick={() => downloadClip(m, viewer.label, i, viewer.ids.length, viewer.ext)}
                 >
                   ⬇ Download{viewer.ids.length > 1 ? ` #${i + 1}` : ""}
                 </button>
@@ -274,12 +357,22 @@ export function NodeHistoryModal({
 }
 
 /** Small header button that opens the history for a node. */
-export function NodeHistoryButton({ rfId, title }: { rfId: string; title?: string }) {
+export function NodeHistoryButton({
+  rfId,
+  title,
+  kind = "video",
+  onReuse,
+}: {
+  rfId: string;
+  title?: string;
+  kind?: "video" | "audio";
+  onReuse?: (row: HistoryRow) => void;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <>
       <button
-        className="node-header__btn"
+        className="node-header__btn node-header__btn--history"
         onClick={(e) => {
           e.stopPropagation();
           setOpen(true);
@@ -291,7 +384,13 @@ export function NodeHistoryButton({ rfId, title }: { rfId: string; title?: strin
         ⏱
       </button>
       {open ? (
-        <NodeHistoryModal rfId={rfId} title={title} onClose={() => setOpen(false)} />
+        <NodeHistoryModal
+          rfId={rfId}
+          title={title}
+          kind={kind}
+          onReuse={onReuse}
+          onClose={() => setOpen(false)}
+        />
       ) : null}
     </>
   );

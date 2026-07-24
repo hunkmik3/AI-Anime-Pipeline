@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import uuid
 from pathlib import Path
@@ -24,8 +25,12 @@ from flowboard.services import media as media_service
 
 logger = logging.getLogger(__name__)
 
-FFMPEG_BIN = "ffmpeg"
-FFPROBE_BIN = "ffprobe"
+# Resolve ffmpeg/ffprobe from an explicit path when set — the Windows service
+# runs as LocalSystem, whose PATH does not include a per-user winget shim, so
+# the bare "ffmpeg" name won't resolve there. FLOWBOARD_FFMPEG_BIN /
+# FLOWBOARD_FFPROBE_BIN point at C:\ffmpeg\bin\*.exe; falls back to PATH.
+FFMPEG_BIN = os.environ.get("FLOWBOARD_FFMPEG_BIN") or "ffmpeg"
+FFPROBE_BIN = os.environ.get("FLOWBOARD_FFPROBE_BIN") or "ffprobe"
 
 _PROBE_TIMEOUT = 30
 _EXTRACT_TIMEOUT = 60

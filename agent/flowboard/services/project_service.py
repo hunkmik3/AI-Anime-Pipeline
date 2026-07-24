@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Optional
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
 from flowboard.db.models import (
@@ -22,6 +22,7 @@ from flowboard.db.models import (
     PlanRevision,
     Project,
     ProjectFlowMapping,
+    ProjectMember,
     Request,
     Scene,
     Shot,
@@ -42,11 +43,76 @@ class FlowProjectNotBound(Exception):
 def list_projects(
     session: Session, owner_user_id: Optional[uuid.UUID] = None
 ) -> list[Project]:
-    # Multi-user: scope to the owner when given (None = all → single-user/admin).
+    # Multi-user: scope to the caller when given (None = all → single-user/admin).
+    # A scoped user sees a project they OWN or are a MEMBER of (assigned to).
     stmt = select(Project)
     if owner_user_id is not None:
-        stmt = stmt.where(Project.owner_user_id == owner_user_id)
+        member_pids = select(ProjectMember.project_id).where(
+            ProjectMember.user_id == owner_user_id
+        )
+        stmt = stmt.where(
+            or_(
+                Project.owner_user_id == owner_user_id,
+                Project.id.in_(member_pids),  # type: ignore[attr-defined]
+            )
+        )
     return list(session.exec(stmt.order_by(Project.created_at, Project.id)).all())
+
+
+def is_project_member(
+    session: Session, project_id: uuid.UUID, user_id: uuid.UUID
+) -> bool:
+    return (
+        session.exec(
+            select(ProjectMember).where(
+                ProjectMember.project_id == project_id,
+                ProjectMember.user_id == user_id,
+            )
+        ).first()
+        is not None
+    )
+
+
+def user_can_access_project(
+    session: Session, project: Project, user_id: uuid.UUID
+) -> bool:
+    """A scoped (non-admin) caller may access a project they own or are a
+    member of. Admins/no-auth pass ``user_id=None`` and never reach here."""
+    return project.owner_user_id == user_id or is_project_member(
+        session, project.id, user_id
+    )
+
+
+def get_project_member_ids(
+    session: Session, project_id: uuid.UUID
+) -> list[uuid.UUID]:
+    return [
+        m.user_id
+        for m in session.exec(
+            select(ProjectMember)
+            .where(ProjectMember.project_id == project_id)
+            .order_by(ProjectMember.created_at, ProjectMember.id)
+        ).all()
+    ]
+
+
+def set_project_members(
+    session: Session, project_id: uuid.UUID, user_ids: list[uuid.UUID]
+) -> None:
+    """Replace a project's additional-member set with ``user_ids`` (the owner is
+    stored separately on the project and need not appear here). Idempotent."""
+    want = list(dict.fromkeys(user_ids))  # dedupe, keep order
+    existing = session.exec(
+        select(ProjectMember).where(ProjectMember.project_id == project_id)
+    ).all()
+    have = {m.user_id for m in existing}
+    for m in existing:
+        if m.user_id not in want:
+            session.delete(m)
+    for uid in want:
+        if uid not in have:
+            session.add(ProjectMember(project_id=project_id, user_id=uid))
+    session.commit()
 
 
 def create_project(
@@ -77,9 +143,13 @@ def get_project(
     project = session.get(Project, project_id)
     if project is None:
         raise ProjectNotFound(str(project_id))
-    # Multi-user: a scoped caller that isn't the owner sees a 404 (don't leak
-    # existence). None = unscoped (single-user/admin/internal).
-    if owner_user_id is not None and project.owner_user_id != owner_user_id:
+    # Multi-user: a scoped caller who is neither owner nor an assigned member
+    # sees a 404 (don't leak existence). None = unscoped (single-user/admin/
+    # internal). This is the single access chokepoint for the whole project
+    # tree — scenes/shots/nodes/references all gate through get_project().
+    if owner_user_id is not None and not user_can_access_project(
+        session, project, owner_user_id
+    ):
         raise ProjectNotFound(str(project_id))
     return project
 
@@ -156,6 +226,13 @@ def delete_project(session: Session, project_id: uuid.UUID) -> None:
     mapping = session.get(ProjectFlowMapping, project_id)
     if mapping is not None:
         session.delete(mapping)
+
+    # Assignment rows FK project.id (no ON DELETE CASCADE via create_all) — drop
+    # them explicitly or the project delete would hit a FK violation.
+    for m in session.exec(
+        select(ProjectMember).where(ProjectMember.project_id == project_id)
+    ).all():
+        session.delete(m)
 
     session.delete(project)
     session.commit()

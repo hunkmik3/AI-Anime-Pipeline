@@ -5,6 +5,7 @@ import {
   markDownloaded,
   mediaUrl,
   patchNode,
+  thumbUrl,
   uploadImage,
   uploadImageFromUrl,
 } from "../../api/client";
@@ -338,7 +339,7 @@ function VisualAssetBody({ rfId, data }: { rfId: string; data: FlowboardNodeData
       <div className={`visual-asset__media${dragOver ? " visual-asset__media--over" : ""}`}>
         <img
           className="visual-asset__image visual-asset__image--clickable"
-          src={mediaUrl(displayId ?? mediaId)}
+          src={thumbUrl(displayId ?? mediaId, 384)}
           alt={data.title}
           role="button"
           tabIndex={0}

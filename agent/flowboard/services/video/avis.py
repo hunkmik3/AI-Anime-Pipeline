@@ -88,6 +88,22 @@ def _avis_submit_concurrency() -> int:
 
 _CONCURRENCY_SEM = asyncio.Semaphore(_avis_submit_concurrency())
 
+# On HTTP 429 (Avis "api key gen limit reached" — rate/concurrency cap), retry
+# the submit with backoff instead of failing the generation. Env-tunable.
+_SUBMIT_MAX_RETRIES = max(1, int(os.getenv("FLOWBOARD_AVIS_SUBMIT_RETRIES", "6")))
+
+
+def _retry_after_s(resp: httpx.Response, attempt: int) -> float:
+    """Seconds to wait before retrying a 429: honor the Retry-After header,
+    else capped exponential backoff (2, 4, 8, … up to 30s)."""
+    ra = resp.headers.get("retry-after")
+    if ra:
+        try:
+            return min(60.0, float(ra))
+        except ValueError:
+            pass
+    return min(30.0, 2.0 ** (attempt + 1))
+
 
 # Avis Seedance 2.0 (`dreamina-seedance-2-0`). supportedParameters from
 # GET /ai/models: duration, resolution, ratio, seed, watermark, generateAudio,
@@ -102,10 +118,28 @@ AVIS_SEEDANCE_2_0_CAPABILITY = VideoProviderCapability(
     supports_video_ref=True,
     supports_kyc=True,
     max_refs=9,
-    aspect_ratios=("1:1", "16:9", "9:16"),
-    # 480p/720p/1080p/4k per BytePlus ModelArk (4k is Seedance-2.0-only).
-    resolutions=("480p", "720p", "1080p", "4k"),
+    aspect_ratios=("1:1", "16:9", "9:16", "4:3"),
+    # 480p/720p/1080p (4k intentionally disabled per request). Shared by the
+    # 2.0 family (2.0, 2.0-fast, 2.0-mini) — all r2v + audio + KYC via Avis.
+    resolutions=("480p", "720p", "1080p"),
     durations=tuple(range(4, 16)),
+)
+
+
+# i2v-only Seedance tiers on Avis (text+image inputs; no r2v / audio / KYC):
+# seedance-1-5-pro, seedance-1-0-pro, seedance-1-0-pro-fast. Full resolutions
+# minus 4k.
+AVIS_SEEDANCE_I2V_CAPABILITY = VideoProviderCapability(
+    supports_multi_ref=False,
+    supports_last_frame=True,
+    supports_audio_toggle=False,
+    supports_audio_ref=False,
+    supports_video_ref=False,
+    supports_kyc=False,
+    max_refs=0,
+    aspect_ratios=("1:1", "16:9", "9:16", "4:3"),
+    resolutions=("480p", "720p", "1080p"),
+    durations=(5, 10),
 )
 
 
@@ -758,16 +792,31 @@ class AvisVideoProvider:
     async def _post_generation(
         self, body: dict, headers: dict, warnings: list[str]
     ) -> VideoGenSubmitResult:
-        """POST a built /video/generations body; return the submit result."""
+        """POST a built /video/generations body; return the submit result.
+
+        Avis returns HTTP 429 ("api key gen limit reached") when the key's
+        rate/concurrency cap is hit. Rather than fail the generation, retry the
+        submit with backoff (honoring Retry-After) so it goes through once a
+        slot frees up."""
         await _CONCURRENCY_SEM.acquire()
         try:
             async with _http_client_factory() as client:
-                try:
-                    resp = await client.post(
-                        f"{BASE_URL}/video/generations", json=body, headers=headers
+                resp = None
+                for attempt in range(_SUBMIT_MAX_RETRIES):
+                    try:
+                        resp = await client.post(
+                            f"{BASE_URL}/video/generations", json=body, headers=headers
+                        )
+                    except httpx.HTTPError as exc:
+                        raise VideoError("internal", f"avis submit transport error: {exc}") from exc
+                    if resp.status_code != 429 or attempt == _SUBMIT_MAX_RETRIES - 1:
+                        break
+                    wait = _retry_after_s(resp, attempt)
+                    logger.warning(
+                        "avis submit 429 (rate/concurrency limit) — retrying in %.1fs (%d/%d)",
+                        wait, attempt + 1, _SUBMIT_MAX_RETRIES - 1,
                     )
-                except httpx.HTTPError as exc:
-                    raise VideoError("internal", f"avis submit transport error: {exc}") from exc
+                    await asyncio.sleep(wait)
         finally:
             _CONCURRENCY_SEM.release()
 

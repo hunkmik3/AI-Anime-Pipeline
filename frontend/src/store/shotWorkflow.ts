@@ -281,6 +281,13 @@ interface ShotWorkflowState {
   // Duplicate one node (same shot, offset position, cloned data). Returns the
   // new node id.
   duplicateNode(id: string): Promise<string | null>;
+  // Create a node of `type` in `shotId` with explicit `data` (offset near the
+  // source node). Used to "reuse" a past generation from a node's history.
+  addNodeToShotWithData(
+    sourceRfId: string,
+    type: NodeType,
+    data: Record<string, unknown>,
+  ): Promise<string | null>;
   // Clone every node + intra-shot edge of `srcShotId` into `destShotId` (used to
   // duplicate a whole sequence; caller reloads the canvas to render the frame).
   cloneShotContents(srcShotId: string, destShotId: string): Promise<void>;
@@ -511,6 +518,27 @@ export const useShotWorkflowStore = create<ShotWorkflowState>((set, get) => ({
         node.data.status = st;
         patchNode(dto.id, { status: st }).catch(() => {});
       }
+      set((s) => ({ nodes: [...s.nodes, node] }));
+      return node.id;
+    } catch {
+      return null;
+    }
+  },
+
+  async addNodeToShotWithData(sourceRfId, type, data) {
+    const src = get().nodes.find((n) => n.id === sourceRfId);
+    const shotId = (src?.data.shotId as string | undefined) ?? get().shotId ?? undefined;
+    if (!shotId) return null;
+    // Offset from the source so the new node doesn't land exactly on top of it.
+    const x = Math.round((src?.position.x ?? 80) + 60);
+    const y = Math.round((src?.position.y ?? 80) + 60);
+    try {
+      const dto = await createNode({ shot_id: shotId, type, x, y, data });
+      const node = nodeFromDto({
+        id: dto.id, short_id: dto.short_id, type: dto.type,
+        x: dto.x, y: dto.y, data: dto.data, status: dto.status,
+      });
+      node.data.shotId = shotId; // tag for SceneCanvas grouping
       set((s) => ({ nodes: [...s.nodes, node] }));
       return node.id;
     } catch {

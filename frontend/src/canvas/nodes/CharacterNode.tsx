@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 
-import { markDownloaded, mediaUrl, patchNode, uploadImage } from "../../api/client";
+import { markDownloaded, mediaUrl, patchNode, thumbUrl, uploadImage } from "../../api/client";
 import { resolvePrimaryMediaId, useGenerationStore } from "../../store/generation";
 import {
   useShotWorkflowStore,
@@ -142,7 +142,7 @@ function CharacterBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }
         >
           <img
             className="character-avatar__img"
-            src={mediaUrl(displayId ?? mediaId!)}
+            src={thumbUrl(displayId ?? mediaId!, 384)}
             alt={data.title}
           />
           {uploading && <span className="character-drop__overlay">…</span>}

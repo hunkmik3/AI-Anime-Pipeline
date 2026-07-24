@@ -133,24 +133,17 @@ def register_defaults() -> None:
         return
 
     # Local imports break the otherwise-circular registry→provider→base→registry chain.
-    from .flow import FlowVideoProvider, FLOW_DEFAULT_CAPABILITY
     from .dreamina import (
         DreaminaVideoProvider,
         SEEDANCE_1_5_PRO_CAPABILITY,
         SEEDANCE_2_0_CAPABILITY,
     )
-    from .avis import AvisVideoProvider, AVIS_SEEDANCE_2_0_CAPABILITY
-
-    register(
-        VideoModelEntry(
-            model_id="flow-default",
-            provider_name="flow",
-            display_name="Google Flow (Pro/Ultra)",
-            upstream_model_id=None,
-            capabilities=FLOW_DEFAULT_CAPABILITY,
-            factory=lambda entry: FlowVideoProvider(entry),
-        )
+    from .avis import (
+        AvisVideoProvider,
+        AVIS_SEEDANCE_2_0_CAPABILITY,
+        AVIS_SEEDANCE_I2V_CAPABILITY,
     )
+
     register(
         VideoModelEntry(
             model_id="seedance-1-5-pro",
@@ -171,18 +164,26 @@ def register_defaults() -> None:
             factory=lambda entry: AvisVideoProvider(entry),
         )
     )
-    # Direct BytePlus ARK path for Seedance 2.0. Kept (under a distinct id)
-    # after Seedance 2.0 was repointed to the Avis gateway, so the
-    # Dreamina-native r2v/audio/@imageN behaviour stays available + tested.
-    register(
-        VideoModelEntry(
-            model_id="seedance-2-0-byteplus",
-            provider_name="dreamina",
-            display_name="Seedance 2.0 (BytePlus direct · r2v + audio)",
-            upstream_model_id="dreamina-seedance-2-0-260128",
-            capabilities=SEEDANCE_2_0_CAPABILITY,
-            factory=lambda entry: DreaminaVideoProvider(entry),
+    # ── Extra Avis Seedance models (added per request) ─────────────────────
+    # All routed through the Avis gateway (the working key). seedance-1-5-pro
+    # is re-pointed to Avis here (overwrites the direct-BytePlus entry above).
+    # 4k is intentionally omitted from every capability.
+    for _mid, _label, _cap in (
+        ("seedance-1-5-pro", "Seedance 1.5 Pro (Avis · i2v)", AVIS_SEEDANCE_I2V_CAPABILITY),
+        ("dreamina-seedance-2-0-fast", "Seedance 2.0 Fast (Avis · r2v)", AVIS_SEEDANCE_2_0_CAPABILITY),
+        ("dreamina-seedance-2-0-mini", "Seedance 2.0 Mini (Avis · r2v)", AVIS_SEEDANCE_2_0_CAPABILITY),
+        ("seedance-1-0-pro", "Seedance 1.0 Pro (Avis · i2v)", AVIS_SEEDANCE_I2V_CAPABILITY),
+        ("seedance-1-0-pro-fast", "Seedance 1.0 Pro Fast (Avis · i2v)", AVIS_SEEDANCE_I2V_CAPABILITY),
+    ):
+        register(
+            VideoModelEntry(
+                model_id=_mid,
+                provider_name="avis",
+                display_name=_label,
+                upstream_model_id=_mid,
+                capabilities=_cap,
+                factory=lambda entry: AvisVideoProvider(entry),
+            )
         )
-    )
 
     _DEFAULTS_REGISTERED = True

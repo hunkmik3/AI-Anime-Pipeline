@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import JSON, text
+from sqlalchemy import JSON, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Column, Field, SQLModel
 
@@ -58,6 +58,22 @@ class Project(SQLModel, table=True):
     )
     project_bible: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
     settings: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class ProjectMember(SQLModel, table=True):
+    """Additional users a project is assigned to (beyond ``owner_user_id``).
+
+    A project can be shared with several people: a non-admin may open and work
+    in a project when they are its owner OR listed here. Admins see everything,
+    so they never need a row. One row per (project, user)."""
+
+    __tablename__ = "project_member"
+    __table_args__ = (UniqueConstraint("project_id", "user_id", name="uq_project_member"),)
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: uuid.UUID = Field(foreign_key="project.id", index=True)
+    user_id: uuid.UUID = Field(foreign_key="app_user.id", index=True)
     created_at: datetime = Field(default_factory=_utcnow)
 
 

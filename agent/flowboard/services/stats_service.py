@@ -18,7 +18,9 @@ can be gamed — the spend is already on the bill):
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 from collections import defaultdict
 from typing import Optional
 
@@ -26,6 +28,7 @@ from sqlmodel import select
 
 from flowboard.db import get_session
 from flowboard.db.models import (
+    AppSetting,
     DownloadEvent,
     Node,
     Project,
@@ -283,6 +286,88 @@ def cost_tree() -> list[dict]:
     return out
 
 
+def _ref_num(label) -> int:
+    """Sort key for @imageN reference labels (image1 before image10)."""
+    m = re.search(r"\d+", label or "")
+    return int(m.group()) if m else 999
+
+
+def project_video_gens(project_id) -> dict:
+    """Every video generation in ONE project that produced a clip, grouped
+    episode (scene) → sequence (shot), newest take first. Each gen carries its
+    media, prompt and settings so the project page can show a "what have we
+    generated" gallery with inline playback."""
+    pid = str(project_id)
+    with get_session() as s:
+        users, reqs, nodes, shots, scenes, projects, _paid, _d = _load(s)
+        settled = {
+            u.request_id: u
+            for u in s.exec(select(UsageRecord).where(UsageRecord.status == "settled")).all()
+        }
+
+    ep_map: dict = {}
+    total = 0
+    for req in reqs.values():
+        if getattr(req, "type", None) != "gen_video":
+            continue
+        media = [m for m in ((req.result or {}).get("media_ids") or []) if isinstance(m, str)]
+        if not media:
+            continue
+        n = nodes.get(req.node_id) if req.node_id else None
+        if n is None or n.shot_id is None:
+            continue
+        sh = shots.get(n.shot_id)
+        sc = scenes.get(sh.scene_id) if sh else None
+        if sc is None or str(sc.project_id) != pid:
+            continue
+        params = req.params or {}
+        rec = settled.get(req.id)
+        total += 1
+        ref_ids = params.get("reference_images") or []
+        ref_lbls = params.get("reference_labels") or []
+        references = [
+            {"media_id": m, "label": ref_lbls[i] if i < len(ref_lbls) and isinstance(ref_lbls[i], str) else None}
+            for i, m in enumerate(ref_ids)
+            if isinstance(m, str)
+        ]
+        references.sort(key=lambda r: _ref_num(r["label"]))
+        gen = {
+            "request_id": req.id,
+            "node_id": n.id,
+            "node_title": (n.data or {}).get("title") or f"node {n.id}",
+            "created_at": req.created_at.isoformat() if req.created_at else None,
+            "status": req.status,
+            "media_ids": media,
+            "references": references,
+            "prompt": params.get("prompt") or params.get("motion_prompt"),
+            "model": params.get("model_id"),
+            "resolution": params.get("resolution"),
+            "aspect_ratio": params.get("aspect_ratio"),
+            "duration_seconds": params.get("duration_seconds"),
+            "cost_usd": round(float(rec.actual_usd or 0.0), 4) if rec else None,
+        }
+        scid = str(sc.id)
+        ep = ep_map.setdefault(
+            scid,
+            {"scene_id": scid, "name": sc.name or "Episode", "_order": sc.order_index or 0, "_seq": {}},
+        )
+        shid = str(sh.id)
+        seq = ep["_seq"].setdefault(
+            shid,
+            {"shot_id": shid, "shot_label": _shot_label(sh, scenes), "_order": sh.order_index or 0, "gens": []},
+        )
+        seq["gens"].append(gen)
+
+    episodes = []
+    for ep in sorted(ep_map.values(), key=lambda e: e["_order"]):
+        seqs = sorted(ep["_seq"].values(), key=lambda x: x["_order"])
+        for seq in seqs:
+            seq.pop("_order", None)
+            seq["gens"].sort(key=lambda g: (g["created_at"] or ""), reverse=True)
+        episodes.append({"scene_id": ep["scene_id"], "name": ep["name"], "sequences": seqs})
+    return {"total": total, "episodes": episodes}
+
+
 def node_history(node_id) -> list[dict]:
     """Every generation ever run on ONE node — newest first.
 
@@ -345,12 +430,25 @@ def node_history(node_id) -> list[dict]:
                 ),
                 "model": (rec.model if rec else None) or params.get("video_model_id"),
                 "resolution": params.get("resolution"),
-                "duration_seconds": params.get("duration_seconds"),
+                "duration_seconds": params.get("duration_seconds") or result.get("duration"),
                 "prompt": params.get("prompt") or params.get("motion_prompt"),
                 "cost_usd": cost,
                 "ledger_status": rec.status if rec else None,
                 "user_name": (u.display_name or u.username) if u else None,
                 "media_ids": media,
+                # Audio (Seed Audio) history — the tile plays an <audio> element
+                # and shows these settings instead of a video's resolution.
+                "kind": "audio" if q.type == "gen_audio" else "video",
+                "audio_format": params.get("format"),
+                "sample_rate": params.get("sample_rate"),
+                "speech_rate": params.get("speech_rate"),
+                "loudness_rate": params.get("loudness_rate"),
+                "pitch_rate": params.get("pitch_rate"),
+                # Material used — so the history can spawn a node that reuses it.
+                "references": [
+                    r for r in (params.get("references") or []) if isinstance(r, str)
+                ],
+                "image_ref": params.get("image_ref"),
                 # The take the node is showing right now (its output survived).
                 "kept": bool(media) and (
                     current in media or any(m in node_media for m in media)
@@ -539,14 +637,30 @@ def project_costs() -> list[dict]:
     return out
 
 
+def _orphan_res_map() -> dict:
+    """Resolution recovered for settled usage records whose request was deleted
+    (matched to the output file by timestamp — see the one-off backfill). Lets
+    the model/resolution breakdown show the real resolution for orphaned gens
+    instead of a blank."""
+    with get_session() as s:
+        row = s.get(AppSetting, "orphan_resolution_map")
+    if row and row.value:
+        try:
+            return json.loads(row.value)
+        except (ValueError, TypeError):
+            return {}
+    return {}
+
+
 def model_costs() -> list[dict]:
     """Which models/resolutions eat the budget (4k is ~4× 1080p)."""
+    orphan_map = _orphan_res_map()
     with get_session() as s:
         _u, reqs, _n, _sh, _sc, _p, paid, _d = _load(s)
     agg: dict = defaultdict(lambda: {"usd": 0.0, "takes": 0})
     for r in paid:
         req = reqs.get(r.request_id)
-        res = (req.params or {}).get("resolution") if req else None
+        res = (req.params or {}).get("resolution") if req else orphan_map.get(str(r.id))
         key = f"{r.model or 'unknown'}{f' · {res}' if res else ''}"
         agg[key]["usd"] += float(r.actual_usd or 0.0)
         agg[key]["takes"] += 1

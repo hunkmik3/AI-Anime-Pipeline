@@ -62,6 +62,7 @@ function VideoBody({ rfId, data }: { rfId: string; data: FlowboardNodeData }) {
         key={i}
         mediaId={mid}
         posterMediaId={poster}
+        aspectRatio={data.aspectRatio}
         isProcessing={isProcessing && !mid}
         isError={(isError && !mid) || slotBlocked}
         slotError={slotError}

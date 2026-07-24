@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
 
-import { getSceneEstablishing, mediaUrl, patchNode } from "../../api/client";
+import { getSceneEstablishing, patchNode, thumbUrl } from "../../api/client";
 import { useSceneStore } from "../../store/scene";
 import { useShotStore } from "../../store/shot";
 import {
@@ -78,7 +78,7 @@ function MasterShotBody({ rfId, data }: { rfId: string; data: FlowboardNodeData 
         <div className="visual-asset__media">
           <img
             className="visual-asset__image"
-            src={mediaUrl(mediaId)}
+            src={thumbUrl(mediaId, 384)}
             alt={data.title}
           />
         </div>

@@ -465,7 +465,21 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         // know the provider mapping.
         const videoSettings = (nodeForModel?.data as Record<string, unknown> | undefined) ?? {};
         if (videoSettings.duration_seconds) videoParams.duration_seconds = videoSettings.duration_seconds;
-        if (videoSettings.resolution) videoParams.resolution = videoSettings.resolution;
+        // Resolution: always send the EFFECTIVE value — the user's pick, or the
+        // model's shown default (720p when offered, else the first option) — so
+        // "what the dropdown shows is what actually gets generated", and so the
+        // request records the resolution for the admin's per-resolution stats.
+        // Before, an untouched dropdown left this unset → the backend silently
+        // used 720p and the admin saw a blank resolution.
+        {
+          const vmodel = useVideoModelsStore
+            .getState()
+            .models.find((m) => m.model_id === resolvedModelId);
+          const resOpts = vmodel?.capabilities?.resolutions ?? [];
+          const defaultRes = resOpts.includes("720p") ? "720p" : resOpts[0];
+          const effRes = (videoSettings.resolution as string | undefined) ?? defaultRes;
+          if (effRes) videoParams.resolution = effRes;
+        }
         if (videoSettings.generate_audio !== undefined) videoParams.generate_audio = videoSettings.generate_audio;
         // Person-driven (KYC): backend turns the wired image/audio/video refs
         // into Avis KYC assets and dispatches portrait→video / lip-sync / video-ref.

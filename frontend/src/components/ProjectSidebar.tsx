@@ -147,6 +147,15 @@ export function ProjectSidebar() {
 
   return (
     <aside className={`project-sidebar${collapsed ? " project-sidebar--collapsed" : ""}`}>
+      {!collapsed && (
+        <Link to="/projects" className="project-sidebar__logo-row">
+          <img src="/favicon.png" alt="" width={28} height={28} />
+          <span className="project-sidebar__logo-txt">
+            Giant Studio
+            <span className="project-sidebar__ver">v1.0.2</span>
+          </span>
+        </Link>
+      )}
       <div className="project-sidebar__header">
         {!collapsed && (
           <Link to="/projects" className="project-sidebar__title">

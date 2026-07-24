@@ -1,5 +1,5 @@
 #!/usr/bin/env pwsh
-# Flowboard — one-command setup for a Windows host (parity with deploy.sh).
+# Flowboard - one-command setup for a Windows host (parity with deploy.sh).
 #
 #   powershell -ExecutionPolicy Bypass -File .\deploy.ps1            # Postgres via Docker
 #   powershell -ExecutionPolicy Bypass -File .\deploy.ps1 -NoDocker  # SQLite, no Docker
@@ -42,7 +42,7 @@ Need python "winget install Python.Python.3.12"
 Need node   "winget install OpenJS.NodeJS.LTS"
 Need npm    "winget install OpenJS.NodeJS.LTS"
 if (-not $NoDocker) {
-  Need docker "winget install Docker.DockerDesktop (mo app 1 lan) — hoac chay lai voi -NoDocker"
+  Need docker "winget install Docker.DockerDesktop (mo app 1 lan) - hoac chay lai voi -NoDocker"
   docker info *> $null
   if ($LASTEXITCODE -ne 0) { Die "Docker engine chua chay - mo Docker Desktop, hoac chay lai voi -NoDocker (dung SQLite)." }
 }
@@ -72,6 +72,9 @@ Set-Location "$RepoRoot\agent"
 if (-not (Test-Path ".venv")) { python -m venv .venv; CheckExit "Tao venv that bai" }
 & ".venv\Scripts\python.exe" -m pip install --quiet --upgrade pip; CheckExit "Nang cap pip that bai"
 & ".venv\Scripts\pip.exe" install --quiet -e .; CheckExit "Cai backend that bai"
+# Runtime deps live in requirements.txt (boto3 for R2/KYC, psycopg, etc.) which
+# `pip install -e .` does NOT pull in — install them explicitly so KYC works.
+& ".venv\Scripts\pip.exe" install --quiet -r requirements.txt; CheckExit "Cai requirements that bai"
 Ok "Backend san sang"
 
 # --- 3. database ------------------------------------------------------------

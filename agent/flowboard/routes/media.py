@@ -85,11 +85,56 @@ def get_media_status(media_id: str):
     return media_service.status(media_id)
 
 
+# Extensions we treat as video → the thumbnail is the first frame (ffmpeg),
+# not a direct image decode. Everything else goes through PIL.
+_VIDEO_THUMB_EXTS = {".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv"}
+
+
+def _build_thumb(src, thumb_path, w: int) -> bool:
+    """Write a downscaled WEBP thumbnail of ``src`` to ``thumb_path``.
+
+    Blocking (PIL + possibly ffmpeg) — call via ``run_in_threadpool`` so a big
+    canvas firing dozens of thumb requests never stalls the event loop. For a
+    video, a still first frame is extracted with ffmpeg first, then thumbnailed.
+    Returns True on success, False if ``src`` couldn't be decoded as an image
+    (caller then serves the original bytes)."""
+    from PIL import Image
+
+    frame_tmp = None
+    try:
+        img_src = src
+        if src.suffix.lower() in _VIDEO_THUMB_EXTS:
+            from flowboard.services import frame_extract
+
+            frame_tmp = media_service.MEDIA_CACHE_DIR / f"thumbframe_{thumb_path.stem}.jpg"
+            # First frame (t=0) — cheap and representative enough for a tile.
+            frame_extract._run_ffmpeg_extract(src, 0.0, frame_tmp)
+            if not frame_tmp.exists() or frame_tmp.stat().st_size == 0:
+                return False
+            img_src = frame_tmp
+
+        with Image.open(img_src) as im:
+            im = im.convert("RGB")
+            im.thumbnail((w, w * 4))  # cap width; allow tall portraits
+            im.save(thumb_path, "WEBP", quality=80, method=4)
+        return True
+    except Exception:  # noqa: BLE001 — non-image / ffmpeg error → serve original
+        return False
+    finally:
+        if frame_tmp is not None:
+            try:
+                frame_tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 @api_router.get("/{media_id}/thumb")
 async def get_media_thumb(media_id: str, w: int = 256):
     """Downscaled WEBP thumbnail for grids/pickers — avoids shipping full-res
-    (multi-MB) images for tiny tiles. Cached on disk after the first request.
-    Falls back to the original bytes for non-images / resize failures."""
+    (multi-MB) images, or a full <video> element, for tiny tiles. Cached on
+    disk after the first request. For video media the thumbnail is the first
+    frame (ffmpeg); everything else decodes directly. Falls back to the
+    original bytes for non-images / resize failures."""
     media_id = media_service.normalize_media_id(media_id)
     if not media_service.is_valid_media_id(media_id):
         raise HTTPException(status_code=400, detail="invalid media_id")
@@ -106,18 +151,12 @@ async def get_media_thumb(media_id: str, w: int = 256):
             return JSONResponse(status_code=404, content=media_service.status(media_id))
         src = result[2]
 
-    try:
-        from PIL import Image
+    from starlette.concurrency import run_in_threadpool
 
-        with Image.open(src) as im:
-            im = im.convert("RGB")
-            im.thumbnail((w, w * 4))  # cap width; allow tall portraits
-            im.save(thumb_path, "WEBP", quality=80, method=4)
+    ok = await run_in_threadpool(_build_thumb, src, thumb_path, w)
+    if ok:
         return FileResponse(str(thumb_path), media_type="image/webp")
-    except Exception:  # noqa: BLE001 — non-image or decode error → serve original
-        return FileResponse(
-            str(src), media_type=media_service._mime_from_ext(src.suffix)
-        )
+    return FileResponse(str(src), media_type=media_service._mime_from_ext(src.suffix))
 
 
 class ExtractFrameBody(BaseModel):
