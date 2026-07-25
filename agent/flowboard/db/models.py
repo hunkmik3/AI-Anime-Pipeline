@@ -41,7 +41,19 @@ def _jsonb_list() -> Column:
     return Column(_JSON, nullable=False, server_default=text("'[]'"))
 
 
-# ── Hierarchy: Project → Scene → Shot ────────────────────────────────────
+# ── Hierarchy: Project → Series → Scene(Episode/Chapter) → Shot(Sequence) ──
+#
+# Phase 10 renamed the production tiers to match how the studio actually talks
+# about the work. The table names stay ``scene``/``shot`` (renaming them would
+# touch every FK, canvas payload and saved workflow for no functional gain);
+# only the user-facing labels move:
+#
+#     Project  →  Series  →  Episode | Chapter  →  Sequence
+#     project     series      scene                shot
+#
+# ``Series`` is the new tier. A Series decides whether its children are called
+# Episodes or Chapters (``unit_label``), so one Project can hold an animated
+# series and a webtoon side by side.
 
 
 class Project(SQLModel, table=True):
@@ -66,7 +78,11 @@ class ProjectMember(SQLModel, table=True):
 
     A project can be shared with several people: a non-admin may open and work
     in a project when they are its owner OR listed here. Admins see everything,
-    so they never need a row. One row per (project, user)."""
+    so they never need a row. One row per (project, user).
+
+    Phase 10: ``role`` is what the member may *do* inside the project —
+    producer | lead | artist | viewer (see ``services/permissions.py``). The
+    project's ``owner_user_id`` is implicitly a producer and needs no row."""
 
     __tablename__ = "project_member"
     __table_args__ = (UniqueConstraint("project_id", "user_id", name="uq_project_member"),)
@@ -74,14 +90,53 @@ class ProjectMember(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     project_id: uuid.UUID = Field(foreign_key="project.id", index=True)
     user_id: uuid.UUID = Field(foreign_key="app_user.id", index=True)
+    role: str = "artist"
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class Series(SQLModel, table=True):
+    """A production line inside a Project — "Season 1", "Volume 2".
+
+    Owns the naming convention for its children: ``unit_label`` picks whether
+    they read as Episodes (animation) or Chapters (webtoon/manga), and ``code``
+    is the short prefix used to build human codes like ``S1-EP007-SQ03``.
+    """
+
+    __tablename__ = "series"
+
+    id: uuid.UUID = Field(default_factory=_uuid_pk, primary_key=True)
+    project_id: uuid.UUID = Field(foreign_key="project.id", index=True)
+    name: str
+    code: str = ""
+    unit_label: str = "Episode"   # "Episode" | "Chapter"
+    order_index: int = 0
+    settings: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
+    # Phase 10 CRM: production-tracking bag mirroring the Series_Master sheet
+    # (tier, status, priority, dates, genres, logline, planned episodes…). A
+    # JSONB bag rather than ~17 typed columns so the field set can track the
+    # sheet without a migration each time; known keys live in series_service.
+    production: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
     created_at: datetime = Field(default_factory=_utcnow)
 
 
 class Scene(SQLModel, table=True):
+    """An Episode or Chapter (label comes from its parent Series)."""
+
     id: uuid.UUID = Field(default_factory=_uuid_pk, primary_key=True)
     project_id: uuid.UUID = Field(foreign_key="project.id", index=True)
+    # Nullable so rows predating the Series tier survive; the migration
+    # backfills every existing scene into its project's "Default" series.
+    series_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="series.id", index=True
+    )
     name: str
+    # Human code within the series — "EP007", "CH012". Free-form, not unique.
+    code: str = ""
     order_index: int = 0
+    # Phase 10 CRM: per-episode production bag mirroring the Episode_Tracker
+    # sheet (pipeline status + the four role assignees + duration/deadline…).
+    # Known keys live in scene_service.EPISODE_PROD_FIELDS.
+    production: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
     # Phase 8.3: multi-shot SceneCanvas layout.
     # shot_groups[] = [{shot_id, position:{x,y}, collapsed, label, order}].
     # (Scene Bible removed — Manual mode runs no Phase 6 bible injection.)
@@ -95,8 +150,12 @@ class Scene(SQLModel, table=True):
 
 
 class Shot(SQLModel, table=True):
+    """A Sequence — the unit a single artist owns and generates on the canvas."""
+
     id: uuid.UUID = Field(default_factory=_uuid_pk, primary_key=True)
     scene_id: uuid.UUID = Field(foreign_key="scene.id", index=True)
+    # Human code within the episode/chapter — "SQ03". Free-form, not unique.
+    code: str = ""
     order_index: int = 0
     script_text: str = ""
     # idle | running | awaiting_approval | done | error

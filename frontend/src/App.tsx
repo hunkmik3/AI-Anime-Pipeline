@@ -23,6 +23,7 @@ import { ShotEditor } from "./routes/ShotEditor";
 import { AssetLibraryPage } from "./routes/AssetLibraryPage";
 import { LoginPage } from "./routes/LoginPage";
 import { AdminPage } from "./routes/AdminPage";
+import { StructureConsole } from "./routes/StructureConsole";
 
 import { useProjectStore } from "./store/project";
 import { useAuthStore } from "./store/auth";
@@ -55,15 +56,14 @@ export function App() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
 
-        {/* Admin is a STANDALONE console — deliberately outside AppLayout so it
-            has no project sidebar / canvas chrome. Its own shell, full width. */}
+        {/* Standalone console — outside AppLayout (no project sidebar / canvas
+            chrome). Role-aware: an admin gets the full admin console; a
+            producer/lead gets the scoped Studio console (structure only). */}
         <Route
           path="/admin"
           element={
             <RequireAuth>
-              <RequireAdmin>
-                <AdminShell />
-              </RequireAdmin>
+              <ConsoleRoute />
             </RequireAuth>
           }
         />
@@ -109,10 +109,17 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function RequireAdmin({ children }: { children: React.ReactNode }) {
+/**
+ * The /admin URL serves two shells depending on who's asking:
+ *  • system admin → the full admin console (accounts, budget, cost, audit…)
+ *  • everyone else → the scoped Studio console, which lists only the projects
+ *    they run (producer/lead) and self-empties for anyone with no such role.
+ * Both live outside AppLayout so neither inherits the project/canvas chrome.
+ */
+function ConsoleRoute() {
   const user = useAuthStore((s) => s.user);
-  if (user?.role !== "admin") return <Navigate to="/projects" replace />;
-  return <>{children}</>;
+  if (user?.role === "admin") return <AdminShell />;
+  return <StructureConsole />;
 }
 
 /**

@@ -49,6 +49,7 @@ from flowboard.routes import (
     projects,
     prompt,
     scenes,
+    series,
     shots,
     upload,
     video_providers,
@@ -234,6 +235,7 @@ app.include_router(chat.router)
 app.include_router(account.router)
 app.include_router(admin.router)
 app.include_router(projects.router)
+app.include_router(series.router)
 app.include_router(scenes.router)
 app.include_router(shots.router)
 app.include_router(bibles.router)

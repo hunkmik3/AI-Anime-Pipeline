@@ -26,6 +26,7 @@ from flowboard.routes.deps import (
     require_structure_admin,
 )
 from flowboard.schemas import ProjectCreate, ProjectUpdate
+from flowboard.services import permissions
 from flowboard.services import project_service as ps
 from flowboard.services import user_service
 from flowboard.services.flow_sdk import get_flow_sdk, is_valid_project_id
@@ -35,7 +36,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 
-def _project_dict(project, *, owner_names: dict | None = None, session=None) -> dict:
+def _project_dict(
+    project,
+    *,
+    owner_names: dict | None = None,
+    session=None,
+    user=None,
+) -> dict:
     oid = str(project.owner_user_id) if project.owner_user_id else None
     d = {
         "id": str(project.id),
@@ -51,11 +58,23 @@ def _project_dict(project, *, owner_names: dict | None = None, session=None) -> 
     # admin console can show/edit who a project is shared with.
     if session is not None:
         d["thumb_media_id"] = ps.project_thumb_media_id(session, project)
-        member_ids = [str(m) for m in ps.get_project_member_ids(session, project.id)]
-        assignees = ([oid] if oid else []) + [m for m in member_ids if m != oid]
+        members = ps.get_project_members(session, project.id)
+        by_id = {str(m.user_id): permissions.normalize_role(m.role) for m in members}
+        assignees = ([oid] if oid else []) + [m for m in by_id if m != oid]
         d["assignee_ids"] = assignees
+        # The owner is a producer implicitly (no member row) — surface that so
+        # the console shows one consistent role column.
+        d["assignee_roles"] = {
+            a: (permissions.PRODUCER if a == oid else by_id.get(a, permissions.ARTIST))
+            for a in assignees
+        }
         if owner_names:
             d["assignee_names"] = [owner_names.get(a, a) for a in assignees]
+        # What *this* caller may do here — the UI hides what it can't do rather
+        # than letting the user click into a 403.
+        role = permissions.project_role(session, user, project.id)
+        d["my_role"] = role
+        d["can"] = permissions.capability_map(role)
     return d
 
 
@@ -84,7 +103,7 @@ def list_projects(user=Depends(get_optional_user)):
     with get_session() as s:
         projects = ps.list_projects(s, owner_user_id=scope)
         names = _owner_name_map(user_service.list_users()) if scope is None else {}
-        return [_project_dict(p, owner_names=names, session=s) for p in projects]
+        return [_project_dict(p, owner_names=names, session=s, user=user) for p in projects]
 
 
 @router.post("")
@@ -120,7 +139,7 @@ def create_project(body: ProjectCreate, user=Depends(require_structure_admin)):
                 s, project.id, [u for u in dict.fromkeys(assigned) if u != owner_id]
             )
         names = _owner_name_map(user_service.list_users())
-        return _project_dict(project, owner_names=names, session=s)
+        return _project_dict(project, owner_names=names, session=s, user=user)
 
 
 @router.get("/{project_id}")
@@ -132,7 +151,7 @@ def get_project(project_id: uuid.UUID, user=Depends(get_optional_user)):
         except ps.ProjectNotFound:
             raise HTTPException(404, "project not found")
         names = _owner_name_map(user_service.list_users()) if scope is None else {}
-        base = _project_dict(project, owner_names=names, session=s)
+        base = _project_dict(project, owner_names=names, session=s, user=user)
         base["scene_count"] = ps.project_scene_count(s, project_id)
         base["asset_count"] = ps.project_asset_count(s, project_id)
         return base
@@ -172,7 +191,7 @@ def update_project(
         except ps.ProjectNotFound:
             raise HTTPException(404, "project not found")
         names = _owner_name_map(user_service.list_users())
-        return _project_dict(project, owner_names=names, session=s)
+        return _project_dict(project, owner_names=names, session=s, user=user)
 
 
 @router.delete("/{project_id}")
@@ -184,6 +203,113 @@ def delete_project(project_id: uuid.UUID, user=Depends(require_structure_admin))
         except ps.ProjectNotFound:
             raise HTTPException(404, "project not found")
         return {"deleted": str(project_id)}
+
+
+# ── Members + roles (Phase 10) ────────────────────────────────────────────
+
+
+class MemberAssignment(BaseModel):
+    user_id: uuid.UUID
+    role: str = permissions.ARTIST
+
+
+class MembersBody(BaseModel):
+    """The project's full assigned set. The first entry (or the current owner
+    if still listed) stays the primary owner and is forced to ``producer``."""
+
+    members: list[MemberAssignment]
+
+
+def _members_payload(s, project) -> dict:
+    names = {str(u.id): (u.display_name or u.username) for u in user_service.list_users()}
+    oid = str(project.owner_user_id) if project.owner_user_id else None
+    rows = []
+    if oid:
+        rows.append(
+            {
+                "user_id": oid,
+                "name": names.get(oid, oid),
+                "role": permissions.PRODUCER,
+                "is_owner": True,
+            }
+        )
+    for m in ps.get_project_members(s, project.id):
+        uid = str(m.user_id)
+        if uid == oid:
+            continue
+        rows.append(
+            {
+                "user_id": uid,
+                "name": names.get(uid, uid),
+                "role": permissions.normalize_role(m.role),
+                "is_owner": False,
+            }
+        )
+    return {"members": rows, "roles": list(permissions.PROJECT_ROLES)}
+
+
+@router.get("/{project_id}/members")
+def list_project_members(project_id: uuid.UUID, user=Depends(get_optional_user)):
+    with get_session() as s:
+        permissions.require(s, user, project_id, "canvas.read")
+        project = ps.get_project(s, project_id)
+        return _members_payload(s, project)
+
+
+@router.get("/{project_id}/assignable-users")
+def list_assignable_users(project_id: uuid.UUID, user=Depends(get_optional_user)):
+    """The people a producer can add to *this* project — id + display name only.
+
+    Gated on ``member.manage`` (producer+/admin) and deliberately leaner than
+    the admin ``/api/admin/users`` console (no budget, role, or audit data), so
+    a producer can staff their project without seeing company-wide account info.
+    """
+    with get_session() as s:
+        permissions.require(s, user, project_id, "member.manage")
+        return [
+            {"user_id": str(u.id), "name": (u.display_name or u.username)}
+            for u in user_service.list_users()
+            if getattr(u, "status", "active") == "active"
+        ]
+
+
+@router.put("/{project_id}/members")
+def set_project_members_route(
+    project_id: uuid.UUID, body: MembersBody, user=Depends(get_optional_user)
+):
+    """Replace who is on the project and what each of them may do.
+
+    Producer-and-up (admins included) — this is how a producer staffs their own
+    project without an admin round-trip.
+    """
+    with get_session() as s:
+        permissions.require(s, user, project_id, "member.manage")
+        try:
+            existing = ps.get_project(s, project_id)
+        except ps.ProjectNotFound:
+            raise HTTPException(404, "project not found")
+
+        seen: dict[uuid.UUID, str] = {}
+        for m in body.members:
+            if user_service.get_by_id(m.user_id) is None:
+                raise HTTPException(404, f"assigned user not found: {m.user_id}")
+            seen.setdefault(m.user_id, permissions.normalize_role(m.role))
+        ids = list(seen)
+        # Keep the current owner as owner when they're still assigned, so
+        # re-saving the roster never silently hands the project to someone else.
+        owner = existing.owner_user_id if existing.owner_user_id in seen else (
+            ids[0] if ids else None
+        )
+        ps.set_project_members(
+            s,
+            project_id,
+            [u for u in ids if u != owner],
+            roles={u: r for u, r in seen.items() if u != owner},
+        )
+        if owner != existing.owner_user_id:
+            ps.update_project(s, project_id, owner_user_id=owner)
+        project = ps.get_project(s, project_id)
+        return _members_payload(s, project)
 
 
 @router.get("/{project_id}/cost")
@@ -240,7 +366,7 @@ def set_project_cover(
         except ps.ProjectNotFound:
             raise HTTPException(404, "project not found")
         names = _owner_name_map(user_service.list_users()) if owner_scope(user) is None else {}
-        return _project_dict(project, owner_names=names, session=s)
+        return _project_dict(project, owner_names=names, session=s, user=user)
 
 
 @router.get("/{project_id}/chat")

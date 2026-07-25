@@ -21,7 +21,11 @@ interface SceneState {
   error: string | null;
 
   loadScenes(projectId: string): Promise<SceneDTO[]>;
-  createScene(projectId: string, name: string): Promise<SceneDTO | null>;
+  createScene(
+    projectId: string,
+    name: string,
+    opts?: { series_id?: string; code?: string },
+  ): Promise<SceneDTO | null>;
   renameScene(id: string, name: string): Promise<void>;
   deleteScene(id: string): Promise<void>;
   selectScene(id: string | null): Promise<void>;
@@ -55,12 +59,18 @@ export const useSceneStore = create<SceneState>((set, get) => ({
     }
   },
 
-  async createScene(projectId, name) {
+  async createScene(projectId, name, opts) {
     try {
       const existing = get().scenesByProject[projectId] ?? [];
+      // Order within the target series, not the whole project.
+      const inSeries = opts?.series_id
+        ? existing.filter((sc) => sc.series_id === opts.series_id)
+        : existing;
       const scene = await apiCreateScene(projectId, {
         name: name.trim() || "Untitled scene",
-        order_index: existing.length,
+        series_id: opts?.series_id,
+        code: opts?.code,
+        order_index: inSeries.length,
       });
       set((s) => ({
         scenesByProject: {

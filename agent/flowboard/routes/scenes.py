@@ -16,23 +16,23 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from flowboard.db import get_session
-from flowboard.routes.deps import (
-    get_optional_user,
-    owner_scope,
-    require_structure_admin,
-)
+from flowboard.routes.deps import get_optional_user
 from flowboard.schemas import SceneCreate, SceneUpdate
+from flowboard.services import permissions
 from flowboard.services import project_service as ps
 from flowboard.services import scene_service as ss
 
 router = APIRouter(tags=["scenes"])
 
 
-def _gate_project(s, project_id, user) -> None:
-    """Confirm the caller may access this project tree — raises ProjectNotFound
-    (→ 404) for a non-owner. Admins and the no-auth path are unscoped, so this
-    is a no-op for them."""
-    ps.get_project(s, project_id, owner_user_id=owner_scope(user))
+def _gate_project(s, project_id, user, capability: str = "canvas.read") -> str:
+    """Confirm the caller may do ``capability`` on this project tree.
+
+    Phase 10: structure is no longer admin-only — a producer/lead builds their
+    own Episodes. 404 when the caller can't see the project at all, 403 when
+    their role is too low. Admins and the no-auth path pass everything.
+    """
+    return permissions.require(s, user, project_id, capability)
 
 
 def _scene_dict(scene) -> dict:
@@ -40,8 +40,11 @@ def _scene_dict(scene) -> dict:
     return {
         "id": str(scene.id),
         "project_id": str(scene.project_id),
+        "series_id": str(scene.series_id) if scene.series_id else None,
         "name": scene.name,
+        "code": scene.code or "",
         "order_index": scene.order_index,
+        "production": dict(scene.production or {}),
         "canvas_state": cs,
         "master_establishing_asset_id": scene.master_establishing_asset_id,
         # Cover thumbnail (user/admin-set, cosmetic); None → gradient placeholder.
@@ -63,11 +66,15 @@ class SceneCoverBody(BaseModel):
 
 
 @router.get("/api/projects/{project_id}/scenes")
-def list_scenes(project_id: uuid.UUID, user=Depends(get_optional_user)):
+def list_scenes(
+    project_id: uuid.UUID,
+    series_id: uuid.UUID | None = None,
+    user=Depends(get_optional_user),
+):
     with get_session() as s:
         try:
-            _gate_project(s, project_id, user)  # owner gate (404 if not yours)
-            scenes = ss.list_scenes(s, project_id)
+            _gate_project(s, project_id, user)  # access gate (404 if not yours)
+            scenes = ss.list_scenes(s, project_id, series_id=series_id)
         except (ss.ProjectNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "project not found")
         return [_scene_dict(sc) for sc in scenes]
@@ -75,17 +82,19 @@ def list_scenes(project_id: uuid.UUID, user=Depends(get_optional_user)):
 
 @router.post("/api/projects/{project_id}/scenes")
 def create_scene(
-    project_id: uuid.UUID, body: SceneCreate, user=Depends(require_structure_admin)
+    project_id: uuid.UUID, body: SceneCreate, user=Depends(get_optional_user)
 ):
-    # Admin-only. Admin is unscoped, so they may add a scene to any user's
-    # project (the project they're building out on that user's behalf).
+    # Phase 10: lead+ on the project (not admin-only). `series_id` omitted →
+    # the project's first / auto-created "Default" series.
     with get_session() as s:
         try:
-            _gate_project(s, project_id, user)
+            _gate_project(s, project_id, user, "episode.create")
             scene = ss.create_scene(
                 s,
                 project_id,
                 name=body.name,
+                series_id=body.series_id,
+                code=body.code,
                 order_index=body.order_index,
             )
         except (ss.ProjectNotFound, ps.ProjectNotFound):
@@ -111,18 +120,21 @@ def get_scene(scene_id: uuid.UUID, user=Depends(get_optional_user)):
 
 @router.patch("/api/scenes/{scene_id}")
 def update_scene(
-    scene_id: uuid.UUID, body: SceneUpdate, user=Depends(require_structure_admin)
+    scene_id: uuid.UUID, body: SceneUpdate, user=Depends(get_optional_user)
 ):
-    # Rename / reorder — structural, admin-only.
+    # Rename / recode / move between series / reorder — lead+ on the project.
     with get_session() as s:
         try:
             scene = ss.get_scene(s, scene_id)
-            _gate_project(s, scene.project_id, user)
+            _gate_project(s, scene.project_id, user, "episode.update")
             scene = ss.update_scene(
                 s,
                 scene_id,
                 name=body.name,
+                series_id=body.series_id,
+                code=body.code,
                 order_index=body.order_index,
+                production=body.production,
             )
         except (ss.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "scene not found")
@@ -133,12 +145,12 @@ def update_scene(
 def set_scene_cover(
     scene_id: uuid.UUID, body: SceneCoverBody, user=Depends(get_optional_user)
 ):
-    # Setting a scene's cover thumbnail is cosmetic → owner-scoped (owner + admin),
-    # not a structural change.
+    # Setting a scene's cover thumbnail is cosmetic → anyone who works in the
+    # project, not a structural change.
     with get_session() as s:
         try:
             scene = ss.get_scene(s, scene_id)
-            _gate_project(s, scene.project_id, user)
+            _gate_project(s, scene.project_id, user, "project.decorate")
             scene = ss.set_scene_cover(s, scene_id, body.media_id)
         except (ss.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "scene not found")
@@ -146,11 +158,11 @@ def set_scene_cover(
 
 
 @router.delete("/api/scenes/{scene_id}")
-def delete_scene(scene_id: uuid.UUID, user=Depends(require_structure_admin)):
+def delete_scene(scene_id: uuid.UUID, user=Depends(get_optional_user)):
     with get_session() as s:
         try:
             scene = ss.get_scene(s, scene_id)
-            _gate_project(s, scene.project_id, user)
+            _gate_project(s, scene.project_id, user, "episode.delete")
             ss.delete_scene(s, scene_id)
         except (ss.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "scene not found")
@@ -187,13 +199,14 @@ def auto_migrate_canvas(scene_id: uuid.UUID, user=Depends(get_optional_user)):
 
 @router.post("/api/scenes/{scene_id}/reorder")
 def reorder_shots(
-    scene_id: uuid.UUID, body: ShotReorderBody, user=Depends(require_structure_admin)
+    scene_id: uuid.UUID, body: ShotReorderBody, user=Depends(get_optional_user)
 ):
-    # Reordering shots is structural → admin-only.
+    # Reordering sequences within an episode → lead+ (an artist owns a single
+    # sequence, not the running order).
     with get_session() as s:
         try:
             scene = ss.get_scene(s, scene_id)
-            _gate_project(s, scene.project_id, user)
+            _gate_project(s, scene.project_id, user, "episode.update")
             shots = ss.reorder_shots(s, scene_id, body.shot_ids)
         except (ss.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "scene not found")

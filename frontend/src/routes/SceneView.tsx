@@ -1,22 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 
 import {
-  EMPTY_PROJECT_BIBLE,
   thumbUrl,
   setSceneCover,
   uploadImage,
-  type ProjectBible,
+  type ProjectCapability,
   type SceneDTO,
+  type SeriesDTO,
 } from "../api/client";
 import { ReferencesPanel } from "../components/ReferencesPanel";
 import { ProjectVideoGallery } from "../components/ProjectVideoGallery";
+import { ProjectMembersDialog } from "../components/ProjectMembersDialog";
 import { useProjectStore } from "../store/project";
 import { useSceneStore } from "../store/scene";
-import { useAuthStore } from "../store/auth";
+import { useSeriesStore } from "../store/series";
 import { useReferencesStore } from "../store/references";
 
 const EMPTY_SCENES: SceneDTO[] = [];
+const EMPTY_SERIES: SeriesDTO[] = [];
 
 /** Open a native file picker and resolve with the chosen image (or null). */
 function pickImageFile(): Promise<File | null> {
@@ -29,27 +31,26 @@ function pickImageFile(): Promise<File | null> {
   });
 }
 
-// Project Bible editor is hidden for now (not needed yet). Flip to true to
-// restore it — all the state/handlers below stay wired so this is reversible.
-const SHOW_PROJECT_BIBLE = false;
-
 /**
- * Phase 8.3 project hub (the new entry point at /projects/:projectId).
+ * Phase 10 project home (entry point at /projects/:projectId).
  *
- * Left: project-level shared refs (Character / VisualAsset reused across
- * episodes). Right: scenes grid (= episodes) + create. Clicking a scene
- * opens its multi-shot SceneCanvas. Project Bible editing lives in a
- * collapsible panel (kept for Automation; Scene Bible was removed in 8.3).
+ * This is where the production structure is BUILT — no longer in the admin
+ * console. The hierarchy is Project → Series → Episode|Chapter → Sequence:
+ *   • Admin creates the Project and assigns a producer.
+ *   • Producer/Lead build Series and their Episodes/Chapters right here.
+ *   • Opening an Episode/Chapter goes to its multi-Sequence canvas.
+ *
+ * What each control does is gated by the caller's project role via the
+ * `can` capability map the backend returns on the project — the UI hides what
+ * the role can't do rather than letting the user click into a 403.
  */
 export function SceneView() {
   const { projectId } = useParams<{ projectId: string }>();
+  const location = useLocation();
 
   const currentProject = useProjectStore((s) => s.currentProject);
   const currentProjectId = useProjectStore((s) => s.currentProjectId);
-  const projectBible = useProjectStore((s) => s.projectBible);
   const selectProject = useProjectStore((s) => s.selectProject);
-  const refreshDetail = useProjectStore((s) => s.refreshProjectDetail);
-  const saveBible = useProjectStore((s) => s.saveBible);
 
   const scenes = useSceneStore((s) =>
     projectId ? s.scenesByProject[projectId] ?? EMPTY_SCENES : EMPTY_SCENES,
@@ -58,18 +59,97 @@ export function SceneView() {
   const createScene = useSceneStore((s) => s.createScene);
   const deleteScene = useSceneStore((s) => s.deleteScene);
   const resetScenes = useSceneStore((s) => s.resetForProject);
-  // Phase 9.1: scenes are structural — only admins create/delete them.
-  const isAdmin = useAuthStore((s) => s.isAdmin());
 
-  const [bibleDraft, setBibleDraft] = useState<ProjectBible>(EMPTY_PROJECT_BIBLE);
-  const [bibleSaving, setBibleSaving] = useState(false);
-  const [bibleDirty, setBibleDirty] = useState(false);
+  const series = useSeriesStore((s) =>
+    projectId ? s.byProject[projectId] ?? EMPTY_SERIES : EMPTY_SERIES,
+  );
+  const loadSeries = useSeriesStore((s) => s.loadSeries);
+  const createSeries = useSeriesStore((s) => s.createSeries);
+  const renameSeries = useSeriesStore((s) => s.renameSeries);
+  const deleteSeries = useSeriesStore((s) => s.deleteSeries);
 
-  const [sceneName, setSceneName] = useState("");
-  const [creatingScene, setCreatingScene] = useState(false);
-  const [newSceneOpen, setNewSceneOpen] = useState(false);
-  // scene cover upload (per-card)
+  // Capability gates — the owner is a producer implicitly; admins get all.
+  const can = (cap: ProjectCapability): boolean =>
+    currentProject?.can?.[cap] ?? false;
+  const myRole = currentProject?.my_role ?? null;
+
   const [coverBusy, setCoverBusy] = useState<string | null>(null);
+  const [membersOpen, setMembersOpen] = useState(false);
+
+  // New-series modal
+  const [seriesModalOpen, setSeriesModalOpen] = useState(false);
+  const [seriesName, setSeriesName] = useState("");
+  const [seriesCode, setSeriesCode] = useState("");
+  const [savingSeries, setSavingSeries] = useState(false);
+
+  // New-episode modal (scoped to one series)
+  const [epModalFor, setEpModalFor] = useState<SeriesDTO | null>(null);
+  const [epName, setEpName] = useState("");
+  const [epCode, setEpCode] = useState("");
+  const [savingEp, setSavingEp] = useState(false);
+
+  const loadReferences = useReferencesStore((s) => s.load);
+  useEffect(() => {
+    if (!projectId) return;
+    if (projectId !== currentProjectId) {
+      resetScenes(projectId);
+      void selectProject(projectId);
+    }
+    void loadScenes(projectId);
+    void loadSeries(projectId);
+    void loadReferences(projectId);
+  }, [
+    projectId,
+    currentProjectId,
+    selectProject,
+    loadScenes,
+    loadSeries,
+    resetScenes,
+    loadReferences,
+  ]);
+
+  // Deep-link from the sidebar: clicking a Series routes here with
+  // #series-<id>. Scroll it into view + flash a highlight once the series
+  // sections have rendered.
+  useEffect(() => {
+    const hash = location.hash;
+    if (!hash.startsWith("#series-")) return;
+    const el = document.getElementById(hash.slice(1));
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    el.classList.add("series-block--flash");
+    const t = setTimeout(() => el.classList.remove("series-block--flash"), 1600);
+    return () => clearTimeout(t);
+  }, [location.hash, series.length, scenes.length]);
+
+  // Group episodes under their series; anything with no series_id (legacy /
+  // in-flight) falls into a synthetic "Unfiled" bucket so it's never lost.
+  const scenesBySeries = useMemo(() => {
+    const map = new Map<string, SceneDTO[]>();
+    for (const sc of scenes) {
+      const key = sc.series_id ?? "__unfiled__";
+      const list = map.get(key) ?? [];
+      list.push(sc);
+      map.set(key, list);
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => a.order_index - b.order_index);
+    }
+    return map;
+  }, [scenes]);
+
+  // The Series selected from the sidebar (#series-<id>). When set, the main
+  // screen shows ONLY that series' episodes; with none selected it lists all.
+  const selectedSeriesId = location.hash.startsWith("#series-")
+    ? location.hash.slice("#series-".length)
+    : null;
+
+  const sortedSeries = useMemo(() => {
+    const all = series.slice().sort((a, b) => a.order_index - b.order_index);
+    return selectedSeriesId ? all.filter((s) => s.id === selectedSeriesId) : all;
+  }, [series, selectedSeriesId]);
+  // Unfiled episodes only belong on the full (unfiltered) view.
+  const unfiled = selectedSeriesId ? [] : scenesBySeries.get("__unfiled__") ?? [];
 
   async function handleSceneCover(sceneId: string, file: File) {
     if (!projectId) return;
@@ -86,70 +166,62 @@ export function SceneView() {
     }
   }
 
-  const loadReferences = useReferencesStore((s) => s.load);
-  useEffect(() => {
+  async function handleCreateSeries() {
+    if (!projectId || savingSeries) return;
+    setSavingSeries(true);
+    try {
+      await createSeries(projectId, {
+        name: seriesName.trim() || `Series ${series.length + 1}`,
+        code: seriesCode.trim(),
+      });
+      setSeriesName("");
+      setSeriesCode("");
+      setSeriesModalOpen(false);
+    } finally {
+      setSavingSeries(false);
+    }
+  }
+
+  async function handleCreateEpisode() {
+    if (!projectId || !epModalFor || savingEp) return;
+    const label = epModalFor.unit_label || "Episode";
+    const count = (scenesBySeries.get(epModalFor.id) ?? []).length;
+    setSavingEp(true);
+    try {
+      await createScene(projectId, epName.trim() || `${label} ${count + 1}`, {
+        series_id: epModalFor.id,
+        code: epCode.trim(),
+      });
+      setEpName("");
+      setEpCode("");
+      setEpModalFor(null);
+    } finally {
+      setSavingEp(false);
+    }
+  }
+
+  async function handleDeleteSeries(s: SeriesDTO) {
     if (!projectId) return;
-    if (projectId !== currentProjectId) {
-      resetScenes(projectId);
-      void selectProject(projectId);
+    const count = (scenesBySeries.get(s.id) ?? []).length;
+    if (count > 0) {
+      // eslint-disable-next-line no-alert
+      alert(
+        `"${s.name}" still has ${count} ${s.unit_label.toLowerCase()}${count === 1 ? "" : "s"}. ` +
+          `Delete or move them first.`,
+      );
+      return;
     }
-    void loadScenes(projectId);
-    void loadReferences(projectId); // library is scoped to this project
-  }, [projectId, currentProjectId, selectProject, loadScenes, resetScenes, loadReferences]);
-
-  useEffect(() => {
-    if (projectBible) {
-      setBibleDraft({ ...EMPTY_PROJECT_BIBLE, ...projectBible });
-      setBibleDirty(false);
-    }
-  }, [projectBible]);
-
-  const sceneCount = scenes.length;
-  const sortedScenes = useMemo(
-    () => scenes.slice().sort((a, b) => a.order_index - b.order_index),
-    [scenes],
-  );
-
-  async function handleSaveBible() {
-    if (!projectId || bibleSaving) return;
-    setBibleSaving(true);
-    try {
-      await saveBible(bibleDraft);
-      setBibleDirty(false);
-      await refreshDetail();
-    } finally {
-      setBibleSaving(false);
-    }
+    if (!window.confirm(`Delete series "${s.name}"?`)) return;
+    await deleteSeries(projectId, s.id);
   }
 
-  async function handleCreateScene() {
-    if (!projectId || creatingScene) return;
-    const name = sceneName.trim() || `Episode ${sceneCount + 1}`;
-    setCreatingScene(true);
-    try {
-      await createScene(projectId, name);
-      // Stay on the episodes list (the new card appears in the grid); the user
-      // opens the canvas by clicking the episode when they're ready.
-      setSceneName("");
-      setNewSceneOpen(false);
-    } finally {
-      setCreatingScene(false);
-    }
+  function handleRenameSeries(s: SeriesDTO) {
+    if (!projectId) return;
+    // eslint-disable-next-line no-alert
+    const name = window.prompt("Series name", s.name);
+    if (name == null) return;
+    void renameSeries(projectId, s.id, { name: name.trim() || s.name });
   }
-
-  function updateBibleField<K extends keyof ProjectBible>(key: K, value: ProjectBible[K]) {
-    setBibleDraft((prev) => ({ ...prev, [key]: value }));
-    setBibleDirty(true);
-  }
-
-  const paletteText = useMemo(
-    () => bibleDraft.color_palette.join(", "),
-    [bibleDraft.color_palette],
-  );
-  const negativeText = useMemo(
-    () => bibleDraft.negative_prompts.join("\n"),
-    [bibleDraft.negative_prompts],
-  );
 
   if (!projectId) {
     return <div className="page-empty">No project id in URL.</div>;
@@ -167,291 +239,437 @@ export function SceneView() {
           <h1 className="page-title">{currentProject?.name ?? "…"}</h1>
           <p className="page-subtitle">
             {currentProject
-              ? `${currentProject.scene_count} episode${currentProject.scene_count === 1 ? "" : "s"} · ${currentProject.asset_count} asset${currentProject.asset_count === 1 ? "" : "s"}`
+              ? `${series.length} series · ${currentProject.scene_count} total · ${currentProject.asset_count} asset${currentProject.asset_count === 1 ? "" : "s"}`
               : "Loading…"}
+            {myRole ? <span className="role-chip">{myRole}</span> : null}
           </p>
         </div>
         <div className="page-header__actions">
+          {can("member.manage") && (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => setMembersOpen(true)}
+            >
+              Members
+            </button>
+          )}
           <Link to={`/projects/${projectId}/library`} className="btn">
             Asset library
           </Link>
         </div>
       </header>
 
-      {/* Project-level shared references — a floating drawer (its own toggle
-          tab), so it no longer reserves an empty left column. */}
+      {/* Project-level shared references — a floating drawer. */}
       <ReferencesPanel />
 
       <div className="scene-hub">
-        {/* Scenes (episodes) + create + Project Bible (collapsible). */}
         <section className="scene-hub-main">
-          <header className="dashboard-section__header">
-            <h2>Episodes</h2>
-            <p className="dashboard-section__hint">
-              Each episode has its own multi-sequence canvas.
-            </p>
-          </header>
-
-          {isAdmin && (
-            <div className="scene-create">
+          <header className="dashboard-section__header dashboard-section__header--row">
+            <div>
+              <h2>
+                Series
+                {selectedSeriesId ? (
+                  <Link to={`/projects/${projectId}`} className="series-show-all">
+                    ← All series
+                  </Link>
+                ) : null}
+              </h2>
+              <p className="dashboard-section__hint">
+                {selectedSeriesId
+                  ? "Showing one series. Click “All series” to see the rest."
+                  : "A series holds its Episodes. Open one to storyboard its sequences."}
+              </p>
+            </div>
+            {can("series.create") && (
               <button
                 type="button"
                 className="btn btn--primary"
-                onClick={() => {
-                  setSceneName("");
-                  setNewSceneOpen(true);
-                }}
+                onClick={() => setSeriesModalOpen(true)}
               >
-                + New Episode
+                + New Series
               </button>
-            </div>
-          )}
+            )}
+          </header>
 
-          {scenes.length === 0 ? (
+          {sortedSeries.length === 0 && unfiled.length === 0 ? (
             <div className="page-empty">
-              {isAdmin
-                ? "No episodes yet. Add the first episode to start storyboarding."
-                : "No episodes yet. An admin will create episodes for this project."}
+              {can("series.create")
+                ? "No series yet. Create the first series to start building episodes."
+                : "No series yet. A producer will set up this project's structure."}
             </div>
-          ) : (
-            <ol className="scene-grid">
-              {sortedScenes.map((scene) => {
-                const shotCount = scene.canvas_state?.shot_groups?.length ?? 0;
-                // Deterministic thumbnail gradient per scene (until a real
-                // establishing frame is wired) — stable across renders.
-                const hue = (scene.order_index * 47 + 200) % 360;
-                return (
-                  <li key={scene.id} className="scene-card">
-                    <Link
-                      to={`/projects/${projectId}/scenes/${scene.id}`}
-                      className="scene-card__body"
-                    >
-                      <div
-                        className="scene-card__thumb"
-                        style={{
-                          background: `linear-gradient(135deg, hsl(${hue} 42% 26%), hsl(${(hue + 40) % 360} 46% 16%))`,
-                        }}
-                      >
-                        {scene.thumb_media_id ? (
-                          <img
-                            className="scene-card__img"
-                            src={thumbUrl(scene.thumb_media_id, 400)}
-                            alt=""
-                            loading="lazy"
-                            onError={(e) => {
-                              (e.currentTarget as HTMLImageElement).style.display = "none";
-                            }}
-                          />
-                        ) : (
-                          <svg
-                            className="scene-card__glyph"
-                            viewBox="0 0 24 24"
-                            width="40"
-                            height="40"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.4"
-                            aria-hidden="true"
-                          >
-                            <rect x="2" y="7" width="20" height="14" rx="2" />
-                            <path d="M2 7l3-4h4l-3 4M9 7l3-4h4l-3 4M16 7l3-4h4l-3 4" />
-                          </svg>
-                        )}
-                        <span className="scene-card__badge">EP {scene.order_index + 1}</span>
+          ) : null}
 
-                        {/* hover-to-upload cover — a button (not a nav link) that
-                            opens a file picker in JS, so it never navigates. */}
-                        <button
-                          type="button"
-                          className={`scene-card__upload${coverBusy === scene.id ? " is-busy" : ""}`}
-                          title="Upload a cover thumbnail"
-                          disabled={coverBusy === scene.id}
-                          onClick={async (e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            const f = await pickImageFile();
-                            if (f) void handleSceneCover(scene.id, f);
-                          }}
-                        >
-                          {coverBusy === scene.id ? (
-                            "Uploading…"
-                          ) : (
-                            <>
-                              <svg
-                                viewBox="0 0 24 24"
-                                width="14"
-                                height="14"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="1.8"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                aria-hidden="true"
-                              >
-                                <path d="M12 16V4M6 10l6-6 6 6M4 20h16" />
-                              </svg>
-                              {scene.thumb_media_id ? "Change" : "Thumbnail"}
-                            </>
-                          )}
-                        </button>
-                      </div>
-                      <div className="scene-card__meta">
-                        <div className="scene-card__name" title={scene.name}>
-                          {scene.name}
-                        </div>
-                        <div className="scene-card__hint">
-                          {shotCount} sequence{shotCount === 1 ? "" : "s"}
-                        </div>
-                      </div>
-                    </Link>
-                    {isAdmin && (
+          {sortedSeries.map((s) => {
+            const eps = scenesBySeries.get(s.id) ?? [];
+            const unit = s.unit_label || "Episode";
+            return (
+              <section key={s.id} id={`series-${s.id}`} className="series-block">
+                <header className="series-block__header">
+                  <div className="series-block__title">
+                    <h3>
+                      {s.code ? <span className="series-block__code">{s.code}</span> : null}
+                      {s.name}
+                    </h3>
+                    <span className="series-block__count">
+                      {eps.length} {unit.toLowerCase()}
+                      {eps.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                  <div className="series-block__actions">
+                    {can("episode.create") && (
                       <button
                         type="button"
-                        className="scene-card__delete"
+                        className="btn btn--sm"
                         onClick={() => {
+                          setEpName("");
+                          setEpCode("");
+                          setEpModalFor(s);
+                        }}
+                      >
+                        + New {unit}
+                      </button>
+                    )}
+                    {can("series.update") && (
+                      <button
+                        type="button"
+                        className="btn btn--sm btn--ghost"
+                        onClick={() => handleRenameSeries(s)}
+                        title="Rename series"
+                      >
+                        Rename
+                      </button>
+                    )}
+                    {can("series.delete") && (
+                      <button
+                        type="button"
+                        className="btn btn--sm btn--ghost"
+                        onClick={() => void handleDeleteSeries(s)}
+                        title="Delete series"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                </header>
+
+                {eps.length === 0 ? (
+                  <div className="series-block__empty">
+                    No {unit.toLowerCase()}s yet.
+                  </div>
+                ) : (
+                  <ol className="scene-grid">
+                    {eps.map((scene) => (
+                      <EpisodeCard
+                        key={scene.id}
+                        scene={scene}
+                        unit={unit}
+                        projectId={projectId}
+                        coverBusy={coverBusy === scene.id}
+                        canDecorate={can("project.decorate")}
+                        canDelete={can("episode.delete")}
+                        onCover={(f) => void handleSceneCover(scene.id, f)}
+                        onDelete={() => {
                           if (
                             window.confirm(
-                              `Delete episode "${scene.name}"? All sequences inside will also be deleted.`,
+                              `Delete ${unit.toLowerCase()} "${scene.name}"? All sequences inside will also be deleted.`,
                             )
                           ) {
                             void deleteScene(scene.id);
                           }
                         }}
-                        aria-label={`Delete ${scene.name}`}
-                      >
-                        ✕
-                      </button>
-                    )}
-                  </li>
-                );
-              })}
-            </ol>
+                      />
+                    ))}
+                  </ol>
+                )}
+              </section>
+            );
+          })}
+
+          {/* Legacy / in-flight episodes with no series — surfaced so nothing
+              is ever hidden while a producer files them. */}
+          {unfiled.length > 0 && (
+            <section className="series-block">
+              <header className="series-block__header">
+                <div className="series-block__title">
+                  <h3>Unfiled</h3>
+                  <span className="series-block__count">
+                    {unfiled.length} episode{unfiled.length === 1 ? "" : "s"}
+                  </span>
+                </div>
+              </header>
+              <ol className="scene-grid">
+                {unfiled.map((scene) => (
+                  <EpisodeCard
+                    key={scene.id}
+                    scene={scene}
+                    unit="Episode"
+                    projectId={projectId}
+                    coverBusy={coverBusy === scene.id}
+                    canDecorate={can("project.decorate")}
+                    canDelete={can("episode.delete")}
+                    onCover={(f) => void handleSceneCover(scene.id, f)}
+                    onDelete={() => {
+                      if (window.confirm(`Delete "${scene.name}"?`)) {
+                        void deleteScene(scene.id);
+                      }
+                    }}
+                  />
+                ))}
+              </ol>
+            </section>
           )}
 
           {projectId ? <ProjectVideoGallery projectId={projectId} /> : null}
-
-          {SHOW_PROJECT_BIBLE && (
-          <details className="project-bible-collapse">
-            <summary>Project Bible (style anchor)</summary>
-            <div className="dashboard-bible">
-              <label className="form-field">
-                <span className="form-field__label">Art style</span>
-                <input
-                  type="text"
-                  value={bibleDraft.art_style}
-                  onChange={(e) => updateBibleField("art_style", e.target.value)}
-                  placeholder="e.g. cel-shaded anime, 90s OVA"
-                />
-              </label>
-              <label className="form-field">
-                <span className="form-field__label">Color palette</span>
-                <input
-                  type="text"
-                  value={paletteText}
-                  onChange={(e) =>
-                    updateBibleField(
-                      "color_palette",
-                      e.target.value.split(",").map((x) => x.trim()).filter(Boolean),
-                    )
-                  }
-                  placeholder="comma-separated, e.g. teal, amber, ink black"
-                />
-              </label>
-              <label className="form-field">
-                <span className="form-field__label">Line style</span>
-                <input
-                  type="text"
-                  value={bibleDraft.line_style}
-                  onChange={(e) => updateBibleField("line_style", e.target.value)}
-                  placeholder="e.g. fine ink outline, varied weight"
-                />
-              </label>
-              <label className="form-field">
-                <span className="form-field__label">Lighting conventions</span>
-                <textarea
-                  rows={3}
-                  value={bibleDraft.lighting_conventions}
-                  onChange={(e) => updateBibleField("lighting_conventions", e.target.value)}
-                  placeholder="e.g. high-contrast key light, soft rim, mood-driven"
-                />
-              </label>
-              <label className="form-field">
-                <span className="form-field__label">Negative prompts</span>
-                <textarea
-                  rows={3}
-                  value={negativeText}
-                  onChange={(e) =>
-                    updateBibleField(
-                      "negative_prompts",
-                      e.target.value.split("\n").map((x) => x.trim()).filter(Boolean),
-                    )
-                  }
-                  placeholder="one per line"
-                />
-              </label>
-              <div className="form-actions">
-                <button
-                  type="button"
-                  className="btn btn--primary"
-                  onClick={() => void handleSaveBible()}
-                  disabled={!bibleDirty || bibleSaving}
-                >
-                  {bibleSaving ? "Saving…" : bibleDirty ? "Save bible" : "Saved"}
-                </button>
-              </div>
-            </div>
-          </details>
-          )}
         </section>
       </div>
 
-      {newSceneOpen && (
+      {membersOpen && (
+        <ProjectMembersDialog
+          projectId={projectId}
+          onClose={() => setMembersOpen(false)}
+        />
+      )}
+
+      {seriesModalOpen && (
         <div
           className="project-modal-backdrop"
           role="presentation"
           onClick={(e) => {
-            if (e.target === e.currentTarget && !creatingScene) setNewSceneOpen(false);
+            if (e.target === e.currentTarget && !savingSeries) setSeriesModalOpen(false);
           }}
         >
           <div className="project-modal" role="dialog" aria-modal="true">
-            <h2 className="project-modal__title">New episode</h2>
+            <h2 className="project-modal__title">New series</h2>
             <p className="project-modal__hint">
-              Name the episode. Once created it shows up in the list — click it to open the canvas.
+              A series holds its Episodes. Open one to storyboard its sequences.
             </p>
             <input
               type="text"
               className="project-modal__input"
               autoFocus
               maxLength={120}
-              value={sceneName}
-              placeholder={`Episode ${sceneCount + 1}`}
-              onChange={(e) => setSceneName(e.target.value)}
+              value={seriesName}
+              placeholder={`Series ${series.length + 1}`}
+              onChange={(e) => setSeriesName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") void handleCreateScene();
-                if (e.key === "Escape" && !creatingScene) setNewSceneOpen(false);
+                if (e.key === "Enter") void handleCreateSeries();
+                if (e.key === "Escape" && !savingSeries) setSeriesModalOpen(false);
               }}
             />
+            <div className="project-modal__row">
+              <input
+                type="text"
+                className="project-modal__input"
+                maxLength={32}
+                value={seriesCode}
+                placeholder="Code (e.g. S1)"
+                onChange={(e) => setSeriesCode(e.target.value)}
+              />
+            </div>
             <div className="project-modal__actions">
               <button
                 type="button"
                 className="project-modal__btn"
-                onClick={() => setNewSceneOpen(false)}
-                disabled={creatingScene}
+                onClick={() => setSeriesModalOpen(false)}
+                disabled={savingSeries}
               >
                 Cancel
               </button>
               <button
                 type="button"
                 className="project-modal__btn project-modal__btn--primary"
-                onClick={() => void handleCreateScene()}
-                disabled={creatingScene}
+                onClick={() => void handleCreateSeries()}
+                disabled={savingSeries}
               >
-                {creatingScene ? "Creating…" : "Create episode"}
+                {savingSeries ? "Creating…" : "Create series"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {epModalFor && (
+        <div
+          className="project-modal-backdrop"
+          role="presentation"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !savingEp) setEpModalFor(null);
+          }}
+        >
+          <div className="project-modal" role="dialog" aria-modal="true">
+            <h2 className="project-modal__title">
+              New {epModalFor.unit_label.toLowerCase()} in {epModalFor.name}
+            </h2>
+            <p className="project-modal__hint">
+              Once created it appears in the grid — click it to open the
+              sequence canvas.
+            </p>
+            <input
+              type="text"
+              className="project-modal__input"
+              autoFocus
+              maxLength={120}
+              value={epName}
+              placeholder={`${epModalFor.unit_label} ${(scenesBySeries.get(epModalFor.id) ?? []).length + 1}`}
+              onChange={(e) => setEpName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleCreateEpisode();
+                if (e.key === "Escape" && !savingEp) setEpModalFor(null);
+              }}
+            />
+            <div className="project-modal__row">
+              <input
+                type="text"
+                className="project-modal__input"
+                maxLength={32}
+                value={epCode}
+                placeholder={
+                  epModalFor.unit_label === "Chapter" ? "Code (e.g. CH012)" : "Code (e.g. EP007)"
+                }
+                onChange={(e) => setEpCode(e.target.value)}
+              />
+            </div>
+            <div className="project-modal__actions">
+              <button
+                type="button"
+                className="project-modal__btn"
+                onClick={() => setEpModalFor(null)}
+                disabled={savingEp}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="project-modal__btn project-modal__btn--primary"
+                onClick={() => void handleCreateEpisode()}
+                disabled={savingEp}
+              >
+                {savingEp ? "Creating…" : `Create ${epModalFor.unit_label.toLowerCase()}`}
               </button>
             </div>
           </div>
         </div>
       )}
     </div>
+  );
+}
+
+/** One Episode/Chapter card in a series grid. Extracted so the same markup
+ *  serves both real series and the Unfiled bucket. */
+function EpisodeCard({
+  scene,
+  unit,
+  projectId,
+  coverBusy,
+  canDecorate,
+  canDelete,
+  onCover,
+  onDelete,
+}: {
+  scene: SceneDTO;
+  unit: string;
+  projectId: string;
+  coverBusy: boolean;
+  canDecorate: boolean;
+  canDelete: boolean;
+  onCover: (file: File) => void;
+  onDelete: () => void;
+}) {
+  const shotCount = scene.canvas_state?.shot_groups?.length ?? 0;
+  const hue = (scene.order_index * 47 + 200) % 360;
+  const badge = scene.code || `${unit.slice(0, 2).toUpperCase()} ${scene.order_index + 1}`;
+  return (
+    <li className="scene-card">
+      <Link to={`/projects/${projectId}/scenes/${scene.id}`} className="scene-card__body">
+        <div
+          className="scene-card__thumb"
+          style={{
+            background: `linear-gradient(135deg, hsl(${hue} 42% 26%), hsl(${(hue + 40) % 360} 46% 16%))`,
+          }}
+        >
+          {scene.thumb_media_id ? (
+            <img
+              className="scene-card__img"
+              src={thumbUrl(scene.thumb_media_id, 400)}
+              alt=""
+              loading="lazy"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).style.display = "none";
+              }}
+            />
+          ) : (
+            <svg
+              className="scene-card__glyph"
+              viewBox="0 0 24 24"
+              width="40"
+              height="40"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              aria-hidden="true"
+            >
+              <rect x="2" y="7" width="20" height="14" rx="2" />
+              <path d="M2 7l3-4h4l-3 4M9 7l3-4h4l-3 4M16 7l3-4h4l-3 4" />
+            </svg>
+          )}
+          <span className="scene-card__badge">{badge}</span>
+
+          {canDecorate && (
+            <button
+              type="button"
+              className={`scene-card__upload${coverBusy ? " is-busy" : ""}`}
+              title="Upload a cover thumbnail"
+              disabled={coverBusy}
+              onClick={async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const f = await pickImageFile();
+                if (f) onCover(f);
+              }}
+            >
+              {coverBusy ? (
+                "Uploading…"
+              ) : (
+                <>
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="14"
+                    height="14"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 16V4M6 10l6-6 6 6M4 20h16" />
+                  </svg>
+                  {scene.thumb_media_id ? "Change" : "Thumbnail"}
+                </>
+              )}
+            </button>
+          )}
+        </div>
+        <div className="scene-card__meta">
+          <div className="scene-card__name" title={scene.name}>
+            {scene.name}
+          </div>
+          <div className="scene-card__hint">
+            {shotCount} sequence{shotCount === 1 ? "" : "s"}
+          </div>
+        </div>
+      </Link>
+      {canDelete && (
+        <button
+          type="button"
+          className="scene-card__delete"
+          onClick={onDelete}
+          aria-label={`Delete ${scene.name}`}
+        >
+          ✕
+        </button>
+      )}
+    </li>
   );
 }

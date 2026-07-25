@@ -96,22 +96,54 @@ def get_project_member_ids(
     ]
 
 
+def get_project_members(session: Session, project_id: uuid.UUID) -> list[ProjectMember]:
+    return list(
+        session.exec(
+            select(ProjectMember)
+            .where(ProjectMember.project_id == project_id)
+            .order_by(ProjectMember.created_at, ProjectMember.id)
+        ).all()
+    )
+
+
 def set_project_members(
-    session: Session, project_id: uuid.UUID, user_ids: list[uuid.UUID]
+    session: Session,
+    project_id: uuid.UUID,
+    user_ids: list[uuid.UUID],
+    roles: Optional[dict[uuid.UUID, str]] = None,
 ) -> None:
     """Replace a project's additional-member set with ``user_ids`` (the owner is
-    stored separately on the project and need not appear here). Idempotent."""
+    stored separately on the project and need not appear here). Idempotent.
+
+    ``roles`` maps user id → project role; anyone missing from it keeps the role
+    they already had, or gets the default for a new row. Callers that don't care
+    about roles (the legacy assign-by-id path) leave it None and never disturb
+    existing roles.
+    """
+    from flowboard.services import permissions
+
     want = list(dict.fromkeys(user_ids))  # dedupe, keep order
     existing = session.exec(
         select(ProjectMember).where(ProjectMember.project_id == project_id)
     ).all()
-    have = {m.user_id for m in existing}
+    by_user = {m.user_id: m for m in existing}
     for m in existing:
         if m.user_id not in want:
             session.delete(m)
     for uid in want:
-        if uid not in have:
-            session.add(ProjectMember(project_id=project_id, user_id=uid))
+        wanted_role = (roles or {}).get(uid)
+        row = by_user.get(uid)
+        if row is None:
+            session.add(
+                ProjectMember(
+                    project_id=project_id,
+                    user_id=uid,
+                    role=permissions.normalize_role(wanted_role),
+                )
+            )
+        elif wanted_role is not None:
+            row.role = permissions.normalize_role(wanted_role)
+            session.add(row)
     session.commit()
 
 

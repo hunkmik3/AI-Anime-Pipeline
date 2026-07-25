@@ -58,13 +58,19 @@ def create_shot(
     *,
     order_index: Optional[int] = None,
     script_text: str = "",
+    code: str = "",
 ) -> Shot:
     scene = session.get(Scene, scene_id)
     if scene is None:
         raise SceneNotFound(str(scene_id))
     if order_index is None:
         order_index = _next_shot_order_index(session, scene_id)
-    shot = Shot(scene_id=scene_id, order_index=order_index, script_text=script_text)
+    shot = Shot(
+        scene_id=scene_id,
+        order_index=order_index,
+        script_text=script_text,
+        code=code or "",
+    )
     session.add(shot)
     session.commit()
     session.refresh(shot)

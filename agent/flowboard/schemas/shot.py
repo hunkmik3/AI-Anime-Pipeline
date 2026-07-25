@@ -11,11 +11,14 @@ ShotStatus = Literal["idle", "running", "awaiting_approval", "done", "error"]
 
 
 class ShotCreate(BaseModel):
+    # Phase 10: human code within the episode/chapter — "SQ03".
+    code: str = Field(default="", max_length=32)
     order_index: Optional[int] = Field(default=None, ge=0)
     script_text: str = ""
 
 
 class ShotUpdate(BaseModel):
+    code: Optional[str] = Field(default=None, max_length=32)
     order_index: Optional[int] = Field(default=None, ge=0)
     script_text: Optional[str] = None
     status: Optional[ShotStatus] = None

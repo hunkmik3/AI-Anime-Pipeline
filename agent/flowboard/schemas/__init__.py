@@ -12,6 +12,7 @@ from .project import (
     ProjectUpdate,
 )
 from .scene import SceneCreate, SceneEstablishing, SceneRead, SceneReadDetail, SceneUpdate
+from .series import SeriesCreate, SeriesRead, SeriesReadDetail, SeriesUpdate
 from .shot import ShotCreate, ShotRead, ShotUpdate
 
 __all__ = [
@@ -20,6 +21,10 @@ __all__ = [
     "ProjectRead",
     "ProjectReadDetail",
     "ProjectUpdate",
+    "SeriesCreate",
+    "SeriesRead",
+    "SeriesReadDetail",
+    "SeriesUpdate",
     "SceneEstablishing",
     "SceneCreate",
     "SceneRead",

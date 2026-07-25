@@ -24,7 +24,6 @@ import { useProjectStore } from "../store/project";
 import { useSceneStore } from "../store/scene";
 import { useShotStore } from "../store/shot";
 import { useShotWorkflowStore, type FlowNode, type NodeType } from "../store/shotWorkflow";
-import { useAuthStore } from "../store/auth";
 import { useReferencesStore } from "../store/references";
 
 const edgeTypes = { default: VariantEdge };
@@ -149,9 +148,11 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
   const currentScene = useSceneStore((s) => s.currentScene);
   const selectScene = useSceneStore((s) => s.selectScene);
   const createShot = useShotStore((s) => s.createShot);
-  // Phase 9.1: creating/deleting shots is structural → admin-only. The user
-  // still works inside each shot (nodes, prompts, generations, downloads).
-  const isAdmin = useAuthStore((s) => s.isAdmin());
+  // Phase 10: sequence create/delete follow the caller's project role, not a
+  // blanket admin gate. Artist+ may add a sequence; lead+ may delete one. The
+  // `can` map comes from the project the backend already scoped for us.
+  const canCreateSequence = currentProject?.can?.["sequence.create"] ?? false;
+  const canDeleteSequence = currentProject?.can?.["sequence.delete"] ?? false;
 
   const storeNodes = useShotWorkflowStore((s) => s.nodes);
   const edges = useShotWorkflowStore((s) => s.edges);
@@ -336,9 +337,9 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
   const [rfNodes, setRfNodes] = useState<FlowNode[]>([]);
   useEffect(() => {
     setRfNodes(
-      buildRfNodes(storeNodes, shotGroups, sceneLabel, handleDeleteShot, reflowStack, isAdmin),
+      buildRfNodes(storeNodes, shotGroups, sceneLabel, handleDeleteShot, reflowStack, canDeleteSequence),
     );
-  }, [storeNodes, shotGroups, sceneLabel, handleDeleteShot, reflowStack, isAdmin]);
+  }, [storeNodes, shotGroups, sceneLabel, handleDeleteShot, reflowStack, canDeleteSequence]);
 
   // When auto-fit changes a group's height (child added/removed, or any size
   // recompute), the next group's y can drift out of the constant-gap layout.
@@ -570,7 +571,7 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
           <span aria-hidden="true">/</span>
           <span>{currentScene?.name ?? "Scene"}</span>
         </nav>
-        {isAdmin && (
+        {canCreateSequence && (
           <button
             type="button"
             className="btn btn--primary"
@@ -625,12 +626,12 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
       <div className="scene-canvas__flow" onContextMenu={onWrapperContextMenu}>
         {!loading && !migrating && shotGroups.length === 0 && (
           <div className="scene-canvas__empty">
-            {isAdmin ? (
+            {canCreateSequence ? (
               <>
                 No sequences yet. Use <strong>+ New Sequence</strong> to create your first sequence.
               </>
             ) : (
-              "No sequences in this episode yet. An admin will create sequences for you to work in."
+              "No sequences in this episode yet — you don't have permission to add one here."
             )}
           </div>
         )}
@@ -710,7 +711,7 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
               <span aria-hidden="true">{t.icon}</span> Add {t.label}
             </button>
           ))}
-          {isAdmin && ctxMenu.shotId && (
+          {canDeleteSequence && ctxMenu.shotId && (
             <>
               <div className="canvas-ctx-menu__divider" />
               <button

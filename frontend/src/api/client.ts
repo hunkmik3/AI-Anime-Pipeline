@@ -1018,6 +1018,27 @@ export const EMPTY_PROJECT_BIBLE: ProjectBible = {
   style_anchor_asset_ids: [],
 };
 
+/** Phase 10: per-project role. The owner is a producer implicitly. */
+export type ProjectRole = "admin" | "producer" | "lead" | "artist" | "viewer";
+
+/** Phase 10: capability keys the backend reports in `ProjectDTO.can`.
+ *  The UI reads these to hide (not just 403) what the caller can't do. */
+export type ProjectCapability =
+  | "series.create"
+  | "series.update"
+  | "series.delete"
+  | "episode.create"
+  | "episode.update"
+  | "episode.delete"
+  | "sequence.create"
+  | "sequence.update"
+  | "sequence.delete"
+  | "canvas.write"
+  | "canvas.read"
+  | "project.decorate"
+  | "member.manage"
+  | "project.manage";
+
 export interface ProjectDTO {
   id: string;
   name: string;
@@ -1028,6 +1049,46 @@ export interface ProjectDTO {
   thumb_media_id?: string | null;
   owner_user_id?: string | null;
   owner_name?: string | null;
+  /** Everyone assigned (owner first), and their role. */
+  assignee_ids?: string[];
+  assignee_names?: string[];
+  assignee_roles?: Record<string, ProjectRole>;
+  /** Phase 10: this caller's role here + the flat can-I map the UI reads. */
+  my_role?: ProjectRole | null;
+  can?: Partial<Record<ProjectCapability, boolean>>;
+}
+
+// ── Phase 10: Series (Project → Series → Episode/Chapter → Sequence) ────────
+
+export type UnitLabel = "Episode" | "Chapter";
+
+export interface SeriesStats {
+  episodes: number;
+  by_status: Record<string, number>;
+  completion_pct: number;
+}
+
+export interface SeriesDTO {
+  id: string;
+  project_id: string;
+  name: string;
+  code: string;
+  unit_label: UnitLabel | string;
+  order_index: number;
+  /** Phase 10 CRM: Series_Master production metadata bag. */
+  production?: Record<string, string | number>;
+  /** Live per-status episode rollup (list/detail only). */
+  stats?: SeriesStats;
+  created_at: string | null;
+  /** Present on list/detail. */
+  episode_count?: number;
+}
+
+export interface ProjectMemberDTO {
+  user_id: string;
+  name: string;
+  role: ProjectRole;
+  is_owner: boolean;
 }
 
 export interface ProjectImage {
@@ -1072,8 +1133,14 @@ export interface SceneCanvasState {
 export interface SceneDTO {
   id: string;
   project_id: string;
+  /** Phase 10: the Series this Episode/Chapter belongs to (null on legacy rows). */
+  series_id?: string | null;
   name: string;
+  /** Phase 10: human code within the series — "EP007", "CH012". */
+  code?: string;
   order_index: number;
+  /** Phase 10 CRM: Episode_Tracker production metadata bag. */
+  production?: Record<string, string | number>;
   // Phase 8.3: Scene Bible removed; multi-shot layout lives here.
   canvas_state: SceneCanvasState;
   master_establishing_asset_id: number | null;
@@ -1105,6 +1172,8 @@ export type ShotStatus =
 export interface ShotDTO {
   id: string;
   scene_id: string;
+  /** Phase 10: human code within the episode/chapter — "SQ03". */
+  code?: string;
   order_index: number;
   script_text: string;
   status: ShotStatus | string;
@@ -1179,13 +1248,17 @@ export function putProjectBible(
 
 // ── Scenes ───────────────────────────────────────────────────────────────
 
-export function listScenes(projectId: string): Promise<SceneDTO[]> {
-  return api<SceneDTO[]>(`/api/projects/${projectId}/scenes`);
+export function listScenes(
+  projectId: string,
+  seriesId?: string,
+): Promise<SceneDTO[]> {
+  const q = seriesId ? `?series_id=${seriesId}` : "";
+  return api<SceneDTO[]>(`/api/projects/${projectId}/scenes${q}`);
 }
 
 export function createScene(
   projectId: string,
-  input: { name: string; order_index?: number },
+  input: { name: string; series_id?: string; code?: string; order_index?: number },
 ): Promise<SceneDTO> {
   return api<SceneDTO>(`/api/projects/${projectId}/scenes`, {
     method: "POST",
@@ -1201,7 +1274,10 @@ export function patchScene(
   id: string,
   patch: {
     name?: string;
+    series_id?: string;
+    code?: string;
     order_index?: number;
+    production?: Record<string, string | number | null>;
   },
 ): Promise<SceneDTO> {
   return api<SceneDTO>(`/api/scenes/${id}`, {
@@ -1212,6 +1288,87 @@ export function patchScene(
 
 export function deleteScene(id: string): Promise<{ deleted: string }> {
   return api<{ deleted: string }>(`/api/scenes/${id}`, { method: "DELETE" });
+}
+
+// ── Phase 10: Series ───────────────────────────────────────────────────────
+
+export function listSeries(projectId: string): Promise<SeriesDTO[]> {
+  return api<SeriesDTO[]>(`/api/projects/${projectId}/series`);
+}
+
+export function createSeries(
+  projectId: string,
+  input: {
+    name: string;
+    code?: string;
+    unit_label?: UnitLabel;
+    order_index?: number;
+    production?: Record<string, string | number | null>;
+  },
+): Promise<SeriesDTO> {
+  return api<SeriesDTO>(`/api/projects/${projectId}/series`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function patchSeries(
+  id: string,
+  patch: {
+    name?: string;
+    code?: string;
+    unit_label?: UnitLabel;
+    order_index?: number;
+    production?: Record<string, string | number | null>;
+  },
+): Promise<SeriesDTO> {
+  return api<SeriesDTO>(`/api/series/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+export function deleteSeries(id: string): Promise<{ deleted: string }> {
+  return api<{ deleted: string }>(`/api/series/${id}`, { method: "DELETE" });
+}
+
+/** Episodes/Chapters under a series (same shape as listScenes). */
+export function listSeriesEpisodes(seriesId: string): Promise<SceneDTO[]> {
+  return api<SceneDTO[]>(`/api/series/${seriesId}/episodes`);
+}
+
+/** Distinct crew names across all episodes — the CRM crew-dropdown pool. */
+export function getCrewNames(): Promise<{ names: string[] }> {
+  return api<{ names: string[] }>(`/api/production/crew-names`);
+}
+
+// ── Phase 10: project members + roles ───────────────────────────────────────
+
+export function listProjectMembers(
+  projectId: string,
+): Promise<{ members: ProjectMemberDTO[]; roles: ProjectRole[] }> {
+  return api<{ members: ProjectMemberDTO[]; roles: ProjectRole[] }>(
+    `/api/projects/${projectId}/members`,
+  );
+}
+
+export function setProjectMembers(
+  projectId: string,
+  members: { user_id: string; role: ProjectRole }[],
+): Promise<{ members: ProjectMemberDTO[]; roles: ProjectRole[] }> {
+  return api<{ members: ProjectMemberDTO[]; roles: ProjectRole[] }>(
+    `/api/projects/${projectId}/members`,
+    { method: "PUT", body: JSON.stringify({ members }) },
+  );
+}
+
+/** Lean id+name list of users a producer may add to this project. */
+export function listAssignableUsers(
+  projectId: string,
+): Promise<{ user_id: string; name: string }[]> {
+  return api<{ user_id: string; name: string }[]>(
+    `/api/projects/${projectId}/assignable-users`,
+  );
 }
 
 export function getSceneEstablishing(id: string): Promise<SceneEstablishing> {
@@ -1301,7 +1458,7 @@ export function listShots(sceneId: string): Promise<ShotDTO[]> {
 
 export function createShot(
   sceneId: string,
-  input: { order_index?: number; script_text?: string } = {},
+  input: { order_index?: number; script_text?: string; code?: string } = {},
 ): Promise<ShotDTO> {
   return api<ShotDTO>(`/api/scenes/${sceneId}/shots`, {
     method: "POST",
@@ -1318,6 +1475,7 @@ export function patchShot(
   patch: {
     order_index?: number;
     script_text?: string;
+    code?: string;
     status?: ShotStatus;
     workflow_metadata?: Record<string, unknown>;
   },

@@ -1,8 +1,8 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
 
 import { thumbUrl, listProjectImages, uploadImage, type ProjectImage } from "../../api/client";
 import { toast } from "../../store/toast";
+import { ProjectStructureModal } from "../ProjectStructureModal";
 import { HBars } from "./Charts";
 import { ProjectShots, ShotGens } from "./ProjectShots";
 
@@ -441,6 +441,8 @@ export function ProjectsTab() {
   const [coverFor, setCoverFor] = useState<AdminProject | null>(null);
   const [coverImgs, setCoverImgs] = useState<ProjectImage[] | null>(null);
   const [uploading, setUploading] = useState(false);
+  // structure modal (Series → Episode/Chapter → Sequence) — no page nav
+  const [structFor, setStructFor] = useState<AdminProject | null>(null);
   // per-shot cost drill-down (which project row is expanded)
   const [openShots, setOpenShots] = useState<string | null>(null);
 
@@ -572,9 +574,10 @@ export function ProjectsTab() {
       <section className="admin2__card admin-proj-new">
         <div className="admin-proj-new__title">Create a project for a member</div>
         <p className="admin2__email" style={{ marginTop: 0 }}>
-          Only admins can create projects · episodes · sequences. Pick an owner — only they (and
-          admins) can see &amp; work inside that project. After creating it, hit <b>Open</b> to add
-          episodes and sequences.
+          Admins create the project and hand it to an owner (its <b>producer</b>). Only assigned
+          people — and admins — can see it. From there the producer opens the project and builds
+          its <b>Series → Episodes/Chapters → Sequences</b> themselves, and can staff the rest of
+          the team from the project's <b>Members</b> panel.
         </p>
         <div className="admin-proj-new__row">
           <input
@@ -668,13 +671,13 @@ export function ProjectsTab() {
                       >
                         Cover
                       </button>
-                      <Link
+                      <button
                         className="btn2 btn2--primary admin-proj__open"
-                        to={`/projects/${p.id}`}
-                        title="Open the project to add episodes & sequences"
+                        onClick={() => setStructFor(p)}
+                        title="Build Series → Episodes → Sequences (no page change)"
                       >
-                        Open →
-                      </Link>
+                        Structure
+                      </button>
                       <button
                         className="btn2 btn2--ghost admin-proj__del"
                         onClick={() => void remove(p)}
@@ -698,6 +701,15 @@ export function ProjectsTab() {
           </table>
         )}
       </div>
+
+      {/* structure modal — build the hierarchy without leaving the console */}
+      {structFor ? (
+        <ProjectStructureModal
+          projectId={structFor.id}
+          projectName={structFor.name}
+          onClose={() => setStructFor(null)}
+        />
+      ) : null}
 
       {/* cover picker */}
       {coverFor ? (

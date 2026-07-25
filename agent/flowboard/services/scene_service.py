@@ -23,26 +23,69 @@ class InvalidBibleAsset(Exception):
     """``master_establishing_asset_id`` doesn't belong to the scene's project."""
 
 
+# ── Production-tracking metadata (Episode_Tracker spreadsheet columns) ──────
+# Stored in Scene.production. `status` is the pipeline stage; the four names are
+# role assignees (free text — no account required).
+EPISODE_PROD_FIELDS: tuple[str, ...] = (
+    "status",             # NotStarted | Script | Production | Completed | Dropped
+    "scriptwriter",
+    "concept_creator",
+    "ai_creator",
+    "editor",
+    "duration_sec",
+    "episode_link",
+    "deadline",
+    "complete_date",
+)
+_EPISODE_INT_FIELDS = {"duration_sec"}
+_CREW_ROLES = ("scriptwriter", "concept_creator", "ai_creator", "editor")
+
+
+def distinct_crew_names(session: Session) -> list[str]:
+    """Every distinct crew name used across all episodes' production bags (the
+    four role fields pooled), sorted. Powers the CRM crew dropdowns so you pick
+    an existing person instead of retyping."""
+    names: set[str] = set()
+    for sc in session.exec(select(Scene)).all():
+        prod = sc.production or {}
+        for role in _CREW_ROLES:
+            v = prod.get(role)
+            if isinstance(v, str) and v.strip():
+                names.add(v.strip())
+    return sorted(names, key=lambda s: s.lower())
+
+
 # ── CRUD ──────────────────────────────────────────────────────────────────
 
 
-def list_scenes(session: Session, project_id: uuid.UUID) -> list[Scene]:
+def list_scenes(
+    session: Session,
+    project_id: uuid.UUID,
+    *,
+    series_id: Optional[uuid.UUID] = None,
+) -> list[Scene]:
     project = session.get(Project, project_id)
     if project is None:
         raise ProjectNotFound(str(project_id))
+    stmt = select(Scene).where(Scene.project_id == project_id)
+    if series_id is not None:
+        stmt = stmt.where(Scene.series_id == series_id)
     return list(
         session.exec(
-            select(Scene)
-            .where(Scene.project_id == project_id)
-            .order_by(Scene.order_index, Scene.created_at, Scene.id)
+            stmt.order_by(Scene.order_index, Scene.created_at, Scene.id)
         ).all()
     )
 
 
-def _next_scene_order_index(session: Session, project_id: uuid.UUID) -> int:
-    last = session.exec(
-        select(func.max(Scene.order_index)).where(Scene.project_id == project_id)
-    ).one()
+def _next_scene_order_index(
+    session: Session, project_id: uuid.UUID, series_id: Optional[uuid.UUID] = None
+) -> int:
+    # Ordering is per-series once the tier exists, so Episode 1 of Season 2
+    # doesn't inherit an index from Season 1.
+    stmt = select(func.max(Scene.order_index)).where(Scene.project_id == project_id)
+    if series_id is not None:
+        stmt = stmt.where(Scene.series_id == series_id)
+    last = session.exec(stmt).one()
     if isinstance(last, tuple):
         last = last[0]
     return int(last) + 1 if last is not None else 0
@@ -53,16 +96,26 @@ def create_scene(
     project_id: uuid.UUID,
     *,
     name: str,
+    series_id: Optional[uuid.UUID] = None,
+    code: str = "",
     order_index: Optional[int] = None,
 ) -> Scene:
     project = session.get(Project, project_id)
     if project is None:
         raise ProjectNotFound(str(project_id))
+    if series_id is None:
+        # Pre-Series callers (and a brand-new project) land in the project's
+        # first series; create a "Default" one if there is none.
+        from flowboard.services import series_service
+
+        series_id = series_service.ensure_default_series(session, project_id).id
     if order_index is None:
-        order_index = _next_scene_order_index(session, project_id)
+        order_index = _next_scene_order_index(session, project_id, series_id)
     scene = Scene(
         project_id=project_id,
+        series_id=series_id,
         name=name,
+        code=code or "",
         order_index=order_index,
     )
     session.add(scene)
@@ -83,13 +136,28 @@ def update_scene(
     scene_id: uuid.UUID,
     *,
     name: Optional[str] = None,
+    series_id: Optional[uuid.UUID] = None,
+    code: Optional[str] = None,
     order_index: Optional[int] = None,
+    production: Optional[dict[str, Any]] = None,
 ) -> Scene:
+    from flowboard.services import series_service as sers
+
     scene = get_scene(session, scene_id)
     if name is not None:
         scene.name = name
+    if series_id is not None:
+        scene.series_id = series_id
+    if code is not None:
+        scene.code = code
     if order_index is not None:
         scene.order_index = order_index
+    if production is not None:
+        # patch merged over the existing bag (unset keys untouched)
+        scene.production = sers.merge_production(
+            scene.production, production, EPISODE_PROD_FIELDS, _EPISODE_INT_FIELDS
+        )
+        flag_modified(scene, "production")
     session.add(scene)
     session.commit()
     session.refresh(scene)

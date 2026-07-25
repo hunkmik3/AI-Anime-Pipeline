@@ -1,7 +1,14 @@
-"""Phase 9.1: only an admin may create/rename/reorder/delete project structure
-(Project · Scene · Shot). A normal user works only *inside* a shot they own
-(nodes, prompts, generations, downloads). The no-auth path (REQUIRE_AUTH off,
-i.e. dev + the legacy test suite) stays fully open.
+"""Phase 10: who may build what.
+
+The **Project** itself stays admin-only — created, renamed, deleted and
+assigned by an admin. Everything *inside* it (Series → Episode/Chapter →
+Sequence) is governed by the caller's project role: the owner is a producer and
+builds their own structure, which is what moved structure-building out of the
+admin console and onto the project home page. Role matrix lives in
+``services/permissions.py``; ``test_project_roles.py`` exercises it per-role.
+
+The no-auth path (REQUIRE_AUTH off, i.e. dev + the legacy test suite) stays
+fully open.
 """
 from __future__ import annotations
 
@@ -55,20 +62,43 @@ def test_admin_provisions_full_tree_for_a_user(client):
     assert client.get(f"/api/scenes/{sid}/shots", headers=uh).status_code == 200
 
 
-def test_non_admin_cannot_create_scene_or_shot(client):
+def test_owner_builds_their_own_structure(client):
+    """Phase 10 inversion: the project owner is a producer, so they create
+    Series / Episodes / Sequences themselves — no admin round-trip."""
     ah = _admin(client)
     u, uh = _user(client)
     pid = client.post(
         "/api/projects", json={"name": "P", "owner_user_id": str(u.id)}, headers=ah
     ).json()["id"]
-    sid = client.post(f"/api/projects/{pid}/scenes", json={"name": "S"}, headers=ah).json()["id"]
 
-    # the OWNER of the project still may not add scenes/shots — structural.
-    assert client.post(f"/api/projects/{pid}/scenes", json={"name": "X"}, headers=uh).status_code == 403
-    assert client.post(f"/api/scenes/{sid}/shots", json={}, headers=uh).status_code == 403
+    assert client.get(f"/api/projects/{pid}", headers=uh).json()["my_role"] == "producer"
+
+    series = client.post(
+        f"/api/projects/{pid}/series",
+        json={"name": "Season 1", "code": "S1", "unit_label": "Episode"},
+        headers=uh,
+    )
+    assert series.status_code == 200
+    ser_id = series.json()["id"]
+
+    ep = client.post(
+        f"/api/projects/{pid}/scenes",
+        json={"name": "Cold open", "series_id": ser_id, "code": "EP001"},
+        headers=uh,
+    )
+    assert ep.status_code == 200
+    assert ep.json()["series_id"] == ser_id and ep.json()["code"] == "EP001"
+    sid = ep.json()["id"]
+
+    seq = client.post(f"/api/scenes/{sid}/shots", json={"code": "SQ01"}, headers=uh)
+    assert seq.status_code == 200 and seq.json()["code"] == "SQ01"
+
+    # and the episode shows up under its series
+    eps = client.get(f"/api/series/{ser_id}/episodes", headers=uh).json()
+    assert [e["id"] for e in eps] == [sid]
 
 
-def test_non_admin_cannot_delete_or_rename_structure(client):
+def test_project_lifecycle_stays_admin_only(client):
     ah = _admin(client)
     u, uh = _user(client)
     pid = client.post(
@@ -77,12 +107,18 @@ def test_non_admin_cannot_delete_or_rename_structure(client):
     sid = client.post(f"/api/projects/{pid}/scenes", json={"name": "S"}, headers=ah).json()["id"]
     shot_id = client.post(f"/api/scenes/{sid}/shots", json={}, headers=ah).json()["id"]
 
+    # Creating / renaming / deleting the PROJECT is the admin's alone...
     assert client.patch(f"/api/projects/{pid}", json={"name": "R"}, headers=uh).status_code == 403
-    assert client.patch(f"/api/scenes/{sid}", json={"name": "R"}, headers=uh).status_code == 403
-    assert client.delete(f"/api/shots/{shot_id}", headers=uh).status_code == 403
-    assert client.delete(f"/api/scenes/{sid}", headers=uh).status_code == 403
     assert client.delete(f"/api/projects/{pid}", headers=uh).status_code == 403
-    assert client.post(f"/api/scenes/{sid}/reorder", json={"shot_ids": [shot_id]}, headers=uh).status_code == 403
+    assert client.post("/api/projects", json={"name": "Mine"}, headers=uh).status_code == 403
+
+    # ...but as producer the owner runs everything below it.
+    assert client.patch(f"/api/scenes/{sid}", json={"name": "R"}, headers=uh).status_code == 200
+    assert client.post(
+        f"/api/scenes/{sid}/reorder", json={"shot_ids": [shot_id]}, headers=uh
+    ).status_code == 200
+    assert client.delete(f"/api/shots/{shot_id}", headers=uh).status_code == 200
+    assert client.delete(f"/api/scenes/{sid}", headers=uh).status_code == 200
 
 
 # ── the user CAN work inside their own shot ──────────────────────────────────

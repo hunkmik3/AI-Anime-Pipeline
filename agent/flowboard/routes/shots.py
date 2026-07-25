@@ -17,12 +17,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from flowboard.db import get_session
-from flowboard.routes.deps import (
-    get_optional_user,
-    owner_scope,
-    require_structure_admin,
-)
+from flowboard.routes.deps import get_optional_user
 from flowboard.schemas import ShotCreate, ShotUpdate
+from flowboard.services import permissions
 from flowboard.services import project_service as ps
 from flowboard.services import scene_service as scenes
 from flowboard.services import shot_service as ss
@@ -30,16 +27,16 @@ from flowboard.services import shot_service as ss
 router = APIRouter(tags=["shots"])
 
 
-def _gate_scene(s, scene_id, user) -> None:
-    """Owner gate on a scene → its project. 404 for a non-owner; no-op for
-    admins and the no-auth path."""
+def _gate_scene(s, scene_id, user, capability: str = "canvas.read") -> str:
+    """Role gate on an episode → its project. 404 when the caller can't see the
+    project, 403 when their role is too low; admins and the no-auth path pass."""
     scene = scenes.get_scene(s, scene_id)
-    ps.get_project(s, scene.project_id, owner_user_id=owner_scope(user))
+    return permissions.require(s, user, scene.project_id, capability)
 
 
-def _gate_shot(s, shot, user) -> None:
-    """Owner gate on a shot (resolves shot → scene → project)."""
-    _gate_scene(s, shot.scene_id, user)
+def _gate_shot(s, shot, user, capability: str = "canvas.read") -> str:
+    """Role gate on a sequence (resolves sequence → episode → project)."""
+    return _gate_scene(s, shot.scene_id, user, capability)
 
 
 class ShotGroupPatch(BaseModel):
@@ -59,6 +56,7 @@ def _shot_dict(shot) -> dict:
     return {
         "id": str(shot.id),
         "scene_id": str(shot.scene_id),
+        "code": shot.code or "",
         "order_index": shot.order_index,
         "script_text": shot.script_text,
         "status": shot.status,
@@ -93,18 +91,18 @@ def list_shots(scene_id: uuid.UUID, user=Depends(get_optional_user)):
 
 
 @router.post("/api/scenes/{scene_id}/shots")
-def create_shot(
-    scene_id: uuid.UUID, body: ShotCreate, user=Depends(require_structure_admin)
-):
-    # Admin-only. Creating a shot is provisioning structure on a user's behalf.
+def create_shot(scene_id: uuid.UUID, body: ShotCreate, user=Depends(get_optional_user)):
+    # Phase 10: artist+ — adding a sequence is the everyday work of the project,
+    # not something an admin has to provision.
     with get_session() as s:
         try:
-            _gate_scene(s, scene_id, user)
+            _gate_scene(s, scene_id, user, "sequence.create")
             shot = ss.create_shot(
                 s,
                 scene_id,
                 order_index=body.order_index,
                 script_text=body.script_text,
+                code=body.code,
             )
         except (ss.SceneNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "scene not found")
@@ -127,8 +125,8 @@ def get_shot(shot_id: uuid.UUID, user=Depends(get_optional_user)):
 
 @router.patch("/api/shots/{shot_id}")
 def update_shot(shot_id: uuid.UUID, body: ShotUpdate, user=Depends(get_optional_user)):
-    # Editing a shot's script / status is "working inside" your own shot →
-    # owner-scoped (the owner + admins), NOT structural.
+    # Editing a sequence's script / status is "working inside" your own
+    # sequence → artist+, not a restructure.
     patch = body.model_dump(exclude_unset=True)
     if not patch:
         # Nothing to update — return current state without a write.
@@ -142,7 +140,7 @@ def update_shot(shot_id: uuid.UUID, body: ShotUpdate, user=Depends(get_optional_
     with get_session() as s:
         try:
             shot = ss.get_shot(s, shot_id)
-            _gate_shot(s, shot, user)
+            _gate_shot(s, shot, user, "sequence.update")
             shot = ss.update_shot(s, shot_id, patch=patch)
         except (ss.ShotNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "shot not found")
@@ -154,13 +152,13 @@ def update_shot_group(
     shot_id: uuid.UUID, body: ShotGroupPatch, user=Depends(get_optional_user)
 ):
     """Phase 8.3: update a shot's SceneCanvas group metadata (position,
-    collapsed, label, order) inside its parent scene's canvas_state. Owner-
-    scoped: arranging your own canvas is user work, not structural."""
+    collapsed, label, order) inside its parent scene's canvas_state. Arranging
+    your own canvas is user work → artist+, not structural."""
     patch = body.model_dump(exclude_unset=True)
     with get_session() as s:
         try:
             shot = ss.get_shot(s, shot_id)
-            _gate_shot(s, shot, user)
+            _gate_shot(s, shot, user, "canvas.write")
         except (ss.ShotNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "shot not found")
         return scenes.update_shot_group(
@@ -176,12 +174,13 @@ def update_shot_group(
 
 
 @router.delete("/api/shots/{shot_id}")
-def delete_shot(shot_id: uuid.UUID, user=Depends(require_structure_admin)):
-    # Admin-only — deleting a shot is a structural change.
+def delete_shot(shot_id: uuid.UUID, user=Depends(get_optional_user)):
+    # Lead+ — an artist works in a sequence but doesn't get to remove one
+    # (and its generated work) from the running order.
     with get_session() as s:
         try:
             shot = ss.get_shot(s, shot_id)
-            _gate_shot(s, shot, user)
+            _gate_shot(s, shot, user, "sequence.delete")
             ss.delete_shot(s, shot_id)
         except (ss.ShotNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "shot not found")
@@ -204,11 +203,11 @@ def get_workflow(shot_id: uuid.UUID, user=Depends(get_optional_user)):
 
 @router.put("/api/shots/{shot_id}/workflow")
 def put_workflow(shot_id: uuid.UUID, body: WorkflowSnapshot, user=Depends(get_optional_user)):
-    # Editing the node graph is the core "work inside your shot" action →
-    # owner-scoped.
+    # Editing the node graph is the core "work inside your sequence" action
+    # → artist+.
     with get_session() as s:
         try:
-            _gate_shot(s, ss.get_shot(s, shot_id), user)
+            _gate_shot(s, ss.get_shot(s, shot_id), user, "canvas.write")
             graph = ss.put_workflow(s, shot_id, nodes=body.nodes, edges=body.edges)
         except (ss.ShotNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "shot not found")
@@ -230,7 +229,7 @@ def run_shot(shot_id: uuid.UUID, user=Depends(get_optional_user)):
     """
     with get_session() as s:
         try:
-            _gate_shot(s, ss.get_shot(s, shot_id), user)
+            _gate_shot(s, ss.get_shot(s, shot_id), user, "canvas.write")
             shot = ss.run_shot(s, shot_id)
         except (ss.ShotNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "shot not found")
@@ -241,7 +240,7 @@ def run_shot(shot_id: uuid.UUID, user=Depends(get_optional_user)):
 def cancel_shot(shot_id: uuid.UUID, user=Depends(get_optional_user)):
     with get_session() as s:
         try:
-            _gate_shot(s, ss.get_shot(s, shot_id), user)
+            _gate_shot(s, ss.get_shot(s, shot_id), user, "canvas.write")
             shot = ss.cancel_shot(s, shot_id)
         except (ss.ShotNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "shot not found")

@@ -14,6 +14,7 @@ import {
   AuditTab,
   RegistrationsTab,
 } from "../components/admin/AdminTabs";
+import { ProductionCRM } from "../components/admin/ProductionCRM";
 
 interface AdminUser {
   id: string;
@@ -190,7 +191,7 @@ export function AdminPage() {
 
   // which tab is showing
   const [tab, setTab] = useState<
-    "overview" | "members" | "signups" | "cost" | "projects" | "audit"
+    "overview" | "members" | "signups" | "cost" | "projects" | "production" | "audit"
   >("overview");
   // mobile: is the nav drawer open?
   const [navOpen, setNavOpen] = useState(false);
@@ -382,6 +383,7 @@ export function AdminPage() {
     ["signups", "Sign-ups", "signups"],
     ["cost", "Cost", "cost"],
     ["projects", "Projects", "projects"],
+    ["production", "Production", "projects"],
     ["audit", "Audit log", "audit"],
   ] as const;
   const SUBTITLES: Record<string, string> = {
@@ -390,7 +392,8 @@ export function AdminPage() {
     signups:
       "People who requested an account. Approving one emails them a temporary password.",
     cost: "Total spend per project, broken down into episodes and sequences.",
-    projects: "Create and assign projects to members — only admins can build the structure.",
+    projects: "Create a project and assign an owner (producer). They build the Series → Episodes → Sequences themselves inside it.",
+    production: "The Series_Master / Episode_Tracker board — tier, status, priority, crew and schedule per series and episode.",
     audit: "Security log: logins, SSO, and every admin action.",
   };
   const curLabel = TABS.find(([k]) => k === tab)?.[1] ?? "Dashboard";
@@ -724,6 +727,7 @@ export function AdminPage() {
       ) : null}
       {tab === "cost" ? <CostTab /> : null}
       {tab === "projects" ? <ProjectsTab /> : null}
+      {tab === "production" ? <ProductionCRM /> : null}
       {tab === "audit" ? <AuditTab fmtTime={fmtTime} /> : null}
         </main>
 

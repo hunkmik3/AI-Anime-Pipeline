@@ -27,19 +27,32 @@ class SceneEstablishing(BaseModel):
 
 class SceneCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+    # Phase 10: which Series this Episode/Chapter belongs to. Omitted → the
+    # project's first (or an auto-created "Default") series, so the pre-Series
+    # flat API keeps working.
+    series_id: Optional[uuid.UUID] = None
+    code: str = Field(default="", max_length=32)
     order_index: Optional[int] = Field(default=None, ge=0)
 
 
 class SceneUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    series_id: Optional[uuid.UUID] = None
+    code: Optional[str] = Field(default=None, max_length=32)
     order_index: Optional[int] = Field(default=None, ge=0)
+    # Phase 10 CRM: Episode_Tracker production metadata (pipeline status, the
+    # four role assignees, duration/deadline…). Patch merged over the bag.
+    production: Optional[dict[str, Any]] = None
 
 
 class SceneRead(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
+    series_id: Optional[uuid.UUID] = None
     name: str
+    code: str = ""
     order_index: int
+    production: dict[str, Any] = Field(default_factory=dict)
     canvas_state: dict[str, Any] = Field(default_factory=dict)
     master_establishing_asset_id: Optional[int] = None
     created_at: Optional[datetime] = None

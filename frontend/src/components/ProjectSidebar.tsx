@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { useProjectStore } from "../store/project";
+import { useSeriesStore } from "../store/series";
+import { useSceneStore } from "../store/scene";
 import { useAuthStore } from "../store/auth";
 import { BreakableName } from "./BreakableName";
 
@@ -20,10 +22,18 @@ export function ProjectSidebar() {
   // user just opens the projects assigned to them.
   const isAdmin = useAuthStore((s) => s.isAdmin());
 
+  // Phase 10: inline hierarchy — expand a project to reveal its Series, and a
+  // Series to reveal its Episodes/Chapters, all in the sidebar tree.
+  const seriesByProject = useSeriesStore((s) => s.byProject);
+  const loadSeries = useSeriesStore((s) => s.loadSeries);
+  const scenesByProject = useSceneStore((s) => s.scenesByProject);
+  const loadScenes = useSceneStore((s) => s.loadScenes);
+
   const location = useLocation();
   const navigate = useNavigate();
 
   const [collapsed, setCollapsed] = useState(false);
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
@@ -40,6 +50,36 @@ export function ProjectSidebar() {
       setTimeout(() => renameInputRef.current?.select(), 30);
     }
   }, [renamingId]);
+
+  function ensureLoaded(pid: string) {
+    if (!seriesByProject[pid]) void loadSeries(pid);
+    if (!scenesByProject[pid]) void loadScenes(pid);
+  }
+
+  function toggleProject(pid: string) {
+    setExpandedProjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(pid)) next.delete(pid);
+      else {
+        next.add(pid);
+        ensureLoaded(pid);
+      }
+      return next;
+    });
+  }
+
+  // Auto-expand the active project so its tree is visible on arrival.
+  useEffect(() => {
+    if (!activeId) return;
+    setExpandedProjects((prev) => {
+      if (prev.has(activeId)) return prev;
+      const next = new Set(prev);
+      next.add(activeId);
+      return next;
+    });
+    ensureLoaded(activeId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
 
   useEffect(() => {
     if (openMenuId === null) return;
@@ -187,6 +227,11 @@ export function ProjectSidebar() {
             {projects.map((p) => {
               const isActive = p.id === activeId;
               const isRenaming = p.id === renamingId;
+              const isOpen = expandedProjects.has(p.id);
+              const series = (seriesByProject[p.id] ?? [])
+                .slice()
+                .sort((a, b) => a.order_index - b.order_index);
+              const scenes = scenesByProject[p.id] ?? [];
               return (
                 <li
                   key={p.id}
@@ -206,41 +251,87 @@ export function ProjectSidebar() {
                     />
                   ) : (
                     <>
-                      <Link
-                        to={`/projects/${p.id}`}
-                        className="project-sidebar__name"
-                        title={p.name}
-                      >
-                        <BreakableName text={p.name || "Untitled"} />
-                      </Link>
-                      {isAdmin && (
+                      <div className="project-sidebar__row">
                         <button
                           type="button"
-                          className="project-sidebar__kebab"
-                          onClick={() =>
-                            setOpenMenuId((cur) => (cur === p.id ? null : p.id))
-                          }
-                          aria-label="Project actions"
+                          className="project-sidebar__twisty"
+                          aria-label={isOpen ? "Collapse" : "Expand"}
+                          aria-expanded={isOpen}
+                          onClick={() => toggleProject(p.id)}
                         >
-                          ⋯
+                          {isOpen ? "▾" : "▸"}
                         </button>
-                      )}
-                      {isAdmin && openMenuId === p.id && (
-                        <div className="project-sidebar__menu" role="menu">
+                        <Link
+                          to={`/projects/${p.id}`}
+                          className="project-sidebar__name"
+                          title={p.name}
+                        >
+                          <BreakableName text={p.name || "Untitled"} />
+                        </Link>
+                        {isAdmin && (
                           <button
                             type="button"
-                            onClick={() => startRename(p.id, p.name)}
+                            className="project-sidebar__kebab"
+                            onClick={() =>
+                              setOpenMenuId((cur) => (cur === p.id ? null : p.id))
+                            }
+                            aria-label="Project actions"
                           >
-                            Rename
+                            ⋯
                           </button>
-                          <button
-                            type="button"
-                            className="project-sidebar__menu-danger"
-                            onClick={() => openDeleteConfirm(p.id, p.name)}
-                          >
-                            Delete
-                          </button>
-                        </div>
+                        )}
+                        {isAdmin && openMenuId === p.id && (
+                          <div className="project-sidebar__menu" role="menu">
+                            <button
+                              type="button"
+                              onClick={() => startRename(p.id, p.name)}
+                            >
+                              Rename
+                            </button>
+                            <button
+                              type="button"
+                              className="project-sidebar__menu-danger"
+                              onClick={() => openDeleteConfirm(p.id, p.name)}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      {isOpen && (
+                        <ul className="project-sidebar__tree">
+                          {series.length === 0 ? (
+                            <li className="project-sidebar__tree-empty">No series yet</li>
+                          ) : (
+                            series.map((se) => {
+                              // Episodes are NOT listed here — the sidebar stops
+                              // at Series; clicking one shows its episodes on the
+                              // main project screen (deep-linked via #series-id).
+                              const epCount = scenes.filter(
+                                (sc) => sc.series_id === se.id,
+                              ).length;
+                              const seActive = location.hash === `#series-${se.id}`;
+                              return (
+                                <li key={se.id} className="project-sidebar__series">
+                                  <Link
+                                    to={`/projects/${p.id}#series-${se.id}`}
+                                    className={`project-sidebar__series-row${seActive ? " is-active" : ""}`}
+                                    title={se.name}
+                                  >
+                                    <span className="project-sidebar__series-name">
+                                      {se.code ? (
+                                        <span className="project-sidebar__code">{se.code}</span>
+                                      ) : null}
+                                      {se.name}
+                                    </span>
+                                    <span className="project-sidebar__count">{epCount}</span>
+                                  </Link>
+                                </li>
+                              );
+                            })
+                          )}
+                        </ul>
                       )}
                     </>
                   )}

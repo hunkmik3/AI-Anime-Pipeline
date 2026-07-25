@@ -68,7 +68,7 @@ button:disabled {
 .project-sidebar {
   display: flex;
   flex-direction: column;
-  width: 256px;
+  width: 384px;
   background: var(--panel);
   border-right: 1px solid var(--border);
   transition: width 120ms ease;
@@ -147,19 +147,43 @@ button:disabled {
 .project-sidebar__item {
   position: relative;
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+/* the project's own row (twisty + name + kebab) — hover/active live here now
+   so the nested Series/Episode tree below isn't swallowed by the highlight */
+.project-sidebar__row {
+  position: relative;
+  display: flex;
   align-items: center;
   border-radius: 6px;
   padding: 0 4px 0 0;
 }
-.project-sidebar__item:hover {
+.project-sidebar__row:hover {
   background: var(--panel-high);
 }
-.project-sidebar__item--active {
+.project-sidebar__item--active .project-sidebar__row {
   background: rgba(0, 167, 111, 0.14);
 }
-.project-sidebar__item--active:hover {
+.project-sidebar__item--active .project-sidebar__row:hover {
   background: rgba(0, 167, 111, 0.2);
 }
+.project-sidebar__twisty {
+  flex-shrink: 0;
+  width: 20px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 0;
+}
+.project-sidebar__twisty:hover { color: var(--text); }
+.project-sidebar__twisty--sm { width: 16px; height: 22px; }
 .project-sidebar__name {
   flex: 1;
   min-width: 0;
@@ -9206,3 +9230,410 @@ button:disabled {
 .pvg__card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* move the variant-count badge to the top-left so it doesn't sit under download */
 .pvg__variants { right: auto; left: 6px; }
+
+/* ── Phase 10: Series → Episode/Chapter home page + roles ─────────────────── */
+.btn--sm { padding: 4px 8px; font-size: 12px; }
+.btn--ghost { background: transparent; border-color: var(--border, #2b3640); }
+.btn--ghost:hover { background: var(--panel-high, #232e39); }
+
+.role-chip {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--panel-high, #232e39);
+  border: 1px solid var(--border, #2b3640);
+  color: var(--muted, #919eab);
+  font-size: 11px;
+  text-transform: capitalize;
+  vertical-align: middle;
+}
+
+.dashboard-section__header--row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.series-block {
+  border: 1px solid var(--border, #2b3640);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-top: 14px;
+  background: var(--panel, #171f27);
+}
+.series-block__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.series-block__title { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.series-block__title h3 { margin: 0; font-size: 15px; }
+.series-block__code {
+  margin-right: 8px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--panel-high, #232e39);
+  color: var(--accent, #00a76f);
+  font-size: 12px;
+  font-weight: 600;
+}
+.series-block__count { color: var(--muted, #919eab); font-size: 12px; }
+.series-block__actions { display: flex; gap: 6px; align-items: center; }
+.series-block__empty {
+  color: var(--muted, #919eab);
+  font-size: 13px;
+  padding: 8px 2px 4px;
+}
+
+.member-list { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.member-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #2b3640);
+  border-radius: 8px;
+  background: var(--panel-high, #232e39);
+}
+.member-row__who { display: flex; align-items: center; gap: 8px; }
+.member-row__name { font-size: 14px; }
+.member-row__controls { display: flex; align-items: center; gap: 8px; }
+.member-row__controls select,
+.member-add select {
+  background: var(--panel, #171f27);
+  color: var(--text, #e6e6e6);
+  border: 1px solid var(--border, #2b3640);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font: inherit;
+}
+.member-add { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+.member-add select { flex: 1; }
+.form-error { color: #ff6b6b; font-size: 13px; margin: 8px 0 0; }
+
+.project-modal__row { display: flex; gap: 8px; margin-top: 8px; }
+.project-modal__row .project-modal__input { flex: 1; }
+
+/* ── Phase 10: structure modal (Series → Episode/Chapter → Sequence) ──────── */
+.struct-modal { max-width: 720px; width: 92vw; max-height: 86vh; display: flex; flex-direction: column; }
+.struct-body { overflow-y: auto; padding-right: 4px; }
+.struct-toolbar { margin-bottom: 12px; }
+.struct-series {
+  border: 1px solid var(--border, #2b3640);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  background: var(--panel, #171f27);
+}
+.struct-series__head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-bottom: 8px;
+}
+.struct-series__title { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.struct-series__actions { display: flex; gap: 6px; }
+.struct-muted { color: var(--muted, #919eab); font-size: 12px; }
+.struct-empty { color: var(--muted, #919eab); font-size: 13px; padding: 4px 2px; }
+
+.struct-eplist, .struct-seqlist { list-style: none; margin: 0; padding: 0; }
+.struct-ep {
+  border-top: 1px solid var(--border, #2b3640);
+  padding: 8px 0;
+}
+.struct-ep:first-child { border-top: none; }
+.struct-ep__row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.struct-ep__expand {
+  display: flex; align-items: center; gap: 8px;
+  background: none; border: none; color: var(--text, #e6e6e6);
+  cursor: pointer; font: inherit; text-align: left; flex: 1; min-width: 0;
+}
+.struct-ep__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.struct-ep__actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+.struct-seqs {
+  margin: 8px 0 2px 22px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--border, #2b3640);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.struct-seq { display: flex; align-items: center; gap: 10px; }
+.struct-seq__label {
+  font-size: 12px; font-weight: 600; color: var(--accent, #00a76f);
+  min-width: 64px;
+}
+.struct-seq__open, .struct-seq__del {
+  background: none; border: 1px solid var(--border, #2b3640);
+  color: var(--muted, #919eab); border-radius: 6px; cursor: pointer;
+  font-size: 12px; padding: 2px 8px;
+}
+.struct-seq__open:hover { color: var(--text, #e6e6e6); }
+.struct-seq__del:hover { color: #ff6b6b; border-color: #ff6b6b; }
+.struct-seq__add { align-self: flex-start; margin-top: 2px; }
+
+/* ── Phase 10: sidebar hierarchy tree (Series → Episode/Chapter) ──────────── */
+.project-sidebar__tree { list-style: none; margin: 0 0 2px; padding: 0 0 0 8px; }
+.project-sidebar__tree-empty {
+  padding: 4px 10px 4px 24px;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-style: italic;
+}
+.project-sidebar__series { display: flex; flex-direction: column; }
+.project-sidebar__series-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  padding: 5px 6px 5px 4px;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font-size: 12.5px;
+}
+.project-sidebar__series-row { text-decoration: none; }
+.project-sidebar__series-row:hover { background: var(--panel-high); }
+.project-sidebar__series-name {
+  flex: 1;
+  min-width: 0;
+  /* wrap long names onto multiple lines instead of truncating — never hide */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.3;
+}
+.project-sidebar__code {
+  /* inline prefix inside the name so wrapped lines hang to the row's left
+     edge (under the code) instead of indenting under the first word */
+  display: inline;
+  margin-right: 6px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
+.project-sidebar__code--ep { color: var(--muted); }
+.project-sidebar__count {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--muted);
+  background: var(--panel-high);
+  border-radius: 999px;
+  padding: 0 6px;
+  min-width: 18px;
+  text-align: center;
+}
+.project-sidebar__eps { list-style: none; margin: 0 0 2px; padding: 0 0 0 18px; }
+.project-sidebar__ep {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  color: var(--text);
+  text-decoration: none;
+  font-size: 12px;
+  border-left: 1px solid var(--border);
+  margin-left: 4px;
+}
+.project-sidebar__ep:hover { background: var(--panel-high); }
+.project-sidebar__ep.is-active { background: rgba(0,167,111,0.14); color: var(--accent); font-weight: 600; }
+.project-sidebar__ep-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Sidebar: wider (384px above) + ~20% larger type ─────────────────────── */
+.project-sidebar__logo-txt { font-size: 1.36rem; }
+.project-sidebar__ver { font-size: 0.91rem; }
+.project-sidebar__title { font-size: 14.5px; }
+.project-sidebar__new { font-size: 15.5px; }
+.project-sidebar__empty { font-size: 13px; }
+.project-sidebar__name { font-size: 16px; }
+.project-sidebar__kebab { font-size: 17px; }
+.project-sidebar__twisty { font-size: 12px; }
+.project-sidebar__series-row { font-size: 15px; }
+/* code + name share the row's size so they sit on one even line */
+.project-sidebar__code { font-size: inherit; }
+.project-sidebar__code--ep { font-size: inherit; }
+.project-sidebar__count { font-size: 12.5px; }
+.project-sidebar__ep { font-size: 14.5px; }
+.project-sidebar__tree-empty { font-size: 14px; }
+.project-sidebar__menu button { font-size: 14.5px; }
+
+/* Series section flash when deep-linked from the sidebar */
+.series-block--flash { animation: series-flash 1.6s ease-out; }
+@keyframes series-flash {
+  0% { box-shadow: 0 0 0 2px var(--accent, #00a76f); background: rgba(0,167,111,0.10); }
+  100% { box-shadow: none; background: transparent; }
+}
+
+/* "← All series" reset link next to the Series heading */
+.series-show-all {
+  margin-left: 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent, #00a76f);
+  text-decoration: none;
+  vertical-align: middle;
+}
+.series-show-all:hover { text-decoration: underline; }
+
+/* ── Phase 10 CRM: Production tab (Series_Master / Episode_Tracker) ──────── */
+.dash .crm { display: flex; flex-direction: column; gap: 14px; }
+.dash .crm__toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dash .crm__search {
+  flex: 1 1 260px; min-width: 200px; padding: 10px 14px; border-radius: 10px;
+  background: var(--d-surface-2); border: 1px solid var(--d-border); color: var(--d-ink);
+  font-size: 0.9rem; outline: none;
+}
+.dash .crm__search:focus { border-color: var(--d-primary); box-shadow: 0 0 0 3px rgba(0,167,111,0.18); }
+.dash .crm__filter {
+  padding: 10px 12px; border-radius: 10px; background: var(--d-surface-2);
+  border: 1px solid var(--d-border); color: var(--d-ink); font-size: 0.86rem; cursor: pointer;
+}
+.dash .crm__count { color: var(--d-muted); font-size: 0.82rem; margin-left: auto; }
+.dash .crm__new { white-space: nowrap; }
+.dash .crm__card {
+  background: var(--d-surface); border: 1px solid var(--d-border);
+  border-radius: 16px; box-shadow: var(--d-shadow); overflow-x: auto;
+}
+.dash .crm-table { width: 100%; border-collapse: collapse; min-width: 980px; }
+.dash .crm-table thead th {
+  text-align: left; padding: 14px 16px; font-size: 0.72rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.5px; color: var(--d-faint);
+  background: var(--d-surface-2); border-bottom: 1px solid var(--d-border); white-space: nowrap;
+}
+.dash .crm-table__ex { width: 34px; }
+.dash .crm-table tbody td { padding: 13px 16px; font-size: 0.9rem; border-bottom: 1px solid var(--d-border-soft); vertical-align: middle; }
+.dash .crm-table__row { cursor: pointer; }
+.dash .crm-table__row:hover { background: var(--d-hover); }
+.dash .crm-table__code { font-family: ui-monospace, monospace; font-size: 0.82rem; color: var(--d-primary-bright); white-space: nowrap; }
+.dash .crm-table__name { font-weight: 600; color: var(--d-ink); }
+.dash .crm-table__actions { text-align: right; white-space: nowrap; }
+.dash .crm-table__drill > td { padding: 0; background: var(--d-page); }
+/* status / priority / tier chips */
+.dash .crm-chip {
+  display: inline-block; padding: 3px 10px; border-radius: 999px;
+  font-size: 0.72rem; font-weight: 700; white-space: nowrap;
+  background: rgba(145,158,171,0.16); color: var(--d-muted);
+}
+.dash .crm-chip--done   { background: rgba(34,197,94,0.16);  color: #5be49b; }
+.dash .crm-chip--active { background: rgba(0,167,111,0.18);  color: var(--d-primary-bright); }
+.dash .crm-chip--dead   { background: rgba(255,86,48,0.16);  color: var(--d-danger-bright); }
+.dash .crm-chip--idle   { background: rgba(145,158,171,0.14); color: var(--d-muted); }
+.dash .crm-chip--high   { background: rgba(255,86,48,0.18);  color: #ff9d82; }
+.dash .crm-chip--med    { background: rgba(255,171,0,0.16);  color: #ffd666; }
+.dash .crm-chip--low    { background: rgba(145,158,171,0.14); color: var(--d-muted); }
+.dash .crm-chip--tier   { background: var(--d-surface-2); border: 1px solid var(--d-border); color: var(--d-body); font-family: ui-monospace, monospace; }
+/* progress cell */
+.dash .crm-prog { display: flex; align-items: center; gap: 8px; min-width: 100px; }
+.dash .crm-prog__bar { flex: 1; height: 7px; border-radius: 999px; background: rgba(145,158,171,0.16); overflow: hidden; }
+.dash .crm-prog__bar > span { display: block; height: 100%; background: linear-gradient(90deg,#00a76f,#5be49b); border-radius: 999px; }
+.dash .crm-prog__txt { font-size: 0.76rem; color: var(--d-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* episode drill-down table */
+.dash .crm-sub { padding: 10px 16px 16px; overflow-x: auto; }
+.dash .crm-sub__loading, .dash .crm-sub__empty { padding: 18px; color: var(--d-muted); font-size: 0.85rem; }
+.dash .crm-eptable { width: 100%; border-collapse: collapse; min-width: 900px; }
+.dash .crm-eptable thead th {
+  text-align: left; padding: 8px 10px; font-size: 0.68rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.4px; color: var(--d-faint);
+}
+.dash .crm-eptable tbody td { padding: 6px 10px; border-top: 1px solid var(--d-border-soft); }
+.dash .crm-eptable__ep { white-space: nowrap; }
+.dash .crm-eptable__ep b { color: var(--d-ink); }
+.dash .crm-eptable__code { display: block; font-family: ui-monospace, monospace; font-size: 0.68rem; color: var(--d-faint); }
+/* inline editable inputs */
+.dash .crm-input {
+  width: 100%; min-width: 90px; padding: 6px 8px; border-radius: 7px;
+  background: var(--d-surface-2); border: 1px solid transparent; color: var(--d-ink);
+  font: inherit; font-size: 0.82rem; outline: none;
+}
+.dash .crm-input:hover { border-color: var(--d-border); }
+.dash .crm-input:focus { border-color: var(--d-primary); background: var(--d-surface); }
+.dash .crm-input--num { width: 70px; min-width: 60px; }
+.dash .crm-input--date { width: 140px; min-width: 130px; }
+.dash .crm-input--status { font-weight: 700; cursor: pointer; }
+/* ── New/Edit series form modal ── */
+.dash .crm-form,
+.crm-form {
+  width: min(880px, 96vw); max-height: 90vh; display: flex; flex-direction: column;
+  background: #1c252e; border: 1px solid #2b3640; border-radius: 16px;
+  box-shadow: 0 24px 60px -12px rgba(0,0,0,0.7); color: #e7ecf0;
+  font-family: "Public Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+.crm-form__head { display: flex; align-items: center; justify-content: space-between; padding: 20px 24px; border-bottom: 1px solid #2b3640; }
+.crm-form__head h2 { margin: 0; font-size: 1.1rem; font-weight: 700; }
+.crm-form__close { border: none; background: transparent; color: #919eab; font-size: 26px; line-height: 1; cursor: pointer; }
+.crm-form__close:hover { color: #e7ecf0; }
+.crm-form__body { overflow-y: auto; padding: 8px 24px 20px; }
+.crm-form__section { padding: 16px 0; border-bottom: 1px solid rgba(145,158,171,0.14); }
+.crm-form__section:last-child { border-bottom: none; }
+.crm-form__section h3 {
+  margin: 0 0 14px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.6px; color: #637381;
+}
+.crm-form__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px 18px; }
+.crm-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.crm-field--wide { grid-column: span 2; }
+.crm-field--full { grid-column: 1 / -1; }
+.crm-field > span { font-size: 0.78rem; color: #919eab; }
+.crm-field__input {
+  padding: 9px 11px; border-radius: 8px; background: #0e141a; border: 1px solid #2b3640;
+  color: #f0f0f4; font: inherit; font-size: 0.88rem; outline: none; resize: vertical;
+}
+.crm-field__input:focus { border-color: #00a76f; box-shadow: 0 0 0 3px rgba(0,167,111,0.16); }
+.crm-form__foot { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 24px; border-top: 1px solid #2b3640; }
+/* ── Series hub (Project → Series → Episode → Sequence) ─────────────────────── */
+
+/* Series detail summary in the expanded Production row */
+.dash .crm-detail {
+  margin: 4px 0 16px;
+  padding: 16px 18px;
+  background: var(--d-surface-2);
+  border: 1px solid var(--d-border);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.dash .crm-detail--empty {
+  color: var(--d-muted);
+  font-size: 0.85rem;
+  padding: 14px 18px;
+}
+.dash .crm-detail__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 14px 24px;
+}
+.dash .crm-detail__item,
+.dash .crm-detail__wide { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.dash .crm-detail__wide {
+  padding-top: 12px;
+  border-top: 1px solid var(--d-border);
+}
+.dash .crm-detail__label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--d-muted);
+}
+.dash .crm-detail__value {
+  font-size: 0.9rem;
+  color: var(--d-ink);
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+.dash .crm-detail__link { color: var(--d-primary); text-decoration: none; }
+.dash .crm-detail__link:hover { text-decoration: underline; }
+
+/* Production table: truncating cell (genres) + no-wrap dates */
+.dash .crm-table__clip {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash .crm-table__nowrap { white-space: nowrap; }
