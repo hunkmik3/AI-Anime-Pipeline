@@ -9586,48 +9586,57 @@ button:disabled {
 .crm-form__foot { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 24px; border-top: 1px solid #2b3640; }
 /* ── Series hub (Project → Series → Episode → Sequence) ─────────────────────── */
 
-/* Series detail summary in the expanded Production row */
-.dash .crm-detail {
-  margin: 4px 0 16px;
+/* Series detail card in the expanded Production row.
+   Self-contained (no --d- vars, no .dash scope) so it renders correctly
+   wherever the table lives. */
+.crm-detail {
+  margin: 6px 0 16px;
   padding: 16px 18px;
-  background: var(--d-surface-2);
-  border: 1px solid var(--d-border);
+  background: #141b22;
+  border: 1px solid #2b3640;
   border-radius: 12px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
-.dash .crm-detail--empty {
-  color: var(--d-muted);
+.crm-detail--empty {
+  color: #8a97a3;
   font-size: 0.85rem;
   padding: 14px 18px;
 }
-.dash .crm-detail__grid {
+.crm-detail__grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 14px 24px;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 16px 24px;
 }
-.dash .crm-detail__item,
-.dash .crm-detail__wide { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.dash .crm-detail__wide {
+.crm-detail__item,
+.crm-detail__wide {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.crm-detail__wide {
   padding-top: 12px;
-  border-top: 1px solid var(--d-border);
+  border-top: 1px solid #232e39;
 }
-.dash .crm-detail__label {
+.crm-detail__label {
+  display: block;
   font-size: 0.68rem;
-  font-weight: 600;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--d-muted);
+  color: #8a97a3;
 }
-.dash .crm-detail__value {
-  font-size: 0.9rem;
-  color: var(--d-ink);
+.crm-detail__value {
+  display: block;
+  font-size: 0.92rem;
+  color: #e7ecf0;
   overflow-wrap: anywhere;
   line-height: 1.4;
 }
-.dash .crm-detail__link { color: var(--d-primary); text-decoration: none; }
-.dash .crm-detail__link:hover { text-decoration: underline; }
+.crm-detail__link { color: #00a76f; text-decoration: none; }
+.crm-detail__link:hover { text-decoration: underline; }
 
 /* Production table: truncating cell (genres) + no-wrap dates */
 .dash .crm-table__clip {
@@ -9637,3 +9646,96 @@ button:disabled {
   white-space: nowrap;
 }
 .dash .crm-table__nowrap { white-space: nowrap; }
+
+/* Full code cell: monospace-ish, single line (table scrolls-x if needed) */
+.dash .crm-table__fullcode {
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  color: var(--d-primary);
+}
+/* Series-name column moved to the right — clamp width, ellipsis when long */
+.dash .crm-table__name.crm-table__clip { max-width: 220px; }
+
+/* Series detail sub-table — match the MAIN table's header/cell sizing (the
+   .crm-eptable defaults are smaller); override with higher specificity. */
+.crm-sub--detail { margin-bottom: 16px; }
+.crm-sub--detail table.crm-eptable thead th {
+  padding: 14px 16px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #8a97a3;
+  background: #1a222b;
+  border-bottom: 1px solid #2b3640;
+}
+.crm-sub--detail table.crm-eptable tbody td {
+  padding: 13px 16px;
+  border-top: none;
+}
+.crm-detail__cell {
+  vertical-align: top;
+  min-width: 90px;
+  max-width: 320px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: #e7ecf0;
+  font-size: 0.9rem;
+}
+
+/* Auto-generate structure section (series form) */
+.crm-gen__hint { margin: 0 0 12px; color: #8a97a3; font-size: 0.82rem; line-height: 1.5; }
+.crm-gen__row { align-items: end; }
+.crm-gen__calc { font-size: 0.9rem; color: #e7ecf0; align-self: center; }
+.crm-gen__calc b { color: #00a76f; }
+.crm-gen__muted { color: #8a97a3; font-size: 0.85rem; }
+
+/* Episode-card action cluster (rename + delete), top-right, on hover */
+.scene-card__actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 6px;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+.scene-card:hover .scene-card__actions,
+.scene-card:focus-within .scene-card__actions {
+  opacity: 1;
+  transform: translateY(0);
+}
+.scene-card__act {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: rgba(15, 20, 26, 0.72);
+  backdrop-filter: blur(4px);
+  color: #cfd6dd;
+  cursor: pointer;
+  transition: background-color 100ms ease, color 100ms ease;
+}
+.scene-card__act:hover { background: var(--accent, #00a76f); color: #fff; }
+.scene-card__act--danger:hover { background: #d64545; color: #fff; }
+
+/* Row of pill actions on the episode thumbnail (Rename + Thumbnail), bottom-right */
+.scene-card__thumb-actions {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  z-index: 3;
+  display: flex;
+  gap: 6px;
+}
+/* the pills inside flow in the row (override the standalone absolute positioning) */
+.scene-card__thumb-actions .scene-card__upload {
+  position: static;
+  bottom: auto;
+  right: auto;
+}

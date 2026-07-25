@@ -1,6 +1,7 @@
 """Scene CRUD + bible + reorder + (Phase 7 stub) compose."""
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any, Optional
 
@@ -8,7 +9,9 @@ from sqlalchemy import func
 from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Session, select
 
-from flowboard.db.models import Asset, Project, Scene, Shot
+import math
+
+from flowboard.db.models import AppSetting, Asset, Project, Scene, Series, Shot
 
 
 class SceneNotFound(Exception):
@@ -40,12 +43,41 @@ EPISODE_PROD_FIELDS: tuple[str, ...] = (
 _EPISODE_INT_FIELDS = {"duration_sec"}
 _CREW_ROLES = ("scriptwriter", "concept_creator", "ai_creator", "editor")
 
+# Persistent staff roster (seed of the Staff DB). Kept in app_setting so the
+# crew pool survives even when no episodes exist yet (e.g. a fresh project).
+STAFF_SETTING_KEY = "crm_staff_names"
+
+
+def get_staff_names(session: Session) -> list[str]:
+    row = session.get(AppSetting, STAFF_SETTING_KEY)
+    if not row or not row.value:
+        return []
+    try:
+        return [str(x).strip() for x in json.loads(row.value) if str(x).strip()]
+    except (ValueError, TypeError):
+        return []
+
+
+def set_staff_names(session: Session, names: list[str]) -> list[str]:
+    clean = sorted(
+        {str(n).strip() for n in (names or []) if str(n).strip()},
+        key=lambda s: s.lower(),
+    )
+    row = session.get(AppSetting, STAFF_SETTING_KEY)
+    if row is None:
+        row = AppSetting(key=STAFF_SETTING_KEY, value=json.dumps(clean, ensure_ascii=False))
+    else:
+        row.value = json.dumps(clean, ensure_ascii=False)
+    session.add(row)
+    session.commit()
+    return clean
+
 
 def distinct_crew_names(session: Session) -> list[str]:
-    """Every distinct crew name used across all episodes' production bags (the
-    four role fields pooled), sorted. Powers the CRM crew dropdowns so you pick
-    an existing person instead of retyping."""
-    names: set[str] = set()
+    """The crew-dropdown pool: the persistent staff roster (app_setting) UNION
+    every distinct crew name already used across episodes. Sorted. So the pool
+    stays populated even in a fresh/empty project."""
+    names: set[str] = set(get_staff_names(session))
     for sc in session.exec(select(Scene)).all():
         prod = sc.production or {}
         for role in _CREW_ROLES:
@@ -198,6 +230,28 @@ def scene_shot_count(session: Session, scene_id: uuid.UUID) -> int:
     if isinstance(n, tuple):
         n = n[0]
     return int(n or 0)
+
+
+def sequence_cap(session: Session, scene: Scene) -> Optional[int]:
+    """Hard ceiling on how many Sequences an Episode may hold, derived from its
+    Series' plan: standard = ceil(duration / sec_per_video), cap = standard + 2
+    (the '±2' tolerance the producer allows). ``None`` = no cap (the series has
+    no duration/sec-per-video configured), so creation stays unrestricted."""
+    if scene.series_id is None:
+        return None
+    series = session.get(Series, scene.series_id)
+    if series is None:
+        return None
+    prod = series.production or {}
+    try:
+        duration = int(prod.get("episode_duration_sec") or 0)
+        per_video = int(prod.get("sec_per_video") or 0)
+    except (TypeError, ValueError):
+        return None
+    if duration <= 0 or per_video <= 0:
+        return None
+    standard = math.ceil(duration / per_video)
+    return standard + 2
 
 
 # ── Reorder ───────────────────────────────────────────────────────────────

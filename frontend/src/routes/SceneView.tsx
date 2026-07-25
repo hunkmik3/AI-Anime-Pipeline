@@ -57,7 +57,6 @@ export function SceneView() {
   );
   const loadScenes = useSceneStore((s) => s.loadScenes);
   const createScene = useSceneStore((s) => s.createScene);
-  const deleteScene = useSceneStore((s) => s.deleteScene);
   const resetScenes = useSceneStore((s) => s.resetForProject);
 
   const series = useSeriesStore((s) =>
@@ -281,15 +280,6 @@ export function SceneView() {
                   : "A series holds its Episodes. Open one to storyboard its sequences."}
               </p>
             </div>
-            {can("series.create") && (
-              <button
-                type="button"
-                className="btn btn--primary"
-                onClick={() => setSeriesModalOpen(true)}
-              >
-                + New Series
-              </button>
-            )}
           </header>
 
           {sortedSeries.length === 0 && unfiled.length === 0 ? (
@@ -363,21 +353,10 @@ export function SceneView() {
                       <EpisodeCard
                         key={scene.id}
                         scene={scene}
-                        unit={unit}
                         projectId={projectId}
                         coverBusy={coverBusy === scene.id}
                         canDecorate={can("project.decorate")}
-                        canDelete={can("episode.delete")}
                         onCover={(f) => void handleSceneCover(scene.id, f)}
-                        onDelete={() => {
-                          if (
-                            window.confirm(
-                              `Delete ${unit.toLowerCase()} "${scene.name}"? All sequences inside will also be deleted.`,
-                            )
-                          ) {
-                            void deleteScene(scene.id);
-                          }
-                        }}
                       />
                     ))}
                   </ol>
@@ -403,17 +382,10 @@ export function SceneView() {
                   <EpisodeCard
                     key={scene.id}
                     scene={scene}
-                    unit="Episode"
                     projectId={projectId}
                     coverBusy={coverBusy === scene.id}
                     canDecorate={can("project.decorate")}
-                    canDelete={can("episode.delete")}
                     onCover={(f) => void handleSceneCover(scene.id, f)}
-                    onDelete={() => {
-                      if (window.confirm(`Delete "${scene.name}"?`)) {
-                        void deleteScene(scene.id);
-                      }
-                    }}
                   />
                 ))}
               </ol>
@@ -559,26 +531,19 @@ export function SceneView() {
  *  serves both real series and the Unfiled bucket. */
 function EpisodeCard({
   scene,
-  unit,
   projectId,
   coverBusy,
   canDecorate,
-  canDelete,
   onCover,
-  onDelete,
 }: {
   scene: SceneDTO;
-  unit: string;
   projectId: string;
   coverBusy: boolean;
   canDecorate: boolean;
-  canDelete: boolean;
   onCover: (file: File) => void;
-  onDelete: () => void;
 }) {
   const shotCount = scene.canvas_state?.shot_groups?.length ?? 0;
   const hue = (scene.order_index * 47 + 200) % 360;
-  const badge = scene.code || `${unit.slice(0, 2).toUpperCase()} ${scene.order_index + 1}`;
   return (
     <li className="scene-card">
       <Link to={`/projects/${projectId}/scenes/${scene.id}`} className="scene-card__body">
@@ -613,43 +578,48 @@ function EpisodeCard({
               <path d="M2 7l3-4h4l-3 4M9 7l3-4h4l-3 4M16 7l3-4h4l-3 4" />
             </svg>
           )}
-          <span className="scene-card__badge">{badge}</span>
 
-          {canDecorate && (
-            <button
-              type="button"
-              className={`scene-card__upload${coverBusy ? " is-busy" : ""}`}
-              title="Upload a cover thumbnail"
-              disabled={coverBusy}
-              onClick={async (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const f = await pickImageFile();
-                if (f) onCover(f);
-              }}
-            >
-              {coverBusy ? (
-                "Uploading…"
-              ) : (
-                <>
-                  <svg
-                    viewBox="0 0 24 24"
-                    width="14"
-                    height="14"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d="M12 16V4M6 10l6-6 6 6M4 20h16" />
-                  </svg>
-                  {scene.thumb_media_id ? "Change" : "Thumbnail"}
-                </>
-              )}
-            </button>
-          )}
+          <div
+            className="scene-card__thumb-actions"
+            style={{ position: "absolute", bottom: 8, right: 8, zIndex: 3, display: "flex", gap: 6 }}
+          >
+            {canDecorate && (
+              <button
+                type="button"
+                className={`scene-card__upload${coverBusy ? " is-busy" : ""}`}
+                style={{ position: "static", bottom: "auto", right: "auto" }}
+                title="Upload a cover thumbnail"
+                disabled={coverBusy}
+                onClick={async (e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const f = await pickImageFile();
+                  if (f) onCover(f);
+                }}
+              >
+                {coverBusy ? (
+                  "Uploading…"
+                ) : (
+                  <>
+                    <svg
+                      viewBox="0 0 24 24"
+                      width="14"
+                      height="14"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M12 16V4M6 10l6-6 6 6M4 20h16" />
+                    </svg>
+                    {scene.thumb_media_id ? "Change" : "Thumbnail"}
+                  </>
+                )}
+              </button>
+            )}
+          </div>
         </div>
         <div className="scene-card__meta">
           <div className="scene-card__name" title={scene.name}>
@@ -660,16 +630,6 @@ function EpisodeCard({
           </div>
         </div>
       </Link>
-      {canDelete && (
-        <button
-          type="button"
-          className="scene-card__delete"
-          onClick={onDelete}
-          aria-label={`Delete ${scene.name}`}
-        >
-          ✕
-        </button>
-      )}
     </li>
   );
 }

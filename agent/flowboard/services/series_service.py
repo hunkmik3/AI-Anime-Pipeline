@@ -1,12 +1,15 @@
 """Phase 10 — Series CRUD (the tier between Project and Episode/Chapter)."""
 from __future__ import annotations
 
+import re
+import unicodedata
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from sqlmodel import Session, func, select
 
-from flowboard.db.models import Project, Scene, Series
+from flowboard.db.models import Project, Scene, Series, Shot
 
 UNIT_LABELS = ("Episode", "Chapter")
 
@@ -18,6 +21,9 @@ SERIES_PROD_FIELDS: tuple[str, ...] = (
     "tier",
     "status",              # Planning | On-going | Completed | Cancelled
     "priority",            # High | Medium | Low
+    "producer",            # PM/Producer who assigns the series to staff
+    "assignee",            # the staff member producing the series
+    "sec_per_video",       # nominal seconds per sequence (5–15) → sets the cap
     "start_date",
     "end_date",
     "folder_link",
@@ -31,7 +37,7 @@ SERIES_PROD_FIELDS: tuple[str, ...] = (
     "total_episodes_planned",
     "episode_duration_sec",
 )
-_SERIES_INT_FIELDS = {"total_episodes_planned", "episode_duration_sec"}
+_SERIES_INT_FIELDS = {"total_episodes_planned", "episode_duration_sec", "sec_per_video"}
 
 
 def clean_production(patch: dict, allowed: tuple[str, ...], int_fields: set) -> dict:
@@ -62,6 +68,74 @@ def merge_production(existing: dict, patch: dict, allowed, int_fields) -> dict:
         else:
             merged[k] = v
     return merged
+
+
+# ── Auto full_code (mirrors the Series_Master sheet formula) ────────────────
+# Format:  <BRAND>_<YY><NNN>_<CODE>_<PascalName>
+#   BRAND  project.settings["code_prefix"] or the project name, ASCII-uppercased
+#   YY     2-digit year of production.start_date (fallback: current year)
+#   NNN    running count of series in the same project + same year (zero-pad 3)
+#   CODE   series.code
+#   Name   series name in PascalCase, diacritics + spaces stripped
+# The prefix (brand_YYNNN_code) is uppercased; the name keeps its PascalCase,
+# exactly like `UPPER("MOGU_"&yy&order&"_"&scode) & "_" & name` in the sheet.
+
+
+def _ascii(s: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", s or "") if not unicodedata.combining(c)
+    )
+
+
+def _pascal(name: str) -> str:
+    return "".join(w[:1].upper() + w[1:] for w in re.split(r"[^0-9A-Za-z]+", _ascii(name)) if w)
+
+
+def _year2(start_date: Any, fallback_year: int) -> str:
+    if isinstance(start_date, str):
+        m = re.search(r"(?:19|20)\d{2}", start_date)
+        if m:
+            return m.group(0)[-2:]
+    return f"{fallback_year % 100:02d}"
+
+
+def build_full_code(session: Session, project: Project, series: Series) -> str:
+    """Compute the deterministic full_code for a series (see block comment)."""
+    raw_brand = (project.settings or {}).get("code_prefix") or project.name or "PRJ"
+    brand = re.sub(r"[^0-9A-Za-z]+", "", _ascii(raw_brand)).upper() or "PRJ"
+    yy = _year2((series.production or {}).get("start_date"), datetime.now(timezone.utc).year)
+
+    # NNN = position among same-project, same-year series by creation order, so
+    # a series' number is stable once assigned (new rows only append).
+    siblings = session.exec(
+        select(Series).where(Series.project_id == project.id)
+    ).all()
+
+    def _yy_of(s: Series) -> str:
+        return _year2((s.production or {}).get("start_date"), datetime.now(timezone.utc).year)
+
+    earlier = [
+        s
+        for s in siblings
+        if s.id != series.id
+        and _yy_of(s) == yy
+        and s.created_at
+        and series.created_at
+        and s.created_at < series.created_at
+    ]
+    seq = len(earlier) + 1
+    prefix = f"{brand}_{yy}{seq:03d}_{(series.code or '').strip()}".upper()
+    return f"{prefix}_{_pascal(series.name or '')}"
+
+
+def _apply_full_code(session: Session, series: Series) -> None:
+    """Set production['full_code'] on the series in place (does not commit)."""
+    project = session.get(Project, series.project_id)
+    if project is None:
+        return
+    prod = dict(series.production or {})
+    prod["full_code"] = build_full_code(session, project, series)
+    series.production = prod
 
 
 class SeriesNotFound(Exception):
@@ -129,6 +203,9 @@ def create_series(
             production or {}, SERIES_PROD_FIELDS, _SERIES_INT_FIELDS
         ),
     )
+    # full_code is always machine-generated (mirrors the sheet), overriding any
+    # value the caller sent.
+    _apply_full_code(session, row)
     session.add(row)
     session.commit()
     session.refresh(row)
@@ -166,6 +243,14 @@ def update_series(
         row.production = merge_production(
             row.production, production, SERIES_PROD_FIELDS, _SERIES_INT_FIELDS
         )
+    # Keep full_code in sync whenever an input it depends on changes (name,
+    # code, or the start_date inside the production patch).
+    if (
+        name is not None
+        or code is not None
+        or (production is not None and "start_date" in production)
+    ):
+        _apply_full_code(session, row)
     session.add(row)
     session.commit()
     session.refresh(row)
@@ -183,6 +268,69 @@ def delete_series(session: Session, series_id: uuid.UUID) -> None:
         session.add(scene)
     session.delete(row)
     session.commit()
+
+
+def generate_structure(
+    session: Session,
+    series_id: uuid.UUID,
+    *,
+    episodes: int,
+    sequences_per_episode: int,
+) -> dict:
+    """Plan out a series: ensure it has ``episodes`` Episodes, each Episode with
+    ``sequences_per_episode`` Sequences.
+
+    Idempotent + non-destructive:
+    - only the MISSING episodes (beyond what already exists) are created, so
+      re-running tops up rather than duplicating;
+    - sequences are only added to episodes that currently have NONE, so
+      episodes already holding real work are never touched.
+
+    Bulk-inserts in a single transaction. Returns what was created.
+    """
+    series = get_series(session, series_id)
+    existing = list(
+        session.exec(
+            select(Scene)
+            .where(Scene.series_id == series_id)
+            .order_by(Scene.order_index, Scene.created_at, Scene.id)
+        ).all()
+    )
+
+    made_ep = 0
+    new_scenes: list[Scene] = []
+    for i in range(len(existing), episodes):
+        sc = Scene(
+            project_id=series.project_id,
+            series_id=series_id,
+            name=f"Episode {i + 1}",
+            code=f"EP{i + 1:03d}",
+            order_index=i,
+        )
+        session.add(sc)
+        new_scenes.append(sc)
+        made_ep += 1
+    session.flush()  # assign scene ids
+
+    made_seq = 0
+    target_eps = (existing + new_scenes)[:episodes]
+    for sc in target_eps:
+        has_shot = session.exec(
+            select(Shot.id).where(Shot.scene_id == sc.id).limit(1)
+        ).first()
+        if has_shot is None and sequences_per_episode > 0:
+            for j in range(sequences_per_episode):
+                session.add(
+                    Shot(scene_id=sc.id, order_index=j, code=f"SQ{j + 1:02d}")
+                )
+                made_seq += 1
+    session.commit()
+    return {
+        "episodes_created": made_ep,
+        "sequences_created": made_seq,
+        "total_episodes": len(target_eps),
+        "sequences_per_episode": sequences_per_episode,
+    }
 
 
 def series_episode_count(session: Session, series_id: uuid.UUID) -> int:

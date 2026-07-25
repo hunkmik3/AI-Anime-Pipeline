@@ -12,6 +12,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 
 from flowboard.db import get_session
 from flowboard.routes.deps import get_optional_user
@@ -150,6 +151,34 @@ def delete_series(series_id: uuid.UUID, user=Depends(get_optional_user)):
         except ses.SeriesNotFound:
             raise HTTPException(404, "series not found")
         return {"deleted": str(series_id)}
+
+
+class GenerateStructureBody(BaseModel):
+    # Bounded so a stray value can't create a runaway number of rows.
+    episodes: int = Field(ge=0, le=2000)
+    sequences_per_episode: int = Field(ge=0, le=200)
+
+
+@router.post("/api/series/{series_id}/generate-structure")
+def generate_structure(
+    series_id: uuid.UUID, body: GenerateStructureBody, user=Depends(get_optional_user)
+):
+    """Plan out a series' episodes + sequences in one go (idempotent; only
+    creates what's missing). Needs episode.create (lead+) since it builds
+    structure. The created rows are ordinary Episodes/Sequences, so they show
+    up on the project home immediately and edit both ways."""
+    with get_session() as s:
+        try:
+            row = ses.get_series(s, series_id)
+        except ses.SeriesNotFound:
+            raise HTTPException(404, "series not found")
+        permissions.require(s, user, row.project_id, "episode.create")
+        return ses.generate_structure(
+            s,
+            series_id,
+            episodes=body.episodes,
+            sequences_per_episode=body.sequences_per_episode,
+        )
 
 
 @router.get("/api/series/{series_id}/episodes")

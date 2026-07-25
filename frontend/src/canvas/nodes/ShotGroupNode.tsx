@@ -70,6 +70,7 @@ export function ShotGroupNode({ data, selected }: NodeProps) {
         {editing ? (
           <input
             className="shot-group__label-input"
+            style={{ fontSize: 28, fontWeight: 700 }}
             value={label}
             autoFocus
             maxLength={60}
@@ -87,16 +88,63 @@ export function ShotGroupNode({ data, selected }: NodeProps) {
         ) : (
           <span
             className="shot-group__label"
-            onDoubleClick={() => {
+            onDoubleClick={(e) => {
+              e.stopPropagation();
               setLabel(d.label);
               setEditing(true);
             }}
             title="Double-click to rename"
           >
-            <span className="shot-group__num">{d.label}</span>
+            <span className="shot-group__num" style={{ fontSize: 30 }}>
+              {d.label}
+            </span>
             {d.sceneLabel ? (
-              <span className="shot-group__scene"> — {d.sceneLabel}</span>
+              <span className="shot-group__scene" style={{ fontSize: 26 }}>
+                {" "}
+                — {d.sceneLabel}
+              </span>
             ) : null}
+            <button
+              type="button"
+              className="shot-group__rename nodrag"
+              title="Rename sequence"
+              aria-label="Rename sequence"
+              style={{
+                marginLeft: 12,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                height: 50,
+                flexShrink: 0,
+                padding: "0 20px",
+                borderRadius: 10,
+                background: "rgba(255,255,255,0.06)",
+                border: "1px solid var(--border)",
+                color: "var(--text)",
+                cursor: "pointer",
+                fontSize: 16,
+                fontWeight: 600,
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.background = "var(--accent)";
+                (e.currentTarget as HTMLButtonElement).style.color = "#fff";
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.06)";
+                (e.currentTarget as HTMLButtonElement).style.color = "var(--text)";
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                setLabel(d.label);
+                setEditing(true);
+              }}
+            >
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
+              </svg>
+              Rename
+            </button>
           </span>
         )}
         <span className="shot-group__badge">{d.childCount} node{d.childCount === 1 ? "" : "s"}</span>

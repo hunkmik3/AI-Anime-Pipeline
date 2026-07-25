@@ -25,6 +25,7 @@ import { useSceneStore } from "../store/scene";
 import { useShotStore } from "../store/shot";
 import { useShotWorkflowStore, type FlowNode, type NodeType } from "../store/shotWorkflow";
 import { useReferencesStore } from "../store/references";
+import { toast } from "../store/toast";
 
 const edgeTypes = { default: VariantEdge };
 
@@ -41,8 +42,8 @@ const MIN_H = 300;
 // to hold a real shot's worth of nodes without touching a corner handle.
 const DEFAULT_W = 1920;
 const DEFAULT_H = 1080;
-const COLLAPSED_W = 280;
-const COLLAPSED_H = 120;
+const COLLAPSED_W = 480; // wide enough for the larger "Sequence N — Episode" label
+const COLLAPSED_H = 110;
 
 const SHOT_DEFAULT_X = 100; // alignment x for the vertical shot stack
 const SHOT_VERTICAL_GAP = 100; // gap below the previous shot's bottom edge
@@ -544,7 +545,12 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
       // group (not a fixed far stride), aligned to the column x.
       const pos = nextShotPosition(groups, nodes);
       const shot = await createShot(sceneId);
-      if (!shot) return;
+      if (!shot) {
+        // e.g. the episode hit its sequence cap (409) — surface why.
+        const err = useShotStore.getState().error;
+        if (err) toast(err, "error");
+        return;
+      }
       // patchShotGroup creates the group entry if missing → no auto-migrate
       // stride; the new frame lands exactly where we computed.
       await patchShotGroup(shot.id, {

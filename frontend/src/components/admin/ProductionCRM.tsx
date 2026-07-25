@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   createSeries,
+  generateSeriesStructure,
   getCrewNames,
   listProjects,
   listSeries,
@@ -37,6 +38,103 @@ function statusClass(s: string): string {
 function priClass(p: string): string {
   const k = p.toLowerCase();
   return k === "high" ? "crm-chip--high" : k === "low" ? "crm-chip--low" : "crm-chip--med";
+}
+
+// ── Full series record (shown when a row is expanded) ────────────────────────
+// Every series production field, in natural order. The compact table shows only
+// the key ones; the rest live here so no data is hidden without over-wide rows.
+// Only the fields NOT already shown as a main-table column live here, so the
+// expanded row never repeats what's on the row above it. (Code, Full code,
+// Series, Tier, Status, Priority, Producer, Assignee, Progress are up there.)
+const SERIES_DETAIL: [string, string][] = [
+  ["Start date", "start_date"],
+  ["End date", "end_date"],
+  ["Planned episodes", "total_episodes_planned"],
+  ["Duration / ep (s)", "episode_duration_sec"],
+  ["Target market", "target_market"],
+  ["Secondary markets", "secondary_markets"],
+  ["Target audience", "target_audience"],
+  ["Original language", "language_original"],
+  ["Genres", "genres"],
+  ["Tropes", "tropes"],
+  ["Folder", "folder_link"],
+  ["Logline", "logline"],
+];
+/** The extra series fields (those not already on the main row) as a sub-table,
+ *  led by the Series name: field names as the header row, one row of values. */
+function SeriesDetail({
+  seriesName,
+  production,
+}: {
+  seriesName: string;
+  production: Record<string, string | number>;
+}) {
+  const has = (k: string) => {
+    const v = production[k];
+    return v !== undefined && v !== null && String(v).trim() !== "";
+  };
+  const shown: [string, string][] = [
+    ["Series", "__name__"],
+    ...SERIES_DETAIL.filter(([, k]) => has(k)),
+  ];
+  const renderValue = (k: string) => {
+    if (k === "__name__") return seriesName;
+    const v = String(production[k]);
+    if (k === "folder_link" && /^https?:\/\//.test(v)) {
+      return (
+        <a href={v} target="_blank" rel="noreferrer" style={{ color: "#00a76f" }}>
+          {v}
+        </a>
+      );
+    }
+    return v;
+  };
+  // Inline styles so the look is guaranteed regardless of stylesheet caching —
+  // sized to match the MAIN table's header/cell (padding + font).
+  const thStyle: React.CSSProperties = {
+    textAlign: "left",
+    padding: "14px 16px",
+    fontSize: "0.72rem",
+    fontWeight: 700,
+    textTransform: "uppercase",
+    letterSpacing: "0.5px",
+    color: "#8a97a3",
+    background: "#1a222b",
+    whiteSpace: "nowrap",
+    borderBottom: "1px solid #2b3640",
+  };
+  const tdStyle: React.CSSProperties = {
+    padding: "13px 16px",
+    fontSize: "0.9rem",
+    color: "#e7ecf0",
+    verticalAlign: "top",
+    maxWidth: 340,
+    overflowWrap: "anywhere",
+  };
+  return (
+    <div style={{ overflowX: "auto", margin: "0 0 4px" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr>
+            {shown.map(([label, k]) => (
+              <th key={k} style={thStyle}>
+                {label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            {shown.map(([, k]) => (
+              <td key={k} style={tdStyle}>
+                {renderValue(k)}
+              </td>
+            ))}
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 // ── Episode table (inline-editable) ──────────────────────────────────────────
@@ -201,39 +299,122 @@ interface ProjectLite {
 function SeriesForm({
   projects,
   editing,
+  crewNames,
   onClose,
   onSaved,
 }: {
   projects: ProjectLite[];
   editing: Row | null;
+  crewNames: string[];
   onClose: () => void;
   onSaved: () => void;
 }) {
   const p0 = editing?.production ?? {};
-  const [projectId, setProjectId] = useState(editing?.project_id ?? projects[0]?.id ?? "");
-  const [name, setName] = useState(editing?.name ?? "");
-  const [code, setCode] = useState(editing?.code ?? "");
+  // Draft persistence: a form closed (Cancel / ✕ / Esc) WITHOUT saving keeps
+  // what was typed, so reopening restores it. Keyed per new/edit; cleared on a
+  // successful save.
+  const draftKey = editing ? `crm:series:draft:${editing.id}` : "crm:series:draft:new";
+  const draft0 = (() => {
+    try {
+      const raw = localStorage.getItem(draftKey);
+      return raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  const [projectId, setProjectId] = useState(
+    (draft0?.projectId as string) ?? editing?.project_id ?? projects[0]?.id ?? "",
+  );
+  const [name, setName] = useState((draft0?.name as string) ?? editing?.name ?? "");
+  const [code, setCode] = useState((draft0?.code as string) ?? editing?.code ?? "");
   const [f, setF] = useState<Record<string, string>>(() => {
+    if (draft0?.f && typeof draft0.f === "object") return draft0.f as Record<string, string>;
     const init: Record<string, string> = {};
     for (const k of Object.keys(p0)) init[k] = p0[k] == null ? "" : String(p0[k]);
     return init;
   });
   const [busy, setBusy] = useState(false);
+  const [secPerVideo, setSecPerVideo] = useState(() => {
+    const d = parseInt(String(draft0?.secPerVideo ?? ""), 10);
+    if (d > 0) return d;
+    const v = parseInt(String(editing?.production?.sec_per_video ?? ""), 10);
+    return v > 0 ? v : 10;
+  });
   const set = (k: string, v: string) => setF((s) => ({ ...s, [k]: v }));
+
+  // Persist the draft on every change.
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        draftKey,
+        JSON.stringify({ projectId, name, code, f, secPerVideo }),
+      );
+    } catch {
+      /* storage full / disabled — non-fatal */
+    }
+  }, [draftKey, projectId, name, code, f, secPerVideo]);
+
+  // Esc closes the form (same as Cancel / ✕ — draft is kept).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  function clearDraft() {
+    try {
+      localStorage.removeItem(draftKey);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Producer sets N episodes + duration + seconds-per-video. From that we derive
+  // the "standard" sequences per episode and the HARD CAP (standard + 2) that
+  // artists can build up to. Episodes are created EMPTY — artists fill them.
+  const plannedEps = Math.max(0, parseInt(f.total_episodes_planned ?? "", 10) || 0);
+  const epDuration = Math.max(0, parseInt(f.episode_duration_sec ?? "", 10) || 0);
+  const stdSeq =
+    epDuration > 0 && secPerVideo > 0 ? Math.ceil(epDuration / secPerVideo) : 0;
+  const capSeq = stdSeq > 0 ? stdSeq + 2 : 0;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (busy || !name.trim() || !projectId) return;
     setBusy(true);
     try {
-      const production = { ...f };
+      // Persist seconds-per-video so the backend can enforce the per-episode cap.
+      const production = { ...f, sec_per_video: String(secPerVideo) };
+      let seriesId: string;
       if (editing) {
         await patchSeries(editing.id, { name: name.trim(), code: code.trim(), production });
-        toast(`Saved "${name.trim()}"`);
+        seriesId = editing.id;
       } else {
-        await createSeries(projectId, { name: name.trim(), code: code.trim(), production });
-        toast(`Created "${name.trim()}"`);
+        const created = await createSeries(projectId, {
+          name: name.trim(),
+          code: code.trim(),
+          production,
+        });
+        seriesId = created.id;
       }
+      // Create the planned number of EMPTY episodes (artists add the sequences,
+      // up to the cap). Idempotent — only missing episodes are added.
+      if (plannedEps > 0) {
+        const r = await generateSeriesStructure(seriesId, {
+          episodes: plannedEps,
+          sequences_per_episode: 0,
+        });
+        toast(
+          `Saved. +${r.episodes_created} empty episode(s). Artists add up to ` +
+            `${capSeq || "∞"} sequences each.`,
+        );
+      } else {
+        toast(editing ? `Saved "${name.trim()}"` : `Created "${name.trim()}"`);
+      }
+      clearDraft(); // saved successfully → drop the recovery draft
       onSaved();
       onClose();
     } catch (err) {
@@ -248,7 +429,9 @@ function SeriesForm({
       className="project-modal-backdrop"
       role="dialog"
       aria-modal="true"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
+      // Deliberately NO close-on-backdrop-click here — this is a long data-entry
+      // form; a stray click outside must not wipe what's being typed. Close only
+      // via Cancel or the ✕.
     >
       <form className="crm-form" onSubmit={submit}>
         <div className="crm-form__head">
@@ -297,12 +480,13 @@ function SeriesForm({
                 />
               </label>
               <label className="crm-field">
-                <span>Full code</span>
+                <span>Full code (auto)</span>
                 <input
                   className="crm-field__input"
                   value={f.full_code ?? ""}
-                  onChange={(e) => set("full_code", e.target.value)}
-                  placeholder="MOGU_26001_OUTF_…"
+                  readOnly
+                  placeholder="auto-generated on save — MOGU_26001_OUTF_…"
+                  title="Generated automatically from project, start date, code and name"
                 />
               </label>
             </div>
@@ -360,6 +544,37 @@ function SeriesForm({
           </section>
 
           <section className="crm-form__section">
+            <h3>Team</h3>
+            <div className="crm-form__grid">
+              <label className="crm-field">
+                <span>Producer (PM — assigns the series)</span>
+                <input
+                  className="crm-field__input"
+                  list="crm-people"
+                  value={f.producer ?? ""}
+                  onChange={(e) => set("producer", e.target.value)}
+                  placeholder="who assigns this series"
+                />
+              </label>
+              <label className="crm-field">
+                <span>Assignee (produces the series)</span>
+                <input
+                  className="crm-field__input"
+                  list="crm-people"
+                  value={f.assignee ?? ""}
+                  onChange={(e) => set("assignee", e.target.value)}
+                  placeholder="who makes this series"
+                />
+              </label>
+              <datalist id="crm-people">
+                {crewNames.map((n) => (
+                  <option key={n} value={n} />
+                ))}
+              </datalist>
+            </div>
+          </section>
+
+          <section className="crm-form__section">
             <h3>Schedule</h3>
             <div className="crm-form__grid">
               <label className="crm-field">
@@ -398,6 +613,40 @@ function SeriesForm({
                 <span>Logline</span>
                 <textarea className="crm-field__input" rows={2} value={f.logline ?? ""} onChange={(e) => set("logline", e.target.value)} placeholder="One-sentence summary…" />
               </label>
+            </div>
+          </section>
+
+          <section className="crm-form__section">
+            <h3>Episodes &amp; pacing</h3>
+            <p className="crm-gen__hint">
+              On <b>Save</b>, <b>{plannedEps || "N"}</b> empty Episodes are created
+              on the project home. Each sequence is one 5–{secPerVideo}s video, so
+              from the Duration each episode is capped at{" "}
+              <b>⌈{epDuration || "D"}÷{secPerVideo}⌉ + 2</b> sequences — artists fill
+              them up to that limit. Idempotent; existing episodes are kept.
+            </p>
+            <div className="crm-form__grid crm-gen__row">
+              <label className="crm-field">
+                <span>Seconds / video</span>
+                <input
+                  className="crm-field__input"
+                  type="number"
+                  min={1}
+                  max={60}
+                  value={secPerVideo}
+                  onChange={(e) => setSecPerVideo(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                />
+              </label>
+              <div className="crm-gen__calc">
+                {plannedEps > 0 ? (
+                  <>
+                    → <b>{plannedEps}</b> empty episodes · cap{" "}
+                    <b>{capSeq || "∞"}</b> sequences/ep (standard <b>{stdSeq || "—"}</b> + 2)
+                  </>
+                ) : (
+                  <span className="crm-gen__muted">Set “Planned episodes” to build</span>
+                )}
+              </div>
             </div>
           </section>
         </div>
@@ -512,16 +761,14 @@ export function ProductionCRM() {
               <tr>
                 <th className="crm-table__ex" />
                 <th>Code</th>
-                <th>Series</th>
+                <th>Full code</th>
                 <th>Project</th>
                 <th>Tier</th>
+                <th>Producer</th>
+                <th>Assignee</th>
+                <th>Progress</th>
                 <th>Status</th>
                 <th>Priority</th>
-                <th>Genres</th>
-                <th>Start</th>
-                <th>End</th>
-                <th>Planned</th>
-                <th>Progress</th>
                 <th className="admin2__th-actions" />
               </tr>
             </thead>
@@ -538,17 +785,17 @@ export function ProductionCRM() {
                     <tr className="crm-table__row" onClick={() => setOpen(isOpen ? null : r.id)}>
                       <td className="admin2__muted">{isOpen ? "▾" : "▸"}</td>
                       <td className="crm-table__code">{r.code || "—"}</td>
-                      <td className="crm-table__name">{r.name}</td>
+                      <td className="crm-table__fullcode" title={p.full_code ? String(p.full_code) : ""}>
+                        {p.full_code ? String(p.full_code) : "—"}
+                      </td>
                       <td className="admin2__muted">{r.project_name}</td>
                       <td>{p.tier ? <span className="crm-chip crm-chip--tier">{p.tier}</span> : "—"}</td>
-                      <td>{p.status ? <span className={`crm-chip ${statusClass(String(p.status))}`}>{p.status}</span> : "—"}</td>
-                      <td>{p.priority ? <span className={`crm-chip ${priClass(String(p.priority))}`}>{p.priority}</span> : "—"}</td>
-                      <td className="crm-table__clip" title={p.genres ? String(p.genres) : ""}>
-                        {p.genres ? String(p.genres) : "—"}
+                      <td className="crm-table__clip admin2__muted" title={p.producer ? String(p.producer) : ""}>
+                        {p.producer ? String(p.producer) : "—"}
                       </td>
-                      <td className="admin2__muted crm-table__nowrap">{p.start_date ? String(p.start_date) : "—"}</td>
-                      <td className="admin2__muted crm-table__nowrap">{p.end_date ? String(p.end_date) : "—"}</td>
-                      <td className="admin2__muted">{p.total_episodes_planned != null && p.total_episodes_planned !== "" ? String(p.total_episodes_planned) : "—"}</td>
+                      <td className="crm-table__clip admin2__muted" title={p.assignee ? String(p.assignee) : ""}>
+                        {p.assignee ? String(p.assignee) : "—"}
+                      </td>
                       <td>
                         <div className="crm-prog" title={`${done}/${planned} episodes`}>
                           <div className="crm-prog__bar">
@@ -559,6 +806,8 @@ export function ProductionCRM() {
                           </span>
                         </div>
                       </td>
+                      <td>{p.status ? <span className={`crm-chip ${statusClass(String(p.status))}`}>{p.status}</span> : "—"}</td>
+                      <td>{p.priority ? <span className={`crm-chip ${priClass(String(p.priority))}`}>{p.priority}</span> : "—"}</td>
                       <td className="crm-table__actions">
                         <button
                           className="btn2 btn2--ghost"
@@ -573,8 +822,12 @@ export function ProductionCRM() {
                     </tr>
                     {isOpen ? (
                       <tr className="crm-table__drill">
-                        <td colSpan={13}>
+                        <td colSpan={11}>
+                          <SeriesDetail seriesName={r.name} production={r.production ?? {}} />
                           <EpisodeTable
+                            // Remount (refetch) whenever the episode count changes
+                            // — e.g. right after auto-generate adds episodes.
+                            key={`${r.id}:${r.stats?.episodes ?? r.episode_count ?? 0}`}
                             seriesId={r.id}
                             crewNames={crewNames}
                             onCrewAdded={(n) =>
@@ -598,6 +851,7 @@ export function ProductionCRM() {
         <SeriesForm
           projects={projects}
           editing={formFor === "new" ? null : formFor}
+          crewNames={crewNames}
           onClose={() => setFormFor(null)}
           onSaved={() => void load()}
         />

@@ -97,15 +97,25 @@ def create_shot(scene_id: uuid.UUID, body: ShotCreate, user=Depends(get_optional
     with get_session() as s:
         try:
             _gate_scene(s, scene_id, user, "sequence.create")
-            shot = ss.create_shot(
-                s,
-                scene_id,
-                order_index=body.order_index,
-                script_text=body.script_text,
-                code=body.code,
-            )
+            scene = scenes.get_scene(s, scene_id)
         except (ss.SceneNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "scene not found")
+        # Phase 10: hard cap — an episode can hold at most (planned ± 2)
+        # sequences, derived from its series' duration + seconds-per-video.
+        cap = scenes.sequence_cap(s, scene)
+        if cap is not None and scenes.scene_shot_count(s, scene_id) >= cap:
+            raise HTTPException(
+                409,
+                f"this episode is at its sequence limit ({cap}) — set by the "
+                f"series' duration ÷ seconds-per-video, +2 tolerance",
+            )
+        shot = ss.create_shot(
+            s,
+            scene_id,
+            order_index=body.order_index,
+            script_text=body.script_text,
+            code=body.code,
+        )
         return _shot_dict(shot)
 
 

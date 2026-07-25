@@ -1342,6 +1342,23 @@ export function getCrewNames(): Promise<{ names: string[] }> {
   return api<{ names: string[] }>(`/api/production/crew-names`);
 }
 
+/** Bulk-plan a series: ensure `episodes` Episodes, each with
+ *  `sequences_per_episode` Sequences (idempotent; only creates what's missing). */
+export function generateSeriesStructure(
+  seriesId: string,
+  input: { episodes: number; sequences_per_episode: number },
+): Promise<{
+  episodes_created: number;
+  sequences_created: number;
+  total_episodes: number;
+  sequences_per_episode: number;
+}> {
+  return api(`/api/series/${seriesId}/generate-structure`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 // ── Phase 10: project members + roles ───────────────────────────────────────
 
 export function listProjectMembers(
