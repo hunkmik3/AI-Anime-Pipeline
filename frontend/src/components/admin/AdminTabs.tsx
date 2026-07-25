@@ -1,10 +1,17 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 
-import { thumbUrl, listProjectImages, uploadImage, type ProjectImage } from "../../api/client";
+import {
+  thumbUrl,
+  listProjectImages,
+  listSeries,
+  uploadImage,
+  type ProjectImage,
+  type SeriesDTO,
+} from "../../api/client";
 import { toast } from "../../store/toast";
 import { ProjectStructureModal } from "../ProjectStructureModal";
 import { HBars } from "./Charts";
-import { ProjectShots, ShotGens } from "./ProjectShots";
+import { ShotGens } from "./ProjectShots";
 
 /* emerald bar colour (validated dark-mode mark) */
 const KEPT = "#1f9e57";
@@ -426,6 +433,81 @@ function AssigneePicker({
   );
 }
 
+/** Read-only table of a project's Series (same shape as the Production board,
+ *  but info-only — customizing anything is done back in the Production tab).
+ *  Inline-styled so it always renders regardless of stylesheet caching. */
+function ProjectSeriesPreview({ projectId }: { projectId: string }) {
+  const [rows, setRows] = useState<SeriesDTO[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void listSeries(projectId)
+      .then((r) => alive && setRows(r))
+      .catch(() => alive && setRows([]));
+    return () => {
+      alive = false;
+    };
+  }, [projectId]);
+
+  if (rows === null) return <div className="pshots__empty">Loading series…</div>;
+  if (rows.length === 0)
+    return <div className="pshots__empty">No series yet — use “Structure” to add one.</div>;
+
+  const th: React.CSSProperties = {
+    textAlign: "left",
+    padding: "11px 16px",
+    fontSize: "0.7rem",
+    fontWeight: 700,
+    textTransform: "uppercase",
+    letterSpacing: "0.5px",
+    color: "#8a97a3",
+    background: "#1a222b",
+    borderBottom: "1px solid #2b3640",
+    whiteSpace: "nowrap",
+  };
+  const td: React.CSSProperties = {
+    padding: "11px 16px",
+    fontSize: "0.86rem",
+    color: "#e7ecf0",
+    borderTop: "1px solid #232e39",
+    verticalAlign: "middle",
+  };
+  const val = (s: SeriesDTO, k: string) => {
+    const v = (s.production ?? {})[k];
+    return v === undefined || v === null || String(v).trim() === "" ? "—" : String(v);
+  };
+
+  return (
+    <div style={{ padding: "10px 6px 6px", overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", background: "#141b22", borderRadius: 10, overflow: "hidden" }}>
+        <thead>
+          <tr>
+            <th style={th}>Code</th>
+            <th style={th}>Series</th>
+            <th style={th}>Tier</th>
+            <th style={th}>Status</th>
+            <th style={th}>Priority</th>
+            <th style={th}>Episodes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((s) => (
+            <tr key={s.id}>
+              <td style={{ ...td, fontFamily: "ui-monospace, monospace", color: "#3ddc97", fontWeight: 700 }}>
+                {s.code || "—"}
+              </td>
+              <td style={{ ...td, fontWeight: 600 }}>{s.name}</td>
+              <td style={td}>{val(s, "tier")}</td>
+              <td style={td}>{val(s, "status")}</td>
+              <td style={td}>{val(s, "priority")}</td>
+              <td style={{ ...td, color: "#8a97a3" }}>{s.episode_count ?? 0}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function ProjectsTab() {
   const projects = useFetch<AdminProject[]>("/api/projects");
   const users = useFetch<AdminUserLite[]>("/api/admin/users");
@@ -647,7 +729,7 @@ export function ProjectsTab() {
                       <button
                         className="admin-proj__expand"
                         onClick={() => setOpenShots(shotsOpen ? null : p.id)}
-                        title="View cost per sequence"
+                        title="View series in this project"
                       >
                         <span className="admin-proj__chev">{shotsOpen ? "▾" : "▸"}</span>
                         <b>{p.name || "Untitled"}</b>
@@ -664,13 +746,6 @@ export function ProjectsTab() {
                     <td>{c ? <b>{usd(c.total_usd)}</b> : <span className="admin2__muted">—</span>}</td>
                     <td className="admin2__muted">{c ? c.clips : 0}</td>
                     <td className="admin2__row-actions admin-proj__actions">
-                      <button
-                        className="btn2 btn2--ghost"
-                        onClick={() => void openCover(p)}
-                        title="Set cover image"
-                      >
-                        Cover
-                      </button>
                       <button
                         className="btn2 btn2--primary admin-proj__open"
                         onClick={() => setStructFor(p)}
@@ -690,7 +765,7 @@ export function ProjectsTab() {
                   {shotsOpen ? (
                     <tr className="admin-proj__shots-row">
                       <td colSpan={6}>
-                        <ProjectShots projectId={p.id} />
+                        <ProjectSeriesPreview projectId={p.id} />
                       </td>
                     </tr>
                   ) : null}

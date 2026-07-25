@@ -9739,3 +9739,17 @@ button:disabled {
   bottom: auto;
   right: auto;
 }
+
+/* Series preview list in the admin Projects expand row */
+.dash .admin-proj__series { list-style: none; margin: 0; padding: 6px 4px; display: flex; flex-direction: column; gap: 2px; }
+.dash .admin-proj__series-row {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 8px 12px; border-radius: 8px;
+}
+.dash .admin-proj__series-row:hover { background: var(--d-hover); }
+.dash .admin-proj__series-code {
+  font-family: ui-monospace, monospace; font-size: 0.78rem; font-weight: 700;
+  color: var(--d-primary-bright); min-width: 56px;
+}
+.dash .admin-proj__series-name { flex: 1; color: var(--d-ink); }
+.dash .admin-proj__series-count { color: var(--d-faint); font-size: 0.82rem; }

@@ -51,14 +51,9 @@ const SERIES_DETAIL: [string, string][] = [
   ["End date", "end_date"],
   ["Planned episodes", "total_episodes_planned"],
   ["Duration / ep (s)", "episode_duration_sec"],
-  ["Target market", "target_market"],
-  ["Secondary markets", "secondary_markets"],
-  ["Target audience", "target_audience"],
-  ["Original language", "language_original"],
   ["Genres", "genres"],
   ["Tropes", "tropes"],
   ["Folder", "folder_link"],
-  ["Logline", "logline"],
 ];
 /** The extra series fields (those not already on the main row) as a sub-table,
  *  led by the Series name: field names as the header row, one row of values. */
@@ -603,15 +598,13 @@ function SeriesForm({
           <section className="crm-form__section">
             <h3>Content</h3>
             <div className="crm-form__grid">
-              <label className="crm-field"><span>Genres</span><input className="crm-field__input" value={f.genres ?? ""} onChange={(e) => set("genres", e.target.value)} placeholder="Drama, Romance" /></label>
-              <label className="crm-field"><span>Tropes</span><input className="crm-field__input" value={f.tropes ?? ""} onChange={(e) => set("tropes", e.target.value)} placeholder="Climax, Payoff" /></label>
-              <label className="crm-field"><span>Target market</span><input className="crm-field__input" value={f.target_market ?? ""} onChange={(e) => set("target_market", e.target.value)} /></label>
-              <label className="crm-field"><span>Secondary markets</span><input className="crm-field__input" value={f.secondary_markets ?? ""} onChange={(e) => set("secondary_markets", e.target.value)} /></label>
-              <label className="crm-field"><span>Target audience</span><input className="crm-field__input" value={f.target_audience ?? ""} onChange={(e) => set("target_audience", e.target.value)} /></label>
-              <label className="crm-field"><span>Original language</span><input className="crm-field__input" value={f.language_original ?? ""} onChange={(e) => set("language_original", e.target.value)} placeholder="Vietnamese" /></label>
-              <label className="crm-field crm-field--full">
-                <span>Logline</span>
-                <textarea className="crm-field__input" rows={2} value={f.logline ?? ""} onChange={(e) => set("logline", e.target.value)} placeholder="One-sentence summary…" />
+              <label className="crm-field">
+                <span>Genres</span>
+                <input className="crm-field__input" value={f.genres ?? ""} onChange={(e) => set("genres", e.target.value)} placeholder="Drama, Romance" />
+              </label>
+              <label className="crm-field">
+                <span>Tropes</span>
+                <input className="crm-field__input" value={f.tropes ?? ""} onChange={(e) => set("tropes", e.target.value)} placeholder="Climax, Payoff" />
               </label>
             </div>
           </section>
