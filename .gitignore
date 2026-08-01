@@ -50,3 +50,11 @@ coverage/
 /video_model*.md
 .claude/
 docs/samples/raw/
+
+# Google OAuth client + token for the Drive proxy (secrets — never commit)
+oauth-client.json
+agent/oauth-client.json
+drive-token.json
+agent/drive-token.json
+drive-sa.json
+agent/drive-sa.json

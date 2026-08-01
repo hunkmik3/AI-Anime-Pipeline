@@ -54,6 +54,8 @@ def record(
     target_label: Optional[str] = None,
     ip: Optional[str] = None,
     detail: Optional[str] = None,
+    object_type: Optional[str] = None,
+    object_id=None,
 ) -> None:
     try:
         a_id, a_label = _resolve(actor, actor_label)
@@ -68,11 +70,89 @@ def record(
                     target_label=t_label,
                     ip=ip,
                     detail=(detail[:500] if isinstance(detail, str) else detail),
+                    object_type=object_type,
+                    object_id=(str(object_id) if object_id is not None else None),
                 )
             )
             s.commit()
     except Exception:  # noqa: BLE001 — auditing must never break the caller
         logger.exception("audit record failed for %s", action)
+
+
+def _fmt(value) -> str:
+    """Render a field value for the trail. Empty and unset must be
+    distinguishable — "" → (empty), None → (none) — or a diff reads as a no-op."""
+    if value is None:
+        return "(none)"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, float):
+        return f"{value:g}"
+    text = str(value)
+    if not text.strip():
+        return "(empty)"
+    return text if len(text) <= 120 else text[:117] + "…"
+
+
+def record_change(
+    action: str,
+    *,
+    object_type: str,
+    object_id,
+    object_label: Optional[str] = None,
+    changes: Optional[dict] = None,
+    actor=None,
+    target=None,
+    ip: Optional[str] = None,
+    note: Optional[str] = None,
+) -> None:
+    """Log an edit to a production object as ``field: before → after``.
+
+    ``changes`` maps field name to ``(before, after)``. Pairs that didn't
+    actually change are dropped, and when nothing changed nothing is written —
+    a trail full of no-op entries is a trail nobody reads.
+    """
+    diffs = []
+    for field, pair in (changes or {}).items():
+        try:
+            before, after = pair
+        except (TypeError, ValueError):
+            continue
+        if before == after:
+            continue
+        diffs.append(f"{field}: {_fmt(before)} → {_fmt(after)}")
+
+    if not diffs and not note:
+        return
+
+    detail = "; ".join(diffs)
+    if note:
+        detail = f"{detail} — {note}" if detail else note
+    record(
+        action,
+        actor=actor,
+        target=target,
+        target_label=object_label,
+        ip=ip,
+        detail=detail,
+        object_type=object_type,
+        object_id=object_id,
+    )
+
+
+def history_for(object_type: str, object_id, limit: int = 200) -> list[dict]:
+    """Everything recorded against one object, newest first."""
+    with get_session() as s:
+        q = (
+            select(AuditLog)
+            .where(
+                AuditLog.object_type == object_type,
+                AuditLog.object_id == str(object_id),
+            )
+            .order_by(desc(AuditLog.created_at))
+            .limit(limit)
+        )
+        return [_public(r) for r in s.exec(q).all()]
 
 
 def _public(r: AuditLog) -> dict:
@@ -86,6 +166,8 @@ def _public(r: AuditLog) -> dict:
         "target_id": str(r.target_user_id) if r.target_user_id else None,
         "ip": r.ip,
         "detail": r.detail,
+        "object_type": r.object_type,
+        "object_id": r.object_id,
     }
 
 

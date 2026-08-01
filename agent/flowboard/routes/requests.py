@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from flowboard.db import get_session
 from flowboard.db.models import Node, Request
 from flowboard.routes.deps import get_optional_user
-from flowboard.services import budget_service
+from flowboard.services import budget_service, resource_guard, scope_budget
 from flowboard.worker.processor import get_worker
 
 router = APIRouter(prefix="/api/requests", tags=["requests"])
@@ -22,6 +22,13 @@ class RequestCreate(BaseModel):
 @router.post("")
 def create_request(body: RequestCreate, user=Depends(get_optional_user)):
     params = dict(body.params)
+    # Authorize the TARGET before anything else. Without this, queuing work
+    # against another team's node both overwrote their canvas and drew the cost
+    # from their credit ceiling — which made every budget below pointless, since
+    # the spend landed on a project the caller was never allowed to touch.
+    if body.node_id is not None:
+        with get_session() as s:
+            resource_guard.authorize_node(s, user, body.node_id, "canvas.write")
     # Budget gate (Phase 9.2): video gen is metered per user. Estimate + check
     # available budget BEFORE creating the request (hard-cap on insufficient).
     est = 0.0
@@ -36,9 +43,30 @@ def create_request(body: RequestCreate, user=Depends(get_optional_user)):
         pool_avail = budget_service.pool_available_usd()
         if pool_avail is not None and pool_avail + 1e-9 < est:
             raise HTTPException(status_code=402, detail="avis_pool_exhausted")
+    # Phase 11.1 — production ceilings the BOD set on the Series and the
+    # Project. Blocking here (not at the worker) means the user is told before
+    # anything is queued, and the alert names who can top the budget up.
+    if body.type == "gen_video":
+        with get_session() as s:
+            blocked = scope_budget.check(s, body.node_id, est)
+            if blocked is not None:
+                scope_budget.notify_blocked(s, body.node_id, blocked, user)
+                raise HTTPException(
+                    status_code=402,
+                    detail={
+                        "code": "scope_budget_exhausted",
+                        "message": (
+                            f"the {scope_budget.scope_noun(blocked['scope'])} "
+                            "credit budget is used up "
+                            f"(${blocked['used_usd']:.2f} of ${blocked['effective_usd']:.2f}) — "
+                            "ask your PM to grant more credit"
+                        ),
+                        "budget": blocked,
+                    },
+                )
     with get_session() as s:
-        if body.node_id is not None and not s.get(Node, body.node_id):
-            raise HTTPException(404, "node not found")
+        # Existence was re-checked here before; authorize_node above already
+        # 404s on a missing node, so reaching this point means it exists.
         req = Request(
             node_id=body.node_id,
             type=body.type,
@@ -77,16 +105,15 @@ def create_request(body: RequestCreate, user=Depends(get_optional_user)):
 
 
 @router.get("/{request_id}")
-def get_request(request_id: int):
+def get_request(request_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
-        req = s.get(Request, request_id)
-        if req is None:
-            raise HTTPException(404, "request not found")
-        return req
+        # Request ids are sequential integers; polling one belonged to whoever
+        # owns the node it targets, not to whoever guessed the number.
+        return resource_guard.authorize_request(s, user, request_id)
 
 
 @router.post("/{request_id}/cancel")
-def cancel_request(request_id: int):
+def cancel_request(request_id: int, user=Depends(get_optional_user)):
     """Cancel a queued request before the worker picks it up.
 
     Only ``queued`` rows are cancelable. The worker pulls rids off an
@@ -97,7 +124,7 @@ def cancel_request(request_id: int):
     different surgery (in-flight HTTP calls to Flow).
     """
     with get_session() as s:
-        req = s.get(Request, request_id)
+        req = resource_guard.authorize_request(s, user, request_id, "canvas.write")
         if req is None:
             raise HTTPException(404, "request not found")
         if req.status != "queued":

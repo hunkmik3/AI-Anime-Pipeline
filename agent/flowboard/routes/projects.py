@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from flowboard.config import BRIDGE_ENABLED
@@ -26,7 +26,9 @@ from flowboard.routes.deps import (
     require_structure_admin,
 )
 from flowboard.schemas import ProjectCreate, ProjectUpdate
-from flowboard.services import permissions
+from sqlmodel import select
+
+from flowboard.services import audit_service, permissions, resource_guard
 from flowboard.services import project_service as ps
 from flowboard.services import user_service
 from flowboard.services.flow_sdk import get_flow_sdk, is_valid_project_id
@@ -75,6 +77,11 @@ def _project_dict(
         role = permissions.project_role(session, user, project.id)
         d["my_role"] = role
         d["can"] = permissions.capability_map(role)
+        # Phase 11.1: credit budget rollup, so the console can show a Budget
+        # column without a second round-trip per row.
+        from flowboard.services import scope_budget
+
+        d["budget"] = scope_budget.summary(session, "project", project.id)
     return d
 
 
@@ -275,7 +282,10 @@ def list_assignable_users(project_id: uuid.UUID, user=Depends(get_optional_user)
 
 @router.put("/{project_id}/members")
 def set_project_members_route(
-    project_id: uuid.UUID, body: MembersBody, user=Depends(get_optional_user)
+    project_id: uuid.UUID,
+    body: MembersBody,
+    request: Request,
+    user=Depends(get_optional_user),
 ):
     """Replace who is on the project and what each of them may do.
 
@@ -295,11 +305,17 @@ def set_project_members_route(
                 raise HTTPException(404, f"assigned user not found: {m.user_id}")
             seen.setdefault(m.user_id, permissions.normalize_role(m.role))
         ids = list(seen)
-        # Keep the current owner as owner when they're still assigned, so
-        # re-saving the roster never silently hands the project to someone else.
-        owner = existing.owner_user_id if existing.owner_user_id in seen else (
-            ids[0] if ids else None
-        )
+        # Snapshot the roster so the trail shows who joined, left, or changed
+        # role — a bare "roster replaced" tells nobody anything.
+        before_roster = _roster_snapshot(s, project_id, existing.owner_user_id)
+        # Editing the roster must never move ownership. Falling back to "the
+        # first person in the list" made dropping the owner from the roster
+        # silently promote whoever happened to be first — an artist would come
+        # out of it holding producer rights (member.manage, series.delete).
+        # Ownership changes go through PATCH /api/projects/{id}, which is
+        # admin-only and explicit. Only a project that has no owner at all
+        # (legacy / no-auth rows) adopts one from the roster.
+        owner = existing.owner_user_id or (ids[0] if ids else None)
         ps.set_project_members(
             s,
             project_id,
@@ -309,16 +325,48 @@ def set_project_members_route(
         if owner != existing.owner_user_id:
             ps.update_project(s, project_id, owner_user_id=owner)
         project = ps.get_project(s, project_id)
+
+        after_roster = _roster_snapshot(s, project_id, project.owner_user_id)
+        changes = {}
+        for uid in set(before_roster) | set(after_roster):
+            changes[_user_label(uid)] = (before_roster.get(uid), after_roster.get(uid))
+        audit_service.record_change(
+            "project.members",
+            object_type="project",
+            object_id=project_id,
+            object_label=project.name,
+            changes=changes,
+            actor=user,
+            ip=audit_service.client_ip(request),
+        )
         return _members_payload(s, project)
 
 
+def _user_label(user_id) -> str:
+    u = user_service.get_by_id(user_id)
+    return (u.display_name or u.username) if u else str(user_id)[:8]
+
+
+def _roster_snapshot(session, project_id, owner_user_id) -> dict:
+    """{user_id: role} for a project, owner included as the implicit producer."""
+    from flowboard.db.models import ProjectMember
+
+    out: dict = {}
+    if owner_user_id:
+        out[owner_user_id] = "producer (owner)"
+    for m in session.exec(
+        select(ProjectMember).where(ProjectMember.project_id == project_id)
+    ).all():
+        out.setdefault(m.user_id, m.role)
+    return out
+
+
 @router.get("/{project_id}/cost")
-def get_project_cost(project_id: uuid.UUID):
+def get_project_cost(project_id: uuid.UUID, user=Depends(get_optional_user)):
     with get_session() as s:
-        try:
-            ps.get_project(s, project_id)
-        except ps.ProjectNotFound:
-            raise HTTPException(404, "project not found")
+        # Spend rolled up across the whole project is management information:
+        # ungated, any caller could read what another team's project costs.
+        resource_guard.authorize_project(s, user, project_id, "member.manage")
         return {"cost_usd": ps.project_cost_usd(s, project_id)}
 
 
@@ -326,14 +374,13 @@ def get_project_cost(project_id: uuid.UUID):
 def get_project_video_gens(project_id: uuid.UUID, user=Depends(get_optional_user)):
     """All generated video clips in a project, grouped episode -> sequence,
     with prompt + settings. Powers the project 'Generated videos' gallery.
-    Owner-scoped (admins unscoped)."""
+    Producer+ (admins unscoped)."""
     from flowboard.services import stats_service
 
     with get_session() as s:
-        try:
-            ps.get_project(s, project_id, owner_user_id=owner_scope(user))
-        except ps.ProjectNotFound:
-            raise HTTPException(404, "project not found")
+        # A cross-episode rollup of everything the project has produced, so it
+        # ignores episode scope — bare project membership was too weak a gate.
+        resource_guard.authorize_project(s, user, project_id, "member.manage")
     return stats_service.project_video_gens(project_id)
 
 
@@ -357,11 +404,11 @@ class ProjectCoverBody(BaseModel):
 def set_project_cover(
     project_id: uuid.UUID, body: ProjectCoverBody, user=Depends(get_optional_user)
 ):
-    """Set/clear a project's cover thumbnail. Cosmetic → owner-scoped (owner +
-    admin), unlike the structural PATCH."""
+    """Set/clear a project's cover thumbnail. Cosmetic → project.decorate
+    (artist+), unlike the structural PATCH."""
     with get_session() as s:
+        resource_guard.authorize_project(s, user, project_id, "project.decorate")
         try:
-            ps.get_project(s, project_id, owner_user_id=owner_scope(user))
             project = ps.set_project_cover(s, project_id, body.media_id)
         except ps.ProjectNotFound:
             raise HTTPException(404, "project not found")
@@ -373,8 +420,10 @@ def set_project_cover(
 def list_project_chat(
     project_id: uuid.UUID,
     limit: int = Query(default=500, ge=1, le=2000),
+    user=Depends(get_optional_user),
 ):
     with get_session() as s:
+        resource_guard.authorize_project(s, user, project_id, "canvas.read")
         try:
             return ps.list_project_chat(s, project_id, limit=limit)
         except ps.ProjectNotFound:
@@ -385,16 +434,13 @@ def list_project_chat(
 
 
 @router.get("/{project_id}/flow-project")
-def get_flow_project(project_id: uuid.UUID):
+def get_flow_project(project_id: uuid.UUID, user=Depends(get_optional_user)):
     with get_session() as s:
+        resource_guard.authorize_project(s, user, project_id, "canvas.read")
         # Bridge off (Avis/Seedance mode): there's no Google Flow binding —
         # the DB project id doubles as the project handle that uploads + the
         # worker's R2 namespace key need.
         if not BRIDGE_ENABLED:
-            try:
-                ps.get_project(s, project_id)
-            except ps.ProjectNotFound:
-                raise HTTPException(404, "project not found")
             return {"flow_project_id": str(project_id), "created": False}
         try:
             row = ps.get_flow_project(s, project_id)
@@ -406,13 +452,13 @@ def get_flow_project(project_id: uuid.UUID):
 
 
 @router.post("/{project_id}/flow-project")
-async def ensure_flow_project(project_id: uuid.UUID):
+async def ensure_flow_project(project_id: uuid.UUID, user=Depends(get_optional_user)):
     # Cheap path: existing binding short-circuits before the extension hop.
     with get_session() as s:
-        try:
-            project = ps.get_project(s, project_id)
-        except ps.ProjectNotFound:
-            raise HTTPException(404, "project not found")
+        # Binds the project to a Google Flow project on the studio's Flow
+        # account, so an ungated caller could create Flow projects off another
+        # team's id — a write, not a read.
+        project = resource_guard.authorize_project(s, user, project_id, "canvas.write")
         # Bridge off: skip the Flow extension round-trip entirely and hand back
         # the DB project id as the handle (see get_flow_project above).
         if not BRIDGE_ENABLED:

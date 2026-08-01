@@ -28,6 +28,13 @@ _TMPDIR = tempfile.mkdtemp(prefix="flowboard-test-")
 os.environ["FLOWBOARD_STORAGE"] = _TMPDIR
 # Force the deterministic mock planner in tests — never spawn `claude` subprocess.
 os.environ["FLOWBOARD_PLANNER_BACKEND"] = "mock"
+# Keep the suite off Google Drive: a dev machine has real credentials sitting in
+# agent/, and the submit-time precheck would then call Drive with the fixture's
+# made-up file ids (and fail). Pointing at paths that don't exist makes
+# drive.is_configured() False, so the precheck is skipped — same as a fresh
+# checkout or CI.
+os.environ["FLOWBOARD_DRIVE_CLIENT"] = os.path.join(_TMPDIR, "no-oauth-client.json")
+os.environ["FLOWBOARD_DRIVE_TOKEN"] = os.path.join(_TMPDIR, "no-drive-token.json")
 
 # Hermetic credentials. Phase 6.5 made .env the canonical source for
 # API keys / R2 — the agent calls load_dotenv() at boot, and the new

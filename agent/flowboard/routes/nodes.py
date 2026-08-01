@@ -1,14 +1,14 @@
 import uuid
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlmodel import select
 
 from flowboard.db import get_session
-from flowboard.db.models import Edge, Node, Project, Scene, Shot
-from flowboard.routes.deps import get_optional_user, owner_scope
-from flowboard.services import project_service, stats_service
+from flowboard.db.models import Edge, Node
+from flowboard.routes.deps import get_optional_user
+from flowboard.services import resource_guard, stats_service
 from flowboard.short_id import generate_unique_short_id
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
@@ -65,10 +65,11 @@ class NodeUpdate(BaseModel):
 
 
 @router.post("")
-def create_node(body: NodeCreate):
+def create_node(body: NodeCreate, user=Depends(get_optional_user)):
     with get_session() as s:
-        if not s.get(Shot, body.shot_id):
-            raise HTTPException(404, "shot not found")
+        # Authorize the TARGET sequence: the body names where the node lands, so
+        # without this a caller could drop nodes onto another team's canvas.
+        resource_guard.authorize_shot(s, user, body.shot_id, "canvas.write")
         short_id = generate_unique_short_id(s, body.shot_id)
         node = Node(
             shot_id=body.shot_id,
@@ -88,7 +89,7 @@ def create_node(body: NodeCreate):
 
 
 @router.patch("/{node_id}")
-def update_node(node_id: int, body: NodeUpdate):
+def update_node(node_id: int, body: NodeUpdate, user=Depends(get_optional_user)):
     """Partial update.
 
     The `data` field is **shallow-merged** into the existing JSON
@@ -115,9 +116,9 @@ def update_node(node_id: int, body: NodeUpdate):
     setattr-replace semantic — no merge applied.
     """
     with get_session() as s:
-        node = s.get(Node, node_id)
-        if not node:
-            raise HTTPException(404, "node not found")
+        # Node ids are sequential integers — ungated, a caller could walk 1..N
+        # and rewrite any node in the company.
+        node = resource_guard.authorize_node(s, user, node_id, "canvas.write")
         patch = body.model_dump(exclude_unset=True)
         for k, v in patch.items():
             if k == "data" and isinstance(v, dict):
@@ -137,11 +138,9 @@ def update_node(node_id: int, body: NodeUpdate):
 
 
 @router.delete("/{node_id}")
-def delete_node(node_id: int):
+def delete_node(node_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
-        node = s.get(Node, node_id)
-        if not node:
-            raise HTTPException(404, "node not found")
+        node = resource_guard.authorize_node(s, user, node_id, "canvas.write")
         edges = s.exec(
             select(Edge).where((Edge.source_id == node_id) | (Edge.target_id == node_id))
         ).all()
@@ -156,24 +155,12 @@ def delete_node(node_id: int):
 def node_history(node_id: int, user=Depends(get_optional_user)):
     """Every generation ever run on this node — newest first.
 
-    Owner-gated by walking node → shot → scene → project, because this exposes
-    what each attempt cost. A caller who can't see the project gets 404 rather
-    than 403, matching the rest of the structure (ids must not leak).
+    Gated by walking node → shot → scene → project, because this exposes what
+    each attempt cost. A caller who can't see the node gets 404 rather than 403,
+    matching the rest of the structure (ids must not leak).
     """
     with get_session() as s:
-        node = s.get(Node, node_id)
-        if node is None:
-            raise HTTPException(404, "node not found")
-        scope = owner_scope(user)
-        if scope is not None:
-            # Resolve the owning project; a node with no shot (scene-level or
-            # orphaned) has nothing to gate on, so it stays admin/no-auth only.
-            shot = s.get(Shot, node.shot_id) if node.shot_id else None
-            scene = s.get(Scene, shot.scene_id) if shot else None
-            project = s.get(Project, scene.project_id) if scene else None
-            # Owner OR assigned member may see the history (mirrors get_project).
-            if project is None or not project_service.user_can_access_project(
-                s, project, scope
-            ):
-                raise HTTPException(404, "node not found")
+        # Project membership alone was not enough: it let an artist assigned one
+        # episode read a sibling episode's spend. The guard applies episode scope.
+        resource_guard.authorize_node(s, user, node_id, "canvas.read")
     return stats_service.node_history(node_id)

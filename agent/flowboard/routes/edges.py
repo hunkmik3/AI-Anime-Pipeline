@@ -1,11 +1,13 @@
 import uuid
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from flowboard.db import get_session
 from flowboard.db.models import Edge, Node
+from flowboard.routes.deps import get_optional_user
+from flowboard.services import resource_guard
 
 router = APIRouter(prefix="/api/edges", tags=["edges"])
 
@@ -30,8 +32,11 @@ class EdgePatch(BaseModel):
 
 
 @router.post("")
-def create_edge(body: EdgeCreate):
+def create_edge(body: EdgeCreate, user=Depends(get_optional_user)):
     with get_session() as s:
+        # Authorize the sequence the body names first; the checks below then pin
+        # both endpoints to that same shot, so authorizing it covers all three.
+        resource_guard.authorize_shot(s, user, body.shot_id, "canvas.write")
         if body.source_id == body.target_id:
             raise HTTPException(400, "source_id and target_id must differ")
         source = s.get(Node, body.source_id)
@@ -54,7 +59,7 @@ def create_edge(body: EdgeCreate):
 
 
 @router.patch("/{edge_id}")
-def patch_edge(edge_id: int, body: EdgePatch):
+def patch_edge(edge_id: int, body: EdgePatch, user=Depends(get_optional_user)):
     """Update an edge's variant pin without recreating the edge.
 
     Used by the variant-click flow: user picks a variant on an upstream
@@ -63,9 +68,9 @@ def patch_edge(edge_id: int, body: EdgePatch):
     ``source_variant_idx: null`` clears the pin (revert to mediaId).
     """
     with get_session() as s:
-        edge = s.get(Edge, edge_id)
-        if not edge:
-            raise HTTPException(404, "edge not found")
+        # Edge ids are sequential integers — repointing another team's ref edge
+        # silently changes which image their next Generate feeds on.
+        edge = resource_guard.authorize_edge(s, user, edge_id, "canvas.write")
         if "source_variant_idx" in body.model_fields_set:
             edge.source_variant_idx = body.source_variant_idx
         s.add(edge)
@@ -75,11 +80,9 @@ def patch_edge(edge_id: int, body: EdgePatch):
 
 
 @router.delete("/{edge_id}")
-def delete_edge(edge_id: int):
+def delete_edge(edge_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
-        edge = s.get(Edge, edge_id)
-        if not edge:
-            raise HTTPException(404, "edge not found")
+        edge = resource_guard.authorize_edge(s, user, edge_id, "canvas.write")
         s.delete(edge)
         s.commit()
         return {"ok": True}

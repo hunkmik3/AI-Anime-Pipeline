@@ -143,3 +143,118 @@ def capability_map(role: Optional[str]) -> dict[str, bool]:
     """Flat can-I map for the frontend, so the UI hides what it can't do
     instead of letting the user click into a 403."""
     return {cap: role_allows(role, cap) for cap in CAPABILITIES}
+
+
+# ── visibility scope ────────────────────────────────────────────────────────
+#
+# Roles above answer *what you may do*; this answers *what you may see*.
+#
+# Being on a project used to mean seeing all of it, so an artist assigned one
+# episode could read every colleague's work in the same project. The workflow
+# diagram is narrower: you see the subtree you are assigned to, plus the
+# ancestors above it (you need those to navigate), but never your siblings —
+# a worker on Ep03 must not see Ep01 or Ep02.
+#
+# The scope is derived from the assignments a PM already makes — the episode's
+# assignee and the Series Producer — rather than a second place to declare it.
+# That way handing someone an episode grants exactly the access to do it, and
+# taking it back removes that access, with nothing to keep in sync.
+#
+# Narrowing applies to ``artist`` and ``viewer`` only. Producers and leads build
+# the structure (they create the series and episodes others get assigned to), so
+# scoping them to their own assignments would leave them unable to do their job.
+
+#: Roles whose view is limited to what they're assigned. Higher roles run the
+#: project and see all of it.
+SCOPED_ROLES: tuple[str, ...] = (ARTIST, VIEWER)
+
+
+def is_scoped(role: Optional[str]) -> bool:
+    return role in SCOPED_ROLES
+
+
+def visible_scope(
+    session: Session, user: Optional[User], project_id: uuid.UUID
+) -> Optional[dict]:
+    """What this caller may see inside a project.
+
+    ``None`` means unrestricted (admins, producers, leads). Otherwise a dict of
+    ``{"series_ids": set, "scene_ids": set}`` — the episodes they own or produce,
+    and the series those sit in so the tree can still be navigated.
+    """
+    from flowboard.db.models import Scene, Series
+
+    role = project_role(session, user, project_id)
+    if role is None or not is_scoped(role) or user is None:
+        return None
+
+    # Episodes assigned directly to them.
+    scene_ids = set(
+        session.exec(
+            select(Scene.id).where(
+                Scene.project_id == project_id,
+                Scene.assignee_user_id == user.id,
+            )
+        ).all()
+    )
+    # Series they produce — that whole subtree is theirs (the "Manager assigned
+    # at Series" case: every episode under it is visible).
+    produced = set(
+        session.exec(
+            select(Series.id).where(
+                Series.project_id == project_id,
+                Series.producer_user_id == user.id,
+            )
+        ).all()
+    )
+    if produced:
+        scene_ids |= set(
+            session.exec(
+                select(Scene.id).where(Scene.series_id.in_(produced))  # type: ignore[attr-defined]
+            ).all()
+        )
+
+    # Ancestors are readable: the series holding a visible episode shows in the
+    # tree, but its other episodes do not.
+    series_ids = set(produced)
+    if scene_ids:
+        series_ids |= {
+            sid
+            for sid in session.exec(
+                select(Scene.series_id).where(Scene.id.in_(scene_ids))  # type: ignore[attr-defined]
+            ).all()
+            if sid
+        }
+    return {"series_ids": series_ids, "scene_ids": scene_ids}
+
+
+def can_see_scene(
+    session: Session, user: Optional[User], project_id: uuid.UUID, scene_id: uuid.UUID
+) -> bool:
+    scope = visible_scope(session, user, project_id)
+    return scope is None or scene_id in scope["scene_ids"]
+
+
+def can_see_series(
+    session: Session, user: Optional[User], project_id: uuid.UUID, series_id: uuid.UUID
+) -> bool:
+    scope = visible_scope(session, user, project_id)
+    return scope is None or series_id in scope["series_ids"]
+
+
+def require_scene(
+    session: Session,
+    user: Optional[User],
+    project_id: uuid.UUID,
+    scene_id: uuid.UUID,
+    capability: str,
+) -> str:
+    """``require``, plus the visibility check for a specific episode.
+
+    Out-of-scope reads 404 rather than 403 — to someone who may not see an
+    episode, it must be indistinguishable from one that doesn't exist.
+    """
+    role = require(session, user, project_id, capability)
+    if not can_see_scene(session, user, project_id, scene_id):
+        raise HTTPException(404, "episode not found")
+    return role

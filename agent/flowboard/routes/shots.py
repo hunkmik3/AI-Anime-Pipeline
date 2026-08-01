@@ -13,13 +13,13 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from flowboard.db import get_session
 from flowboard.routes.deps import get_optional_user
 from flowboard.schemas import ShotCreate, ShotUpdate
-from flowboard.services import permissions
+from flowboard.services import audit_service, permissions
 from flowboard.services import project_service as ps
 from flowboard.services import scene_service as scenes
 from flowboard.services import shot_service as ss
@@ -28,10 +28,15 @@ router = APIRouter(tags=["shots"])
 
 
 def _gate_scene(s, scene_id, user, capability: str = "canvas.read") -> str:
-    """Role gate on an episode → its project. 404 when the caller can't see the
-    project, 403 when their role is too low; admins and the no-auth path pass."""
+    """Role gate on an episode → its project, plus the visibility scope.
+
+    404 when the caller can't see the project OR isn't assigned this episode,
+    403 when their role is too low; admins and the no-auth path pass. This is the
+    chokepoint every sequence operation goes through, which is what stops an
+    artist from working inside a colleague's episode.
+    """
     scene = scenes.get_scene(s, scene_id)
-    return permissions.require(s, user, scene.project_id, capability)
+    return permissions.require_scene(s, user, scene.project_id, scene_id, capability)
 
 
 def _gate_shot(s, shot, user, capability: str = "canvas.read") -> str:
@@ -91,7 +96,12 @@ def list_shots(scene_id: uuid.UUID, user=Depends(get_optional_user)):
 
 
 @router.post("/api/scenes/{scene_id}/shots")
-def create_shot(scene_id: uuid.UUID, body: ShotCreate, user=Depends(get_optional_user)):
+def create_shot(
+    scene_id: uuid.UUID,
+    body: ShotCreate,
+    request: Request,
+    user=Depends(get_optional_user),
+):
     # Phase 10: artist+ — adding a sequence is the everyday work of the project,
     # not something an admin has to provision.
     with get_session() as s:
@@ -116,6 +126,15 @@ def create_shot(scene_id: uuid.UUID, body: ShotCreate, user=Depends(get_optional
             script_text=body.script_text,
             code=body.code,
         )
+        audit_service.record_change(
+            "sequence.created",
+            object_type="shot",
+            object_id=shot.id,
+            object_label=getattr(shot, "code", None) or str(shot.id)[:8],
+            actor=user,
+            ip=audit_service.client_ip(request),
+            note=f"in episode {scene.code or scene.name}",
+        )
         return _shot_dict(shot)
 
 
@@ -134,7 +153,12 @@ def get_shot(shot_id: uuid.UUID, user=Depends(get_optional_user)):
 
 
 @router.patch("/api/shots/{shot_id}")
-def update_shot(shot_id: uuid.UUID, body: ShotUpdate, user=Depends(get_optional_user)):
+def update_shot(
+    shot_id: uuid.UUID,
+    body: ShotUpdate,
+    request: Request,
+    user=Depends(get_optional_user),
+):
     # Editing a sequence's script / status is "working inside" your own
     # sequence → artist+, not a restructure.
     patch = body.model_dump(exclude_unset=True)
@@ -151,9 +175,19 @@ def update_shot(shot_id: uuid.UUID, body: ShotUpdate, user=Depends(get_optional_
         try:
             shot = ss.get_shot(s, shot_id)
             _gate_shot(s, shot, user, "sequence.update")
+            before = {k: getattr(shot, k, None) for k in patch}
             shot = ss.update_shot(s, shot_id, patch=patch)
         except (ss.ShotNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "shot not found")
+        audit_service.record_change(
+            "sequence.updated",
+            object_type="shot",
+            object_id=shot_id,
+            object_label=getattr(shot, "code", None) or str(shot_id)[:8],
+            changes={k: (v, getattr(shot, k, None)) for k, v in before.items()},
+            actor=user,
+            ip=audit_service.client_ip(request),
+        )
         return _shot_dict(shot)
 
 
@@ -184,16 +218,28 @@ def update_shot_group(
 
 
 @router.delete("/api/shots/{shot_id}")
-def delete_shot(shot_id: uuid.UUID, user=Depends(get_optional_user)):
+def delete_shot(
+    shot_id: uuid.UUID, request: Request, user=Depends(get_optional_user)
+):
     # Lead+ — an artist works in a sequence but doesn't get to remove one
     # (and its generated work) from the running order.
     with get_session() as s:
         try:
             shot = ss.get_shot(s, shot_id)
             _gate_shot(s, shot, user, "sequence.delete")
+            label = getattr(shot, "code", None) or str(shot_id)[:8]
             ss.delete_shot(s, shot_id)
         except (ss.ShotNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "shot not found")
+        audit_service.record_change(
+            "sequence.deleted",
+            object_type="shot",
+            object_id=shot_id,
+            object_label=label,
+            actor=user,
+            ip=audit_service.client_ip(request),
+            note="deleted",
+        )
         return {"deleted": str(shot_id)}
 
 

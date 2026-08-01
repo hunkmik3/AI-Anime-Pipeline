@@ -1,12 +1,14 @@
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, StringConstraints
 from typing_extensions import Annotated
 
 from flowboard.db import get_session
-from flowboard.db.models import ChatMessage, Plan, Scene, Shot
+from flowboard.db.models import ChatMessage, Plan, Scene
+from flowboard.routes.deps import get_optional_user
+from flowboard.services import resource_guard
 from flowboard.services.planner import generate_plan_reply
 
 router = APIRouter(tags=["chat"])
@@ -26,22 +28,17 @@ class ChatSendRequest(BaseModel):
     mentions: List[MentionStr] = Field(default_factory=list, max_length=32)
 
 
-def _resolve_project_id(session, shot_id: uuid.UUID) -> Optional[uuid.UUID]:
-    shot = session.get(Shot, shot_id)
-    if shot is None:
-        return None
-    scene = session.get(Scene, shot.scene_id)
-    if scene is None:
-        return None
-    return scene.project_id
-
-
 @router.post("/api/chat")
-async def send_chat(body: ChatSendRequest):
+async def send_chat(body: ChatSendRequest, user=Depends(get_optional_user)):
     with get_session() as s:
-        project_id = _resolve_project_id(s, body.shot_id)
-        if project_id is None:
+        # A sequence id was the only key here, so anyone could post into another
+        # team's project chat and have the planner read that sequence's nodes
+        # back to them — and drop a draft Plan on it.
+        shot = resource_guard.authorize_shot(s, user, body.shot_id, "canvas.write")
+        scene = s.get(Scene, shot.scene_id)
+        if scene is None:
             raise HTTPException(404, "shot not found")
+        project_id = scene.project_id
 
         user_msg = ChatMessage(
             project_id=project_id,

@@ -64,6 +64,12 @@ def _make_shot(
     return shot
 
 
+def _seed_scene_id():
+    """A real Episode id, for routes that now authorize their target."""
+    with get_session() as s:
+        return _make_shot(s).scene_id
+
+
 def _seed_simple_char_chain() -> dict:
     """Project → Scene → Shot with character → image target chain.
 
@@ -1012,11 +1018,15 @@ def test_route_auto_passes_camera_arg_through(client, monkeypatch):
 
 
 def test_route_auto_502_on_synth_failure(client, monkeypatch):
+    # A real node: the route authorizes its target before synthesising, so a
+    # made-up id now (correctly) 404s before the provider is ever called.
+    ids = _seed_simple_char_chain()
+
     async def stub(node_id, *, camera=None):
         raise prompt_synth.PromptSynthError("provider timeout")
 
     monkeypatch.setattr(prompt_synth, "auto_prompt", stub)
-    r = client.post("/api/prompt/auto", json={"node_id": 1})
+    r = client.post("/api/prompt/auto", json={"node_id": ids["target_id"]})
     assert r.status_code == 502
 
 
@@ -1375,7 +1385,9 @@ async def test_parse_script_rejects_missing_shots(client, monkeypatch):
 
 
 def test_route_parse_script_happy_path(client, monkeypatch):
-    scene_id = uuid.uuid4()
+    # Must be a real episode: the route authorizes it before parsing, so a
+    # random uuid now (correctly) 404s.
+    scene_id = _seed_scene_id()
 
     async def stub(sid, script_text):
         assert sid == scene_id
@@ -1412,7 +1424,7 @@ def test_route_parse_script_rejects_empty(client):
 
 
 def test_route_parse_script_502_on_synth_failure(client, monkeypatch):
-    scene_id = uuid.uuid4()
+    scene_id = _seed_scene_id()
 
     async def stub(sid, script_text):
         raise prompt_synth.PromptSynthError("provider failed")

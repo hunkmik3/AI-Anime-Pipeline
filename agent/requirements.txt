@@ -10,3 +10,12 @@ psycopg[binary]>=3.2
 boto3>=1.34
 python-dotenv>=1.0
 
+# Flow Studio (/giantflow). Two uses, both in the ported code:
+#   - services/flowstudio/r2.py re-encodes reference images before pushing them
+#     to R2 for Atrium to fetch. Without cv2 that returns None and Atrium fails
+#     with "atrium_needs_public_url" — the error looks like missing config.
+#   - worker/flowstudio.py matches a generation's LAB chroma to its reference
+#     ("Keep original colors"); degrades to a no-op without cv2.
+# headless: no GUI bindings, so it stays small and needs no display.
+numpy>=1.26
+opencv-python-headless>=4.9

@@ -128,6 +128,15 @@ def build_full_code(session: Session, project: Project, series: Series) -> str:
     return f"{prefix}_{_pascal(series.name or '')}"
 
 
+def episode_code(series: Series, number: int) -> str:
+    """Episode id convention, mirroring the Episode_Tracker sheet:
+    ``<SERIES_CODE>_EP<NN>`` → ``HUSB_EP01``, ``P1PRE_EP05``. Falls back to a
+    bare ``EP07`` when the series has no code yet. Two digits, widening past 99.
+    """
+    code = (series.code or "").strip().upper()
+    return f"{code}_EP{number:02d}" if code else f"EP{number:02d}"
+
+
 def _apply_full_code(session: Session, series: Series) -> None:
     """Set production['full_code'] on the series in place (does not commit)."""
     project = session.get(Project, series.project_id)
@@ -304,7 +313,7 @@ def generate_structure(
             project_id=series.project_id,
             series_id=series_id,
             name=f"Episode {i + 1}",
-            code=f"EP{i + 1:03d}",
+            code=episode_code(series, i + 1),
             order_index=i,
         )
         session.add(sc)

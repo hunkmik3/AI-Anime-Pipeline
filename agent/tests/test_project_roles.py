@@ -53,6 +53,7 @@ def staffed(client):
     return {
         "pid": pid,
         "admin": ah,
+        "users": users,
         "h": {name: _h(client, name) for name in users},
     }
 
@@ -88,6 +89,14 @@ def test_artist_works_in_sequences_but_cannot_restructure(client, staffed):
     ep = client.post(
         f"/api/projects/{pid}/scenes", json={"name": "EP1"}, headers=h["lead"]
     ).json()["id"]
+    # Being on the project is no longer enough to work in an episode — the
+    # artist has to be assigned to it (see test_visibility_scope.py). That
+    # assignment is step "PM gán Employee" in the workflow.
+    client.patch(
+        f"/api/scenes/{ep}/assignee",
+        json={"user_id": str(staffed["users"]["artist"].id)},
+        headers=h["lead"],
+    )
 
     # artist may add + edit a sequence and save its node graph
     seq = client.post(f"/api/scenes/{ep}/shots", json={}, headers=h["artist"])

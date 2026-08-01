@@ -13,6 +13,12 @@ Frontend ↔ backend contract is documented in detail in
 
 API keys are accepted only via PUT /providers/{name} and never echoed
 back. The list endpoint reports `configured: true/false` instead.
+
+These settings are installation-wide — there is no owning project, so the
+mutations are admin-only (``require_unscoped``): repointing a feature at another
+provider, or replacing the API key, changes which vendor every team's work is
+sent to and whose account pays for it. The two GETs stay open to any logged-in
+caller because the app's boot-time setup gate reads them on every page load.
 """
 from __future__ import annotations
 
@@ -20,12 +26,15 @@ import logging
 import time
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from flowboard.db import get_session
+from flowboard.routes.deps import get_optional_user
 from flowboard.services.llm import registry, secrets
 from flowboard.services.llm.base import LLMError
 from flowboard.services import claude_cli
+from flowboard.services.resource_guard import require_unscoped
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +67,13 @@ _VALID_FEATURES = ("auto_prompt", "vision", "planner")
 
 
 @router.post("/debug/reset-probe")
-async def debug_reset_probe() -> dict:
+async def debug_reset_probe(user=Depends(get_optional_user)) -> dict:
     """Force re-probe Claude CLI (debug endpoint)."""
+    # Installation-wide state, so admin-only.
+    with get_session() as s:
+        require_unscoped(s, user)
+    with get_session() as s:
+        require_unscoped(s, user)
     claude_cli.reset_availability_cache()
     available = await claude_cli.is_available(force=True)
     return {"ok": True, "claude_available": available}
@@ -109,13 +123,21 @@ async def list_providers() -> list[dict]:
 
 
 @router.put("/providers/{name}")
-async def set_provider_key(name: str, body: _ApiKeyBody) -> dict:
+async def set_provider_key(
+    name: str, body: _ApiKeyBody, user=Depends(get_optional_user)
+) -> dict:
     """Save (or clear, when `apiKey: null`) a provider's API key.
 
     Only OpenAI's API mode accepts keys (its CLI path doesn't need one).
     Setting a key on a CLI-only provider is a 400 — the UI shouldn't
     reach this endpoint for them in the first place, but defend in depth.
+
+    Admin-only: the key is the installation's billing credential, so any
+    logged-in caller could otherwise swap in their own (or clear it and take
+    every feature offline for the whole company).
     """
+    with get_session() as s:
+        require_unscoped(s, user)
     if name not in _VALID_PROVIDER_NAMES:
         raise HTTPException(status_code=404, detail=f"unknown provider {name!r}")
     if name != "openai":
@@ -137,13 +159,22 @@ async def set_provider_key(name: str, body: _ApiKeyBody) -> dict:
 
 
 @router.post("/providers/{name}/test")
-async def test_provider(name: str) -> dict:
+async def test_provider(name: str, user=Depends(get_optional_user)) -> dict:
     """Ping the provider with a tiny prompt and report success / latency.
 
     Cost: ~1 token in + ~1 token out. Used by the Settings panel's "Test"
     button. Returns `{ok, latencyMs}` on success or `{ok: false, error}`
     on any failure mode.
+
+    Admin-only like the rest of the provider settings: it spends the
+    installation's own vendor credit and reports whether the stored key is
+    valid, which is a probe on someone else's credential.
     """
+    # Spends credit on the shared provider key — admin-only.
+    with get_session() as s:
+        require_unscoped(s, user)
+    with get_session() as s:
+        require_unscoped(s, user)
     if name not in _VALID_PROVIDER_NAMES:
         raise HTTPException(status_code=404, detail=f"unknown provider {name!r}")
     provider = registry.get_provider(name)
@@ -201,7 +232,7 @@ def get_config() -> dict:
 
 
 @router.put("/config")
-def set_config(body: _ConfigBody) -> dict:
+def set_config(body: _ConfigBody, user=Depends(get_optional_user)) -> dict:
     """Update one or more feature → provider assignments.
 
     Validates names against the whitelist + feature keys against the
@@ -209,7 +240,12 @@ def set_config(body: _ConfigBody) -> dict:
     unconfigured provider is allowed (the dispatch path will fail loud
     when invoked, surfacing the gap to the user). Lets the user pre-pin
     a provider before completing setup.
+
+    Admin-only: this mapping is global, so one user's edit repoints
+    auto_prompt / vision / planner for every project in the installation.
     """
+    with get_session() as s:
+        require_unscoped(s, user)
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=400, detail="no fields to update")

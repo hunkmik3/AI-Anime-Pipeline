@@ -24,7 +24,8 @@ def test_generate_creates_episodes_and_sequences(client):
         "sequences_per_episode": 3,
     }
     eps = client.get(f"/api/series/{sid}/episodes").json()
-    assert [e["code"] for e in eps] == ["EP001", "EP002", "EP003", "EP004"]
+    # Episode ids follow the sheet convention: <SERIES_CODE>_EP<NN>
+    assert [e["code"] for e in eps] == ["SH_EP01", "SH_EP02", "SH_EP03", "SH_EP04"]
     shots = client.get(f"/api/scenes/{eps[0]['id']}/shots").json()
     assert [s["code"] for s in shots] == ["SQ01", "SQ02", "SQ03"]
 

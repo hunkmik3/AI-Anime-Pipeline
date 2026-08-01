@@ -9,10 +9,12 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from flowboard.services import seed_audio
+from flowboard.db import get_session
+from flowboard.routes.deps import get_optional_user
+from flowboard.services import resource_guard, seed_audio
 from flowboard.services.seed_audio import SeedAudioError
 
 logger = logging.getLogger(__name__)
@@ -41,7 +43,16 @@ async def seed_audio_available() -> dict:
 
 
 @router.post("/generate")
-async def generate_audio(body: SeedAudioRequest) -> dict:
+async def generate_audio(body: SeedAudioRequest, user=Depends(get_optional_user)) -> dict:
+    # The clip is written onto the target node and logged as its generation
+    # history, so this is a canvas write on someone's sequence — and it spends
+    # the shared provider key. With no node there is no project to authorize it
+    # against, so only an unscoped caller may fire an unattached generation.
+    with get_session() as s:
+        if body.node_id is not None:
+            resource_guard.authorize_node(s, user, body.node_id, "canvas.write")
+        else:
+            resource_guard.require_unscoped(s, user)
     try:
         result = await seed_audio.generate(
             prompt=body.prompt,

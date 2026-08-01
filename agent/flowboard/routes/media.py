@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from flowboard.db import get_session
 from flowboard.db.models import DownloadEvent
 from flowboard.routes.deps import get_optional_user
+from flowboard.services import resource_guard
 from flowboard.services import media as media_service
 
 logger = logging.getLogger(__name__)
@@ -200,9 +201,14 @@ def extract_frame_endpoint(media_id: str, body: ExtractFrameBody):
 
 
 @api_router.get("/_debug/assets")
-def debug_assets():
+def debug_assets(user=Depends(get_optional_user)):
     """Dev-only dump of every Asset row so we can see what URLs the extension
     has actually pushed to the agent. Remove once media flow is stable.
+
+    Admin-only. Every other media route is protected by media ids being opaque
+    hashes rather than guessable numbers — and a route that lists them all
+    dissolves exactly that protection, handing over the id of every asset in the
+    company in one call.
     """
     from sqlmodel import select as _select
 
@@ -210,6 +216,7 @@ def debug_assets():
     from flowboard.db.models import Asset
 
     with get_session() as s:
+        resource_guard.require_unscoped(s, user)
         rows = s.exec(_select(Asset)).all()
         return {
             "count": len(rows),

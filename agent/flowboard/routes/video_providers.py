@@ -9,9 +9,11 @@ the capability matrix. The VideoNode settings panel uses the matrix to:
 - Show a persistent banner when a user picks an i2v-only model but
   already has reference images attached
 
-Read-only. No auth — Flowboard is single-user / localhost-only at this
-phase. Returns a stable JSON shape; new capability fields can be added
-without a version bump as long as they're additive.
+Read-only, and deliberately open to any caller the global auth gate lets
+through: the response is the static model registry compiled into the build —
+no project, user or credential data — and every user's canvas needs it at boot
+to render the model dropdown. Returns a stable JSON shape; new capability
+fields can be added without a version bump as long as they're additive.
 """
 from __future__ import annotations
 

@@ -202,12 +202,18 @@ def test_admin_stats_endpoints(client):
     assert any(m["takes"] == 2 for m in models)
 
 
-# ── cost tree: project → episode → sequence ──────────────────────────────────
+# ── cost tree: project → series → episode → sequence ─────────────────────────
 
 
-def test_cost_tree_project_episode_sequence(client):
+def test_cost_tree_project_series_episode_sequence(client):
     """The admin Cost tab tree rolls settled Avis spend up at every level:
-    project total → per-episode total → per-sequence spend."""
+    project → series → episode → sequence.
+
+    The series tier is not cosmetic: two series in one project each have an
+    "Episode 1", and without it the tree showed two identically-named rows with no
+    way to tell them apart. Episodes created without a series land under a single
+    "no series" bucket, which is what this test exercises.
+    """
     proj = client.post("/api/projects", json={"name": "Anime P1"}).json()
     e1 = client.post(f"/api/projects/{proj['id']}/scenes", json={"name": "Episode 1"}).json()
     e2 = client.post(f"/api/projects/{proj['id']}/scenes", json={"name": "Episode 2"}).json()
@@ -223,12 +229,17 @@ def test_cost_tree_project_episode_sequence(client):
 
     p = next(x for x in stats_service.cost_tree() if x["project_id"] == proj["id"])
     assert p["total_usd"] == 11.0
-    assert len(p["episodes"]) == 2
+    # These episodes have no series, so they share one bucket rather than being
+    # hoisted to the project — the tier is always present.
+    assert len(p["series"]) == 1
+    sr = p["series"][0]
+    assert sr["total_usd"] == 11.0
+    assert len(sr["episodes"]) == 2
     # episodes keep story order (E1 before E2)
-    assert [e["scene_id"] for e in p["episodes"]] == [e1["id"], e2["id"]]
+    assert [e["scene_id"] for e in sr["episodes"]] == [e1["id"], e2["id"]]
 
-    ep1 = next(e for e in p["episodes"] if e["scene_id"] == e1["id"])
-    ep2 = next(e for e in p["episodes"] if e["scene_id"] == e2["id"])
+    ep1 = next(e for e in sr["episodes"] if e["scene_id"] == e1["id"])
+    ep2 = next(e for e in sr["episodes"] if e["scene_id"] == e2["id"])
     assert ep1["total_usd"] == 8.0 and ep2["total_usd"] == 3.0
 
     seq1 = ep1["sequences"][0]
@@ -252,7 +263,7 @@ def test_admin_cost_tree_route(client):
     assert r.status_code == 200
     tree = r.json()
     assert len(tree) == 1 and tree[0]["total_usd"] == 4.0
-    assert tree[0]["episodes"][0]["sequences"][0]["total_usd"] == 4.0
+    assert tree[0]["series"][0]["episodes"][0]["sequences"][0]["total_usd"] == 4.0
 
 
 def test_stats_require_admin(client):

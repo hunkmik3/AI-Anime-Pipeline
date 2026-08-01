@@ -109,6 +109,12 @@ class Series(SQLModel, table=True):
     name: str
     code: str = ""
     unit_label: str = "Episode"   # "Episode" | "Chapter"
+    # Phase 11: the Series Producer — the person who reviews this series'
+    # deliverables. First link in the approver chain (see submission_service);
+    # nullable, in which case review falls through to the project's PM.
+    producer_user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="app_user.id", index=True
+    )
     order_index: int = 0
     settings: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
     # Phase 10 CRM: production-tracking bag mirroring the Series_Master sheet
@@ -133,6 +139,17 @@ class Scene(SQLModel, table=True):
     # Human code within the series — "EP007", "CH012". Free-form, not unique.
     code: str = ""
     order_index: int = 0
+    # Phase 11 — deliverable ownership + lifecycle. An episode is the unit that
+    # gets submitted: the assignee generates its sequences in-app, edits the cut
+    # OUTSIDE the app, then submits a Drive link for review.
+    #   assignee_user_id   — the only person who may submit (besides admins)
+    #   deliverable_status — draft | submitted | approved | paid
+    #     A rejection returns the episode to `draft` (the Submission row keeps
+    #     the rejection + reason), matching the deliverable state machine.
+    assignee_user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="app_user.id", index=True
+    )
+    deliverable_status: str = Field(default="draft", index=True)
     # Phase 10 CRM: per-episode production bag mirroring the Episode_Tracker
     # sheet (pipeline status + the four role assignees + duration/deadline…).
     # Known keys live in scene_service.EPISODE_PROD_FIELDS.
@@ -163,6 +180,11 @@ class Shot(SQLModel, table=True):
     current_node_id: Optional[int] = Field(default=None, foreign_key="node.id")
     final_video_asset_id: Optional[int] = Field(default=None, foreign_key="asset.id")
     workflow_metadata: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
+    # Phase 11.5: production bag, matching Series and Scene. Holds this
+    # sequence's own credit ceiling (``credit_budget_usd``) — the tier the
+    # generation gate checks first, since a sequence is what an artist generates
+    # into. Kept as a bag so per-sequence tracking can grow without migrations.
+    production: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
     created_at: datetime = Field(default_factory=_utcnow)
 
 
@@ -251,7 +273,31 @@ class Reference(SQLModel, table=True):
     position: int = 0
     source_shot_id: Optional[uuid.UUID] = Field(default=None, foreign_key="shot.id", index=True)
     source_node_short_id: Optional[str] = None
+    # Flow Studio (/giantflow) scopes its assets by its own board instead of by
+    # project, because the studio was brought over standalone and is not yet wired
+    # into the Project → Series → Episode hierarchy. Keeping its images in THIS
+    # table (rather than a parallel one) is what makes that later wiring a backfill
+    # of ``project_id`` rather than a data migration.
+    source_board_id: Optional[int] = Field(
+        default=None, foreign_key="flow_board.id", index=True
+    )
     created_at: datetime = Field(default_factory=_utcnow)
+
+
+class FlowBoard(SQLModel, table=True):
+    """A Flow Studio project — the studio's own grouping for generated images.
+
+    Deliberately NOT ``Project``. The studio came over as a standalone surface at
+    ``/giantflow``; giving it its own list keeps it out of the production
+    hierarchy (and out of per-project budgets and RBAC) until that integration is
+    planned. One nullable column on Reference is the entire coupling.
+    """
+
+    __tablename__ = "flow_board"  # type: ignore[assignment]
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    created_at: datetime = Field(default_factory=_utcnow, index=True)
 
 
 class ChatMessage(SQLModel, table=True):
@@ -416,6 +462,12 @@ class AuditLog(SQLModel, table=True):
     target_label: Optional[str] = None
     ip: Optional[str] = None
     detail: Optional[str] = None                   # short human-readable context
+    # What was changed, when the subject isn't a user account: "project",
+    # "series", "scene", "shot". Together with object_id this is what makes
+    # "everything that ever happened to Ep03" answerable — the record the studio
+    # never had while production ran on Sheets and Discord. Unset for logins.
+    object_type: Optional[str] = Field(default=None, index=True)
+    object_id: Optional[str] = Field(default=None, index=True)
 
 
 class Registration(SQLModel, table=True):
@@ -442,3 +494,81 @@ class Registration(SQLModel, table=True):
     decided_by: Optional[str] = None               # admin username at decision time
     # Stamped on approval so the admin can relay the login if the email bounced.
     created_username: Optional[str] = None
+
+
+# ── Phase 11: deliverable submission + review ────────────────────────────
+
+
+class Submission(SQLModel, table=True):
+    """One attempt at delivering an Episode.
+
+    The finished cut is edited outside the app, so what we store is the link to
+    it (Google Drive) plus who submitted, who reviewed, and the verdict. Rows
+    are append-only history: a rejected submission stays for the record and the
+    next attempt gets ``version + 1``, so the whole back-and-forth is auditable
+    (and the reviewer can compare against the previous cut).
+
+    ``status``: submitted | approved | rejected. The parent Scene carries the
+    current lifecycle state (draft/submitted/approved/paid) — a rejection sends
+    the Scene back to ``draft`` while this row keeps the reason.
+    """
+
+    __tablename__ = "submission"  # type: ignore[assignment]
+
+    id: uuid.UUID = Field(default_factory=_uuid_pk, primary_key=True)
+    scene_id: uuid.UUID = Field(foreign_key="scene.id", index=True)
+    version: int = 1
+    # The delivered cut. ``drive_url`` is what the employee pasted;
+    # ``drive_file_id`` is parsed out of it so the UI can embed a player.
+    drive_url: str = ""
+    drive_file_id: Optional[str] = None
+    note: Optional[str] = None                 # employee's note to the reviewer
+
+    submitted_by: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="app_user.id", index=True
+    )
+    submitted_at: datetime = Field(default_factory=_utcnow, index=True)
+
+    status: str = Field(default="submitted", index=True)
+    # Who the approver chain resolved to at submit time (so the inbox is stable
+    # even if roles change later), and the actual decision.
+    approver_user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="app_user.id", index=True
+    )
+    reviewed_by: Optional[uuid.UUID] = Field(default=None, foreign_key="app_user.id")
+    reviewed_at: Optional[datetime] = None
+    review_note: Optional[str] = None          # required when rejecting
+
+
+class CreditGrant(SQLModel, table=True):
+    """A **request** for extra credit on a Project or Series, and its verdict.
+
+    The BOD sets a base budget (``project.settings['credit_budget_usd']`` /
+    ``series.production['credit_budget_usd']``); when it runs out generation is
+    blocked. A PM may ask for more — with a **required reason** — but the money
+    only lands once an **admin approves**: overspend is a BOD decision, not a
+    PM's, so a pending request changes nothing.
+
+    Effective budget = base + SUM(amount_usd WHERE status == "approved").
+
+    ``status``: pending | approved | rejected.
+    """
+
+    __tablename__ = "credit_grant"  # type: ignore[assignment]
+
+    id: uuid.UUID = Field(default_factory=_uuid_pk, primary_key=True)
+    scope: str = Field(index=True)          # "project" | "series"
+    scope_id: uuid.UUID = Field(index=True)  # project.id or series.id
+    amount_usd: float = 0.0
+    reason: str = ""                         # required by the service
+    # Who asked (the PM). Kept as ``granted_by`` for continuity with the rows
+    # written before the approval step existed.
+    granted_by: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="app_user.id", index=True
+    )
+    created_at: datetime = Field(default_factory=_utcnow, index=True)
+
+    status: str = Field(default="pending", index=True)
+    decided_by: Optional[uuid.UUID] = Field(default=None, foreign_key="app_user.id")
+    decided_at: Optional[datetime] = None
+    decision_note: Optional[str] = None      # admin's note; required on reject

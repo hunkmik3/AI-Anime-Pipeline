@@ -114,8 +114,7 @@ def stats_projects() -> list[dict]:
 
 @router.get("/stats/cost-tree")
 def stats_cost_tree() -> list[dict]:
-    """Nested spend: project → episode → sequence, each with its rolled-up
-    total. Powers the admin 'Cost' tab (drill-down accordion)."""
+    """Spend nested project → series → episode → sequence."""
     return stats_service.cost_tree()
 
 
@@ -139,9 +138,58 @@ def stats_shot_gens(shot_id: str) -> list[dict]:
     return stats_service.shot_gens(shot_id)
 
 
+@router.get("/stats/timeline")
+def stats_timeline(period: str = "day", buckets: int = 30) -> dict:
+    """Credits burned per day/week/month/year, with who burned them in each.
+
+    The totals say how much and the per-user view says who; this says *when*, which
+    is what distinguishes steady spend from one expensive week.
+    """
+    return stats_service.spend_timeline(period=period, buckets=buckets)
+
+
 @router.get("/stats/models")
 def stats_models() -> list[dict]:
     return stats_service.model_costs()
+
+
+@router.get("/stats/ledger")
+def stats_ledger(
+    project_id: Optional[str] = None,
+    series_id: Optional[str] = None,
+    scene_id: Optional[str] = None,
+    shot_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    model: Optional[str] = None,
+    kept: Optional[bool] = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> dict:
+    """The full spend ledger: one row per billed generation, with who ran it and
+    where it landed (project → series → episode → sequence).
+
+    The overview says how much was spent; this says on what. Filterable down to a
+    single sequence or one person, and ``totals`` always describes the whole
+    filtered set rather than the visible page.
+    """
+    return stats_service.spend_ledger(
+        project_id=project_id,
+        series_id=series_id,
+        scene_id=scene_id,
+        shot_id=shot_id,
+        user_id=user_id,
+        model=model,
+        kept=kept,
+        limit=max(1, min(limit, 1000)),
+        offset=max(0, offset),
+    )
+
+
+@router.get("/stats/ledger/filters")
+def stats_ledger_filters() -> dict:
+    """Only the projects, people and models that actually appear in the ledger —
+    offering every row that has ever existed would make the filters useless."""
+    return stats_service.ledger_filter_options()
 
 
 class PoolBody(BaseModel):

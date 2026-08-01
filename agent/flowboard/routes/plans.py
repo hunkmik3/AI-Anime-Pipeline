@@ -16,10 +16,12 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from flowboard.db import get_session
 from flowboard.db.models import Plan, PipelineRun
+from flowboard.routes.deps import get_optional_user
+from flowboard.services import resource_guard
 from flowboard.services.pipeline_executor import materialize_plan, run_pipeline
 
 logger = logging.getLogger(__name__)
@@ -33,21 +35,38 @@ router = APIRouter(tags=["plans"])
 _active_tasks: dict[int, asyncio.Task] = {}
 
 
+def _authorize_plan(s, user, plan: Plan, capability: str) -> None:
+    """A plan belongs to the sequence it was drafted against; authorize there.
+
+    Plan ids are sequential integers, so without this a caller could read — or
+    materialise onto their own canvas — any other team's plan by guessing.
+    """
+    if plan.shot_id is None:
+        # No sequence → no project role can speak for it; admin-only.
+        resource_guard.require_unscoped(s, user)
+        return
+    resource_guard.authorize_shot(s, user, plan.shot_id, capability)
+
+
 @router.get("/api/plans/{plan_id}")
-def get_plan(plan_id: int):
+def get_plan(plan_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
         plan = s.get(Plan, plan_id)
         if plan is None:
             raise HTTPException(404, "plan not found")
+        _authorize_plan(s, user, plan, "canvas.read")
         return plan
 
 
 @router.post("/api/plans/{plan_id}/run")
-async def run_plan(plan_id: int):
+async def run_plan(plan_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
         plan = s.get(Plan, plan_id)
         if plan is None:
             raise HTTPException(404, "plan not found")
+        # Running a plan writes Node + Edge rows onto the sequence's canvas and
+        # then spends generation budget executing them.
+        _authorize_plan(s, user, plan, "canvas.write")
 
         # Idempotency: if there's already an in-progress run for this plan,
         # return it instead of starting another.
@@ -105,9 +124,13 @@ async def run_plan(plan_id: int):
 
 
 @router.get("/api/pipeline-runs/{run_id}")
-def get_pipeline_run(run_id: int):
+def get_pipeline_run(run_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
         row = s.get(PipelineRun, run_id)
         if row is None:
             raise HTTPException(404, "pipeline run not found")
+        plan = s.get(Plan, row.plan_id)
+        if plan is None:
+            raise HTTPException(404, "pipeline run not found")
+        _authorize_plan(s, user, plan, "canvas.read")
         return row

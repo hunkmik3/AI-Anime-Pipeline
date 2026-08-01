@@ -18,11 +18,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlmodel import select
 
 from flowboard.db import get_session
-from flowboard.db.models import Node, Request
+from flowboard.db.models import Node, Request, Scene, Shot
+from flowboard.routes.deps import get_optional_user, owner_scope
+from flowboard.services import permissions, resource_guard
+from flowboard.services import project_service as ps
 
 router = APIRouter(prefix="/api/activity", tags=["activity"])
 
@@ -58,11 +61,32 @@ def _duration_ms(req: Request) -> Optional[int]:
     return int(delta.total_seconds() * 1000)
 
 
+def _visible_scene_ids(session, user) -> list:
+    """Every episode this caller may read, across all the projects they're on.
+
+    The feed spans the whole installation, so it can't gate on a single project
+    id — it has to be narrowed to what the caller could already open. Episode
+    scope applies too: an artist assigned Ep03 must not read Ep01's prompts and
+    results here just because both sit in the same project.
+    """
+    scene_ids: list = []
+    for project in ps.list_projects(session, owner_user_id=owner_scope(user)):
+        scope = permissions.visible_scope(session, user, project.id)
+        if scope is None:  # producer/lead — the whole project is theirs
+            scene_ids.extend(
+                session.exec(select(Scene.id).where(Scene.project_id == project.id)).all()
+            )
+        else:
+            scene_ids.extend(scope["scene_ids"])
+    return scene_ids
+
+
 @router.get("")
 def list_activity(
     limit: int = Query(50, ge=1, le=200),
     before_id: Optional[int] = Query(None, ge=1),
     type: Optional[str] = Query(None, description="Comma-separated type filter"),
+    user=Depends(get_optional_user),
 ) -> dict:
     """Return the most recent N activity rows in DESC order by id.
 
@@ -86,6 +110,24 @@ def list_activity(
             stmt = stmt.where(Request.id < before_id)
         if type_filter:
             stmt = stmt.where(Request.type.in_(type_filter))
+        if not resource_guard.is_unscoped(s, user):
+            # Unfiltered, this returned every generation in the company —
+            # prompts, node handles and errors from projects the caller can't
+            # open — so narrow it in SQL rather than 403-ing the whole feed.
+            scene_ids = _visible_scene_ids(s, user)
+            if not scene_ids:
+                return {"items": [], "next_before_id": None}
+            # A row with no node has nothing to scope it to, and `NULL IN (…)`
+            # is never true, so those drop out for scoped callers by design.
+            stmt = stmt.where(
+                Request.node_id.in_(
+                    select(Node.id).where(
+                        Node.shot_id.in_(
+                            select(Shot.id).where(Shot.scene_id.in_(scene_ids))
+                        )
+                    )
+                )
+            )
         rows = s.exec(stmt).all()
 
         has_more = len(rows) > limit
@@ -118,13 +160,14 @@ def list_activity(
 
 
 @router.get("/{request_id}")
-def get_activity_detail(request_id: int) -> dict:
+def get_activity_detail(request_id: int, user=Depends(get_optional_user)) -> dict:
     """Return the full row including params (input), result (output),
     error. Used by the UI's detail modal."""
     with get_session() as s:
-        req = s.get(Request, request_id)
-        if req is None:
-            raise HTTPException(404, "activity not found")
+        # Activity ids are Request ids — sequential integers. This is the
+        # verbose projection (full prompt, provider result, error), so an
+        # ungated caller could read another team's briefs by counting up.
+        req = resource_guard.authorize_request(s, user, request_id)
         node_short_id: Optional[str] = None
         if req.node_id is not None:
             n = s.get(Node, req.node_id)
