@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -5,11 +6,13 @@ import {
   listProjectImages,
   listSeries,
   uploadImage,
+  type BudgetSummaryDTO,
   type ProjectImage,
   type SeriesDTO,
 } from "../../api/client";
 import { toast } from "../../store/toast";
-import { ProjectStructureModal } from "../ProjectStructureModal";
+import { BudgetCell, BudgetPanel } from "../BudgetPanel";
+import { TierChip } from "../TierChip";
 import { HBars } from "./Charts";
 import { ShotGens } from "./ProjectShots";
 
@@ -165,7 +168,12 @@ interface AllShotRow {
   clips: number;
 }
 
-// Nested spend: project → episode → sequence (GET /api/admin/stats/cost-tree).
+// Nested spend: project → series → episode → sequence
+// (GET /api/admin/stats/cost-tree).
+//
+// The series tier was missing, so a project's episodes were listed flat — with two
+// series in one project that meant two rows both called "Episode 1" and no way to
+// tell which show they belonged to.
 interface CostSeq {
   shot_id: string;
   shot_label: string;
@@ -175,11 +183,21 @@ interface CostSeq {
 }
 interface CostEpisode {
   scene_id: string;
+  code: string;
   name: string;
   total_usd: number;
   gens: number;
   clips: number;
   sequences: CostSeq[];
+}
+interface CostSeries {
+  series_id: string;
+  code: string;
+  name: string;
+  total_usd: number;
+  gens: number;
+  clips: number;
+  episodes: CostEpisode[];
 }
 interface CostProject {
   project_id: string;
@@ -187,7 +205,7 @@ interface CostProject {
   total_usd: number;
   gens: number;
   clips: number;
-  episodes: CostEpisode[];
+  series: CostSeries[];
 }
 
 /** Immutable toggle of an id inside a Set (for the expand/collapse state). */
@@ -201,21 +219,26 @@ function toggleId(set: Set<string>, id: string): Set<string> {
 export function CostTab() {
   const { data, err, loading } = useFetch<CostProject[]>("/api/admin/stats/cost-tree");
   const [openP, setOpenP] = useState<Set<string>>(new Set());
+  const [openSe, setOpenSe] = useState<Set<string>>(new Set());
   const [openE, setOpenE] = useState<Set<string>>(new Set());
   const [openS, setOpenS] = useState<Set<string>>(new Set());
+
+  // Open the projects on arrival, so the series are visible without a click —
+  // a fully collapsed tree makes you open a row just to learn what is in it.
+  // Seeded once per load, or collapsing a project would spring back open.
+  const seeded = useRef<CostProject[] | null>(null);
+  useEffect(() => {
+    if (!data || seeded.current === data) return;
+    seeded.current = data;
+    setOpenP(new Set(data.map((p) => p.project_id)));
+  }, [data]);
 
   if (loading) return <Skeleton />;
   if (err) return <div className="admin-error">{err}</div>;
   const projects = data ?? [];
-  const total = projects.reduce((s, p) => s + p.total_usd, 0);
 
   return (
     <div className="admin2__card">
-      <p className="tab-note">
-        Total spend broken down <b>Project → Episode → Sequence</b>, straight from the Avis bill.
-        Click a row to drill in; opening a sequence lists every generation (who, model, cost).
-        Total: <b>{usd(total)}</b>.
-      </p>
       {projects.length === 0 ? (
         <div className="admin2__empty">No project has spent anything yet.</div>
       ) : (
@@ -232,54 +255,103 @@ export function CostTab() {
                     <span className="ctree__chev">{pOpen ? "▾" : "▸"}</span>
                     <span className="ctree__name">{p.name || "Untitled"}</span>
                     <span className="ctree__meta">
-                      {p.episodes.length} episode{p.episodes.length === 1 ? "" : "s"} · {p.gens} gens
+                      {p.series.length} series · {p.gens} gens
                     </span>
                   </span>
                   <span className="ctree__val">{usd(p.total_usd)}</span>
                 </button>
 
                 {pOpen ? (
-                  <div className="ctree__kids ctree__kids--episode">
-                    {p.episodes.map((e) => {
-                      const eOpen = openE.has(e.scene_id);
+                  <div className="ctree__kids ctree__kids--series">
+                    {p.series.map((se) => {
+                      const seOpen = openSe.has(se.series_id);
                       return (
-                        <div key={e.scene_id} className="ctree__group">
+                        <div key={se.series_id} className="ctree__group">
                           <button
-                            className="ctree__row ctree__row--episode"
-                            onClick={() => setOpenE((s) => toggleId(s, e.scene_id))}
+                            className="ctree__row ctree__row--series"
+                            onClick={() => setOpenSe((s) => toggleId(s, se.series_id))}
                           >
                             <span className="ctree__main">
-                              <span className="ctree__chev">{eOpen ? "▾" : "▸"}</span>
-                              <span className="ctree__name">{e.name || "Untitled episode"}</span>
+                              <span className="ctree__chev">{seOpen ? "▾" : "▸"}</span>
+                              {se.code ? (
+                                <span className="ctree__code">{se.code}</span>
+                              ) : null}
+                              <span className="ctree__name">{se.name || "Untitled series"}</span>
                               <span className="ctree__meta">
-                                {e.sequences.length} sequence{e.sequences.length === 1 ? "" : "s"}
+                                {se.episodes.length} episode
+                                {se.episodes.length === 1 ? "" : "s"}
                               </span>
                             </span>
-                            <span className="ctree__val">{usd(e.total_usd)}</span>
+                            <span className="ctree__val">{usd(se.total_usd)}</span>
                           </button>
 
-                          {eOpen ? (
-                            <div className="ctree__kids ctree__kids--sequence">
-                              {e.sequences.map((sq) => {
-                                const sOpen = openS.has(sq.shot_id);
+                          {seOpen ? (
+                            <div className="ctree__kids ctree__kids--episode">
+                              {se.episodes.map((e) => {
+                                const eOpen = openE.has(e.scene_id);
                                 return (
-                                  <div key={sq.shot_id} className="ctree__group">
+                                  <div key={e.scene_id} className="ctree__group">
                                     <button
-                                      className="ctree__row ctree__row--sequence"
-                                      onClick={() => setOpenS((s) => toggleId(s, sq.shot_id))}
+                                      className="ctree__row ctree__row--episode"
+                                      onClick={() => setOpenE((s) => toggleId(s, e.scene_id))}
                                     >
                                       <span className="ctree__main">
-                                        <span className="ctree__chev">{sOpen ? "▾" : "▸"}</span>
-                                        <span className="ctree__name">{sq.shot_label}</span>
+                                        <span className="ctree__chev">{eOpen ? "▾" : "▸"}</span>
+                                        {e.code ? (
+                                          <span className="ctree__code">{e.code}</span>
+                                        ) : null}
+                                        <span className="ctree__name">
+                                          {e.name || "Untitled episode"}
+                                        </span>
                                         <span className="ctree__meta">
-                                          {sq.gens} gens · {sq.clips} clip{sq.clips === 1 ? "" : "s"}
+                                          {e.sequences.length} sequence
+                                          {e.sequences.length === 1 ? "" : "s"}
                                         </span>
                                       </span>
-                                      <span className="ctree__val">{usd(sq.total_usd)}</span>
+                                      <span className="ctree__val">{usd(e.total_usd)}</span>
                                     </button>
-                                    {sOpen ? (
-                                      <div className="ctree__gens">
-                                        <ShotGens shotId={sq.shot_id} />
+
+                                    {eOpen ? (
+                                      <div className="ctree__kids ctree__kids--sequence">
+                                        {e.sequences.length === 0 ? (
+                                          <div className="ctree__none">
+                                            Nothing generated in this episode yet.
+                                          </div>
+                                        ) : null}
+                                        {e.sequences.map((sq) => {
+                                          const sOpen = openS.has(sq.shot_id);
+                                          return (
+                                            <div key={sq.shot_id} className="ctree__group">
+                                              <button
+                                                className="ctree__row ctree__row--sequence"
+                                                onClick={() =>
+                                                  setOpenS((s) => toggleId(s, sq.shot_id))
+                                                }
+                                              >
+                                                <span className="ctree__main">
+                                                  <span className="ctree__chev">
+                                                    {sOpen ? "▾" : "▸"}
+                                                  </span>
+                                                  <span className="ctree__name">
+                                                    {sq.shot_label}
+                                                  </span>
+                                                  <span className="ctree__meta">
+                                                    {sq.gens} gens · {sq.clips} clip
+                                                    {sq.clips === 1 ? "" : "s"}
+                                                  </span>
+                                                </span>
+                                                <span className="ctree__val">
+                                                  {usd(sq.total_usd)}
+                                                </span>
+                                              </button>
+                                              {sOpen ? (
+                                                <div className="ctree__gens">
+                                                  <ShotGens shotId={sq.shot_id} />
+                                                </div>
+                                              ) : null}
+                                            </div>
+                                          );
+                                        })}
                                       </div>
                                     ) : null}
                                   </div>
@@ -325,6 +397,8 @@ interface AdminProject {
   created_at: string | null;
   thumb_media_id?: string | null;
   settings?: Record<string, unknown>;
+  /** Phase 11.1: credit-budget rollup the list endpoint returns. */
+  budget?: BudgetSummaryDTO;
 }
 
 interface AdminUserLite {
@@ -496,7 +570,9 @@ function ProjectSeriesPreview({ projectId }: { projectId: string }) {
                 {s.code || "—"}
               </td>
               <td style={{ ...td, fontWeight: 600 }}>{s.name}</td>
-              <td style={td}>{val(s, "tier")}</td>
+              <td style={td}>
+                <TierChip tier={(s.production ?? {}).tier} />
+              </td>
               <td style={td}>{val(s, "status")}</td>
               <td style={td}>{val(s, "priority")}</td>
               <td style={{ ...td, color: "#8a97a3" }}>{s.episode_count ?? 0}</td>
@@ -524,7 +600,6 @@ export function ProjectsTab() {
   const [coverImgs, setCoverImgs] = useState<ProjectImage[] | null>(null);
   const [uploading, setUploading] = useState(false);
   // structure modal (Series → Episode/Chapter → Sequence) — no page nav
-  const [structFor, setStructFor] = useState<AdminProject | null>(null);
   // per-shot cost drill-down (which project row is expanded)
   const [openShots, setOpenShots] = useState<string | null>(null);
 
@@ -700,6 +775,7 @@ export function ProjectsTab() {
                 <th>Project</th>
                 <th>Assigned to</th>
                 <th>Total spent</th>
+                <th>Budget</th>
                 <th>Clips</th>
                 <th className="admin2__th-actions" aria-label="Actions" />
               </tr>
@@ -744,15 +820,17 @@ export function ProjectsTab() {
                       />
                     </td>
                     <td>{c ? <b>{usd(c.total_usd)}</b> : <span className="admin2__muted">—</span>}</td>
+                    <td><BudgetCell budget={p.budget} /></td>
                     <td className="admin2__muted">{c ? c.clips : 0}</td>
                     <td className="admin2__row-actions admin-proj__actions">
-                      <button
+                      <Link
                         className="btn2 btn2--primary admin-proj__open"
-                        onClick={() => setStructFor(p)}
-                        title="Build Series → Episodes → Sequences (no page change)"
+                        to={`/projects/${p.id}`}
+                        state={{ from: "admin" }}
+                        title="Open this project"
                       >
-                        Structure
-                      </button>
+                        Open
+                      </Link>
                       <button
                         className="btn2 btn2--ghost admin-proj__del"
                         onClick={() => void remove(p)}
@@ -764,7 +842,9 @@ export function ProjectsTab() {
                   </tr>
                   {shotsOpen ? (
                     <tr className="admin-proj__shots-row">
-                      <td colSpan={6}>
+                      <td colSpan={7}>
+                        {/* BOD sets the ceiling here; a PM tops it up. */}
+                        <BudgetPanel scope="project" scopeId={p.id} canSetBase canGrant canDecide />
                         <ProjectSeriesPreview projectId={p.id} />
                       </td>
                     </tr>
@@ -778,13 +858,6 @@ export function ProjectsTab() {
       </div>
 
       {/* structure modal — build the hierarchy without leaving the console */}
-      {structFor ? (
-        <ProjectStructureModal
-          projectId={structFor.id}
-          projectName={structFor.name}
-          onClose={() => setStructFor(null)}
-        />
-      ) : null}
 
       {/* cover picker */}
       {coverFor ? (

@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 
 import {
+  createScene,
   createSeries,
   generateSeriesStructure,
   getCrewNames,
@@ -13,6 +14,8 @@ import {
   type SeriesDTO,
 } from "../../api/client";
 import { toast } from "../../store/toast";
+import { BudgetCell, BudgetPanel } from "../BudgetPanel";
+import { TierChip, TierPicker } from "../TierChip";
 
 /**
  * Phase 10 Production CRM — the Series_Master / Episode_Tracker spreadsheet,
@@ -136,16 +139,36 @@ function SeriesDetail({
 
 const CREW_ROLES = ["scriptwriter", "concept_creator", "ai_creator", "editor"] as const;
 
+/** Episode id convention (mirrors the Episode_Tracker sheet + the backend's
+ *  series_service.episode_code): `<SERIES_CODE>_EP<NN>` → "HUSB_EP01". */
+function episodeCode(seriesCode: string, n: number): string {
+  const c = (seriesCode || "").trim().toUpperCase();
+  const num = String(n).padStart(2, "0");
+  return c ? `${c}_EP${num}` : `EP${num}`;
+}
+
 function EpisodeTable({
   seriesId,
+  seriesCode,
+  projectId,
+  plannedEpisodes,
   crewNames,
+  canAdd,
   onCrewAdded,
+  onEpisodeAdded,
 }: {
   seriesId: string;
+  seriesCode: string;
+  projectId: string;
+  /** Current production.total_episodes_planned — bumped when adding a one-off. */
+  plannedEpisodes: number;
   crewNames: string[];
+  canAdd: boolean;
   onCrewAdded: (name: string) => void;
+  onEpisodeAdded: () => void;
 }) {
   const [rows, setRows] = useState<SceneDTO[] | null>(null);
+  const [adding, setAdding] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -156,6 +179,83 @@ function EpisodeTable({
       alive = false;
     };
   }, [seriesId]);
+
+  /** Add ONE extra episode beyond the plan (e.g. a late bonus episode), and
+   *  raise Planned episodes to match so the plan never lags reality. */
+  async function addEpisode() {
+    if (adding) return;
+    setAdding(true);
+    try {
+      const existing = rows ?? [];
+      const n = existing.length + 1;
+      await createScene(projectId, {
+        name: `Episode ${n}`,
+        series_id: seriesId,
+        code: episodeCode(seriesCode, n),
+        order_index: existing.length,
+      });
+      // Keep the plan in step: planned = max(current planned, new count).
+      const nextPlanned = Math.max(plannedEpisodes, n);
+      if (nextPlanned !== plannedEpisodes) {
+        await patchSeries(seriesId, {
+          production: { total_episodes_planned: nextPlanned },
+        });
+      }
+      setRows(await listSeriesEpisodes(seriesId));
+      onEpisodeAdded(); // refresh the series row (counts + planned)
+      toast(`Added Episode ${n}. Planned episodes: ${nextPlanned}.`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "could not add episode", "error");
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  /** Add MANY episodes at once (asks how many). Uses the same top-up generator
+   *  as the producer form, so it only creates what's missing; Planned episodes
+   *  is raised to the new total. */
+  async function addManyEpisodes() {
+    if (adding) return;
+    const have = (rows ?? []).length;
+    // eslint-disable-next-line no-alert
+    const raw = window.prompt(
+      `How many episodes to add? (currently ${have})`,
+      "10",
+    );
+    if (raw == null) return;
+    const count = Math.max(0, parseInt(raw, 10) || 0);
+    if (count <= 0) return;
+    const target = have + count;
+    if (target > 2000) {
+      toast("Too many — the per-series limit is 2000 episodes", "error");
+      return;
+    }
+    // eslint-disable-next-line no-alert
+    if (!window.confirm(`Create ${count} episode(s)? The series will have ${target}.`))
+      return;
+    setAdding(true);
+    try {
+      const r = await generateSeriesStructure(seriesId, {
+        episodes: target,
+        sequences_per_episode: 0, // empty episodes — artists add the sequences
+      });
+      const nextPlanned = Math.max(plannedEpisodes, target);
+      if (nextPlanned !== plannedEpisodes) {
+        await patchSeries(seriesId, {
+          production: { total_episodes_planned: nextPlanned },
+        });
+      }
+      setRows(await listSeriesEpisodes(seriesId));
+      onEpisodeAdded();
+      toast(
+        `Added ${r.episodes_created} episode(s). Planned episodes: ${nextPlanned}.`,
+      );
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "could not add episodes", "error");
+    } finally {
+      setAdding(false);
+    }
+  }
 
   function patch(ep: SceneDTO, key: string, value: string) {
     setRows((cur) =>
@@ -208,9 +308,39 @@ function EpisodeTable({
     );
   }
 
+  // One-off "add an extra episode" control (also the only action in the empty
+  // state) — inline-styled so it renders regardless of stylesheet caching.
+  const addBtn = canAdd ? (
+    <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+      <button
+        type="button"
+        className="btn2 btn2--ghost"
+        onClick={() => void addEpisode()}
+        disabled={adding}
+        title="Add one extra episode beyond the plan (raises Planned episodes)"
+      >
+        {adding ? "Adding…" : "+ Add episode"}
+      </button>
+      <button
+        type="button"
+        className="btn2 btn2--ghost"
+        onClick={() => void addManyEpisodes()}
+        disabled={adding}
+        title="Add many episodes at once (raises Planned episodes)"
+      >
+        {adding ? "Adding…" : "+ Add many…"}
+      </button>
+    </div>
+  ) : null;
+
   if (rows === null) return <div className="crm-sub__loading">Loading episodes…</div>;
   if (rows.length === 0)
-    return <div className="crm-sub__empty">No episodes yet in this series.</div>;
+    return (
+      <div className="crm-sub__empty">
+        No episodes yet in this series.
+        {addBtn ? <div>{addBtn}</div> : null}
+      </div>
+    );
 
   return (
     <div className="crm-sub">
@@ -280,6 +410,7 @@ function EpisodeTable({
           })}
         </tbody>
       </table>
+      {addBtn}
     </div>
   );
 }
@@ -490,22 +621,12 @@ function SeriesForm({
           <section className="crm-form__section">
             <h3>Classification</h3>
             <div className="crm-form__grid">
-              <label className="crm-field">
+              <label className="crm-field crm-field--wide">
                 <span>Tier</span>
-                <input
-                  className="crm-field__input"
-                  list="crm-tiers"
-                  value={f.tier ?? ""}
-                  onChange={(e) => set("tier", e.target.value)}
-                  placeholder="A / B / C / D / S"
+                <TierPicker
+                  value={f.tier == null ? "" : String(f.tier)}
+                  onChange={(v) => set("tier", v)}
                 />
-                <datalist id="crm-tiers">
-                  <option>S</option>
-                  <option>A</option>
-                  <option>B</option>
-                  <option>C</option>
-                  <option>D</option>
-                </datalist>
               </label>
               <label className="crm-field">
                 <span>Status</span>
@@ -540,17 +661,9 @@ function SeriesForm({
 
           <section className="crm-form__section">
             <h3>Team</h3>
+            {/* Producer is NOT asked for — whoever creates the series is its
+                producer (that's already their project role). Recorded server-side. */}
             <div className="crm-form__grid">
-              <label className="crm-field">
-                <span>Producer (PM — assigns the series)</span>
-                <input
-                  className="crm-field__input"
-                  list="crm-people"
-                  value={f.producer ?? ""}
-                  onChange={(e) => set("producer", e.target.value)}
-                  placeholder="who assigns this series"
-                />
-              </label>
               <label className="crm-field">
                 <span>Assignee (produces the series)</span>
                 <input
@@ -760,6 +873,7 @@ export function ProductionCRM() {
                 <th>Producer</th>
                 <th>Assignee</th>
                 <th>Progress</th>
+                <th>Budget</th>
                 <th>Status</th>
                 <th>Priority</th>
                 <th className="admin2__th-actions" />
@@ -782,7 +896,9 @@ export function ProductionCRM() {
                         {p.full_code ? String(p.full_code) : "—"}
                       </td>
                       <td className="admin2__muted">{r.project_name}</td>
-                      <td>{p.tier ? <span className="crm-chip crm-chip--tier">{p.tier}</span> : "—"}</td>
+                      <td>
+                        <TierChip tier={p.tier} />
+                      </td>
                       <td className="crm-table__clip admin2__muted" title={p.producer ? String(p.producer) : ""}>
                         {p.producer ? String(p.producer) : "—"}
                       </td>
@@ -799,6 +915,7 @@ export function ProductionCRM() {
                           </span>
                         </div>
                       </td>
+                      <td><BudgetCell budget={r.budget} /></td>
                       <td>{p.status ? <span className={`crm-chip ${statusClass(String(p.status))}`}>{p.status}</span> : "—"}</td>
                       <td>{p.priority ? <span className={`crm-chip ${priClass(String(p.priority))}`}>{p.priority}</span> : "—"}</td>
                       <td className="crm-table__actions">
@@ -817,17 +934,25 @@ export function ProductionCRM() {
                       <tr className="crm-table__drill">
                         <td colSpan={11}>
                           <SeriesDetail seriesName={r.name} production={r.production ?? {}} />
+                          <BudgetPanel scope="series" scopeId={r.id} canSetBase canGrant canDecide />
                           <EpisodeTable
                             // Remount (refetch) whenever the episode count changes
                             // — e.g. right after auto-generate adds episodes.
                             key={`${r.id}:${r.stats?.episodes ?? r.episode_count ?? 0}`}
                             seriesId={r.id}
+                            seriesCode={r.code}
+                            projectId={r.project_id}
+                            plannedEpisodes={
+                              parseInt(String(p.total_episodes_planned ?? ""), 10) || 0
+                            }
                             crewNames={crewNames}
+                            canAdd
                             onCrewAdded={(n) =>
                               setCrewNames((cur) =>
                                 cur.includes(n) ? cur : [...cur, n],
                               )
                             }
+                            onEpisodeAdded={() => void load()}
                           />
                         </td>
                       </tr>

@@ -5,6 +5,8 @@ import {
   Outlet,
   Route,
   Routes,
+  useLocation,
+  useParams,
 } from "react-router-dom";
 
 import { ProjectSidebar } from "./components/ProjectSidebar";
@@ -12,7 +14,7 @@ import { Toaster } from "./components/Toaster";
 import { GenerationDialog } from "./components/GenerationDialog";
 import { ResultViewer } from "./components/ResultViewer";
 import { ForcedSetupGate } from "./components/ForcedSetupGate";
-import { AccountMenu } from "./components/AccountMenu";
+import { TopBar } from "./components/shell/TopBar";
 import { ChangePasswordDialog } from "./components/ChangePasswordDialog";
 
 import { ProjectListPage } from "./routes/ProjectListPage";
@@ -21,9 +23,13 @@ import { SceneCanvas } from "./routes/SceneCanvas";
 import { LegacySceneRedirect } from "./routes/LegacySceneRedirect";
 import { ShotEditor } from "./routes/ShotEditor";
 import { AssetLibraryPage } from "./routes/AssetLibraryPage";
+import { MyWorkPage } from "./routes/MyWorkPage";
+import { ReviewQueuePage } from "./routes/ReviewQueuePage";
 import { LoginPage } from "./routes/LoginPage";
 import { AdminPage } from "./routes/AdminPage";
-import { StructureConsole } from "./routes/StructureConsole";
+import { EpisodePage } from "./routes/EpisodePage";
+import { SeriesPage } from "./routes/SeriesPage";
+import { FlowApp } from "./flow/FlowApp";
 
 import { useProjectStore } from "./store/project";
 import { useAuthStore } from "./store/auth";
@@ -56,14 +62,16 @@ export function App() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
 
-        {/* Standalone console — outside AppLayout (no project sidebar / canvas
-            chrome). Role-aware: an admin gets the full admin console; a
-            producer/lead gets the scoped Studio console (structure only). */}
+        {/* /admin is the only console left. The producer-facing one (/manage) is
+            gone: it was a second navigation for one role, holding controls that
+            belong on the objects themselves. Old links land on /projects. */}
         <Route
           path="/admin"
           element={
             <RequireAuth>
-              <ConsoleRoute />
+              <AdminOnly>
+                <AdminShell />
+              </AdminOnly>
             </RequireAuth>
           }
         />
@@ -77,11 +85,38 @@ export function App() {
         >
           <Route index element={<Navigate to="/projects" replace />} />
           <Route path="/projects" element={<ProjectListPage />} />
+          {/* Phase 11: deliverable hand-in + review. /my-work kept as a
+              redirect — the old link is in people's history and chat logs. */}
+          <Route path="/work" element={<MyWorkPage />} />
+          <Route path="/my-work" element={<Navigate to="/work" replace />} />
+          {/* /manage is gone; its job moved onto the object pages. */}
+          <Route path="/manage" element={<Navigate to="/projects" replace />} />
+          <Route
+            path="/manage/:projectId"
+            element={<ManageRedirect />}
+          />
+          <Route path="/review" element={<ReviewQueuePage />} />
+          {/* Flow Studio, brought over whole from the manga_extract repo. A
+              standalone surface: its own board list, its own image engines, no tie
+              to Project → Series → Episode yet — so it is a SHARED space, with no
+              separation between users and no budget cap. Open to the whole team by
+              decision; see docs/INTEGRATION_PLAN.md. */}
+          <Route path="/giantflow" element={<FlowApp />} />
           {/* Phase 8.3: project hub (entry point) = SceneView. */}
           <Route path="/projects/:projectId" element={<SceneView />} />
           <Route
             path="/projects/:projectId/library"
             element={<AssetLibraryPage />}
+          />
+          {/* One object, one page: a series and an episode each get their own
+              page rather than being scattered across manage/admin. */}
+          <Route
+            path="/projects/:projectId/series/:seriesId"
+            element={<SeriesPage />}
+          />
+          <Route
+            path="/projects/:projectId/episodes/:sceneId"
+            element={<EpisodePage />}
           />
           {/* Phase 8.3: multi-shot canvas, nested under its project. */}
           <Route
@@ -110,16 +145,20 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * The /admin URL serves two shells depending on who's asking:
- *  • system admin → the full admin console (accounts, budget, cost, audit…)
- *  • everyone else → the scoped Studio console, which lists only the projects
- *    they run (producer/lead) and self-empties for anyone with no such role.
- * Both live outside AppLayout so neither inherits the project/canvas chrome.
+ * /admin is admin-only. A non-admin who lands here (an old bookmark, a link from a
+ * colleague) goes to their projects rather than being shown an error.
  */
-function ConsoleRoute() {
+/** An old /manage/:projectId link resolves to that project's page. */
+function ManageRedirect() {
+  const { projectId } = useParams();
+  return <Navigate to={projectId ? `/projects/${projectId}` : "/projects"} replace />;
+}
+
+function AdminOnly({ children }: { children: React.ReactNode }) {
   const user = useAuthStore((s) => s.user);
-  if (user?.role === "admin") return <AdminShell />;
-  return <StructureConsole />;
+  if (!user) return null;
+  if (user.role !== "admin") return <Navigate to="/projects" replace />;
+  return <>{children}</>;
 }
 
 /**
@@ -137,6 +176,34 @@ function AdminShell() {
   );
 }
 
+/**
+ * What layout the current route wants.
+ *
+ * Three shapes, decided in one place so no page has to arrange its own chrome:
+ *   canvas   — full bleed: no top bar, keep the project tree to navigate out
+ *   listing  — top bar, no tree: Work and Review have no hierarchy to walk, and
+ *              the 384px project sidebar was just squeezing them
+ *   default  — top bar + project tree
+ */
+function useLayoutMode(): { topBar: boolean; sidebar: boolean } {
+  const { pathname } = useLocation();
+  const isCanvas =
+    /^\/projects\/[^/]+\/scenes\/[^/]+/.test(pathname) ||
+    pathname.startsWith("/shots/");
+  if (isCanvas) return { topBar: false, sidebar: true };
+  // Work, Review and the Flow Studio all bring their own body layout — the
+  // studio even has its own left rail — so the project tree would just be a
+  // second column fighting for width. The bar stays: it is the way back out.
+  if (
+    pathname === "/work" ||
+    pathname === "/review" ||
+    pathname === "/giantflow"
+  ) {
+    return { topBar: true, sidebar: false };
+  }
+  return { topBar: true, sidebar: true };
+}
+
 function AppLayout() {
   const loadProjects = useProjectStore((s) => s.loadProjects);
   const ran = useRef(false);
@@ -150,13 +217,19 @@ function AppLayout() {
     // SceneView / SceneCanvas / AssetLibrary — not unscoped at app mount.
   }, [loadProjects]);
 
+  const { topBar, sidebar } = useLayoutMode();
+
   return (
     <div className="app">
-      <ProjectSidebar />
-      <main className="app-main">
-        <Outlet />
-      </main>
-      <AccountMenu />
+      {topBar ? <TopBar /> : null}
+      <div className="app-body">
+        {/* The bar carries the brand, so the sidebar only shows its own on the
+            canvas — the one route with no bar. */}
+        {sidebar ? <ProjectSidebar showBrand={!topBar} /> : null}
+        <main className="app-main">
+          <Outlet />
+        </main>
+      </div>
       <Toaster />
       <GenerationDialog />
       <ResultViewer />

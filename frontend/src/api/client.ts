@@ -7,9 +7,53 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!res.ok) {
-    throw new Error(`${res.status} ${res.statusText}`);
+    throw new Error(await errorMessage(res));
   }
   return res.json() as Promise<T>;
+}
+
+/**
+ * The reason a request failed, in words.
+ *
+ * This used to throw `"400 Bad Request"` and drop the body on the floor — so the
+ * backend's careful, actionable messages ("paste a Google Drive video link, e.g.
+ * …", "v1 of this episode is already waiting for review") never reached anyone.
+ * Every error in the app read as a status code.
+ *
+ * FastAPI puts the reason in `detail`, in three shapes: a plain string, an object
+ * with a `message` (the budget gate does this so the UI can also read a code), or
+ * an array of validation problems.
+ */
+async function errorMessage(res: Response): Promise<string> {
+  const fallback = `${res.status} ${res.statusText}`.trim() || "request failed";
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    return fallback; // not JSON (a proxy error page, an empty 502)
+  }
+  const detail = (body as { detail?: unknown } | null)?.detail;
+
+  if (typeof detail === "string" && detail.trim()) return detail;
+
+  if (Array.isArray(detail)) {
+    // Pydantic validation: name the field, not just "invalid".
+    const parts = detail
+      .map((d) => {
+        const e = d as { loc?: unknown[]; msg?: string };
+        const field = Array.isArray(e.loc) ? e.loc.filter((x) => x !== "body").join(".") : "";
+        return [field, e.msg].filter(Boolean).join(": ");
+      })
+      .filter(Boolean);
+    if (parts.length) return parts.join("; ");
+  }
+
+  if (detail && typeof detail === "object") {
+    const d = detail as { message?: string; code?: string };
+    if (d.message) return d.message;
+    if (d.code) return d.code;
+  }
+  return fallback;
 }
 
 // Map cryptic Flow / pipeline error tokens to a sentence the user can act on.
@@ -864,6 +908,9 @@ export interface ReferenceItem {
   aiBrief: string | null;
   aspectRatio: string | null;
   projectId: string | null;
+  // Flow Studio (/giantflow) groups its images by its own board rather than by
+  // project, because it is not wired into the hierarchy yet.
+  sourceBoardId: number | null;
   tags: string[];
   pinned: boolean;
   position: number;
@@ -882,6 +929,7 @@ export interface ReferenceCreateInput {
   url?: string | null;
   project_id?: string | null;
   source_shot_id?: string | null;
+  source_board_id?: number | null;
   source_node_short_id?: string | null;
   tags?: string[];
 }
@@ -907,6 +955,7 @@ interface ReferenceRowWire {
   pinned: boolean;
   position: number;
   source_shot_id: string | null;
+  source_board_id?: number | null;
   source_node_short_id: string | null;
   created_at: string;
 }
@@ -938,6 +987,7 @@ function mapReferenceRow(row: ReferenceRowWire): ReferenceItem {
     pinned: row.pinned,
     position: row.position,
     sourceShotId: row.source_shot_id,
+    sourceBoardId: row.source_board_id ?? null,
     sourceNodeShortId: row.source_node_short_id,
     createdAt: row.created_at,
   };
@@ -946,12 +996,18 @@ function mapReferenceRow(row: ReferenceRowWire): ReferenceItem {
 export async function listReferences(params?: {
   q?: string;
   project_id?: string;
+  source_board_id?: number;
   pinned_first?: boolean;
   limit?: number;
 }): Promise<ReferenceItem[]> {
   const search = new URLSearchParams();
   if (params?.q) search.set("q", params.q);
   if (params?.project_id) search.set("project_id", params.project_id);
+  // Not `if (…)` — board 0 is falsy but the ids start at 1, and an explicit
+  // undefined check keeps it honest if that ever changes.
+  if (params?.source_board_id !== undefined) {
+    search.set("source_board_id", String(params.source_board_id));
+  }
   if (params?.pinned_first !== undefined) {
     search.set("pinned_first", String(params.pinned_first));
   }
@@ -989,7 +1045,7 @@ export async function deleteReference(id: number): Promise<void> {
   // body, so we use fetch() directly and skip the JSON parse.
   const res = await fetch(`/api/references/${id}`, { method: "DELETE" });
   if (!res.ok) {
-    throw new Error(`deleteReference: ${res.status} ${res.statusText}`);
+    throw new Error(await errorMessage(res));
   }
 }
 
@@ -1056,6 +1112,8 @@ export interface ProjectDTO {
   /** Phase 10: this caller's role here + the flat can-I map the UI reads. */
   my_role?: ProjectRole | null;
   can?: Partial<Record<ProjectCapability, boolean>>;
+  /** Phase 11.1: credit-budget rollup (list/detail only). */
+  budget?: BudgetSummaryDTO;
 }
 
 // ── Phase 10: Series (Project → Series → Episode/Chapter → Sequence) ────────
@@ -1077,8 +1135,13 @@ export interface SeriesDTO {
   order_index: number;
   /** Phase 10 CRM: Series_Master production metadata bag. */
   production?: Record<string, string | number>;
+  /** Phase 11: the Series Producer — first reviewer in the approver chain. */
+  producer_user_id?: string | null;
+  producer_name?: string | null;
   /** Live per-status episode rollup (list/detail only). */
   stats?: SeriesStats;
+  /** Phase 11.1: credit-budget rollup (list only). */
+  budget?: BudgetSummaryDTO;
   created_at: string | null;
   /** Present on list/detail. */
   episode_count?: number;
@@ -1141,6 +1204,11 @@ export interface SceneDTO {
   order_index: number;
   /** Phase 10 CRM: Episode_Tracker production metadata bag. */
   production?: Record<string, string | number>;
+  /** Phase 11: the employee who owns this episode — the only person who may
+   *  submit it, so nothing can be delivered until this is set. */
+  assignee_user_id?: string | null;
+  assignee_name?: string | null;
+  deliverable_status?: "draft" | "submitted" | "approved" | "paid" | string;
   // Phase 8.3: Scene Bible removed; multi-shot layout lives here.
   canvas_state: SceneCanvasState;
   master_establishing_asset_id: number | null;
@@ -1310,6 +1378,12 @@ export function createSeries(
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+/** One series — used by the episode page for its breadcrumb, and by the series
+ *  page itself. */
+export function getSeries(seriesId: string): Promise<SeriesDTO> {
+  return api<SeriesDTO>(`/api/series/${seriesId}`);
 }
 
 export function patchSeries(
@@ -1630,4 +1704,594 @@ export function markDownloaded(mediaId: string, nodeId?: number): void {
   }).catch(() => {
     /* stats are best-effort */
   });
+}
+
+// ── Phase 11: deliverable submission + review ──────────────────────────────
+
+export type DeliverableStatus = "draft" | "submitted" | "approved" | "paid";
+
+export interface SubmissionDTO {
+  id: string;
+  scene_id: string;
+  version: number;
+  drive_url: string;
+  drive_file_id: string | null;
+  /** Preferred: our own proxy (app streams the file using the studio's Drive
+   *  identity), so the file can stay Restricted and the reviewer needs no
+   *  Google account. Plays in a plain <video>. */
+  stream_url: string | null;
+  /** Fallback: Drive's own embed, used when the app has no Drive identity. */
+  preview_url: string | null;
+  note: string | null;
+  submitted_by: string | null;
+  submitted_by_name: string | null;
+  submitted_at: string | null;
+  status: "submitted" | "approved" | "rejected";
+  approver_user_id: string | null;
+  approver_name: string | null;
+  reviewed_by_name: string | null;
+  reviewed_at: string | null;
+  review_note: string | null;
+}
+
+export interface DeliverableEpisodeDTO {
+  id: string;
+  name: string;
+  code: string;
+  project_id: string;
+  project_name: string | null;
+  series_id: string | null;
+  series_name: string | null;
+  series_code: string | null;
+  assignee_user_id: string | null;
+  assignee_name: string | null;
+  deliverable_status: DeliverableStatus | string;
+  latest_submission: SubmissionDTO | null;
+}
+
+/** Submit the finished cut (a Google Drive link) for an episode. */
+export function submitEpisode(
+  sceneId: string,
+  input: { drive_url: string; note?: string },
+): Promise<SubmissionDTO> {
+  return api<SubmissionDTO>(`/api/scenes/${sceneId}/submissions`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+/** Full submission history for an episode (newest version first). */
+export function listEpisodeSubmissions(
+  sceneId: string,
+): Promise<{ episode: DeliverableEpisodeDTO; submissions: SubmissionDTO[] }> {
+  return api(`/api/scenes/${sceneId}/submissions`);
+}
+
+export function approveSubmission(id: string, note?: string): Promise<SubmissionDTO> {
+  return api<SubmissionDTO>(`/api/submissions/${id}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ note }),
+  });
+}
+
+/** Send work back. A reason is required. */
+export function rejectSubmission(id: string, note: string): Promise<SubmissionDTO> {
+  return api<SubmissionDTO>(`/api/submissions/${id}/reject`, {
+    method: "POST",
+    body: JSON.stringify({ note }),
+  });
+}
+
+/** Episodes assigned to the signed-in employee ("My work"). */
+export function listMyEpisodes(): Promise<{ episodes: DeliverableEpisodeDTO[] }> {
+  return api(`/api/my/episodes`);
+}
+
+/** Submissions waiting on the signed-in reviewer. */
+export function listReviewQueue(): Promise<{
+  items: { submission: SubmissionDTO; episode: DeliverableEpisodeDTO | null }[];
+}> {
+  return api(`/api/review/queue`);
+}
+
+/** PM assigns the employee who owns (and may submit) an episode. */
+export function setEpisodeAssignee(
+  sceneId: string,
+  userId: string | null,
+): Promise<DeliverableEpisodeDTO> {
+  return api<DeliverableEpisodeDTO>(`/api/scenes/${sceneId}/assignee`, {
+    method: "PATCH",
+    body: JSON.stringify({ user_id: userId }),
+  });
+}
+
+/** PM sets the Series Producer (first reviewer in the approver chain). */
+export function setSeriesProducer(
+  seriesId: string,
+  userId: string | null,
+): Promise<{ id: string; producer_user_id: string | null; producer_name: string | null }> {
+  return api(`/api/series/${seriesId}/producer`, {
+    method: "PATCH",
+    body: JSON.stringify({ user_id: userId }),
+  });
+}
+
+// ── Phase 11.1: Project/Series credit budgets ──────────────────────────────
+
+/** Every tier of the hierarchy can carry a credit ceiling, and all of them
+ *  apply — the innermost breached one is what blocks a generation.
+ *  "scene" is an Episode and "shot" a Sequence (table names, kept so the URL
+ *  matches the API). */
+export type BudgetScope = "project" | "series" | "scene" | "shot";
+
+export interface CreditGrantDTO {
+  id: string;
+  scope?: BudgetScope;
+  scope_id?: string;
+  amount_usd: number;
+  reason: string;
+  granted_by_name: string | null;
+  requested_by?: string | null;
+  requested_by_username?: string | null;
+  requested_by_email?: string | null;
+  created_at: string | null;
+  /** A request only raises the ceiling once an admin approves it. */
+  status: "pending" | "approved" | "rejected";
+  decided_by_name: string | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  /** Where the money goes — resolved server-side so the inbox needs no lookups. */
+  project_id?: string;
+  project_name?: string;
+  series_name?: string;
+  series_code?: string;
+  /** The scope's budget at the moment of asking. */
+  budget?: {
+    used_usd: number;
+    effective_usd: number;
+    remaining_usd: number | null;
+    unlimited: boolean;
+  };
+}
+
+export interface BudgetSummaryDTO {
+  scope: BudgetScope;
+  scope_id: string;
+  /** What the BOD set. 0 → unlimited. */
+  base_usd: number;
+  granted_usd: number;
+  effective_usd: number;
+  spent_usd: number;
+  reserved_usd: number;
+  used_usd: number;
+  /** null when unlimited. */
+  remaining_usd: number | null;
+  unlimited: boolean;
+  used_pct: number | null;
+  grants?: CreditGrantDTO[];
+}
+
+export function getBudget(scope: BudgetScope, id: string): Promise<BudgetSummaryDTO> {
+  return api<BudgetSummaryDTO>(`/api/budgets/${scope}/${id}`);
+}
+
+/** BOD/admin sets the base ceiling. 0 clears it (unlimited). */
+export function setBudget(
+  scope: BudgetScope,
+  id: string,
+  amountUsd: number,
+): Promise<BudgetSummaryDTO> {
+  return api<BudgetSummaryDTO>(`/api/budgets/${scope}/${id}`, {
+    method: "PUT",
+    body: JSON.stringify({ amount_usd: amountUsd }),
+  });
+}
+
+/** PM REQUESTS more credit. Lands pending — an admin has to approve it before
+ *  the ceiling moves. A reason is required and kept in the log. */
+export function requestCredit(
+  scope: BudgetScope,
+  id: string,
+  input: { amount_usd: number; reason: string },
+): Promise<BudgetSummaryDTO & { grant: CreditGrantDTO }> {
+  return api(`/api/budgets/${scope}/${id}/grants`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+/** Admin inbox: every credit request awaiting a verdict. */
+export function listPendingCreditRequests(): Promise<{ requests: CreditGrantDTO[] }> {
+  return api(`/api/budgets/requests/pending`);
+}
+
+/** Admin approves — this is what actually raises the ceiling. */
+export function approveCreditRequest(
+  id: string,
+  note?: string,
+): Promise<BudgetSummaryDTO & { grant: CreditGrantDTO }> {
+  return api(`/api/budgets/requests/${id}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ note }),
+  });
+}
+
+/** Admin rejects — a note is required so the asker knows why. */
+export function rejectCreditRequest(
+  id: string,
+  note: string,
+): Promise<BudgetSummaryDTO & { grant: CreditGrantDTO }> {
+  return api(`/api/budgets/requests/${id}/reject`, {
+    method: "POST",
+    body: JSON.stringify({ note }),
+  });
+}
+
+
+// ── Change history (audit trail per object) ─────────────────────────────────
+
+export type HistoryObjectType = "project" | "series" | "scene" | "shot";
+
+export interface HistoryEntryDTO {
+  id: number;
+  created_at: string | null;
+  action: string;
+  actor: string | null;
+  target: string | null;
+  detail: string | null;
+  ip: string | null;
+}
+
+/** Everything recorded against one object, newest first. This is what answers
+ *  "who reassigned Ep03, and when" — the question the spreadsheet never could. */
+export function getObjectHistory(
+  objectType: HistoryObjectType,
+  objectId: string,
+  limit = 200,
+): Promise<{ object_type: string; object_id: string; entries: HistoryEntryDTO[] }> {
+  return api(`/api/history/${objectType}/${objectId}?limit=${limit}`);
+}
+
+// ── KPI ────────────────────────────────────────────────────────────────────
+
+export interface KpiPersonDTO {
+  user_id: string | null;
+  name: string | null;
+  assigned: number;
+  delivered: number;
+  in_review: number;
+  attempts: number;
+  rejections: number;
+  first_pass: number;
+  first_pass_rate: number | null;
+  avg_attempts: number | null;
+  credits_usd: number;
+  credits_per_delivered_usd: number | null;
+  avg_review_days: number | null;
+}
+
+export interface SeriesKpiDTO {
+  series_id: string;
+  series_name: string;
+  series_code: string;
+  episodes: number;
+  delivered: number;
+  in_review: number;
+  unassigned: number;
+  completion_pct: number | null;
+  budget: BudgetSummaryDTO;
+  people: KpiPersonDTO[];
+}
+
+export interface KpiProjectRowDTO {
+  project_id: string;
+  project_name: string;
+  episodes: number;
+  delivered: number;
+  in_review: number;
+  unassigned: number;
+  completion_pct: number | null;
+  budget: BudgetSummaryDTO;
+}
+
+export interface KpiOverviewDTO {
+  totals: {
+    projects: number;
+    episodes: number;
+    delivered: number;
+    in_review: number;
+    unassigned: number;
+    credits_usd: number;
+    completion_pct: number | null;
+  };
+  projects: KpiProjectRowDTO[];
+  people: KpiPersonDTO[];
+}
+
+/** The board tracker: every project at once. Admin/BOD only. */
+export function getKpiOverview(): Promise<KpiOverviewDTO> {
+  return api(`/api/kpi/overview`);
+}
+
+/** Admin/BOD only — this compares people's output, so it is not exposed to a
+ *  peer, not even the producer running the project. */
+export function getProjectKpi(
+  projectId: string,
+): Promise<{ project_id: string; people: KpiPersonDTO[] }> {
+  return api(`/api/kpi/projects/${projectId}`);
+}
+
+export function getSeriesKpi(seriesId: string): Promise<SeriesKpiDTO> {
+  return api(`/api/kpi/series/${seriesId}`);
+}
+
+// ── CSV export ─────────────────────────────────────────────────────────────
+
+export type ExportKind = "episodes" | "submissions" | "spend";
+
+export function exportUrl(projectId: string, kind: ExportKind): string {
+  return `/api/export/projects/${projectId}/${kind}`;
+}
+
+/** Trigger a CSV download.
+ *
+ * Fetched as a blob rather than a plain `<a href>`: the token is attached by the
+ * global /api fetch interceptor (see api/authFetch.ts), which a navigation would
+ * bypass — the download would arrive unauthenticated and 401. */
+export async function downloadExport(
+  projectId: string,
+  kind: ExportKind,
+  filename?: string,
+): Promise<void> {
+  const res = await fetch(exportUrl(projectId, kind));
+  if (!res.ok) {
+    throw new Error(`export failed (${res.status})`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename || `${kind}-${projectId}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+
+// ── Spend ledger (admin/BOD) ───────────────────────────────────────────────
+
+export interface LedgerRowDTO {
+  usage_id: number | null;
+  when: string | null;
+  user_id: string | null;
+  user_name: string | null;
+  project_id: string | null;
+  project_name: string | null;
+  series_id: string | null;
+  series_code: string | null;
+  scene_id: string | null;
+  episode: string | null;
+  shot_id: string | null;
+  sequence: string | null;
+  node_id: number | null;
+  kind: string | null;
+  model: string | null;
+  resolution: string | null;
+  duration_seconds: number | null;
+  cost_usd: number;
+  /** take N of M on the same shot slot — the retake story */
+  take: number;
+  takes_on_node: number;
+  /** the newest take on a slot: the one the artist settled on */
+  kept: boolean;
+  downloaded: boolean;
+  unattributed?: boolean;
+}
+
+export interface LedgerDTO {
+  rows: LedgerRowDTO[];
+  total_rows: number;
+  offset: number;
+  limit: number;
+  totals: {
+    generations: number;
+    total_usd: number;
+    kept_usd: number;
+    retake_usd: number;
+    /** Charges with no node — they can't be told apart into shipped vs re-rolled. */
+    unclassified_usd: number;
+    unclassified_count: number;
+    /** Share of the CLASSIFIABLE spend that didn't ship, not of the grand total. */
+    retake_pct: number;
+    people: number;
+    downloaded: number;
+  };
+}
+
+export interface LedgerFilters {
+  project_id?: string;
+  series_id?: string;
+  scene_id?: string;
+  shot_id?: string;
+  user_id?: string;
+  model?: string;
+  kept?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+/** Every billed generation, with who ran it and where it landed. Admin/BOD only. */
+export function getSpendLedger(f: LedgerFilters = {}): Promise<LedgerDTO> {
+  const q = new URLSearchParams();
+  Object.entries(f).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== "") q.set(k, String(v));
+  });
+  return api(`/api/admin/stats/ledger?${q.toString()}`);
+}
+
+export function getLedgerFilterOptions(): Promise<{
+  projects: { id: string; name: string }[];
+  people: { id: string; name: string }[];
+  models: string[];
+}> {
+  return api(`/api/admin/stats/ledger/filters`);
+}
+
+
+// ── Spend over time (admin/BOD) ────────────────────────────────────────────
+
+export type SpendPeriod = "day" | "week" | "month" | "year";
+
+export interface TimelinePersonDTO {
+  user_id: string | null;
+  name: string;
+  generations: number;
+  total_usd: number;
+  delivered: number;
+}
+
+export interface TimelineBucketDTO {
+  key: string;
+  label: string;
+  total_usd: number;
+  kept_usd: number;
+  retake_usd: number;
+  generations: number;
+  delivered: number;
+  submitted: number;
+  people: TimelinePersonDTO[];
+}
+
+export interface TimelineDTO {
+  period: SpendPeriod;
+  buckets: TimelineBucketDTO[];
+  totals: {
+    total_usd: number;
+    generations: number;
+    delivered: number;
+    peak_usd: number;
+  };
+}
+
+/** Credits burned per period, and who burned them. Admin/BOD only. */
+export function getSpendTimeline(
+  period: SpendPeriod = "day",
+  buckets = 30,
+): Promise<TimelineDTO> {
+  return api(`/api/admin/stats/timeline?period=${period}&buckets=${buckets}`);
+}
+
+export interface UserCostDTO {
+  user_id: string;
+  username: string;
+  display_name: string | null;
+  budget_usd: number | null;
+  spent_usd: number;
+  kept_usd: number;
+  wasted_usd: number;
+  kept_clips: number;
+  wasted_takes: number;
+  takes: number;
+  downloaded_clips: number;
+  waste_pct: number;
+}
+
+/** Spend per person, all time. Admin/BOD only. */
+export function getUserCosts(): Promise<UserCostDTO[]> {
+  return api(`/api/admin/stats/users`);
+}
+
+// ── Flow Studio (/giantflow) ─────────────────────────────────────────────────
+//
+// The studio came over from the manga_extract repo as a standalone surface. It is
+// not yet wired into Project → Series → Episode, so it keeps its own board list
+// (`/api/flowstudio/boards`) and its images are References scoped by
+// `source_board_id` rather than `project_id`. Every endpoint here is admin-only
+// server-side, for the same reason the unscoped `/api/requests` and
+// `/api/references` paths are: with nothing to scope a permission check against,
+// the only safe caller is one who may see everything.
+
+/** A Flow Studio project. `kind` is echoed by the server as a constant — the
+ *  studio's UI came from a repo where one table served two surfaces. */
+export interface FlowBoard {
+  id: number;
+  name: string;
+  kind: string;
+  created_at: string | null;
+}
+
+export function listFlowBoards(): Promise<FlowBoard[]> {
+  return api<FlowBoard[]>("/api/flowstudio/boards");
+}
+
+export function createFlowBoard(name: string): Promise<FlowBoard> {
+  return api<FlowBoard>("/api/flowstudio/boards", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function patchFlowBoard(id: number, name: string): Promise<FlowBoard> {
+  return api<FlowBoard>(`/api/flowstudio/boards/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function deleteFlowBoard(
+  id: number,
+): Promise<{ deleted: number; references_deleted: number }> {
+  return api<{ deleted: number; references_deleted: number }>(
+    `/api/flowstudio/boards/${id}`,
+    { method: "DELETE" },
+  );
+}
+
+/** Cache an image for use as a reference/source. Local-only: the engines read the
+ *  bytes off disk at dispatch time, so nothing is pushed anywhere on upload. */
+export async function uploadFlowImage(
+  file: File,
+): Promise<{ media_id: string; mime: string; size: number }> {
+  const form = new FormData();
+  form.append("file", file);
+  // No Content-Type and no auth header on purpose: the browser sets the multipart
+  // boundary itself, and `api/authFetch.ts` patches global fetch to attach the
+  // bearer token — same as every other upload in this file.
+  const res = await fetch("/api/flowstudio/upload", { method: "POST", body: form });
+  if (!res.ok) {
+    throw new Error(await errorMessage(res));
+  }
+  return res.json() as Promise<{ media_id: string; mime: string; size: number }>;
+}
+
+export interface FlowUsageGemini {
+  today: number;
+  total: number;
+  daily_quota: number;
+  remaining_est: number;
+}
+
+export interface FlowUsageSeedream {
+  today: number;
+  total: number;
+  usd_per_image: number;
+  cost_today: number; // USD spent today
+  cost_total: number; // USD spent all-time
+}
+
+export interface FlowUsage {
+  today: number;
+  total: number;
+  daily_quota: number;
+  remaining_est: number;
+  resets_at?: string; // ISO — the server's next local midnight
+  seconds_until_reset?: number;
+  // Two engine families priced differently, so one number would mislead: Gemini
+  // and Atrium are quota-based; Seedream bills per image, so it reports money.
+  engines?: { gemini: FlowUsageGemini; seedream: FlowUsageSeedream };
+}
+
+export function getFlowUsage(): Promise<FlowUsage> {
+  return api<FlowUsage>("/api/flowstudio/usage");
 }

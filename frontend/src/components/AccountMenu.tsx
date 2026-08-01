@@ -6,20 +6,16 @@ import { useProjectStore } from "../store/project";
 import { ChangePasswordDialog } from "./ChangePasswordDialog";
 import { NotificationBell } from "./NotificationBell";
 
-/** Top-right account widget: who's logged in, an admin link, and logout. */
+/** Top-right account widget: who's logged in, their budget, and sign out.
+ *
+ *  Navigation deliberately does NOT live here — see ``PrimaryNav``. */
 export function AccountMenu() {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   // Asset library is per-project — link to whichever project is currently open.
   const currentProjectId = useProjectStore((s) => s.currentProjectId);
-  const projects = useProjectStore((s) => s.projects);
   const [pwOpen, setPwOpen] = useState(false);
   if (!user) return null;
-  // A non-admin who runs at least one project (producer/lead) gets the Studio
-  // console — the scoped structure-management surface.
-  const runsAProject = projects.some(
-    (p) => p.my_role === "producer" || p.my_role === "lead",
-  );
   const available =
     user.available_usd ??
     (typeof user.budget_usd === "number"
@@ -60,15 +56,8 @@ export function AccountMenu() {
           ${available.toFixed(2)}
         </span>
       ) : null}
-      {user.role === "admin" ? (
-        <Link className="account-menu__link" to="/admin">
-          Admin console
-        </Link>
-      ) : runsAProject ? (
-        <Link className="account-menu__link" to="/admin">
-          Studio console
-        </Link>
-      ) : null}
+      {/* Work / Review / Projects / Manage / Admin now live in PrimaryNav —
+          destinations belong in the open, not filed under account settings. */}
       <span className="account-menu__name" title={user.username}>
         {user.display_name || user.username}
         {user.role === "admin" ? <span className="account-menu__badge">admin</span> : null}

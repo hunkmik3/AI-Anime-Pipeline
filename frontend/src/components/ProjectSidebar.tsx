@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Brand } from "./shell/Brand";
 
 import { useProjectStore } from "../store/project";
 import { useSeriesStore } from "../store/series";
@@ -12,7 +13,7 @@ import { BreakableName } from "./BreakableName";
  * board era) and uses React Router links so clicks deep-link into
  * ``/projects/:id`` without going through any store imperative.
  */
-export function ProjectSidebar() {
+export function ProjectSidebar({ showBrand = true }: { showBrand?: boolean } = {}) {
   const projects = useProjectStore((s) => s.projects);
   const activeId = useProjectStore((s) => s.currentProjectId);
   const createProject = useProjectStore((s) => s.createProject);
@@ -187,14 +188,10 @@ export function ProjectSidebar() {
 
   return (
     <aside className={`project-sidebar${collapsed ? " project-sidebar--collapsed" : ""}`}>
-      {!collapsed && (
-        <Link to="/projects" className="project-sidebar__logo-row">
-          <img src="/favicon.png" alt="" width={28} height={28} />
-          <span className="project-sidebar__logo-txt">
-            Giant Studio
-            <span className="project-sidebar__ver">v1.0.2</span>
-          </span>
-        </Link>
+      {!collapsed && showBrand && (
+        <div className="project-sidebar__logo-row">
+          <Brand />
+        </div>
       )}
       <div className="project-sidebar__header">
         {!collapsed && (

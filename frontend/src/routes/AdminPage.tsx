@@ -1,5 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
+
+import { Brand } from "../components/shell/Brand";
 
 import { useAuthStore } from "../store/auth";
 import { parseServerTimeMs } from "../utils/serverTime";
@@ -12,8 +14,11 @@ import {
   CostTab,
   ProjectsTab,
   AuditTab,
-  RegistrationsTab,
 } from "../components/admin/AdminTabs";
+import { ApprovalsTab } from "../components/admin/ApprovalsTab";
+import { SpendLedgerTab } from "../components/admin/SpendLedgerTab";
+import { SpendByPerson, SpendOverTime } from "../components/admin/SpendOverTime";
+import { TrackerTab } from "../components/admin/TrackerTab";
 import { ProductionCRM } from "../components/admin/ProductionCRM";
 
 interface AdminUser {
@@ -166,6 +171,36 @@ function NavIcon({ name }: { name: string }) {
   );
 }
 
+/** The admin console's sections. Declared once so the nav table and the active
+ *  tab state cannot drift apart. */
+type AdminTab =
+  | "members"
+  | "approvals"
+  | "spend"
+  | "projects"
+  | "production"
+  | "audit";
+
+/** The views inside Spend & delivery — four former nav items, which were four
+ *  answers to one question. */
+type SpendView = "summary" | "delivery" | "projects" | "ledger";
+
+const ALL_TABS: readonly AdminTab[] = [
+  "members",
+  "approvals",
+  "spend",
+  "projects",
+  "production",
+  "audit",
+];
+
+const SPEND_VIEWS: readonly { key: SpendView; label: string; hint: string }[] = [
+  { key: "summary", label: "Summary", hint: "Pool, real spend and waste at a glance." },
+  { key: "delivery", label: "Delivery", hint: "Who delivered what, and how much came back." },
+  { key: "projects", label: "By project", hint: "Spend per project, down to each sequence." },
+  { key: "ledger", label: "Ledger", hint: "Every billed generation, filterable." },
+];
+
 export function AdminPage() {
   const me = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
@@ -190,21 +225,52 @@ export function AdminPage() {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
   // which tab is showing
-  const [tab, setTab] = useState<
-    "overview" | "members" | "signups" | "cost" | "projects" | "production" | "audit"
-  >("overview");
+  // The section lives in the URL, so leaving to look at a project and pressing
+  // Back returns to the tab you were on rather than resetting to the first one —
+  // and a link to a section can be sent to someone.
+  const [params, setParams] = useSearchParams();
+  const urlTab = params.get("tab") as AdminTab | null;
+  const tab: AdminTab = ALL_TABS.includes(urlTab as AdminTab)
+    ? (urlTab as AdminTab)
+    : "members";
+  const setTab = (next: AdminTab) => {
+    const p = new URLSearchParams(params);
+    p.set("tab", next);
+    setParams(p, { replace: false });
+  };
+  const urlView = params.get("view") as SpendView | null;
+  const spendView: SpendView = SPEND_VIEWS.some((v) => v.key === urlView)
+    ? (urlView as SpendView)
+    : "summary";
+  const setSpendView = (next: SpendView) => {
+    const p = new URLSearchParams(params);
+    p.set("tab", "spend");
+    p.set("view", next);
+    setParams(p, { replace: false });
+  };
   // mobile: is the nav drawer open?
   const [navOpen, setNavOpen] = useState(false);
 
-  // pending signup count → sidebar badge (so a request isn't missed)
+  // Sidebar badge = EVERYTHING waiting on a decision (sign-ups + credit
+  // top-ups + submitted deliverables), so nothing sits unnoticed just because
+  // it isn't the kind of request the tab used to be about.
   const [pendingSignups, setPendingSignups] = useState(0);
   const refreshPending = useCallback(async () => {
-    try {
-      const r = await jsonOrThrow(await fetch("/api/admin/registrations/pending-count"));
-      setPendingSignups(r.count ?? 0);
-    } catch {
-      /* badge is best-effort */
-    }
+    const counts = await Promise.all([
+      fetch("/api/admin/registrations/pending-count")
+        .then((r) => (r.ok ? r.json() : { count: 0 }))
+        .then((d) => d.count ?? 0)
+        .catch(() => 0),
+      fetch("/api/budgets/requests/pending")
+        .then((r) => (r.ok ? r.json() : { requests: [] }))
+        .then((d) => (d.requests ?? []).length)
+        .catch(() => 0),
+      fetch("/api/review/queue")
+        .then((r) => (r.ok ? r.json() : { items: [] }))
+        .then((d) => (d.items ?? []).length)
+        .catch(() => 0),
+    ]);
+    setPendingSignups(counts.reduce((a, b) => a + b, 0));
   }, []);
 
   // Which action modal is open (replaces window.prompt / confirm).
@@ -377,60 +443,90 @@ export function AdminPage() {
   const activeCount = users.filter((u) => u.status === "active").length;
   const suspendedCount = users.length - activeCount;
 
-  const TABS = [
-    ["overview", "Overview", "overview"],
-    ["members", "Members", "members"],
-    ["signups", "Sign-ups", "signups"],
-    ["cost", "Cost", "cost"],
-    ["projects", "Projects", "projects"],
-    ["production", "Production", "projects"],
-    ["audit", "Audit log", "audit"],
-  ] as const;
+  type NavItem = readonly [AdminTab, string, string];
+  const NAV_GROUPS: readonly { title: string; items: readonly NavItem[] }[] = [
+    {
+      title: "People",
+      items: [
+        ["members", "Members", "members"],
+        ["approvals", "Approvals", "signups"],
+      ],
+    },
+    {
+      title: "Money & delivery",
+      items: [["spend", "Spend & delivery", "cost"]],
+    },
+    {
+      title: "Production",
+      items: [
+        ["projects", "Projects", "projects"],
+        ["production", "Series & episodes", "projects"],
+      ],
+    },
+    {
+      title: "System",
+      items: [["audit", "Audit log", "audit"]],
+    },
+  ];
   const SUBTITLES: Record<string, string> = {
-    overview: "Pool and real spend at a glance — straight from the Avis bill.",
+    spend: "Money and delivery in one place — the pool, what each project spent, who delivered, and every billed generation.",
     members: "Provision accounts, budgets and roles for your team.",
-    signups:
-      "People who requested an account. Approving one emails them a temporary password.",
-    cost: "Total spend per project, broken down into episodes and sequences.",
+    approvals:
+      "Everything waiting on a decision: credit top-ups, submitted deliverables and account sign-ups.",
     projects: "Create a project and assign an owner (producer). They build the Series → Episodes → Sequences themselves inside it.",
     production: "The Series_Master / Episode_Tracker board — tier, status, priority, crew and schedule per series and episode.",
     audit: "Security log: logins, SSO, and every admin action.",
   };
-  const curLabel = TABS.find(([k]) => k === tab)?.[1] ?? "Dashboard";
+  const curLabel =
+    NAV_GROUPS.flatMap((g) => g.items).find(([k]) => k === tab)?.[1] ?? "Dashboard";
 
   return (
     <div className={`dash${navOpen ? " dash--nav-open" : ""}`}>
       {/* ── left sidebar nav (Dasher) ── */}
       <aside className="dash__side">
-        <Link to="/projects" className="dash__brand">
-          <img src="/favicon.png" alt="" width={30} height={30} />
-          <span className="dash__brand-txt">
-            Giant Studio
-            <small>Admin console</small>
-            <span className="dash__brand-ver">v1.0.2</span>
-          </span>
-        </Link>
+        <div className="dash__brand">
+          <Brand subtitle="Admin console" />
+        </div>
 
         <nav className="dash__nav" role="tablist" aria-label="Admin sections">
-          {TABS.map(([k, label, icon]) => (
-            <button
-              key={k}
-              role="tab"
-              aria-selected={tab === k}
-              className={`dash__nav-item${tab === k ? " is-active" : ""}`}
-              onClick={() => {
-                setTab(k);
-                setNavOpen(false);
-              }}
-            >
-              <NavIcon name={icon} />
-              <span>{label}</span>
-              {k === "signups" && pendingSignups > 0 ? (
-                <span className="dash__nav-badge" aria-label={`${pendingSignups} waiting`}>
-                  {pendingSignups}
-                </span>
-              ) : null}
-            </button>
+          {NAV_GROUPS.map((group) => (
+            <div key={group.title}>
+              <div
+                style={{
+                  fontSize: 10,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.07em",
+                  opacity: 0.45,
+                  padding: "14px 12px 5px",
+                  fontWeight: 600,
+                }}
+              >
+                {group.title}
+              </div>
+              {group.items.map(([k, label, icon]) => (
+                <button
+                  key={k}
+                  role="tab"
+                  aria-selected={tab === k}
+                  className={`dash__nav-item${tab === k ? " is-active" : ""}`}
+                  onClick={() => {
+                    setTab(k);
+                    setNavOpen(false);
+                  }}
+                >
+                  <NavIcon name={icon} />
+                  <span>{label}</span>
+                  {k === "approvals" && pendingSignups > 0 ? (
+                    <span
+                      className="dash__nav-badge"
+                      aria-label={`${pendingSignups} waiting`}
+                    >
+                      {pendingSignups}
+                    </span>
+                  ) : null}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
 
@@ -483,7 +579,28 @@ export function AdminPage() {
           {error ? <div className="admin-error">{error}</div> : null}
 
       {/* ───────────────── TỔNG QUAN ───────────────── */}
-      {tab === "overview" ? (
+      {tab === "spend" ? (
+        <>
+          <div className="pagetabs" role="tablist" style={{ marginBottom: 20 }}>
+            {SPEND_VIEWS.map((v) => (
+              <button
+                key={v.key}
+                role="tab"
+                aria-selected={spendView === v.key}
+                className={`pagetabs__tab${spendView === v.key ? " is-active" : ""}`}
+                onClick={() => setSpendView(v.key)}
+              >
+                {v.label}
+              </button>
+            ))}
+          </div>
+          {spendView === "delivery" ? <TrackerTab /> : null}
+          {spendView === "projects" ? <CostTab /> : null}
+          {spendView === "ledger" ? <SpendLedgerTab /> : null}
+        </>
+      ) : null}
+
+      {tab === "spend" && spendView === "summary" ? (
         <>
           {/* Avis exposes no balance API — the admin enters the top-up and we
               draw it down against the real per-generation usdCost. */}
@@ -547,6 +664,13 @@ export function AdminPage() {
           </section>
 
           <OverviewTab />
+
+          {/* The tiles above say how much and the ledger says on what; neither says
+              WHEN, or who. */}
+          <div className="panelrow">
+            <SpendOverTime />
+            <SpendByPerson />
+          </div>
         </>
       ) : null}
 
@@ -717,15 +841,14 @@ export function AdminPage() {
       ) : null}
 
       {/* ───────────────── CHI PHÍ / DỰ ÁN / NHẬT KÝ ───────────────── */}
-      {tab === "signups" ? (
-        <RegistrationsTab
+      {tab === "approvals" ? (
+        <ApprovalsTab
           onChanged={() => {
             void refreshPending();
             void refresh();
           }}
         />
       ) : null}
-      {tab === "cost" ? <CostTab /> : null}
       {tab === "projects" ? <ProjectsTab /> : null}
       {tab === "production" ? <ProductionCRM /> : null}
       {tab === "audit" ? <AuditTab fmtTime={fmtTime} /> : null}

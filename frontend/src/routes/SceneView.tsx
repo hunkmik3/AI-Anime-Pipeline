@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 
 import {
-  thumbUrl,
+  downloadExport,
   setSceneCover,
+  thumbUrl,
   uploadImage,
   type ProjectCapability,
   type SceneDTO,
@@ -12,6 +13,8 @@ import {
 import { ReferencesPanel } from "../components/ReferencesPanel";
 import { ProjectVideoGallery } from "../components/ProjectVideoGallery";
 import { ProjectMembersDialog } from "../components/ProjectMembersDialog";
+import { HistoryDrawer } from "../components/HistoryDrawer";
+import { BackTo } from "../components/shell/BackTo";
 import { useProjectStore } from "../store/project";
 import { useSceneStore } from "../store/scene";
 import { useSeriesStore } from "../store/series";
@@ -74,6 +77,8 @@ export function SceneView() {
 
   const [coverBusy, setCoverBusy] = useState<string | null>(null);
   const [membersOpen, setMembersOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   // New-series modal
   const [seriesModalOpen, setSeriesModalOpen] = useState(false);
@@ -244,6 +249,7 @@ export function SceneView() {
           </p>
         </div>
         <div className="page-header__actions">
+          <BackTo />
           {can("member.manage") && (
             <button
               type="button"
@@ -256,8 +262,60 @@ export function SceneView() {
           <Link to={`/projects/${projectId}/library`} className="btn">
             Asset library
           </Link>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setHistoryOpen(true)}
+            title="Who changed this project, and when"
+          >
+            History
+          </button>
+          {can("member.manage") && (
+            <div className="exportmenu">
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setExportOpen((v) => !v)}
+                aria-expanded={exportOpen}
+              >
+                Export ▾
+              </button>
+              {exportOpen ? (
+                <div className="exportmenu__list" role="menu">
+                  {([
+                    ["episodes", "Episode tracker"],
+                    ["submissions", "Delivery history"],
+                    ["spend", "Credit spend"],
+                  ] as const).map(([kind, label]) => (
+                    <button
+                      key={kind}
+                      type="button"
+                      role="menuitem"
+                      className="exportmenu__item"
+                      onClick={() => {
+                        setExportOpen(false);
+                        void downloadExport(projectId, kind);
+                      }}
+                    >
+                      {label}
+                      <small>CSV</small>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          )}
         </div>
       </header>
+
+      {historyOpen ? (
+        <HistoryDrawer
+          objectType="project"
+          objectId={projectId}
+          label={currentProject?.name ?? "Project"}
+          onClose={() => setHistoryOpen(false)}
+        />
+      ) : null}
 
       {/* Project-level shared references — a floating drawer. */}
       <ReferencesPanel />
@@ -297,9 +355,18 @@ export function SceneView() {
               <section key={s.id} id={`series-${s.id}`} className="series-block">
                 <header className="series-block__header">
                   <div className="series-block__title">
+                    {/* The title is the way into the series' own page, which holds
+                        its tier, schedule, market and budget — all of which used to
+                        be reachable only through a modal on an admin table. */}
                     <h3>
-                      {s.code ? <span className="series-block__code">{s.code}</span> : null}
-                      {s.name}
+                      <Link
+                        to={`/projects/${projectId}/series/${s.id}`}
+                        className="series-block__link"
+                        title="Open this series"
+                      >
+                        {s.code ? <span className="series-block__code">{s.code}</span> : null}
+                        {s.name}
+                      </Link>
                     </h3>
                     <span className="series-block__count">
                       {eps.length} {unit.toLowerCase()}
@@ -629,6 +696,16 @@ function EpisodeCard({
             {shotCount} sequence{shotCount === 1 ? "" : "s"}
           </div>
         </div>
+      </Link>
+      {/* The card opens the canvas, because that is what someone came here to do.
+          This is the way to everything *about* the episode — assignee, quota,
+          delivery, spend, history — which is a different task, done less often. */}
+      <Link
+        to={`/projects/${projectId}/episodes/${scene.id}`}
+        className="scene-card__details"
+        title="Assignee, quota, delivery, spend and history"
+      >
+        Details
       </Link>
     </li>
   );
