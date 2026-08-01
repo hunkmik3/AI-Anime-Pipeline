@@ -12,6 +12,7 @@ import asyncio
 import logging
 import os
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
 
@@ -908,6 +909,21 @@ async def _handle_retry_storyboard_shot(params: dict) -> tuple[dict, Optional[st
     )
 
 
+def _ingest_png(png: bytes) -> str:
+    """Cache raw image bytes under a fresh media id and return it."""
+    cid = str(uuid.uuid4())
+    media_service.ingest_inline_bytes(cid, png, kind="image", mime="image/png")
+    return cid
+
+
+def _ingest_pngs(pngs: list) -> list:
+    """Batch of ``_ingest_png``, preserving ``None`` holes so a partly-failed
+    variant set keeps its positions. Sync — call via ``asyncio.to_thread``."""
+    return [None if p is None else _ingest_png(p) for p in pngs]
+
+
+from flowboard.worker import flowstudio as _flow_studio  # noqa: E402
+
 _DEFAULT_HANDLERS: dict[str, Handler] = {
     "proxy": _handle_proxy,
     "create_project": _handle_create_project,
@@ -916,6 +932,9 @@ _DEFAULT_HANDLERS: dict[str, Handler] = {
     "edit_image": _handle_edit_image,
     "gen_storyboard": _handle_gen_storyboard,
     "retry_storyboard_shot": _handle_retry_storyboard_shot,
+    # Flow Studio (/giantflow). Its module imports _ingest_pngs from here
+    # lazily, so this plain import is not a cycle.
+    "flow_gen_image": _flow_studio.handle_flow_gen_image,
 }
 
 

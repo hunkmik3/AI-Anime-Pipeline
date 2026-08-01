@@ -40,8 +40,12 @@ from flowboard.routes import (
     audio,
     auth,
     bibles,
+    budgets,
     chat,
     edges,
+    exports,
+    history,
+    kpi,
     llm,
     media,
     nodes,
@@ -51,8 +55,10 @@ from flowboard.routes import (
     scenes,
     series,
     shots,
+    submissions,
     upload,
     video_providers,
+    flowstudio,
     vision,
 )
 from flowboard.routes import references as references_route
@@ -138,6 +144,10 @@ async def lifespan(app: FastAPI):
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        # Release the pooled connections the Drive video proxy keeps warm.
+        from flowboard.services import drive as _drive
+
+        await _drive.aclose_pool()
         logger.info("flowboard agent stopped")
 
 
@@ -238,7 +248,12 @@ app.include_router(projects.router)
 app.include_router(series.router)
 app.include_router(scenes.router)
 app.include_router(shots.router)
+app.include_router(submissions.router)
 app.include_router(bibles.router)
+app.include_router(budgets.router)
+app.include_router(history.router)
+app.include_router(kpi.router)
+app.include_router(exports.router)
 app.include_router(references_route.router)
 app.include_router(requests_route.router)
 app.include_router(media.bytes_router)
@@ -252,6 +267,7 @@ app.include_router(auth.router)
 app.include_router(llm.router)
 app.include_router(activity.router)
 app.include_router(video_providers.router)
+app.include_router(flowstudio.router)
 
 
 @app.get("/api/health")

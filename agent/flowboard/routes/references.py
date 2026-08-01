@@ -17,6 +17,7 @@ from sqlmodel import select, or_
 from flowboard.db import get_session
 from flowboard.db.models import Reference
 from flowboard.routes.deps import get_optional_user, owner_scope
+from flowboard.services import resource_guard
 from flowboard.services import project_service as ps
 
 router = APIRouter(prefix="/api/references", tags=["references"])
@@ -35,6 +36,10 @@ class ReferenceCreate(BaseModel):
     url: Optional[str] = None
     project_id: Optional[uuid.UUID] = None  # library is scoped per-project
     source_shot_id: Optional[uuid.UUID] = None
+    # Flow Studio (/giantflow) is not project-scoped yet, so it groups its
+    # images by its own board instead. Mutually exclusive with project_id in
+    # practice, but not enforced — a later integration sets both.
+    source_board_id: Optional[int] = None
     source_node_short_id: Optional[str] = None
     tags: Optional[list[str]] = None
 
@@ -75,13 +80,14 @@ def _row_dict(row: Reference) -> dict[str, Any]:
         "pinned": row.pinned,
         "position": row.position,
         "source_shot_id": str(row.source_shot_id) if row.source_shot_id else None,
+        "source_board_id": row.source_board_id,
         "source_node_short_id": row.source_node_short_id,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
 
 
 @router.post("")
-def create_reference(body: ReferenceCreate):
+def create_reference(body: ReferenceCreate, user=Depends(get_optional_user)):
     """Save a media_id to the library.
 
     Idempotent on media_id: if a row with the same media_id already
@@ -96,6 +102,17 @@ def create_reference(body: ReferenceCreate):
         )
 
     with get_session() as s:
+        # The library is per-project, so saving into one requires access to it.
+        # Without this a caller could plant entries in another team's library.
+        if body.project_id is not None:
+            resource_guard.authorize_project(s, user, body.project_id, "canvas.write")
+        elif body.source_board_id is not None:
+            # A Flow Studio image. The studio is a shared space by decision, so it
+            # has no project to authorize against and no owner to compare — an
+            # account is the gate.
+            resource_guard.require_signed_in(s, user)
+        else:
+            resource_guard.require_unscoped(s, user)
         existing = s.exec(
             select(Reference).where(Reference.media_id == body.media_id)
         ).first()
@@ -112,6 +129,7 @@ def create_reference(body: ReferenceCreate):
             url=body.url,
             project_id=body.project_id,
             source_shot_id=body.source_shot_id,
+            source_board_id=body.source_board_id,
             source_node_short_id=body.source_node_short_id,
             tags=list(body.tags or []),
         )
@@ -125,6 +143,7 @@ def create_reference(body: ReferenceCreate):
 def list_references(
     q: Optional[str] = None,
     project_id: Optional[uuid.UUID] = None,
+    source_board_id: Optional[int] = None,
     pinned_first: bool = True,
     limit: int = 200,
     user=Depends(get_optional_user),
@@ -147,6 +166,10 @@ def list_references(
         stmt = select(Reference)
         if project_id is not None:
             stmt = stmt.where(Reference.project_id == project_id)
+        # Flow Studio scopes its grid to one of its own boards. Narrowing rather
+        # than refusing, same as project_id above.
+        if source_board_id is not None:
+            stmt = stmt.where(Reference.source_board_id == source_board_id)
         if q:
             needle = f"%{q.lower()}%"
             # SQLite's LIKE is case-insensitive for ASCII by default but
@@ -175,12 +198,14 @@ def list_references(
 
 
 @router.patch("/{ref_id}")
-def patch_reference(ref_id: int, body: ReferencePatch):
+def patch_reference(
+    ref_id: int, body: ReferencePatch, user=Depends(get_optional_user)
+):
     """Partial update — only fields present in the request body are touched."""
     with get_session() as s:
-        row = s.get(Reference, ref_id)
-        if row is None:
-            raise HTTPException(404, "reference not found")
+        # Reference ids are sequential integers, so an ungated update let anyone
+        # relabel or unpin another project's library entries by counting up.
+        row = resource_guard.authorize_reference(s, user, ref_id, "canvas.write")
         fields = body.model_fields_set
         if "label" in fields and body.label is not None:
             row.label = body.label
@@ -197,16 +222,14 @@ def patch_reference(ref_id: int, body: ReferencePatch):
 
 
 @router.delete("/{ref_id}", status_code=204)
-def delete_reference(ref_id: int):
+def delete_reference(ref_id: int, user=Depends(get_optional_user)):
     """Hard delete the reference row.
 
     The underlying ``storage/media/{media_id}.{ext}`` file is NOT
     touched — the Asset table owns cache lifetime.
     """
     with get_session() as s:
-        row = s.get(Reference, ref_id)
-        if row is None:
-            raise HTTPException(404, "reference not found")
+        row = resource_guard.authorize_reference(s, user, ref_id, "canvas.write")
         s.delete(row)
         s.commit()
     return Response(status_code=204)
