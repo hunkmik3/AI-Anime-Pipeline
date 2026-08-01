@@ -122,6 +122,12 @@ interface FlowGenSettings {
 export interface GenJob {
   id: number;
   requestId?: number; // backend request this tile is polling (used to re-attach after an F5)
+  // When THIS job's generation actually started (epoch ms). Each variant is its
+  // own request and they are dispatched a moment apart, so a single shared clock
+  // showed the same % for a tile that began 20s later. It also survives an F5 —
+  // the persisted pending entry carries the original timestamp — so a resumed
+  // tile picks its bar back up instead of restarting at 0.
+  startedAt: number;
   done: number;
   total: number;
   prompt: string; // exact prompt of this in-flight gen (for "reuse while generating")
@@ -385,11 +391,29 @@ async function pollGen(
  *  by fresh gens and by F5 re-attach. Returns the assets it created. */
 async function trackGen(
   requestId: number,
-  meta: { prompt: string; aspect: string | null; refs: string[]; model: string | null; provider: string | null },
+  meta: {
+    prompt: string;
+    aspect: string | null;
+    refs: string[];
+    model: string | null;
+    provider: string | null;
+    startedAt?: number; // set when resuming after an F5, so the bar keeps its place
+  },
 ): Promise<FlowAsset[]> {
   const jobId = ++_jobSeq;
   useFlowStudioStore.setState((s) => ({
-    genJobs: [...s.genJobs, { id: jobId, requestId, done: 0, total: 1, prompt: meta.prompt, refs: meta.refs }],
+    genJobs: [
+      ...s.genJobs,
+      {
+        id: jobId,
+        requestId,
+        startedAt: meta.startedAt ?? Date.now(),
+        done: 0,
+        total: 1,
+        prompt: meta.prompt,
+        refs: meta.refs,
+      },
+    ],
     generating: true,
   }));
   try {
@@ -474,6 +498,7 @@ function resumePendingGens(): void {
       refs: p.refs,
       model: p.model,
       provider: p.provider,
+      startedAt: p.ts, // keep the original clock, don't restart the bar at 0
     });
   }
 }

@@ -301,45 +301,71 @@ function cssAspect(a: string): string {
   return w && h ? `${w} / ${h}` : "1 / 1";
 }
 
-/** Rough expected seconds PER IMAGE for the progress estimate, from the chosen
- *  model + resolution. The image API gives no true intra-image %, so this just
- *  paces the estimate to real-ish durations (Pro/4K is much slower than flash). */
+/** Expected seconds PER IMAGE, used only to pace the estimate — no image API
+ *  reports true intra-image progress.
+ *
+ *  These are MEASURED, not guessed, because the previous values were wrong in a
+ *  way that showed: they keyed off `model.includes("pro")`, which matched
+ *  `dola-seedream-5-0-pro` and paced it at 30s — so the bar sat at 88% for the
+ *  remaining ~55s of an 85s generation and looked stuck.
+ *
+ *    dola-seedream-5-0-pro (Avis)  1K: 85s measured
+ *    gemini-3.1-flash-image        1K: 16s, 4K: 45s measured
+ *    gemini-2.5-flash-image        1K: 11s measured (it ignores imageSize)
+ *
+ *  Seedream goes through an async job queue rather than a synchronous call,
+ *  which is most of why it is ~5x the flash models — so it gets its own base
+ *  rather than sharing one keyed on the word "pro".
+ */
 function expectedSecondsPerImage(model: string, size: string): number {
-  const base = model.includes("pro") ? 30 : 13;
-  const mult = size === "4K" ? 2.8 : size === "2K" ? 1.7 : 1;
+  const seedream = model.includes("seedream");
+  const base = seedream ? 85 : model.includes("3-pro") ? 22 : 14;
+  // Seedream caps at 2K and prices 2K at exactly 2x 1K; the flash models climb
+  // steeply into real 4K (18.8 MB per image, most of it download).
+  const mult = seedream
+    ? size === "2K" || size === "4K"
+      ? 1.8
+      : 1
+    : size === "4K"
+      ? 3.2
+      : size === "2K"
+        ? 1.6
+        : 1;
   return base * mult;
 }
 
-/** Per-tile climbing %, paced to ~real durations. Variants now generate in
- *  PARALLEL, so all tiles climb together: each eases 0→88 over the expected
- *  per-image time then crawls 88→99 if it overruns. The backend's real `done`
- *  count snaps that many tiles to a true 100 as variants finish. */
-function useTilePcts(
-  progress: { done: number; total: number } | null,
-  generating: boolean,
-  total: number,
-  expS: number,
-): number[] {
-  const [pcts, setPcts] = useState<number[]>(() => Array(total).fill(0));
-  const ref = useRef(progress);
-  ref.current = progress;
+/** Re-render every 300ms while generating, so percentages computed from a
+ *  timestamp stay live. Returns nothing — it exists purely to tick. */
+function useTick(active: boolean): void {
+  const [, force] = useState(0);
   useEffect(() => {
-    if (!generating) {
-      setPcts(Array(total).fill(0));
-      return;
-    }
-    const start = Date.now();
-    const id = setInterval(() => {
-      const done = Math.min(ref.current?.done ?? 0, total);
-      const e = (Date.now() - start) / 1000;
-      const linear = Math.min((e / expS) * 88, 88);
-      const tail = e <= expS ? 0 : (1 - Math.exp(-(e - expS) / (expS * 1.5))) * 11;
-      const est = Math.min(99, Math.round(linear + tail));
-      setPcts(Array.from({ length: total }, (_, i) => (i < done ? 100 : est)));
-    }, 300);
+    if (!active) return;
+    const id = setInterval(() => force((n) => n + 1), 300);
     return () => clearInterval(id);
-  }, [generating, total, expS]);
-  return pcts;
+  }, [active]);
+}
+
+/** This tile's climbing %, from ITS OWN start time.
+ *
+ *  Two bugs made the old version misreport. It held the percentages in state
+ *  behind an effect keyed on the tile COUNT, so when one of four images landed
+ *  the count changed, the effect re-ran, its `start` was re-stamped and every
+ *  remaining tile dropped back to 0. And it indexed percentages by array
+ *  POSITION, which renumbers when a finished job is removed — so a tile could
+ *  inherit a different tile's number.
+ *
+ *  Now it is a pure function of (this job's startedAt, now): nothing to reset,
+ *  no shared clock, and a finished sibling cannot touch it. Eases 0→88 over the
+ *  expected time, then crawls 88→99 if it overruns; a job the backend has marked
+ *  done reads a true 100.
+ */
+function tilePct(job: GenJob | null, expS: number): number {
+  if (!job) return 0;
+  if (job.done >= job.total) return 100;
+  const e = (Date.now() - job.startedAt) / 1000;
+  const linear = Math.min((e / expS) * 88, 88);
+  const tail = e <= expS ? 0 : (1 - Math.exp(-(e - expS) / (expS * 1.5))) * 11;
+  return Math.min(99, Math.round(linear + tail));
 }
 
 /** Daily usage badge in the rail. Counts images this tool generated today
@@ -451,8 +477,8 @@ function GenPlaceholders() {
   const model = useFlowStudioStore((s) => s.settings.model);
   const size = useFlowStudioStore((s) => s.settings.size);
   const total = Math.max(1, jobs.reduce((n, j) => n + j.total, 0));
-  const done = jobs.reduce((n, j) => n + j.done, 0);
-  const pcts = useTilePcts({ done, total }, jobs.length > 0, total, expectedSecondsPerImage(model, size));
+  const expS = expectedSecondsPerImage(model, size);
+  useTick(jobs.length > 0);
   const reusePrompt = useFlowStudioStore((s) => s.reusePrompt);
   // One tile per expected image, tagged with the job it belongs to so each can
   // reuse that job's EXACT prompt + material even while it's still generating.
@@ -465,7 +491,7 @@ function GenPlaceholders() {
       {tiles.map(({ job, i }) => (
         <div key={`gen-${job?.id ?? i}`} className="fc-card fc-card--loading" style={{ aspectRatio: cssAspect(aspect) }}>
           <span className="fc-load__icon" aria-hidden="true">🖼</span>
-          <span className="fc-load__pct">{pcts[i] ?? 0}%</span>
+          <span className="fc-load__pct">{tilePct(job, expS)}%</span>
           {job?.prompt && (
             <button
               type="button"
