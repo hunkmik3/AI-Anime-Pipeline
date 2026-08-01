@@ -491,9 +491,19 @@ export function mediaUrl(mediaId: string): string {
   return `/media/${encodeURIComponent(clean)}`;
 }
 
-/** Downscaled thumbnail (cached WEBP) — use for grids/pickers so we don't ship
+/** Force a download (Content-Disposition: attachment) rather than an inline
+ *  render, optionally naming the file. */
+export function mediaDownloadUrl(mediaId: string, filename?: string): string {
+  const clean = mediaId.replace(/^media\//, "");
+  const params = new URLSearchParams({ download: "1" });
+  if (filename?.trim()) params.set("filename", filename.trim());
+  return `/media/${encodeURIComponent(clean)}?${params.toString()}`;
+}
+
+/** Downscaled thumbnail (cached JPEG) — for grids/pickers, so we don't ship
  *  multi-MB full-res images for tiny tiles. Falls back to the original on the
- *  server for non-images. */
+ *  server for non-images. Use mediaUrl for full-res and mediaDownloadUrl to
+ *  download. */
 export function thumbUrl(mediaId: string, w = 256): string {
   const clean = mediaId.replace(/^media\//, "");
   return `/api/media/${encodeURIComponent(clean)}/thumb?w=${w}`;
@@ -907,6 +917,11 @@ export interface ReferenceItem {
   // spawn skip the re-vision call entirely.
   aiBrief: string | null;
   aspectRatio: string | null;
+  // Image model that produced this (e.g. "gemini-3.1-flash-image", or
+  // "dola-seedream-5-0-pro"); null for uploads and rows saved before the field
+  // existed. The RESOLVED model, which can differ from the requested one when
+  // the backend substitutes a fallback.
+  modelUsed: string | null;
   projectId: string | null;
   // Flow Studio (/giantflow) groups its images by its own board rather than by
   // project, because it is not wired into the hierarchy yet.
@@ -931,6 +946,7 @@ export interface ReferenceCreateInput {
   source_shot_id?: string | null;
   source_board_id?: number | null;
   source_node_short_id?: string | null;
+  model_used?: string | null;
   tags?: string[];
 }
 
@@ -950,6 +966,7 @@ interface ReferenceRowWire {
   kind: string;
   ai_brief: string | null;
   aspect_ratio: string | null;
+  model_used?: string | null;
   project_id?: string | null;
   tags: string[] | null;
   pinned: boolean;
@@ -982,6 +999,7 @@ function mapReferenceRow(row: ReferenceRowWire): ReferenceItem {
     kind,
     aiBrief: row.ai_brief,
     aspectRatio: row.aspect_ratio,
+    modelUsed: row.model_used ?? null,
     projectId: row.project_id ?? null,
     tags: Array.isArray(row.tags) ? row.tags : [],
     pinned: row.pinned,

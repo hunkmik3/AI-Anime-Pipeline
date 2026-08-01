@@ -268,6 +268,11 @@ class Reference(SQLModel, table=True):
     kind: str  # "image" | "character" | "visual_asset" | "storyboard_shot"
     ai_brief: Optional[str] = None
     aspect_ratio: Optional[str] = None
+    # Which image model actually produced this (e.g. "gemini-3.1-flash-image",
+    # "dola-seedream-5-0-pro") — the RESOLVED value, not necessarily what the
+    # caller asked for, since the backend can substitute a fallback. None for
+    # uploads and for rows that predate the column.
+    model_used: Optional[str] = None
     tags: list = Field(default_factory=list, sa_column=_jsonb_list())
     pinned: bool = False
     position: int = 0

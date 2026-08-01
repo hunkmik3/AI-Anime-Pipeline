@@ -21,38 +21,53 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
 from typing import Callable, Optional, Sequence
 
 import httpx
 
+from flowboard.services.flowstudio.transfer_gate import transfer_gate
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE = "https://studio.atrium.art"
 _TIMEOUT_S = 240.0
+# Fetching the generated image from its presigned S3 downloadUrl (~20MB for a
+# 4K PNG) is the real bottleneck. The key fact — confirmed on the same machine
+# and network as the working Mac client — is that S3 throttles PER CONNECTION
+# (per TCP 4-tuple), NOT per IP: at the same instant one connection runs at
+# multiple MB/s while another crawls at tens of KB/s. So a slow download isn't
+# "the network is slow" — this particular connection lost the lottery, and a
+# FRESH connection (new source port → new 4-tuple) is very likely to be fast.
+#
+# Hence a transfer-RATE watchdog (a client-side tail-latency / hedging pattern):
+# stream the file while timing the average rate; after a short grace for TCP
+# slow-start, if the rate is under the floor, abandon THIS connection at once and
+# re-draw a fresh one rather than wait out a ~10-minute crawl. A rate FLOOR (not
+# a hard timeout) is deliberate: a hard timeout would wrongly kill a legitimately
+# large 4K download moving at a fine-but-moderate speed, whereas a rate check
+# tells "throttled" apart from "just a big file".
+#
+# We keep re-drawing fresh connections for up to _DOWNLOAD_BUDGET_S. A fresh draw
+# is cheap (~6s for a fast one) and free (no generation quota), and most draws
+# are un-throttled, so the download almost always lands on the first or second
+# try. If the whole budget elapses without a completed download, the image is
+# FAILED outright — NOT re-generated: re-generating wouldn't help (the throttle
+# is per-connection, not per-image), and undownloadable images are rare enough
+# that failing fast (the user just re-runs, drawing fresh connections again)
+# beats hanging for minutes or burning quota on pointless re-gens.
+_DOWNLOAD_BUDGET_S = float(os.getenv("FLOWBOARD_ATRIUM_DOWNLOAD_BUDGET_S", "90"))  # keep re-drawing this long, then FAIL the image
+_DOWNLOAD_GRACE_S = 8.0            # let TCP slow-start ramp before judging the rate
+_DOWNLOAD_MIN_RATE = 300 * 1024   # bytes/s — below this after grace ⇒ throttled connection, re-draw
+_DOWNLOAD_READ_TIMEOUT_S = 15.0   # a DEAD (0-byte) connection redraws after this
+_DOWNLOAD_ATTEMPT_CAP_S = 120.0   # ceiling for one accepted (≥floor) connection to finish
 MAX_ATTEMPTS = 5
 # An empty (no-image) response is usually a safety filter — often a FALSE
 # POSITIVE on anime art that clears on retry. Retry a few times only (a genuine
 # block won't pass and each try costs quota).
 SAFETY_MAX_ATTEMPTS = 3
 _BACKOFF_S = 2.0
-
-# --- downloadUrl fetch tuning -------------------------------------------------
-# Atrium delivers each image as a presigned S3 ``downloadUrl``. That S3 hop is
-# intermittently throttled to ~30 KB/s (measured live: 3 of 4 concurrent 4K
-# downloads stuck at 31-33 KB/s → ~10 min each, while a sibling ran at
-# 3,700 KB/s). The throttle is PER-CONNECTION, so we stream the body with a
-# speed watchdog and, below a floor after a short grace, abort and retry on a
-# brand-new connection — which almost always escapes it. Download retries are
-# quota-free (S3 GET, no gen). Turn off with FLOWBOARD_ATRIUM_DL_TRIES=1.
-_DL_FLOOR_KBPS = max(1, int(os.getenv("FLOWBOARD_ATRIUM_DL_FLOOR_KBPS", "300")))
-_DL_GRACE_S = float(os.getenv("FLOWBOARD_ATRIUM_DL_GRACE_S", "8"))
-_DL_TRIES = max(1, int(os.getenv("FLOWBOARD_ATRIUM_DL_TRIES", "6")))
-
-
-class _SlowDownload(RuntimeError):
-    """A download whose sustained speed fell below the floor — abort and retry
-    on a fresh connection to escape a per-connection S3 throttle."""
 
 
 class _AtriumSafetyEmpty(RuntimeError):
@@ -95,9 +110,21 @@ def media_public_url(media_id: str) -> Optional[str]:
     return f"{base}/media/{media_id}" if base else None
 
 
+def media_input_url(media_id: str) -> Optional[str]:
+    """Self-hosted input URL for Atrium — a downscaled JPEG thumbnail served
+    straight off this machine through the tunnel, no R2 round-trip. w=2048/q90
+    mirrors what the old R2 input path uploaded (≤3072px JPEG), so Atrium fetches
+    a small file (~hundreds of KB), not a multi-MB original. The ``/thumb`` route
+    never 302-redirects to the R2 CDN (unlike bare ``/media/<id>``), so Atrium
+    always gets the bytes directly from this box."""
+    base = public_media_base()
+    return f"{base}/api/media/{media_id}/thumb?w=2048" if base else None
+
+
 def _mime_for(url: str) -> str:
     low = url.lower().split("?", 1)[0]
-    if low.endswith(".jpg") or low.endswith(".jpeg"):
+    # Our self-hosted input URL (…/thumb) always serves JPEG.
+    if low.endswith("/thumb") or low.endswith(".jpg") or low.endswith(".jpeg"):
         return "image/jpeg"
     if low.endswith(".webp"):
         return "image/webp"
@@ -140,109 +167,79 @@ def _extract_download_url(payload: dict) -> Optional[str]:
     return None
 
 
-async def _download_image(url: str) -> bytes:
-    """Fetch a presigned S3 ``downloadUrl`` → image bytes, dodging the
-    per-connection throttling Atrium's S3 delivery applies.
-
-    Streams the body while watching the sustained rate; if it stays below
-    ``_DL_FLOOR_KBPS`` past a short grace window the connection is likely being
-    throttled (~30 KB/s), so we retry on a BRAND-NEW connection — a fresh 4-tuple
-    usually escapes it. The final attempt drops the floor so a genuinely
-    slow-but-only link still completes. Retries are quota-free (S3 GET, no gen).
-
-    **Retries RESUME rather than restart.** They used to begin again from byte 0,
-    which turned a slow patch of network into a much longer one: a real run
-    (request 3025, four 4K variants) hit 63 → 21 → 14 → 46 → 41 KB/s and threw away
-    up to 18 MB of already-downloaded bytes on each of five aborted attempts,
-    finishing only on the sixth — about 50 s of pure re-download for one image. S3
-    presigned GETs honour ``Range`` (verified: 206 with a Content-Range), so each
-    attempt now continues from what the last one got. A fresh connection can still
-    escape a throttle; the difference is that a slow attempt is no longer wasted.
-    """
-    floor_bps = _DL_FLOOR_KBPS * 1024
-    last = "no attempt"
-    buf = bytearray()  # carried ACROSS attempts — this is the resume
-    total: Optional[int] = None
-    for attempt in range(1, _DL_TRIES + 1):
-        watchdog = attempt < _DL_TRIES  # last try: take whatever speed we get
-        start = time.monotonic()
-        got_this_attempt = 0
-        try:
-            # Fresh client per attempt → new TCP connection, not a pooled (maybe
-            # throttled) one.
-            headers = {"Range": f"bytes={len(buf)}-"} if buf else {}
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=15.0, read=60.0, write=15.0, pool=15.0)
-            ) as dclient:
-                async with dclient.stream("GET", url, headers=headers) as resp:
-                    if resp.status_code not in (200, 206):
-                        last = f"http_{resp.status_code}"
-                        continue
-                    if buf and resp.status_code == 200:
-                        # Range ignored — this body starts at 0, so keeping the old
-                        # bytes would corrupt the file. Start clean.
-                        buf.clear()
-                    if total is None:
-                        total = _content_total(resp)
-                    async for chunk in resp.aiter_bytes(65536):
-                        buf += chunk
-                        got_this_attempt += len(chunk)
-                        elapsed = time.monotonic() - start
-                        # Rate is measured over THIS attempt's bytes only — the
-                        # carried-over prefix was downloaded at some other speed and
-                        # would flatter a stalled connection.
-                        if (
-                            watchdog
-                            and elapsed > _DL_GRACE_S
-                            and got_this_attempt / elapsed < floor_bps
-                        ):
-                            raise _SlowDownload(
-                                f"{got_this_attempt / 1024 / elapsed:,.0f} KB/s < "
-                                f"{_DL_FLOOR_KBPS} floor"
+def _download_watchdog(url: str) -> bytes:
+    """Stream the whole file on ONE FRESH connection, watchdogging the average
+    transfer rate. A fresh ``httpx.Client`` per call guarantees a new TCP 4-tuple
+    (not a pooled/reused socket that may still be throttled). After
+    ``_DOWNLOAD_GRACE_S`` (TCP slow-start headroom), if the average rate is under
+    ``_DOWNLOAD_MIN_RATE`` the connection is abandoned so the caller can re-draw.
+    A short read timeout drops a DEAD (0-byte) connection — which the rate check
+    can't see, as it only runs once bytes arrive — so it's re-drawn quickly."""
+    timeout = httpx.Timeout(connect=10.0, read=_DOWNLOAD_READ_TIMEOUT_S, write=10.0, pool=10.0)
+    with transfer_gate:
+        with httpx.Client(timeout=timeout) as c:
+            with c.stream("GET", url) as r:
+                if r.status_code != 200:
+                    raise RuntimeError(f"atrium downloadUrl fetch http_{r.status_code}")
+                buf = bytearray()
+                start = time.monotonic()
+                for chunk in r.iter_bytes(1 << 16):
+                    buf.extend(chunk)
+                    elapsed = time.monotonic() - start
+                    if elapsed > _DOWNLOAD_ATTEMPT_CAP_S:
+                        raise TimeoutError(f"download exceeded {_DOWNLOAD_ATTEMPT_CAP_S:.0f}s ({len(buf)} bytes)")
+                    if elapsed > _DOWNLOAD_GRACE_S:
+                        rate = len(buf) / elapsed
+                        if rate < _DOWNLOAD_MIN_RATE:
+                            raise TimeoutError(
+                                f"throttled connection: {rate / 1024:.0f} KB/s after "
+                                f"{elapsed:.0f}s ({len(buf)} bytes) — redrawing"
                             )
-            # A short read is not success: without Content-Length we can't tell a
-            # complete body from a truncated one, so only a known total proves it.
-            if buf and (total is None or len(buf) >= total):
-                if attempt > 1:
-                    logger.info("atrium download ok on attempt %d/%d (%.1f MB)",
-                                attempt, _DL_TRIES, len(buf) / 1e6)
-                return bytes(buf)
-            last = "empty body" if not buf else f"short body {len(buf)}/{total}"
-        except (_SlowDownload, httpx.TransportError, httpx.TimeoutException) as exc:
-            last = f"{type(exc).__name__}: {exc}"[:120]
-            logger.warning(
-                "atrium download attempt %d/%d slow/failed: %s (keeping %.1f MB)",
-                attempt, _DL_TRIES, last, len(buf) / 1e6,
-            )
-    raise RuntimeError(f"atrium downloadUrl fetch failed after {_DL_TRIES} tries: {last}")
+    if not buf:
+        raise RuntimeError("atrium downloadUrl fetch: empty body")
+    return bytes(buf)
 
 
-def _content_total(resp: "httpx.Response") -> Optional[int]:
-    """Full object size from a 200 or a 206 response, or None if unknown.
+def _fetch_download(client: httpx.Client, url: str) -> bytes:
+    """Fetch a presigned S3 downloadUrl by re-drawing fresh connections under a
+    rate watchdog until one completes, for up to ``_DOWNLOAD_BUDGET_S`` total. If
+    the budget elapses without a completed download, raise ``BridgeEditError`` so
+    this image FAILS cleanly — no wasteful re-generate (the throttle is
+    per-connection, not per-image, so a fresh gen wouldn't download any faster).
 
-    S3 omits ``Accept-Ranges`` on these presigned URLs and answers HEAD with a
-    zero length, so the size has to come off the GET we are already making.
-    """
-    cr = resp.headers.get("content-range", "")
-    if "/" in cr:
-        try:
-            return int(cr.rsplit("/", 1)[1])
-        except ValueError:
-            pass
-    try:
-        n = int(resp.headers.get("content-length", ""))
-    except ValueError:
-        return None
-    # On a 206 content-length is the SLICE, not the object.
-    return n if resp.status_code == 200 else None
-
-
-async def _generate_once(client: httpx.AsyncClient, headers: dict, body: dict) -> bytes:
-    """One /image/generate call → image bytes (fetched from the downloadUrl).
-    Raises BridgeEditError on a fatal API response; RuntimeError on retryable."""
+    ``client`` is intentionally unused — downloads use a fresh client per attempt
+    to force a new TCP 4-tuple — but kept in the signature for call-site symmetry."""
     from flowboard.services.flowstudio.errors import BridgeEditError
 
-    resp = await client.post(
+    deadline = time.monotonic() + _DOWNLOAD_BUDGET_S
+    last_exc: Optional[BaseException] = None
+    dl_try = 0
+    while time.monotonic() < deadline:
+        dl_try += 1
+        try:
+            return _download_watchdog(url)
+        except (httpx.HTTPError, TimeoutError, RuntimeError) as exc:
+            last_exc = exc
+            logger.warning("atrium downloadUrl slow/failed (draw %d): %r", dl_try, exc)
+    # Budget spent without a good connection — genuinely undownloadable right now.
+    raise BridgeEditError(
+        f"atrium: image download did not complete within {_DOWNLOAD_BUDGET_S:.0f}s "
+        f"after {dl_try} fresh connections ({last_exc!r})",
+        attempts=dl_try,
+    )
+
+
+def _generate_once(client: httpx.Client, headers: dict, body: dict) -> bytes:
+    """One /image/generate call → image bytes (fetched from the downloadUrl).
+    Raises BridgeEditError on a fatal API response; RuntimeError on retryable.
+    SYNC on purpose — runs in a worker thread (see generate_image_variants):
+    Windows' asyncio proactor loop can lose socket events under load, leaving
+    an async POST/GET awaiting forever on a connection the peer already closed
+    (CLOSE_WAIT, 0 B/s, no timeout ever fires). Blocking sockets in a thread
+    use OS-level timeouts that always fire."""
+    from flowboard.services.flowstudio.errors import BridgeEditError
+
+    resp = client.post(
         f"{base_url()}/api/partner/image/generate", headers=headers, json=body
     )
     if resp.status_code != 200:
@@ -255,7 +252,11 @@ async def _generate_once(client: httpx.AsyncClient, headers: dict, body: dict) -
             detail = f"{err.get('status', resp.status_code)}: {str(msg)[:300]}"
         except Exception:  # noqa: BLE001
             detail = f"http_{resp.status_code}"
-        if resp.status_code in _FATAL_STATUSES:
+        # "Failed to fetch media URL" is Atrium's OWN upstream fetch of our R2
+        # input url failing — empirically transient (the same still-live R2
+        # object fetches fine seconds later), not a real bad-request on our
+        # end, so retry it despite the 400/404 status instead of failing fast.
+        if resp.status_code in _FATAL_STATUSES and "fetch media url" not in detail.lower():
             raise BridgeEditError(f"atrium: {detail}", attempts=1)
         raise RuntimeError(f"atrium retryable: {detail}")
 
@@ -264,9 +265,7 @@ async def _generate_once(client: httpx.AsyncClient, headers: dict, body: dict) -
         # Retryable: empty responses are frequently a transient false-positive
         # safety block on anime art (see SAFETY_MAX_ATTEMPTS).
         raise _AtriumSafetyEmpty("atrium: no image in response (safety block?)")
-    # The downloadUrl is a presigned S3 link — fetch (no auth headers) via the
-    # speed-watchdog downloader that dodges S3's per-connection throttling.
-    return await _download_image(url)
+    return _fetch_download(client, url)
 
 
 async def generate_image_variants(
@@ -296,38 +295,47 @@ async def generate_image_variants(
     body = _build_body(prompt, image_urls, image_model, aspect_ratio, image_size)
     n = max(1, min(int(variant_count or 1), 4))
     completed = 0
+    completed_lock = threading.Lock()
 
-    async def _one(client: httpx.AsyncClient) -> bytes:
+    def _one_sync() -> bytes:
+        # Whole variant (POST + download + retries) runs in a worker thread with
+        # a sync client — immune to the Windows proactor event-loss hang (see
+        # _generate_once). One client per variant: setup cost is trivial next to
+        # a 30-60s generation, and no pooled connection can be a shared zombie.
         nonlocal completed
         last = "unknown"
         safety_tries = 0
-        for attempt in range(1, max_attempts + 1):
-            try:
-                out = await _generate_once(client, headers, body)
-                completed += 1  # asyncio single-threaded → no lock needed
-                if on_progress:
-                    on_progress(completed, n)
-                return out
-            except BridgeEditError:
-                raise  # fatal for this variant
-            except _AtriumSafetyEmpty as exc:
-                safety_tries += 1
-                last = str(exc)[:200]
-                logger.warning("atrium safety-empty %d/%d", safety_tries, SAFETY_MAX_ATTEMPTS)
-                if safety_tries >= SAFETY_MAX_ATTEMPTS:
-                    raise BridgeEditError(
-                        f"{last} — blocked after {safety_tries} tries", attempts=safety_tries
-                    )
-                await asyncio.sleep(_BACKOFF_S * attempt)
-            except Exception as exc:  # noqa: BLE001 — 5xx / 429 / timeouts / transport
-                last = f"{type(exc).__name__}: {exc}"[:200].rstrip(": ")
-                logger.warning("atrium attempt %d/%d: %s", attempt, max_attempts, last)
-                if attempt < max_attempts:
-                    await asyncio.sleep(_BACKOFF_S * attempt)
+        with httpx.Client(timeout=_TIMEOUT_S) as client:
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    out = _generate_once(client, headers, body)
+                    with completed_lock:
+                        completed += 1
+                        done_now = completed
+                    if on_progress:
+                        on_progress(done_now, n)
+                    return out
+                except BridgeEditError:
+                    raise  # fatal for this variant
+                except _AtriumSafetyEmpty as exc:
+                    safety_tries += 1
+                    last = str(exc)[:200]
+                    logger.warning("atrium safety-empty %d/%d", safety_tries, SAFETY_MAX_ATTEMPTS)
+                    if safety_tries >= SAFETY_MAX_ATTEMPTS:
+                        raise BridgeEditError(
+                            f"{last} — blocked after {safety_tries} tries", attempts=safety_tries
+                        )
+                    time.sleep(_BACKOFF_S * attempt)
+                except Exception as exc:  # noqa: BLE001 — 5xx / 429 / timeouts / transport
+                    last = f"{type(exc).__name__}: {exc}"[:200].rstrip(": ")
+                    logger.warning("atrium attempt %d/%d: %s", attempt, max_attempts, last)
+                    if attempt < max_attempts:
+                        time.sleep(_BACKOFF_S * attempt)
         raise BridgeEditError(f"atrium: {last}", attempts=max_attempts)
 
-    async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
-        results = await asyncio.gather(*[_one(client) for _ in range(n)], return_exceptions=True)
+    results = await asyncio.gather(
+        *[asyncio.to_thread(_one_sync) for _ in range(n)], return_exceptions=True
+    )
 
     outs = [r for r in results if not isinstance(r, BaseException)]
     if outs:

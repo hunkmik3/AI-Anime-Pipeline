@@ -1402,3 +1402,22 @@
   flex: 1 1 auto;
   min-height: 0;
 }
+
+/* Model tag (bottom-right of the viewer) — which engine/model produced this
+   image. Read from Reference.model_used, so it is the model that actually ran,
+   not the one that was requested. */
+.fv__model {
+  position: absolute;
+  bottom: 14px;
+  right: 16px;
+  z-index: 6;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+  background: rgba(22, 24, 30, 0.94);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  pointer-events: none;
+  user-select: none;
+}

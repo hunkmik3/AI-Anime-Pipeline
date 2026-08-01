@@ -41,6 +41,7 @@ class ReferenceCreate(BaseModel):
     # practice, but not enforced — a later integration sets both.
     source_board_id: Optional[int] = None
     source_node_short_id: Optional[str] = None
+    model_used: Optional[str] = None
     tags: Optional[list[str]] = None
 
 
@@ -75,6 +76,7 @@ def _row_dict(row: Reference) -> dict[str, Any]:
         "kind": row.kind,
         "ai_brief": row.ai_brief,
         "aspect_ratio": row.aspect_ratio,
+        "model_used": row.model_used,
         "project_id": str(row.project_id) if row.project_id else None,
         "tags": list(row.tags or []),
         "pinned": row.pinned,
@@ -130,6 +132,7 @@ def create_reference(body: ReferenceCreate, user=Depends(get_optional_user)):
             project_id=body.project_id,
             source_shot_id=body.source_shot_id,
             source_board_id=body.source_board_id,
+            model_used=body.model_used,
             source_node_short_id=body.source_node_short_id,
             tags=list(body.tags or []),
         )

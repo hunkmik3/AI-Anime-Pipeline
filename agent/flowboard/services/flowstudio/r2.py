@@ -14,16 +14,15 @@ Config (.env, gitignored), each read as ``FLOWSTUDIO_<NAME>`` first and plain
 
 **Why the prefix exists.** This app already stores its own media in R2, via
 ``services/llm/secrets.py``, using `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
-`R2_BUCKET` — the same three names. If Flow Studio points at a *different* bucket
-(it does here: a separate account, because the studio needs a bucket with public
-`r2.dev` access and the app's is private), setting the bare names would silently
-repoint the app's media storage at the wrong bucket. The prefix keeps the two
-apart; the unprefixed fallback means a single-bucket install still needs no extra
-config.
+`R2_BUCKET` — the same three names. Flow Studio points at a DIFFERENT bucket (a
+separate account, because the studio needs public `r2.dev` access and the app's is
+private), so setting the bare names would silently repoint the app's media storage
+at the wrong bucket. The unprefixed fallback means a single-bucket install still
+needs no extra config.
 
 One name does NOT collide and is worth noting: the app calls its public base
-`R2_PUBLIC_BASE_URL`, this module wants `R2_PUBLIC_URL`. Different keys, so
-nothing to disambiguate — but easy to mistype for the other.
+`R2_PUBLIC_BASE_URL`, this module wants `R2_PUBLIC_URL`. Different keys, so nothing
+to disambiguate — but easy to mistype for the other.
 """
 from __future__ import annotations
 
@@ -32,6 +31,8 @@ import os
 import threading
 from pathlib import Path
 from typing import Optional
+
+from flowboard.services.flowstudio.transfer_gate import transfer_gate
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +158,67 @@ def upload_media(media_id: str) -> Optional[str]:
         _uploaded.add(key)
     logger.info("r2: uploaded %s (%d bytes)", key, len(data))
     return url
+
+
+# ── Result offload (CDN serving) ────────────────────────────────────────────
+# Generated RESULT images (~20MB 4K PNGs) are pushed to R2 once so viewers on
+# the public tunnel hostname get them from Cloudflare's CDN instead of
+# streaming through this machine's uplink on every view (routes/media.py
+# redirects non-local Hosts). Unlike the `media/` INPUT copies above these are
+# not auto-deleted — they're the canonical CDN copy. A marker file per media id
+# (storing the extension) makes the upload idempotent across restarts.
+_RESULT_PREFIX = "results"
+
+from flowboard.config import STORAGE_DIR as _STORAGE_DIR  # noqa: E402
+
+_RESULT_MARK_DIR = _STORAGE_DIR / "r2_results"
+_RESULT_MARK_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def upload_result(media_id: str) -> Optional[str]:
+    """Upload a cached media file to R2 under ``results/`` and return its public
+    URL. Idempotent (marker file). Returns None when R2 is unconfigured or the
+    file isn't cached. Sync (boto3 + disk read) — call via ``asyncio.to_thread``."""
+    if not is_configured():
+        return None
+    from flowboard.services import media as media_service
+
+    path = media_service.cached_path(media_id)
+    if path is None:
+        return None
+    ext = path.suffix.lower()
+    key = f"{_RESULT_PREFIX}/{media_id}{ext}"
+    url = f"{public_base()}/{key}"
+    mark = _RESULT_MARK_DIR / media_id
+    if mark.exists():
+        return url
+    ct = _CT.get(ext, "application/octet-stream")
+    # Results can be ~20MB 4K PNGs — gate the actual upload alongside Atrium's
+    # downloads and Avis's fetches so concurrent jobs don't saturate the same
+    # uplink and starve each other (see transfer_gate's docstring).
+    with transfer_gate:
+        _get_client().put_object(
+            Bucket=_env("R2_BUCKET"), Key=key, Body=path.read_bytes(), ContentType=ct,
+            CacheControl="public, max-age=31536000, immutable",  # media ids never change content
+        )
+    mark.write_text(ext)
+    logger.info("r2: result offloaded %s (%d bytes)", key, path.stat().st_size)
+    return url
+
+
+def result_public_url(media_id: str) -> Optional[str]:
+    """Public CDN URL for a previously-offloaded result, else None. Cheap
+    (marker-file check only, no network)."""
+    if not is_configured():
+        return None
+    mark = _RESULT_MARK_DIR / media_id
+    if not mark.exists():
+        return None
+    try:
+        ext = mark.read_text().strip() or ".png"
+    except OSError:
+        return None
+    return f"{public_base()}/{_RESULT_PREFIX}/{media_id}{ext}"
 
 
 def delete_media(media_id: str) -> None:

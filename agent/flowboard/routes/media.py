@@ -7,10 +7,11 @@ state for the frontend to poll while it waits for a URL to arrive.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from flowboard.db import get_session
@@ -23,6 +24,39 @@ logger = logging.getLogger(__name__)
 
 bytes_router = APIRouter(tags=["media"])
 api_router = APIRouter(prefix="/api/media", tags=["media"])
+
+#: Requests arriving on one of these Hosts are local, so serving from disk is
+#: both fastest and works offline. Anything else came in over the tunnel.
+_LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+
+#: Anything outside this set is replaced in a download filename. The header is
+#: attacker-influenced (the name rides in on the query string), so quotes,
+#: semicolons, newlines and path separators must not survive into it.
+_DOWNLOAD_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _download_name(media_id: str, suffix: str, filename: Optional[str]) -> str:
+    """A safe attachment filename: the caller's, sanitised, else the media id."""
+    if isinstance(filename, str) and filename.strip():
+        name = filename.strip().replace("\\", "/").rsplit("/", 1)[-1]
+        name = _DOWNLOAD_NAME_RE.sub("_", name).strip("._")
+        if name:
+            if len(name) <= 160:
+                return name
+            if "." in name:
+                stem, ext = name.rsplit(".", 1)
+                ext = f".{ext[:16]}"
+                return f"{stem[: max(1, 160 - len(ext))]}{ext}"
+            return name[:160]
+    return f"{media_id}{suffix}"
+
+
+def _download_headers(
+    media_id: str, suffix: str, filename: Optional[str] = None
+) -> dict[str, str]:
+    return {
+        "Content-Disposition": f'attachment; filename="{_download_name(media_id, suffix, filename)}"'
+    }
 
 
 class DownloadedBody(BaseModel):
@@ -54,16 +88,45 @@ def mark_downloaded(
 
 
 @bytes_router.get("/media/{media_id:path}")
-async def get_media_bytes(media_id: str):
+async def get_media_bytes(
+    media_id: str,
+    request: Request,
+    raw: int = 0,
+    download: int = 0,
+    filename: Optional[str] = None,
+):
+    """Stream a cached media file.
+
+    Viewers arriving over the public tunnel are 302'd to the R2 CDN copy of a
+    generated result when one exists (``_spawn_result_offload`` puts it there), so
+    a ~20 MB 4K PNG does not climb this machine's uplink on every single view.
+    Local hosts always read straight off disk: faster, works offline, no CDN
+    round-trip.
+
+    ``?raw=1`` forces the same-origin file. Canvas consumers need it — the r2.dev
+    bucket serves no CORS headers, so a cross-origin redirect would taint the
+    canvas and the read would fail.
+    """
     media_id = media_service.normalize_media_id(media_id)
     if not media_service.is_valid_media_id(media_id):
         raise HTTPException(status_code=400, detail="invalid media_id")
 
+    as_download = bool(download)
     cached = media_service.cached_path(media_id)
     if cached is not None:
+        host = (request.headers.get("host") or "").lower()
+        # A download must come from this origin: the CDN copy carries no
+        # Content-Disposition, so a redirect would open the image inline instead.
+        if not raw and not as_download and not host.startswith(_LOCAL_HOSTS):
+            from flowboard.services.flowstudio import r2
+
+            cdn = r2.result_public_url(media_id)
+            if cdn is not None:
+                return RedirectResponse(cdn, status_code=302)
         return FileResponse(
             path=str(cached),
             media_type=media_service._mime_from_ext(cached.suffix),
+            headers=_download_headers(media_id, cached.suffix, filename) if as_download else None,
         )
 
     # Cache miss — try one fetch through the stored URL.
@@ -72,7 +135,11 @@ async def get_media_bytes(media_id: str):
         status = media_service.status(media_id)
         return JSONResponse(status_code=404, content=status)
     _bytes, mime, path = result
-    return FileResponse(path=str(path), media_type=mime)
+    return FileResponse(
+        path=str(path),
+        media_type=mime,
+        headers=_download_headers(media_id, path.suffix, filename) if as_download else None,
+    )
 
 
 @api_router.get("/{media_id}/status")
@@ -92,7 +159,13 @@ _VIDEO_THUMB_EXTS = {".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv"}
 
 
 def _build_thumb(src, thumb_path, w: int) -> bool:
-    """Write a downscaled WEBP thumbnail of ``src`` to ``thumb_path``.
+    """Write a downscaled JPEG thumbnail of ``src`` to ``thumb_path``.
+
+    JPEG rather than WEBP, and not just for size: this route doubles as the
+    SELF-HOSTED INPUT url handed to Atrium (``atrium_api.media_input_url``, w=2048),
+    and that client declares the mime as ``image/jpeg`` for any ``/thumb`` URL. A
+    WEBP body under a JPEG content type is the kind of mismatch that fails inside
+    someone else's decoder, so the format is pinned here.
 
     Blocking (PIL + possibly ffmpeg) — call via ``run_in_threadpool`` so a big
     canvas firing dozens of thumb requests never stalls the event loop. For a
@@ -117,7 +190,7 @@ def _build_thumb(src, thumb_path, w: int) -> bool:
         with Image.open(img_src) as im:
             im = im.convert("RGB")
             im.thumbnail((w, w * 4))  # cap width; allow tall portraits
-            im.save(thumb_path, "WEBP", quality=80, method=4)
+            im.save(thumb_path, "JPEG", quality=90, optimize=True)
         return True
     except Exception:  # noqa: BLE001 — non-image / ffmpeg error → serve original
         return False
@@ -131,19 +204,26 @@ def _build_thumb(src, thumb_path, w: int) -> bool:
 
 @api_router.get("/{media_id}/thumb")
 async def get_media_thumb(media_id: str, w: int = 256):
-    """Downscaled WEBP thumbnail for grids/pickers — avoids shipping full-res
-    (multi-MB) images, or a full <video> element, for tiny tiles. Cached on
-    disk after the first request. For video media the thumbnail is the first
-    frame (ffmpeg); everything else decodes directly. Falls back to the
-    original bytes for non-images / resize failures."""
+    """Downscaled JPEG thumbnail — avoids shipping full-res (multi-MB) images, or
+    a whole <video> element, to render a tile. Cached on disk after the first
+    request. For video media the thumbnail is the first frame (ffmpeg); everything
+    else decodes directly. Falls back to the original bytes for non-images.
+
+    Two very different callers, hence the wide ``w`` range:
+      - grids and pickers ask for ≤640
+      - Atrium's self-hosted INPUT url asks for 2048, so a reference image reaches
+        Atrium as a few hundred KB instead of a multi-MB original — and, unlike
+        bare ``/media/<id>``, this route never 302s to the CDN, so Atrium always
+        gets the bytes from this machine.
+    """
     media_id = media_service.normalize_media_id(media_id)
     if not media_service.is_valid_media_id(media_id):
         raise HTTPException(status_code=400, detail="invalid media_id")
-    w = max(48, min(int(w), 640))
+    w = max(48, min(int(w), 2048))
 
-    thumb_path = media_service.MEDIA_CACHE_DIR / f"thumb_{w}_{media_id}.webp"
+    thumb_path = media_service.MEDIA_CACHE_DIR / f"thumb_{w}_{media_id}.jpg"
     if thumb_path.exists():
-        return FileResponse(str(thumb_path), media_type="image/webp")
+        return FileResponse(str(thumb_path), media_type="image/jpeg")
 
     src = media_service.cached_path(media_id)
     if src is None:
@@ -156,7 +236,7 @@ async def get_media_thumb(media_id: str, w: int = 256):
 
     ok = await run_in_threadpool(_build_thumb, src, thumb_path, w)
     if ok:
-        return FileResponse(str(thumb_path), media_type="image/webp")
+        return FileResponse(str(thumb_path), media_type="image/jpeg")
     return FileResponse(str(src), media_type=media_service._mime_from_ext(src.suffix))
 
 

@@ -37,7 +37,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
-from sqlmodel import delete as sql_delete, select
+from sqlmodel import select, update as sql_update
 
 from flowboard.db import get_session
 from flowboard.db.models import FlowBoard, Reference, Request
@@ -108,28 +108,34 @@ def update_board(board_id: int, body: BoardUpdate, user=Depends(get_optional_use
 
 @router.delete("/boards/{board_id}")
 def delete_board(board_id: int, user=Depends(get_optional_user)):
-    """Delete a studio board and the image records filed under it.
+    """Delete a studio board, DETACHING its images rather than deleting them.
 
-    The References ARE the board's contents — leaving them behind would drop them
-    into the unscoped library with no board and no project, i.e. visible in every
-    other board's grid. The cached media files are NOT deleted, so a mistaken
-    delete loses the catalogue entry, not the pixels.
+    The references are the user's library — they outlive the board that produced
+    them; only the ``source_board_id`` provenance is cleared. Deleting them (an
+    earlier version of this route did) threw away catalogue entries for images the
+    user still had, which is not what "delete this project" should mean. Detached
+    rows do not leak into other boards either: every studio listing filters on
+    ``source_board_id``, so a NULL row appears only in the unscoped library.
+
+    Clearing the column is also what lets the board row go at all — the FK would
+    otherwise block the delete and surface as a 500 on the button.
     """
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
         row = s.get(FlowBoard, board_id)
         if row is None:
             raise HTTPException(404, "board not found")
-        refs = s.exec(
-            select(Reference).where(Reference.source_board_id == board_id)
-        ).all()
-        n = len(refs)
+        n = len(s.exec(select(Reference).where(Reference.source_board_id == board_id)).all())
         if n:
-            s.exec(sql_delete(Reference).where(Reference.source_board_id == board_id))
+            s.exec(
+                sql_update(Reference)
+                .where(Reference.source_board_id == board_id)
+                .values(source_board_id=None)
+            )
         s.delete(row)
         s.commit()
-        logger.info("flowstudio: deleted board %s and %d reference(s)", board_id, n)
-        return {"deleted": board_id, "references_deleted": n}
+        logger.info("flowstudio: deleted board %s, detached %d reference(s)", board_id, n)
+        return {"deleted": board_id, "references_detached": n}
 
 
 # ── Upload ───────────────────────────────────────────────────────────────────
@@ -182,13 +188,18 @@ async def upload_image(
 #
 # Two engine families, priced differently, so one number would be a lie:
 #   Gemini / Atrium — daily QUOTA, no per-image charge.
-#   Seedream (Ark)  — pay per image: output billed in full, reference images
-#                     billed after the first (which is free).
-# Rates are env-overridable because they follow the account tier.
-
+#   Seedream (Avis) — pay per image.
+#
+# The Seedream rates are MEASURED, not from a price list: a credit-balance diff
+# around a real generation, cross-checked against nine per-generation entries in
+# Avis's own VND cost history on 2026-07-30. Every one landed on exactly one of
+# two values — 1K $0.059125, 2K $0.11825, exactly 2x. One of those nine was a 2K
+# job with no reference image, which is how we know **reference images are free**
+# and price tracks output resolution only. The earlier per-input charge modelled
+# here was wrong.
 DAILY_QUOTA = int(os.getenv("FLOWBOARD_DAILY_QUOTA", "1000"))
-SEEDREAM_USD_PER_IMAGE = float(os.getenv("FLOWBOARD_SEEDREAM_USD_PER_IMAGE", "0.045"))
-SEEDREAM_USD_PER_INPUT = float(os.getenv("FLOWBOARD_SEEDREAM_USD_PER_INPUT", "0.003"))
+SEEDREAM_USD_PER_IMAGE_1K = float(os.getenv("FLOWBOARD_SEEDREAM_USD_PER_IMAGE_1K", "0.059125"))
+SEEDREAM_USD_PER_IMAGE_2K = float(os.getenv("FLOWBOARD_SEEDREAM_USD_PER_IMAGE_2K", "0.11825"))
 
 
 def _images_in(result: object) -> int:
@@ -200,23 +211,32 @@ def _images_in(result: object) -> int:
     return sum(1 for m in mids if isinstance(m, str) and m)
 
 
-def _input_count(params: object) -> int:
-    """Input images sent with a gen (source + refs) — the billable-input basis."""
+def _resolution_of(params: object) -> str:
+    """"2K" when the request asked for 2K (or 4K, which this model clamps to 2K),
+    else "1K" — the model default, which the frontend signals by omitting
+    ``image_size`` entirely."""
     if not isinstance(params, dict):
-        return 0
-    n = 1 if params.get("source_media_id") else 0
-    refs = params.get("ref_media_ids")
-    if isinstance(refs, list):
-        n += sum(1 for r in refs if isinstance(r, str) and r)
-    return n
+        return "1K"
+    size = str(params.get("image_size") or "").strip().upper()
+    return "2K" if size in ("2K", "4K") else "1K"
 
 
-def _engine_of(params: object) -> str:
-    """Bucket a request by provider: ark/avis → seedream, everything else → gemini."""
+def _engine_of(params: object) -> Optional[str]:
+    """Bucket a request by provider.
+
+    ``avis`` → seedream. The decommissioned direct-BytePlus ``ark`` provider →
+    None, meaning excluded from every bucket rather than relabelled: those rows
+    are dead history, and counting them as Gemini/Atrium usage would be just as
+    wrong as counting them as Seedream spend.
+    """
     p = ""
     if isinstance(params, dict):
         p = str(params.get("provider") or "").lower()
-    return "seedream" if p in ("avis", "ark") else "gemini"
+    if p == "avis":
+        return "seedream"
+    if p == "ark":
+        return None
+    return "gemini"
 
 
 def _aware(dt: datetime) -> datetime:
@@ -249,18 +269,21 @@ def flow_usage(user=Depends(get_optional_user)) -> dict:
     sd_cost = {"today": 0.0, "total": 0.0}
 
     for r in rows:
-        imgs = _images_in(r.result)
         eng = _engine_of(r.params)
+        if eng is None:
+            continue  # decommissioned "ark" provider — not counted anywhere
+        imgs = _images_in(r.result)
         is_today = bool(r.created_at and _aware(r.created_at) >= start)
         total[eng] += imgs
         if is_today:
             today[eng] += imgs
         if eng == "seedream" and imgs:
-            billable_inputs = max(0, _input_count(r.params) - 1)
-            cost = (
-                imgs * SEEDREAM_USD_PER_IMAGE
-                + billable_inputs * SEEDREAM_USD_PER_INPUT
+            per_image = (
+                SEEDREAM_USD_PER_IMAGE_2K
+                if _resolution_of(r.params) == "2K"
+                else SEEDREAM_USD_PER_IMAGE_1K
             )
+            cost = imgs * per_image
             sd_cost["total"] += cost
             if is_today:
                 sd_cost["today"] += cost
@@ -282,7 +305,15 @@ def flow_usage(user=Depends(get_optional_user)) -> dict:
             "seedream": {
                 "today": today["seedream"],
                 "total": total["seedream"],
-                "usd_per_image": round(SEEDREAM_USD_PER_IMAGE, 6),
+                # The blended average over everything generated so far (the 1K/2K
+                # mix), not a flat rate — a single number would misreport either
+                # tier.
+                "usd_per_image": round(
+                    sd_cost["total"] / total["seedream"]
+                    if total["seedream"]
+                    else SEEDREAM_USD_PER_IMAGE_1K,
+                    6,
+                ),
                 "cost_today": round(sd_cost["today"], 4),
                 "cost_total": round(sd_cost["total"], 4),
             },
