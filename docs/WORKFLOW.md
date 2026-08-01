@@ -234,3 +234,50 @@ It models retakes the way the app does — several takes per shot slot, last one
 because the waste figure is computed per node as "last take kept, earlier wasted".
 One take per node reports 0% waste, which reads as "nothing wasted" when it really
 means "nothing to compare".
+
+
+---
+
+## Setting up a second machine (review box, deploy)
+
+Two things do not travel with the repo, and both look like "the app is broken"
+rather than "something is unconfigured".
+
+### 1. Install from requirements.txt, don't rely on the dev machine's venv
+
+`pillow` was missing from `requirements.txt` until 2026-08-01 while being imported
+by `routes/media.py`. The dev machine happened to have it installed by hand, so
+thumbnails worked there and **every `/thumb` returned 500 on a fresh venv** — which
+presents as a blank review page (no thumbnails anywhere), not as a missing package.
+`anyio` and `typing_extensions` were in the same state, arriving only transitively
+via starlette and pydantic while being imported directly.
+
+    cd agent && .venv/bin/pip install -r requirements.txt
+
+### 2. Google Drive credentials — two files, neither in git
+
+Reviewers watch the submitted cut without a Google account: the app holds its own
+Drive identity and proxies the bytes, so files stay `Restricted`. That needs two
+files in `agent/` (both gitignored, paths overridable with `FLOWBOARD_DRIVE_CLIENT`
+/ `FLOWBOARD_DRIVE_TOKEN`):
+
+| File | What it is |
+|---|---|
+| `oauth-client.json` | the Desktop-app OAuth client from Google Cloud |
+| `drive-token.json` | the refresh token, written by `scripts/drive_auth.py` |
+
+Without them the video player 401s and the rest of the review page still works —
+list, assign, approve, reject — so a review box missing only these is usable for
+everything except watching the cut.
+
+**Fastest path for a new machine:** copy both files from a machine that already
+works. The refresh token is not machine-bound.
+
+**If you want that machine to hold its own token** (revocable on its own), copy
+only `oauth-client.json` and run:
+
+    agent/.venv/bin/python agent/scripts/drive_auth.py
+
+Sign in as the **robot account** — whichever account you pick becomes the identity
+that reads submitted cuts, so it must be the one the submissions folder is shared
+with. Scope is read-only: the app can never modify or delete studio files.

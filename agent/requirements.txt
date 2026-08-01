@@ -10,6 +10,17 @@ psycopg[binary]>=3.2
 boto3>=1.34
 python-dotenv>=1.0
 
+# Thumbnails (routes/media.py) and the video-provider frame work. Absent here
+# until now, so it only ran where someone had installed it by hand — a fresh
+# venv 500'd on every /thumb, which reads as "the review page is broken" rather
+# than "a package is missing".
+pillow>=10.3
+# Both arrive transitively today (anyio via starlette, typing_extensions via
+# pydantic), but the code imports them directly — services/drive*.py and
+# routes/chat.py — so they are ours to declare, not to inherit.
+anyio>=4.4
+typing_extensions>=4.12
+
 # Flow Studio (/giantflow). Two uses, both in the ported code:
 #   - services/flowstudio/r2.py re-encodes reference images before pushing them
 #     to R2 for Atrium to fetch. Without cv2 that returns None and Atrium fails
