@@ -49,7 +49,9 @@ def _user_name(user_id) -> str | None:
     return (u.display_name or u.username) if u else None
 
 
-def _scene_dict(scene) -> dict:
+def _scene_dict(session, scene) -> dict:
+    # Takes a session because the cover can be DERIVED (frame 0 of the first
+    # sequence's first clip) rather than stored — see scene_service.
     cs = scene.canvas_state or {}
     return {
         "id": str(scene.id),
@@ -67,8 +69,9 @@ def _scene_dict(scene) -> dict:
         "deliverable_status": scene.deliverable_status or "draft",
         "canvas_state": cs,
         "master_establishing_asset_id": scene.master_establishing_asset_id,
-        # Cover thumbnail (user/admin-set, cosmetic); None → gradient placeholder.
-        "thumb_media_id": cs.get("cover_media_id"),
+        # Cover thumbnail: a hand-set cover if there is one, else frame 0 of the
+        # first sequence's first clip. None → gradient placeholder.
+        "thumb_media_id": ss.scene_thumb_media_id(session, scene),
         "created_at": scene.created_at.isoformat() if scene.created_at else None,
     }
 
@@ -102,7 +105,7 @@ def list_scenes(
         scope = permissions.visible_scope(s, user, project_id)
         if scope is not None:
             scenes = [sc for sc in scenes if sc.id in scope["scene_ids"]]
-        return [_scene_dict(sc) for sc in scenes]
+        return [_scene_dict(s, sc) for sc in scenes]
 
 
 @router.post("/api/projects/{project_id}/scenes")
@@ -136,7 +139,7 @@ def create_scene(
             ip=audit_service.client_ip(request),
             note=f"in project {project_id}",
         )
-        return _scene_dict(scene)
+        return _scene_dict(s, scene)
 
 
 # ── Item ──────────────────────────────────────────────────────────────────
@@ -150,7 +153,7 @@ def get_scene(scene_id: uuid.UUID, user=Depends(get_optional_user)):
             _gate_scene(s, scene, user)
         except (ss.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "scene not found")
-        base = _scene_dict(scene)
+        base = _scene_dict(s, scene)
         base["shot_count"] = ss.scene_shot_count(s, scene_id)
         return base
 
@@ -193,7 +196,7 @@ def update_scene(
             actor=user,
             ip=audit_service.client_ip(request),
         )
-        return _scene_dict(scene)
+        return _scene_dict(s, scene)
 
 
 @router.post("/api/scenes/{scene_id}/cover")
@@ -209,7 +212,7 @@ def set_scene_cover(
             scene = ss.set_scene_cover(s, scene_id, body.media_id)
         except (ss.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "scene not found")
-        return _scene_dict(scene)
+        return _scene_dict(s, scene)
 
 
 @router.delete("/api/scenes/{scene_id}")

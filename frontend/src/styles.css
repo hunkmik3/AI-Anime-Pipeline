@@ -6927,7 +6927,10 @@ button:disabled {
 .scene-create input { flex: 1; }
 .scene-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+  /* Narrower columns than the landscape layout used: at 232px a 9:16 thumb is
+     over 400px tall, and on a wide screen the 1fr stretch made towers. 168px
+     keeps a portrait card about phone-shaped. */
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
   gap: 16px;
   list-style: none;
   padding: 0;
@@ -6958,7 +6961,11 @@ button:disabled {
 /* 16:9 thumbnail banner */
 .scene-card__thumb {
   position: relative;
-  aspect-ratio: 16 / 9;
+  /* Portrait: nearly every clip this studio generates is 9:16, so a landscape
+     card letterboxed the cover into a thin strip. The auto-cover is frame 0 of
+     the first sequence's clip, so the card now has the shape of the thing it
+     is showing. */
+  aspect-ratio: 9 / 16;
   display: flex;
   align-items: center;
   justify-content: center;

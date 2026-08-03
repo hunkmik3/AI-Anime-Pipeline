@@ -11,7 +11,16 @@ from sqlmodel import Session, select
 
 import math
 
-from flowboard.db.models import AppSetting, Asset, Project, Scene, Series, Shot
+from flowboard.db.models import (
+    AppSetting,
+    Asset,
+    Node,
+    Project,
+    Request,
+    Scene,
+    Series,
+    Shot,
+)
 
 
 class SceneNotFound(Exception):
@@ -213,6 +222,66 @@ def set_scene_cover(
     session.commit()
     session.refresh(scene)
     return scene
+
+
+def scene_thumb_media_id(session: Session, scene: Scene) -> Optional[str]:
+    """The media id to show on an episode card.
+
+    A hand-set cover (``canvas_state.cover_media_id``) always wins — someone
+    chose it deliberately. Otherwise fall back to the **first clip generated in
+    the first sequence**, which is what the episode actually looks like and needs
+    no upload step. The card renders it through ``/api/media/<id>/thumb``, and
+    that route already extracts frame 0 with ffmpeg for video media — so nothing
+    new decodes anything here; we only have to name the right file.
+
+    "First sequence" means lowest ``Shot.order_index``, not the newest clip: the
+    opening shot is the representative one, and ordering by time would make the
+    cover jump every time someone re-rolled a later sequence.
+
+    The source is ``Request``, not ``Asset``. Asset rows are a media *cache
+    index* — for generated video they carry neither ``node_id`` nor
+    ``project_id`` (verified: 514 video assets, 0 with either), so there is no
+    path from an Asset back to the sequence that produced it. The Request row is
+    what remembers the node, and it stores the result under ``media_id``
+    (singular).
+
+    Returns None when the episode has no generated video yet — the card then
+    keeps its gradient placeholder.
+    """
+    override = (scene.canvas_state or {}).get("cover_media_id")
+    if override:
+        return str(override)
+
+    # Only Request is selected — order_index is needed for ORDER BY, not in the
+    # result set, and selecting it turns each row into a Row tuple to unpack.
+    rows = session.exec(
+        select(Request)
+        .join(Node, Node.id == Request.node_id)
+        .join(Shot, Shot.id == Node.shot_id)
+        .where(
+            Shot.scene_id == scene.id,
+            Request.type == "gen_video",
+            Request.status == "done",
+        )
+        .order_by(Shot.order_index, Request.id)
+        .limit(40)
+    ).all()
+
+    first: Optional[str] = None
+    for req in rows:
+        mid = (req.result or {}).get("media_id")
+        if not isinstance(mid, str) or not mid:
+            continue
+        if first is None:
+            first = mid
+        # Prefer one whose bytes are actually on disk: the thumb route has to
+        # run ffmpeg over the file, and a media id whose cache was evicted would
+        # render an empty card instead of a frame.
+        from flowboard.services import media as _media
+
+        if _media.cached_path(mid) is not None:
+            return mid
+    return first
 
 
 def delete_scene(session: Session, scene_id: uuid.UUID) -> None:

@@ -285,4 +285,4 @@ def list_series_episodes(series_id: uuid.UUID, user=Depends(get_optional_user)):
         scope = permissions.visible_scope(s, user, row.project_id)
         if scope is not None:
             scenes = [sc for sc in scenes if sc.id in scope["scene_ids"]]
-        return [_scene_dict(sc) for sc in scenes]
+        return [_scene_dict(s, sc) for sc in scenes]
