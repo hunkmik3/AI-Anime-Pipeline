@@ -5,6 +5,7 @@ import {
   createPanelProject,
   deletePanelProject,
   listPanelProjects,
+  renamePanelProject,
   reorderPanelProjects,
   setPanelProjectCover,
   thumbUrl,
@@ -199,9 +200,39 @@ function ProjectCard({
   drag: Record<string, unknown>;
 }) {
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(project.name);
+  const nameRef = useRef<HTMLInputElement | null>(null);
   const pct = project.panel_count
     ? Math.round((project.approved_count / project.panel_count) * 100)
     : 0;
+
+  useEffect(() => {
+    if (editing) {
+      setDraft(project.name);
+      // select(), not focus(): renaming usually means replacing, and a caret at
+      // the end would make you clear it by hand first.
+      requestAnimationFrame(() => nameRef.current?.select());
+    }
+  }, [editing, project.name]);
+
+  async function rename() {
+    const clean = draft.trim();
+    if (!clean || clean === project.name) {
+      setEditing(false);
+      return;
+    }
+    setBusy(true);
+    try {
+      await renamePanelProject(project.id, clean);
+      setEditing(false);
+      await onChanged();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Rename failed");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function setCover() {
     const file = await pickImage();
@@ -242,9 +273,30 @@ function ProjectCard({
           )}
         </div>
         <div className="pn__tile-meta">
-          <div className="pn__tile-name" title={project.name}>
-            {project.name}
-          </div>
+          {editing ? (
+            // Outside the Link's job: an input inside a navigating anchor would
+            // follow the link on every click.
+            <input
+              ref={nameRef}
+              className="pn__tile-rename"
+              value={draft}
+              disabled={busy}
+              onClick={(e) => e.preventDefault()}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={() => void rename()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void rename();
+                if (e.key === "Escape") {
+                  setDraft(project.name);
+                  setEditing(false);
+                }
+              }}
+            />
+          ) : (
+            <div className="pn__tile-name" title={project.name}>
+              {project.name}
+            </div>
+          )}
           <div className="pn__tile-sub">
             {project.batch_count === 0
               ? "No batches yet"
@@ -259,6 +311,17 @@ function ProjectCard({
       </Link>
 
       <div className="pn__tile-acts">
+        <button
+          type="button"
+          className="pn__tile-btn"
+          title="Rename this project"
+          onClick={(e) => {
+            e.preventDefault();
+            setEditing(true);
+          }}
+        >
+          Rename
+        </button>
         <button
           type="button"
           className="pn__tile-btn"

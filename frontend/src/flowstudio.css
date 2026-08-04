@@ -1741,3 +1741,12 @@
 .pn__draft-row .pn__add-close { position: static; flex: 0 0 auto; }
 .pn__draft-foot { display: flex; align-items: center; gap: 8px; }
 .pn__draft-foot .btn2--primary { margin-left: auto; }
+
+/* Renaming happens in the tile, in the same spot the name already sits, so the
+   card never changes shape while you type. */
+.pn__tile-rename {
+  width: 100%; padding: 4px 7px; margin: -4px -7px;
+  font: inherit; font-weight: 600; font-size: 13.5px;
+  color: var(--text); background: #11151b;
+  border: 1px solid var(--accent, #00a76f); border-radius: 7px; outline: none;
+}
