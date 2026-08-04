@@ -305,6 +305,145 @@ class FlowBoard(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow, index=True)
 
 
+# ── Giantflow: panel production ─────────────────────────────────────────────
+#
+# The studio adapts comics panel by panel: someone cuts the original pages into a
+# folder of panels ("raw material"), an artist restyles each one with AI, a PM
+# reviews it and sends it back with notes until it passes. That review used to
+# live on a Miro board — one row per panel, one column per stage — and these
+# tables are that board, with generation attached instead of alongside.
+#
+# The PANEL is the unit of work, not the project: it is what gets assigned, what
+# carries a status, what a note is about, and what gets exported.
+
+
+class FlowProject(SQLModel, table=True):
+    """One comic being adapted.
+
+    Separate from ``Project`` on purpose: giantflow is a standalone surface, so a
+    role here grants nothing in the production hierarchy and vice versa.
+    """
+
+    __tablename__ = "flow_project"  # type: ignore[assignment]
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    created_by: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="app_user.id", index=True
+    )
+    created_at: datetime = Field(default_factory=_utcnow, index=True)
+
+
+class FlowProjectMember(SQLModel, table=True):
+    """Who works on a giantflow project, and as what.
+
+    Roles reuse ``services/permissions.py``'s ranking (viewer < artist < lead <
+    producer) — a PM is a producer — but membership is stored HERE rather than on
+    ``project_member`` so the two systems stay sealed off from each other.
+    """
+
+    __tablename__ = "flow_project_member"  # type: ignore[assignment]
+    __table_args__ = (
+        UniqueConstraint("project_id", "user_id", name="uq_flow_project_member"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="flow_project.id", index=True)
+    user_id: uuid.UUID = Field(foreign_key="app_user.id", index=True)
+    role: str = "artist"
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+#: Panel lifecycle. ``approved`` is terminal for GENERATION — the app refuses new
+#: versions for an approved panel — but not irreversible: a PM can reopen it to
+#: ``changes_requested``, because one mis-click should not destroy the work.
+PANEL_STATUSES = (
+    "todo",
+    "in_progress",
+    "submitted",
+    "changes_requested",
+    "approved",
+)
+
+
+class FlowPanel(SQLModel, table=True):
+    """One panel of the comic — the unit of work.
+
+    ``order_index`` comes from the cutter's filename order and is never
+    re-derived: they sorted the folder deliberately, so the app preserves what it
+    was given rather than trying to be clever about reading order.
+    """
+
+    __tablename__ = "flow_panel"  # type: ignore[assignment]
+    __table_args__ = (
+        UniqueConstraint("project_id", "code", name="uq_flow_panel_code"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="flow_project.id", index=True)
+    #: The cutter's own name for it ("PANEL006") — shown as-is so it matches
+    #: their sheet and the Miro history it replaces.
+    code: str = Field(index=True)
+    order_index: int = Field(default=0, index=True)
+    assignee_user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="app_user.id", index=True
+    )
+    status: str = Field(default="todo", index=True)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class FlowPanelImage(SQLModel, table=True):
+    """A picture belonging to a panel — either its raw material or a result.
+
+    Both live in one table because they are the same kind of thing to the UI (a
+    media id to show) and the pairing is the point: every PM note compares the
+    result against the original. ``role`` keeps them apart, and a panel legitimately
+    has SEVERAL of each — one Miro row carried three raw pieces, and each review
+    round adds another generated version.
+    """
+
+    __tablename__ = "flow_panel_image"  # type: ignore[assignment]
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    panel_id: int = Field(foreign_key="flow_panel.id", index=True)
+    role: str = Field(index=True)  # "raw" | "generated"
+    #: Ordinal within its role: raw pieces in import order, generated versions
+    #: 1, 2, 3… so "v3 was sent back" is sayable.
+    version: int = Field(default=1)
+    media_id: str = Field(index=True)
+    #: Which model produced it (generated only) — the panel imposes nothing, the
+    #: artist picks per generation, so this is a record rather than a setting.
+    model_used: Optional[str] = None
+    created_by: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="app_user.id", index=True
+    )
+    created_at: datetime = Field(default_factory=_utcnow, index=True)
+
+
+class FlowPanelNote(SQLModel, table=True):
+    """One PM remark on a panel, and whether it has been dealt with.
+
+    Attached to the PANEL, not to a version — matching how the remarks actually
+    read. "Sai nơ áo" is true of the panel and stays true across re-generations
+    until someone fixes it; hanging it off a version would orphan it on the next
+    attempt. ``resolved`` is the Miro board's "Fixed".
+    """
+
+    __tablename__ = "flow_panel_note"  # type: ignore[assignment]
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    panel_id: int = Field(foreign_key="flow_panel.id", index=True)
+    body: str
+    author_user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="app_user.id", index=True
+    )
+    resolved: bool = Field(default=False, index=True)
+    resolved_by: Optional[uuid.UUID] = Field(default=None, foreign_key="app_user.id")
+    resolved_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=_utcnow, index=True)
+
+
 class ChatMessage(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     project_id: uuid.UUID = Field(foreign_key="project.id", index=True)

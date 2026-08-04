@@ -59,6 +59,7 @@ from flowboard.routes import (
     upload,
     video_providers,
     flowstudio,
+    flowpanels,
     vision,
 )
 from flowboard.routes import references as references_route
@@ -268,6 +269,7 @@ app.include_router(llm.router)
 app.include_router(activity.router)
 app.include_router(video_providers.router)
 app.include_router(flowstudio.router)
+app.include_router(flowpanels.router)
 
 
 @app.get("/api/health")
