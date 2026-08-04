@@ -30,6 +30,8 @@ import { AdminPage } from "./routes/AdminPage";
 import { EpisodePage } from "./routes/EpisodePage";
 import { SeriesPage } from "./routes/SeriesPage";
 import { FlowApp } from "./flow/FlowApp";
+import { PanelProjectsPage } from "./flow/PanelProjectsPage";
+import { PanelGridPage } from "./flow/PanelGridPage";
 
 import { useProjectStore } from "./store/project";
 import { useAuthStore } from "./store/auth";
@@ -101,7 +103,12 @@ export function App() {
               to Project → Series → Episode yet — so it is a SHARED space, with no
               separation between users and no budget cap. Open to the whole team by
               decision; see docs/INTEGRATION_PLAN.md. */}
-          <Route path="/giantflow" element={<FlowApp />} />
+          {/* Giantflow is now panel production: a project per comic, a grid of
+              panels inside it. The free-form image studio stays reachable at
+              /giantflow/studio until panel generation replaces it. */}
+          <Route path="/giantflow" element={<PanelProjectsPage />} />
+          <Route path="/giantflow/studio" element={<FlowApp />} />
+          <Route path="/giantflow/:projectId" element={<PanelGridPage />} />
           {/* Phase 8.3: project hub (entry point) = SceneView. */}
           <Route path="/projects/:projectId" element={<SceneView />} />
           <Route
@@ -197,7 +204,10 @@ function useLayoutMode(): { topBar: boolean; sidebar: boolean } {
   if (
     pathname === "/work" ||
     pathname === "/review" ||
-    pathname === "/giantflow"
+    // Every giantflow surface: the production project tree belongs to the other
+    // hierarchy entirely, and on the panel grid it was 384px of unrelated
+    // navigation stealing width from the thing the page is for.
+    pathname.startsWith("/giantflow")
   ) {
     return { topBar: true, sidebar: false };
   }

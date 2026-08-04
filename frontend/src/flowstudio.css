@@ -1421,3 +1421,105 @@
   pointer-events: none;
   user-select: none;
 }
+
+/* ── Panel production (the Miro replacement) ───────────────────────────────
+ * Namespaced .pn__ so it cannot collide with the studio's .fc__/.fv__/.fn__ or
+ * with the app's own sheet. Colours come from the app's :root tokens.
+ */
+
+.pn__newrow { display: flex; gap: 8px; align-items: center; }
+.pn__newrow .inbox__input { width: 240px; }
+.pn__muted { color: var(--muted); }
+
+/* Project list */
+.pn__projects { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.pn__project {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--panel-high, #1d2129);
+  border: 1px solid var(--border, #2a2e38);
+  border-radius: 12px; padding: 14px 16px;
+}
+.pn__project-body { flex: 1; min-width: 0; text-decoration: none; color: inherit; }
+.pn__project-name { font-weight: 600; font-size: 15px; color: var(--text); }
+.pn__project-stat {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 4px; font-size: 12.5px; color: var(--muted);
+}
+.pn__bar {
+  flex: 1; max-width: 260px; height: 5px; border-radius: 3px;
+  background: var(--border); overflow: hidden;
+}
+.pn__bar-fill { display: block; height: 100%; background: var(--accent, #00a76f); }
+.pn__project-acts { display: flex; gap: 8px; align-items: center; }
+
+/* Filters */
+.pn__filters {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 4px 0 14px;
+}
+/* .inbox__input is width:100% — fine in a form column, wrong for a filter
+   sitting beside a segmented control. */
+.pn__select { width: auto; min-width: 170px; max-width: 240px; }
+.pn__newrow .inbox__input { width: 240px; flex: 0 0 auto; }
+
+/* The assign bar only appears with a selection, so it can be loud. */
+.pn__assignbar {
+  position: sticky; top: 8px; z-index: 5;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 14px; margin-bottom: 14px;
+  background: var(--panel-higher, #232833);
+  border: 1px solid var(--accent, #00a76f);
+  border-radius: 10px;
+}
+
+/* The grid. Columns are narrow because a card holds two portrait-ish shots
+   side by side — the point is density, so a PM sees a whole chapter at once. */
+.pn__grid {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(228px, 1fr));
+}
+.pn__card {
+  background: var(--panel-high, #1d2129);
+  border: 1px solid var(--border, #2a2e38);
+  border-left-width: 3px;
+  border-radius: 10px; overflow: hidden;
+  transition: transform 120ms ease, border-color 120ms ease;
+}
+.pn__card:hover { transform: translateY(-2px); }
+.pn__card.is-sel { border-color: var(--accent, #00a76f); box-shadow: 0 0 0 1px var(--accent, #00a76f) inset; }
+
+/* Status reads off the left edge, so scanning a wall of cards works without
+   reading a word of text. */
+.pn__card--todo { border-left-color: #4a5361; }
+.pn__card--in_progress { border-left-color: #3b82f6; }
+.pn__card--submitted { border-left-color: #f59e0b; }
+.pn__card--changes_requested { border-left-color: #ef4444; }
+.pn__card--approved { border-left-color: var(--accent, #00a76f); }
+
+.pn__card-shots {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 1px;
+  background: var(--border); text-decoration: none;
+}
+.pn__shot {
+  position: relative; aspect-ratio: 3 / 4; background: #11151b;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.pn__shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pn__shot-empty { font-size: 10.5px; color: #56626f; font-style: normal; text-align: center; padding: 0 6px; }
+.pn__shot-tag {
+  position: absolute; left: 5px; bottom: 5px;
+  font-style: normal; font-size: 10px; letter-spacing: .02em;
+  padding: 1px 5px; border-radius: 5px;
+  background: rgba(10, 13, 18, .78); color: #9aa7b4;
+}
+.pn__card-meta {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 10px; font-size: 12px; color: var(--muted);
+}
+.pn__pick { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.pn__pick b { color: var(--text); font-size: 12.5px; }
+.pn__who { margin-left: auto; }
+.pn__notes {
+  padding: 1px 6px; border-radius: 6px;
+  background: rgba(239, 68, 68, .16); color: #fca5a5;
+}

@@ -253,6 +253,24 @@ def get_panel(panel_id: int, user=Depends(get_optional_user)):
             raise _fail(exc)
 
 
+@router.get("/assignable-users")
+def assignable_users(user=Depends(get_optional_user)):
+    """Who a panel can be handed to.
+
+    Every active account for now. When giantflow grows its own membership
+    (``flow_project_member``), this narrows to the people actually on the
+    project — assigning work to someone who cannot open it is a dead end, and
+    the picker is where that should be prevented.
+    """
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+    return [
+        {"user_id": str(u.id), "name": (u.display_name or u.username)}
+        for u in user_service.list_users()
+        if getattr(u, "status", "active") == "active"
+    ]
+
+
 class AssignBody(BaseModel):
     panel_ids: list[int]
     #: None unassigns — "take these back off Quân" needs to be sayable.

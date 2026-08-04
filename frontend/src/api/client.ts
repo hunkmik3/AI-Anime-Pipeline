@@ -2313,3 +2313,155 @@ export interface FlowUsage {
 export function getFlowUsage(): Promise<FlowUsage> {
   return api<FlowUsage>("/api/flowstudio/usage");
 }
+
+// ── Giantflow panel production ───────────────────────────────────────────────
+//
+// The comic-adaptation pipeline: a folder of cut panels comes in, an artist
+// restyles each one, a PM reviews it. The PANEL is the unit of work — assigned,
+// statused, noted and exported — so most of these are addressed by panel id, not
+// by project. See docs/GIANTFLOW_REFACTOR.md.
+
+export type PanelStatus =
+  | "todo"
+  | "in_progress"
+  | "submitted"
+  | "changes_requested"
+  | "approved";
+
+export interface PanelProject {
+  id: number;
+  name: string;
+  created_at: string | null;
+  panel_count: number;
+  approved_count: number;
+}
+
+export interface PanelNote {
+  id: number;
+  body: string;
+  resolved: boolean;
+  author_name: string | null;
+  created_at: string | null;
+}
+
+export interface PanelVersion {
+  media_id: string;
+  version: number;
+  model_used: string | null;
+  created_at: string | null;
+}
+
+export interface Panel {
+  id: number;
+  project_id: number;
+  code: string;
+  order_index: number;
+  status: PanelStatus;
+  assignee_user_id: string | null;
+  assignee_name: string | null;
+  /** First raw piece — what the grid shows beside the result. */
+  raw_media_id: string | null;
+  raw_count: number;
+  /** Newest generated version, or null before anything is generated. */
+  latest_media_id: string | null;
+  version_count: number;
+  unresolved_notes: number;
+  updated_at: string | null;
+  // Detail view only (GET /panels/:id).
+  raw?: { media_id: string; version: number }[];
+  versions?: PanelVersion[];
+  notes?: PanelNote[];
+}
+
+export function listPanelProjects(): Promise<PanelProject[]> {
+  return api<PanelProject[]>("/api/flowstudio/projects");
+}
+
+export function createPanelProject(name: string): Promise<PanelProject> {
+  return api<PanelProject>("/api/flowstudio/projects", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function renamePanelProject(id: number, name: string): Promise<PanelProject> {
+  return api<PanelProject>(`/api/flowstudio/projects/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function deletePanelProject(id: number): Promise<{ deleted: number }> {
+  return api<{ deleted: number }>(`/api/flowstudio/projects/${id}`, {
+    method: "DELETE",
+  });
+}
+
+export interface ImportResult {
+  project_id: number;
+  panels: Panel[];
+  imported_files: number;
+  skipped: string[];
+  skipped_count: number;
+}
+
+/**
+ * Import a raw-material folder.
+ *
+ * Each file's path *inside the chosen folder* has to travel with it: that is what
+ * says which panel it belongs to (`PANEL008/a.png` → PANEL008). A browser upload
+ * otherwise arrives as flat basenames and the grouping is lost. `webkitRelativePath`
+ * is where the browser puts it.
+ *
+ * Order is the order sent — the cutter sorted the folder deliberately, so we pass
+ * their order through rather than sorting again.
+ */
+export async function importPanelFolder(
+  projectId: number,
+  files: File[],
+  onProgress?: (sent: number, total: number) => void,
+): Promise<ImportResult> {
+  const form = new FormData();
+  for (const f of files) {
+    const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath;
+    form.append("files", f);
+    // Strip the top-level folder the user picked: the panel code is relative to
+    // it, so "MyChapter/PANEL008/a.png" must read as "PANEL008/a.png".
+    const path = rel && rel.includes("/") ? rel.slice(rel.indexOf("/") + 1) : f.name;
+    form.append("paths", path);
+  }
+  onProgress?.(0, files.length);
+  const res = await fetch(`/api/flowstudio/projects/${projectId}/import`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  onProgress?.(files.length, files.length);
+  return res.json() as Promise<ImportResult>;
+}
+
+/** Who a panel can be handed to. Narrows to project members once giantflow has
+ *  its own membership; today it is every active account. */
+export function listPanelAssignees(): Promise<{ user_id: string; name: string }[]> {
+  return api<{ user_id: string; name: string }[]>("/api/flowstudio/assignable-users");
+}
+
+export function listPanels(projectId: number): Promise<Panel[]> {
+  return api<Panel[]>(`/api/flowstudio/projects/${projectId}/panels`);
+}
+
+export function getPanel(panelId: number): Promise<Panel> {
+  return api<Panel>(`/api/flowstudio/panels/${panelId}`);
+}
+
+/** Assign a batch — `userId: null` takes them back off someone. */
+export function assignPanels(
+  projectId: number,
+  panelIds: number[],
+  userId: string | null,
+): Promise<{ assigned: number }> {
+  return api<{ assigned: number }>(`/api/flowstudio/projects/${projectId}/assign`, {
+    method: "POST",
+    body: JSON.stringify({ panel_ids: panelIds, user_id: userId }),
+  });
+}
