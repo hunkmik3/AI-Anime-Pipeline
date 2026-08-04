@@ -348,6 +348,26 @@ def create_batch(project_id: int, body: BatchCreate, user=Depends(get_optional_u
             raise _fail(exc)
 
 
+class BatchesCreate(BaseModel):
+    #: One entry per batch. Blank names are skipped, so a form with spare rows
+    #: does not have to police itself.
+    batches: list[BatchCreate]
+
+
+@router.post("/projects/{project_id}/batches/bulk")
+def create_batches(project_id: int, body: BatchesCreate, user=Depends(get_optional_user)):
+    """Create several batches in one commit — dividing a comic is one decision."""
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        try:
+            rows = ps.create_batches(
+                s, project_id, [(b.name, b.assignee_user_id) for b in body.batches]
+            )
+        except ps.PanelError as exc:
+            raise _fail(exc)
+        return [_batch_dict(s, r) for r in rows]
+
+
 @router.get("/batches/{batch_id}")
 def get_batch(batch_id: int, user=Depends(get_optional_user)):
     with get_session() as s:

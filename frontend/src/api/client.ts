@@ -2529,6 +2529,24 @@ export function createBatch(
   });
 }
 
+/**
+ * Create several batches in one commit.
+ *
+ * Dividing a comic among its artists is one decision, not six — doing it six
+ * times is six chances to lose track of who already has something. Rows with a
+ * blank name are dropped server-side, so a form with spare rows needn't police
+ * itself.
+ */
+export function createBatches(
+  projectId: number,
+  batches: { name: string; assignee_user_id?: string | null }[],
+): Promise<PanelBatch[]> {
+  return api<PanelBatch[]>(`/api/flowstudio/projects/${projectId}/batches/bulk`, {
+    method: "POST",
+    body: JSON.stringify({ batches }),
+  });
+}
+
 /** `setAssignee` distinguishes "take it off them" (null) from "don't touch it". */
 export function updateBatch(
   batchId: number,

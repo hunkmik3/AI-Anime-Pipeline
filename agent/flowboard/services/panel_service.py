@@ -206,6 +206,43 @@ def create_batch(
     return row
 
 
+def create_batches(
+    session: Session,
+    project_id: int,
+    rows: list[tuple[str, Optional[uuid.UUID]]],
+) -> list[FlowBatch]:
+    """Create several batches at once — the way work is actually handed out.
+
+    A comic is divided among its artists in one sitting, so making that six
+    separate actions is six chances to lose track of who already has something.
+    Rows with a blank name are dropped rather than rejected: a form that starts
+    with spare rows should not punish leaving them empty.
+
+    All or nothing: one commit, so a failure halfway does not leave half a
+    division in place.
+    """
+    get_project(session, project_id)
+    clean = [(n.strip(), a) for n, a in rows if n and n.strip()]
+    if not clean:
+        raise PanelError("bad_input", "give at least one batch a name")
+
+    start = len(list_batches(session, project_id))
+    made: list[FlowBatch] = []
+    for i, (name, assignee) in enumerate(clean):
+        row = FlowBatch(
+            project_id=project_id,
+            name=name,
+            assignee_user_id=assignee,
+            order_index=start + i,
+        )
+        session.add(row)
+        made.append(row)
+    session.commit()
+    for row in made:
+        session.refresh(row)
+    return made
+
+
 def list_batches(session: Session, project_id: int) -> list[FlowBatch]:
     return list(
         session.exec(

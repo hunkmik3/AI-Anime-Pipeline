@@ -1719,3 +1719,25 @@
 }
 .pn__add-create:hover:not(:disabled) { filter: brightness(1.08); }
 .pn__add-create:disabled { opacity: .5; cursor: default; }
+
+/* Drafting several batches at once. Sits above the list it will add to, so the
+   result appears directly beneath where you typed it. */
+.pn__draft {
+  background: var(--panel-high, #1d2129);
+  border: 1px solid var(--accent, #00a76f);
+  border-radius: 12px; padding: 14px 16px; margin-bottom: 14px;
+}
+.pn__draft-head {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+  font-size: 13px; color: var(--text);
+}
+.pn__draft-head .pn__add-close { margin-left: auto; position: static; }
+.pn__draft-rows { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 8px; }
+.pn__draft-row { display: flex; align-items: center; gap: 8px; }
+/* Name takes the room, artist is a fixed column — reading down the list of who
+   has what is the point of the second column. */
+.pn__draft-row .inbox__input:first-child { flex: 1; min-width: 0; }
+.pn__draft-row .pn__select { flex: 0 0 190px; }
+.pn__draft-row .pn__add-close { position: static; flex: 0 0 auto; }
+.pn__draft-foot { display: flex; align-items: center; gap: 8px; }
+.pn__draft-foot .btn2--primary { margin-left: auto; }

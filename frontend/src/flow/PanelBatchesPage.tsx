@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import {
-  createBatch,
+  createBatches,
   deleteBatch,
   importPanelFolder,
   listBatches,
@@ -32,7 +32,7 @@ export function PanelBatchesPage() {
   const [projectName, setProjectName] = useState("");
   const [people, setPeople] = useState<{ user_id: string; name: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [name, setName] = useState("");
+  const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -49,22 +49,6 @@ export function PanelBatchesPage() {
     void load();
     void listPanelAssignees().then(setPeople).catch(() => setPeople([]));
   }, [load]);
-
-  async function create() {
-    const clean = name.trim();
-    if (!clean) return;
-    setBusy(true);
-    try {
-      await createBatch(pid, clean);
-      setName("");
-      await load();
-      toast("Batch created. Assign it and import its panels.");
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Failed");
-    } finally {
-      setBusy(false);
-    }
-  }
 
   const { list, dragProps } = useDragOrder(batches ?? [], async (ids) => {
     await reorderBatches(pid, ids);
@@ -90,26 +74,36 @@ export function PanelBatchesPage() {
             : undefined
         }
         actions={
-          <div className="pn__newrow">
-            <input
-              className="inbox__input"
-              placeholder="New batch name…"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void create();
-              }}
-            />
-            <button
-              className="btn2 btn2--primary"
-              disabled={busy || !name.trim()}
-              onClick={() => void create()}
-            >
-              Create batch
-            </button>
-          </div>
+          <button
+            className="btn2 btn2--primary"
+            disabled={adding}
+            onClick={() => setAdding(true)}
+          >
+            + Add batches
+          </button>
         }
       />
+
+      {adding ? (
+        <BatchDraftPanel
+          people={people}
+          busy={busy}
+          onCancel={() => setAdding(false)}
+          onCreate={async (rows) => {
+            setBusy(true);
+            try {
+              const made = await createBatches(pid, rows);
+              setAdding(false);
+              await load();
+              toast(`${made.length} batch${made.length === 1 ? "" : "es"} created.`);
+            } catch (e) {
+              toast(e instanceof Error ? e.message : "Failed");
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
+      ) : null}
 
       {error ? <p className="inbox__err">{error}</p> : null}
       {batches === null ? <p className="rfoot">Loading…</p> : null}
@@ -132,6 +126,121 @@ export function PanelBatchesPage() {
           />
         ))}
       </ul>
+    </div>
+  );
+}
+
+/**
+ * Draft several batches, then create them together.
+ *
+ * A comic is divided among its artists in one sitting, so the form holds the
+ * whole division: a row per batch, each with the two things a batch has — a name
+ * and one artist. Starts with three rows because "one" would imply this is the
+ * single-create form wearing a hat.
+ */
+function BatchDraftPanel({
+  people,
+  busy,
+  onCancel,
+  onCreate,
+}: {
+  people: { user_id: string; name: string }[];
+  busy: boolean;
+  onCancel: () => void;
+  onCreate: (rows: { name: string; assignee_user_id: string | null }[]) => Promise<void>;
+}) {
+  const [rows, setRows] = useState<{ name: string; assignee: string | null }[]>([
+    { name: "", assignee: null },
+    { name: "", assignee: null },
+    { name: "", assignee: null },
+  ]);
+  const filled = rows.filter((r) => r.name.trim()).length;
+
+  function patch(i: number, next: Partial<{ name: string; assignee: string | null }>) {
+    setRows((cur) => cur.map((r, k) => (k === i ? { ...r, ...next } : r)));
+  }
+
+  return (
+    <div className="pn__draft">
+      <div className="pn__draft-head">
+        <b>New batches</b>
+        <span className="pn__muted">
+          One per artist. Blank rows are ignored.
+        </span>
+        <button className="pn__add-close" title="Cancel" onClick={onCancel}>
+          ✕
+        </button>
+      </div>
+
+      <ul className="pn__draft-rows">
+        {rows.map((r, i) => (
+          <li key={i} className="pn__draft-row">
+            <input
+              className="inbox__input"
+              placeholder={`Batch ${i + 1} name…`}
+              value={r.name}
+              disabled={busy}
+              autoFocus={i === 0}
+              onChange={(e) => patch(i, { name: e.target.value })}
+              onKeyDown={(e) => {
+                // Enter on the last row adds another, so a whole division can be
+                // typed without reaching for the mouse.
+                if (e.key === "Enter" && i === rows.length - 1) {
+                  setRows((cur) => [...cur, { name: "", assignee: null }]);
+                }
+              }}
+            />
+            <select
+              className="inbox__input pn__select"
+              value={r.assignee ?? ""}
+              disabled={busy}
+              onChange={(e) => patch(i, { assignee: e.target.value || null })}
+            >
+              <option value="">— unassigned —</option>
+              {people.map((p) => (
+                <option key={p.user_id} value={p.user_id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <button
+              className="pn__add-close"
+              title="Remove this row"
+              disabled={busy || rows.length === 1}
+              onClick={() => setRows((cur) => cur.filter((_, k) => k !== i))}
+            >
+              ✕
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      <div className="pn__draft-foot">
+        <button
+          className="btn2"
+          disabled={busy}
+          onClick={() => setRows((cur) => [...cur, { name: "", assignee: null }])}
+        >
+          + Add row
+        </button>
+        <button
+          className="btn2 btn2--primary"
+          disabled={busy || filled === 0}
+          onClick={() =>
+            void onCreate(
+              rows
+                .filter((r) => r.name.trim())
+                .map((r) => ({ name: r.name.trim(), assignee_user_id: r.assignee })),
+            )
+          }
+        >
+          {busy
+            ? "Creating…"
+            : filled === 0
+              ? "Create batches"
+              : `Create ${filled} batch${filled === 1 ? "" : "es"}`}
+        </button>
+      </div>
     </div>
   );
 }
