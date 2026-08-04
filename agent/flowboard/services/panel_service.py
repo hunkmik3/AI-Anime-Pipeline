@@ -131,6 +131,17 @@ def panel_code_from_path(rel_path: str) -> str:
     return _SAFE_CODE.sub("_", stem).strip(" _") or "panel"
 
 
+def natural_key(path: str) -> list:
+    """Sort key that reads digit runs as numbers: PANEL9 before PANEL10.
+
+    The cutter's numbering is usually zero-padded, where plain text sorting would
+    do — but it costs nothing to be right when it isn't, and a folder that sorts
+    correctly in Finder and wrongly in the app is a bug nobody can explain.
+    """
+    parts = re.split(r"(\d+)", (path or "").lower())
+    return [int(x) if x.isdigit() else x for x in parts]
+
+
 def import_panels(
     session: Session,
     project_id: int,
@@ -142,9 +153,13 @@ def import_panels(
     ``entries`` is ``[(relative_path, media_id), …]`` — the caller has already
     cached the bytes; this only records what belongs to whom.
 
-    **Order is the caller's order.** The cutter sorted the folder deliberately, so
-    the app does not re-sort: entry 0 becomes ``order_index`` 0. Files of the same
-    panel keep their arrival order as raw ``version`` 1, 2, 3.
+    **Order comes from the FILENAME, sorted here.** The obvious design was to
+    trust the caller's order, since the cutter sorted the folder deliberately —
+    but a browser's folder picker hands over a ``FileList`` in filesystem order,
+    not the sorted order the human sees in Finder. Importing 136 panels that way
+    produced PANEL111, PANEL105, PANEL065… The filename IS how the cutter
+    expressed the order, so sorting by it honours their intent rather than
+    overriding it; the arrival order was never carrying that information.
 
     Re-importing into a project that already has panels is refused rather than
     merged: a second folder almost always means "I meant a new project", and
@@ -165,7 +180,7 @@ def import_panels(
 
     panels: dict[str, FlowPanel] = {}
     order = 0
-    for rel_path, media_id in entries:
+    for rel_path, media_id in sorted(entries, key=lambda e: natural_key(e[0])):
         code = panel_code_from_path(rel_path)
         if not code or not media_id:
             continue
@@ -196,6 +211,24 @@ def import_panels(
         raise PanelError("bad_input", "no usable image files in that folder")
     session.commit()
     return list_panels(session, project_id)
+
+
+def renumber_panels(session: Session, project_id: int) -> int:
+    """Re-derive ``order_index`` from the panel codes, natural-sorted.
+
+    Repairs a project imported before the sort was applied, so an existing board
+    does not have to be deleted and re-uploaded to come out in reading order.
+    """
+    panels = sorted(
+        session.exec(select(FlowPanel).where(FlowPanel.project_id == project_id)).all(),
+        key=lambda p: natural_key(p.code),
+    )
+    for i, panel in enumerate(panels):
+        if panel.order_index != i:
+            panel.order_index = i
+            session.add(panel)
+    session.commit()
+    return len(panels)
 
 
 # ── Panels ──────────────────────────────────────────────────────────────────

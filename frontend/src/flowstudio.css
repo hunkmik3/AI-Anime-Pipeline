@@ -1504,7 +1504,10 @@
   position: relative; aspect-ratio: 3 / 4; background: #11151b;
   display: flex; align-items: center; justify-content: center; overflow: hidden;
 }
-.pn__shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* contain, not cover: panels range from wide establishing shots to tall
+   close-ups, and the question this board answers is "does the result match
+   the original" — which needs the WHOLE panel visible, not a filled cell. */
+.pn__shot img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .pn__shot-empty { font-size: 10.5px; color: #56626f; font-style: normal; text-align: center; padding: 0 6px; }
 .pn__shot-tag {
   position: absolute; left: 5px; bottom: 5px;

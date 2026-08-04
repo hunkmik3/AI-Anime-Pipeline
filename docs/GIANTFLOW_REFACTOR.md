@@ -100,8 +100,12 @@ stored per panel.
 
 A PM imports the raw-material folder; the app creates exactly that many panels.
 
-- **Order comes from the filename**, ascending. The cutter has already sorted them, so
-  the app must not try to be clever — it preserves what it is given.
+- **Order comes from the filename**, natural-sorted server-side (so `PANEL9` precedes
+  `PANEL10` even unpadded). The first design trusted the caller's order, reasoning that
+  the cutter had sorted the folder deliberately — but a browser's folder picker hands
+  over a `FileList` in *filesystem* order, not the sorted order the human sees in
+  Finder. A real 136-panel import came out as PANEL111, PANEL105, PANEL065… The
+  filename is how the cutter expressed the order; arrival order never carried it.
 - **A subfolder is one panel**, and every file inside it is one of that panel's raw
   pieces. A loose file is a panel with a single piece. That is the whole rule, and it
   handles the multi-piece case without a naming convention to memorise.
