@@ -63,7 +63,7 @@ export function PanelProjectsPage() {
   }
 
   return (
-    <div className="shellpage">
+    <div className="shellpage pn__wide">
       <PageHeader
         title="Giantflow"
         subtitle="Comic adaptation, panel by panel. A project is one comic; inside it, a batch per artist carries that artist's panels."

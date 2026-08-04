@@ -71,7 +71,7 @@ export function PanelGridPage() {
   );
 
   return (
-    <div className="shellpage pn__page">
+    <div className="shellpage pn__wide pn__page">
       <PageHeader
         crumb={
           batch ? (

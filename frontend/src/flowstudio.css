@@ -1597,6 +1597,15 @@
 /* Project tiles — 9:16, matching the episode cards. Portrait because nearly
    every panel and every delivered frame is portrait; a landscape tile letterboxed
    the cover into a strip. */
+/* The shared page cap is 1240px, which lands on 5 columns and leaves a lot of
+   margin on a wide screen. This widens JUST the giantflow surface to the width
+   six tiles need — 6x218 + 5x14 gap + the page's 28px padding — rather than
+   removing the cap, which would stretch the tiles instead of adding one. */
+/* Two classes, not one: .shellpage's cap has equal specificity, so a
+   single-class rule would win or lose on bundle order — which is not
+   something to leave to chance. */
+.shellpage.pn__wide { max-width: 1480px; }
+
 .pn__tiles {
   list-style: none; margin: 0; padding: 0;
   display: grid; gap: 14px;

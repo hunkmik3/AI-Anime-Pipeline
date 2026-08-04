@@ -80,7 +80,7 @@ export function PanelBatchesPage() {
   );
 
   return (
-    <div className="shellpage">
+    <div className="shellpage pn__wide">
       <PageHeader
         crumb={<Link to="/giantflow">Giantflow</Link>}
         title={projectName || "Project"}
