@@ -16,7 +16,7 @@ import { toast } from "../store/toast";
 import { useDragOrder } from "./useDragOrder";
 
 /**
- * Giantflow home — one card per comic being adapted.
+ * The Project list — one card per comic being adapted.
  *
  * A project holds nothing but a name and its batches. The material lives one
  * level down: each batch is one artist's share and carries its own imported
@@ -62,7 +62,7 @@ export function PanelProjectsPage() {
 
   return (
     <div className="shellpage pn__wide">
-      <PageHeader title="Giantflow" />
+      <PageHeader title="Project" />
 
       {error ? <p className="inbox__err">{error}</p> : null}
       {projects === null ? <p className="rfoot">Loading…</p> : null}

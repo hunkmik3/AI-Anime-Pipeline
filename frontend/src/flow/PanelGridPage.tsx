@@ -77,7 +77,7 @@ export function PanelGridPage() {
           batch ? (
             <Link to={`/giantflow/${batch.project_id}`}>← Batches</Link>
           ) : (
-            <Link to="/giantflow">Giantflow</Link>
+            <Link to="/giantflow">Project</Link>
           )
         }
         title={batch?.name || "Panels"}
