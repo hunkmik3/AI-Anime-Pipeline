@@ -1593,3 +1593,54 @@
    and "what was already fixed" is context a reviewer wants. */
 .pn__note.is-done span { text-decoration: line-through; color: var(--muted); }
 .pn__noteadd { display: flex; flex-direction: column; gap: 8px; }
+
+/* Project tiles — 9:16, matching the episode cards. Portrait because nearly
+   every panel and every delivered frame is portrait; a landscape tile letterboxed
+   the cover into a strip. */
+.pn__tiles {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+}
+.pn__tile {
+  position: relative;
+  background: var(--panel-high, #1d2129);
+  border: 1px solid var(--border, #2a2e38);
+  border-radius: 12px; overflow: hidden;
+  display: flex; flex-direction: column;
+  transition: transform 120ms ease, border-color 120ms ease;
+}
+.pn__tile:hover { transform: translateY(-2px); border-color: #3d4a57; }
+.pn__tile-body { text-decoration: none; color: inherit; display: block; }
+.pn__tile-thumb {
+  position: relative; aspect-ratio: 9 / 16; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  color: rgba(255,255,255,.32);
+}
+/* cover, not contain: a tile is decoration, and letterboxed bars in a grid of
+   them read as broken. The panel grid uses contain, where seeing the whole
+   frame is the job. */
+.pn__tile-thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.pn__tile-meta { padding: 9px 11px; }
+.pn__tile-name {
+  font-weight: 600; font-size: 13.5px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pn__tile-sub { margin-top: 3px; font-size: 11.5px; color: var(--muted); }
+.pn__tile-bar { margin-top: 6px; height: 4px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.pn__tile-bar span { display: block; height: 100%; background: var(--accent, #00a76f); }
+/* Actions sit over the art and only appear on hover, so a wall of tiles stays
+   quiet until you reach for one. */
+.pn__tile-acts {
+  position: absolute; top: 8px; right: 8px; z-index: 3;
+  display: flex; gap: 6px; opacity: 0; transition: opacity 120ms ease;
+}
+.pn__tile:hover .pn__tile-acts, .pn__tile-acts:focus-within { opacity: 1; }
+.pn__tile-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 8px; font-size: 11px; cursor: pointer;
+  color: #e7ecf0; background: rgba(10,13,18,.82);
+  border: 1px solid rgba(255,255,255,.16); border-radius: 7px;
+}
+.pn__tile-btn:hover { background: rgba(10,13,18,.95); }
+.pn__tile-btn--danger:hover { border-color: #ef4444; color: #fca5a5; }

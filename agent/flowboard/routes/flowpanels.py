@@ -64,6 +64,9 @@ def _project_dict(session, row) -> dict:
         "id": row.id,
         "name": row.name,
         "created_at": row.created_at.isoformat() if row.created_at else None,
+        # Hand-picked cover, else the comic's opening panel.
+        "thumb_media_id": ps.project_cover_media_id(session, row),
+        "has_cover": bool(row.cover_media_id),
         # The three numbers a PM opens this list for.
         "batch_count": len(batches),
         "panel_count": len(panels),
@@ -125,6 +128,22 @@ def delete_project(project_id: int, user=Depends(get_optional_user)):
         except ps.PanelError as exc:
             raise _fail(exc)
         return {"deleted": project_id}
+
+
+class CoverBody(BaseModel):
+    #: None clears it, falling back to the first panel.
+    media_id: Optional[str] = None
+
+
+@router.post("/projects/{project_id}/cover")
+def set_cover(project_id: int, body: CoverBody, user=Depends(get_optional_user)):
+    """Point the project card at an image. Cosmetic, so any account may do it."""
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        try:
+            return _project_dict(s, ps.set_project_cover(s, project_id, body.media_id))
+        except ps.PanelError as exc:
+            raise _fail(exc)
 
 
 # ── Import ──────────────────────────────────────────────────────────────────

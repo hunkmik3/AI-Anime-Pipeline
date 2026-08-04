@@ -76,6 +76,35 @@ def list_projects(session: Session) -> list[FlowProject]:
     )
 
 
+def project_cover_media_id(session: Session, project: FlowProject) -> Optional[str]:
+    """What to show on a project's card.
+
+    A hand-picked cover always wins — someone chose it. Otherwise fall back to the
+    **first panel of the first batch**, which is the comic's opening image and
+    needs no upload step. Same rule as the episode cards.
+    """
+    if project.cover_media_id:
+        return project.cover_media_id
+    for batch in list_batches(session, project.id):
+        for panel in list_panels(session, batch.id):
+            raws = panel_images(session, panel.id, role="raw")
+            if raws:
+                return raws[0].media_id
+    return None
+
+
+def set_project_cover(
+    session: Session, project_id: int, media_id: Optional[str]
+) -> FlowProject:
+    """Set, or clear with None (back to the first-panel fallback)."""
+    row = get_project(session, project_id)
+    row.cover_media_id = (media_id or "").strip() or None
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
 def rename_project(session: Session, project_id: int, name: str) -> FlowProject:
     clean = (name or "").strip()
     if not clean:

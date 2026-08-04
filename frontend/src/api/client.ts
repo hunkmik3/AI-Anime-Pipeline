@@ -2331,6 +2331,10 @@ export type PanelStatus =
 export interface PanelProject {
   id: number;
   name: string;
+  /** Hand-picked cover, else the comic's opening panel; null when neither. */
+  thumb_media_id: string | null;
+  /** True only when someone uploaded one — drives Change vs Thumbnail. */
+  has_cover: boolean;
   created_at: string | null;
   /** A project is a comic; its work is divided into batches, one per artist. */
   batch_count: number;
@@ -2409,6 +2413,17 @@ export function renamePanelProject(id: number, name: string): Promise<PanelProje
   return api<PanelProject>(`/api/flowstudio/projects/${id}`, {
     method: "PATCH",
     body: JSON.stringify({ name }),
+  });
+}
+
+/** Point the project card at an image; null falls back to the first panel. */
+export function setPanelProjectCover(
+  id: number,
+  mediaId: string | null,
+): Promise<PanelProject> {
+  return api<PanelProject>(`/api/flowstudio/projects/${id}/cover`, {
+    method: "POST",
+    body: JSON.stringify({ media_id: mediaId }),
   });
 }
 

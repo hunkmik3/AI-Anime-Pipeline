@@ -328,6 +328,10 @@ class FlowProject(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
+    #: Hand-picked cover. When unset the card falls back to the first panel of the
+    #: first batch, so a project looks like itself without anyone uploading
+    #: anything — the same rule the episode cards use.
+    cover_media_id: Optional[str] = None
     created_by: Optional[uuid.UUID] = Field(
         default=None, foreign_key="app_user.id", index=True
     )
