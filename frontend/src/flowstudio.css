@@ -1600,7 +1600,9 @@
 .pn__tiles {
   list-style: none; margin: 0; padding: 0;
   display: grid; gap: 14px;
-  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  /* 168 -> 218: studio project codes run long (GCSA_26008_STOMPING-GROUNDS
+     is 27 characters) and were being cut mid-word. */
+  grid-template-columns: repeat(auto-fill, minmax(218px, 1fr));
 }
 .pn__tile {
   position: relative;
@@ -1624,7 +1626,13 @@
 .pn__tile-meta { padding: 9px 11px; }
 .pn__tile-name {
   font-weight: 600; font-size: 13.5px; color: var(--text);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  /* Wrap to two lines rather than truncate: the width alone can't hold a 27-char
+     code, and a name cut mid-word is the one thing a project list must not do.
+     Clamped at 2 so an unusually long name can't make one tile taller than its
+     neighbours. */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; overflow-wrap: anywhere; line-height: 1.3;
+  min-height: calc(2 * 1.3em);
 }
 .pn__tile-sub { margin-top: 3px; font-size: 11.5px; color: var(--muted); }
 .pn__tile-bar { margin-top: 6px; height: 4px; border-radius: 3px; background: var(--border); overflow: hidden; }
