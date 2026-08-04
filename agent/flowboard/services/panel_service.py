@@ -25,6 +25,7 @@ from typing import Optional
 from sqlmodel import Session, select
 
 from flowboard.db.models import (
+    FlowBatch,
     FlowPanel,
     FlowPanelImage,
     FlowPanelNote,
@@ -101,6 +102,92 @@ def delete_project(session: Session, project_id: int) -> None:
     session.commit()
 
 
+# ── Batches (one artist's share of a comic) ─────────────────────────────────
+
+
+def create_batch(
+    session: Session,
+    project_id: int,
+    name: str,
+    *,
+    assignee_user_id: Optional[uuid.UUID] = None,
+) -> FlowBatch:
+    clean = (name or "").strip()
+    if not clean:
+        raise PanelError("bad_input", "a batch name is required")
+    get_project(session, project_id)
+    n = len(list_batches(session, project_id))
+    row = FlowBatch(
+        project_id=project_id,
+        name=clean,
+        assignee_user_id=assignee_user_id,
+        order_index=n,
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def list_batches(session: Session, project_id: int) -> list[FlowBatch]:
+    return list(
+        session.exec(
+            select(FlowBatch)
+            .where(FlowBatch.project_id == project_id)
+            .order_by(FlowBatch.order_index, FlowBatch.id)
+        ).all()
+    )
+
+
+def get_batch(session: Session, batch_id: int) -> FlowBatch:
+    row = session.get(FlowBatch, batch_id)
+    if row is None:
+        raise PanelError("not_found", "batch not found")
+    return row
+
+
+def update_batch(
+    session: Session,
+    batch_id: int,
+    *,
+    name: Optional[str] = None,
+    assignee_user_id: Optional[uuid.UUID] = None,
+    set_assignee: bool = False,
+) -> FlowBatch:
+    """Rename and/or reassign.
+
+    ``set_assignee`` exists because None is a real value here — "take this off
+    whoever had it" has to be distinguishable from "leave the assignee alone".
+    """
+    row = get_batch(session, batch_id)
+    if name is not None:
+        clean = name.strip()
+        if not clean:
+            raise PanelError("bad_input", "a batch name is required")
+        row.name = clean
+    if set_assignee:
+        row.assignee_user_id = assignee_user_id
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def delete_batch(session: Session, batch_id: int) -> None:
+    """Delete a batch and its panels (FK CASCADE).
+
+    The panels ARE the batch's contents — its imported folder — so they go with
+    it. Cached media files are untouched, so a mistaken delete loses the
+    catalogue, not the pixels.
+    """
+    session.delete(get_batch(session, batch_id))
+    session.commit()
+
+
+def project_of_batch(session: Session, batch_id: int) -> FlowProject:
+    return get_project(session, get_batch(session, batch_id).project_id)
+
+
 # ── Import ──────────────────────────────────────────────────────────────────
 
 #: Panels arrive as a folder. A SUBFOLDER is one panel and every file in it is one
@@ -144,7 +231,7 @@ def natural_key(path: str) -> list:
 
 def import_panels(
     session: Session,
-    project_id: int,
+    batch_id: int,
     *,
     entries: list[tuple[str, str]],
 ) -> list[FlowPanel]:
@@ -165,14 +252,14 @@ def import_panels(
     merged: a second folder almost always means "I meant a new project", and
     silently interleaving two numbering schemes is not recoverable by hand.
     """
-    get_project(session, project_id)
+    get_batch(session, batch_id)
     existing = session.exec(
-        select(FlowPanel).where(FlowPanel.project_id == project_id).limit(1)
+        select(FlowPanel).where(FlowPanel.batch_id == batch_id).limit(1)
     ).first()
     if existing is not None:
         raise PanelError(
             "closed",
-            "this project already has panels — import into a new project instead, "
+            "this batch already has panels — import into a new batch instead, "
             "so two numbering schemes don't interleave",
         )
     if not entries:
@@ -186,7 +273,7 @@ def import_panels(
             continue
         panel = panels.get(code)
         if panel is None:
-            panel = FlowPanel(project_id=project_id, code=code, order_index=order)
+            panel = FlowPanel(batch_id=batch_id, code=code, order_index=order)
             session.add(panel)
             session.flush()  # need the id for its images
             panels[code] = panel
@@ -210,17 +297,17 @@ def import_panels(
     if not panels:
         raise PanelError("bad_input", "no usable image files in that folder")
     session.commit()
-    return list_panels(session, project_id)
+    return list_panels(session, batch_id)
 
 
-def renumber_panels(session: Session, project_id: int) -> int:
+def renumber_panels(session: Session, batch_id: int) -> int:
     """Re-derive ``order_index`` from the panel codes, natural-sorted.
 
     Repairs a project imported before the sort was applied, so an existing board
     does not have to be deleted and re-uploaded to come out in reading order.
     """
     panels = sorted(
-        session.exec(select(FlowPanel).where(FlowPanel.project_id == project_id)).all(),
+        session.exec(select(FlowPanel).where(FlowPanel.batch_id == batch_id)).all(),
         key=lambda p: natural_key(p.code),
     )
     for i, panel in enumerate(panels):
@@ -234,14 +321,22 @@ def renumber_panels(session: Session, project_id: int) -> int:
 # ── Panels ──────────────────────────────────────────────────────────────────
 
 
-def list_panels(session: Session, project_id: int) -> list[FlowPanel]:
+def list_panels(session: Session, batch_id: int) -> list[FlowPanel]:
     return list(
         session.exec(
             select(FlowPanel)
-            .where(FlowPanel.project_id == project_id)
+            .where(FlowPanel.batch_id == batch_id)
             .order_by(FlowPanel.order_index, FlowPanel.id)
         ).all()
     )
+
+
+def list_project_panels(session: Session, project_id: int) -> list[FlowPanel]:
+    """Every panel in a comic, batch by batch, each batch in its own order."""
+    out: list[FlowPanel] = []
+    for b in list_batches(session, project_id):
+        out.extend(list_panels(session, b.id))
+    return out
 
 
 def get_panel(session: Session, panel_id: int) -> FlowPanel:
@@ -263,31 +358,6 @@ def panel_images(
 def latest_generated(session: Session, panel_id: int) -> Optional[FlowPanelImage]:
     rows = panel_images(session, panel_id, role="generated")
     return rows[-1] if rows else None
-
-
-def assign_panels(
-    session: Session,
-    project_id: int,
-    panel_ids: list[int],
-    user_id: Optional[uuid.UUID],
-) -> int:
-    """Assign (or unassign, with ``None``) a batch of panels.
-
-    Batched because the real action is "artist 1 takes panels 1-30" — doing that
-    one row at a time is thirty round trips and thirty audit entries for one
-    decision.
-    """
-    n = 0
-    for pid in panel_ids:
-        panel = session.get(FlowPanel, pid)
-        if panel is None or panel.project_id != project_id:
-            continue
-        panel.assignee_user_id = user_id
-        panel.updated_at = _utcnow()
-        session.add(panel)
-        n += 1
-    session.commit()
-    return n
 
 
 def add_generated(

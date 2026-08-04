@@ -45,12 +45,22 @@ to Shot/Scene, which is explicitly out of scope.)
 `flow_board` becomes a real project, and the panel is the unit of work.
 
 ```
-flow_project              one comic being adapted  (upgraded flow_board)
+flow_project              one comic — a NAME and nothing else
   ├─ flow_project_member  user + role, giantflow-only
-  └─ flow_panel           PANEL006 — order_index, assignee, status
-       ├─ flow_panel_image   role = raw | generated, version, media_id
-       └─ flow_panel_note    one PM remark + resolved flag ("Fixed")
+  └─ flow_batch           one artist's share: own name, own import, one assignee
+       └─ flow_panel      PANEL006 — order_index, status
+            ├─ flow_panel_image   role = raw | generated, version, media_id
+            └─ flow_panel_note    one PM remark + resolved flag ("Fixed")
 ```
+
+**Three tiers, not two.** The batch is where material enters: a PM creates one per
+artist and uploads *that artist's* folder into it. So there is no range-splitting
+step anywhere — the work arrives already divided by who is doing it, which is how
+the studio actually hands it out. A project on its own holds only a name.
+
+**The assignee lives on the batch and nowhere else.** A copy on each panel would be
+one fact stored twice, and two copies drift. Panel codes are unique per batch, not
+per project, because two artists' folders can each legitimately contain a PANEL001.
 
 **Panel status** — `todo → in_progress → submitted → changes_requested → approved`.
 `changes_requested` returns it to the artist with the notes attached; resubmitting does

@@ -58,15 +58,31 @@ class ProjectBody(BaseModel):
 
 
 def _project_dict(session, row) -> dict:
-    panels = ps.list_panels(session, row.id)
-    done = len([p for p in panels if p.status == "approved"])
+    batches = ps.list_batches(session, row.id)
+    panels = ps.list_project_panels(session, row.id)
     return {
         "id": row.id,
         "name": row.name,
         "created_at": row.created_at.isoformat() if row.created_at else None,
-        # The two numbers a PM actually opens this list for.
+        # The three numbers a PM opens this list for.
+        "batch_count": len(batches),
         "panel_count": len(panels),
-        "approved_count": done,
+        "approved_count": len([p for p in panels if p.status == "approved"]),
+    }
+
+
+def _batch_dict(session, row) -> dict:
+    panels = ps.list_panels(session, row.id)
+    return {
+        "id": row.id,
+        "project_id": row.project_id,
+        "name": row.name,
+        "assignee_user_id": str(row.assignee_user_id) if row.assignee_user_id else None,
+        "assignee_name": _user_name(row.assignee_user_id),
+        "panel_count": len(panels),
+        "approved_count": len([p for p in panels if p.status == "approved"]),
+        "open_notes": sum(ps.unresolved_count(session, p.id) for p in panels),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
     }
 
 
@@ -121,9 +137,9 @@ _MAX_FILE_BYTES = 30 * 1024 * 1024
 _MAX_FILES = 2000
 
 
-@router.post("/projects/{project_id}/import")
+@router.post("/batches/{batch_id}/import")
 async def import_folder(
-    project_id: int,
+    batch_id: int,
     files: list[UploadFile] = File(...),
     paths: list[str] = Form(...),
     user=Depends(get_optional_user),
@@ -167,15 +183,15 @@ async def import_folder(
 
     with get_session() as s:
         try:
-            panels = ps.import_panels(s, project_id, entries=entries)
+            panels = ps.import_panels(s, batch_id, entries=entries)
         except ps.PanelError as exc:
             raise _fail(exc)
         logger.info(
-            "flowpanels: imported %d file(s) into %d panel(s) on project %s (%d skipped)",
-            len(entries), len(panels), project_id, len(skipped),
+            "flowpanels: imported %d file(s) into %d panel(s) on batch %s (%d skipped)",
+            len(entries), len(panels), batch_id, len(skipped),
         )
         return {
-            "project_id": project_id,
+            "batch_id": batch_id,
             "panels": [_panel_dict(s, p) for p in panels],
             "imported_files": len(entries),
             "skipped": skipped[:20],
@@ -189,14 +205,19 @@ async def import_folder(
 def _panel_dict(session, panel, *, with_images: bool = False) -> dict:
     raws = ps.panel_images(session, panel.id, role="raw")
     latest = ps.latest_generated(session, panel.id)
+    batch = ps.get_batch(session, panel.batch_id)
     d = {
         "id": panel.id,
-        "project_id": panel.project_id,
+        "batch_id": panel.batch_id,
+        "batch_name": batch.name,
+        "project_id": batch.project_id,
         "code": panel.code,
         "order_index": panel.order_index,
         "status": panel.status,
-        "assignee_user_id": str(panel.assignee_user_id) if panel.assignee_user_id else None,
-        "assignee_name": _user_name(panel.assignee_user_id),
+        # Who works on this comes from the BATCH — the panel has no assignee of
+        # its own, so there is one place this fact lives.
+        "assignee_user_id": str(batch.assignee_user_id) if batch.assignee_user_id else None,
+        "assignee_name": _user_name(batch.assignee_user_id),
         # The grid shows original and result side by side — that pairing is the
         # whole point of the board this replaces.
         "raw_media_id": raws[0].media_id if raws else None,
@@ -232,15 +253,91 @@ def _panel_dict(session, panel, *, with_images: bool = False) -> dict:
     return d
 
 
-@router.get("/projects/{project_id}/panels")
-def list_panels(project_id: int, user=Depends(get_optional_user)):
+@router.get("/batches/{batch_id}/panels")
+def list_panels(batch_id: int, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        try:
+            ps.get_batch(s, batch_id)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+        return [_panel_dict(s, p) for p in ps.list_panels(s, batch_id)]
+
+
+# ── Batches ─────────────────────────────────────────────────────────────────
+
+
+class BatchCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    assignee_user_id: Optional[uuid.UUID] = None
+
+
+class BatchUpdate(BaseModel):
+    name: Optional[str] = None
+    assignee_user_id: Optional[uuid.UUID] = None
+    #: None is a real value — "take this off whoever had it" must be sayable
+    #: separately from "leave the assignee alone".
+    set_assignee: bool = False
+
+
+@router.get("/projects/{project_id}/batches")
+def list_batches(project_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
         try:
             ps.get_project(s, project_id)
         except ps.PanelError as exc:
             raise _fail(exc)
-        return [_panel_dict(s, p) for p in ps.list_panels(s, project_id)]
+        return [_batch_dict(s, b) for b in ps.list_batches(s, project_id)]
+
+
+@router.post("/projects/{project_id}/batches")
+def create_batch(project_id: int, body: BatchCreate, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        try:
+            row = ps.create_batch(
+                s, project_id, body.name, assignee_user_id=body.assignee_user_id
+            )
+            return _batch_dict(s, row)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+
+
+@router.get("/batches/{batch_id}")
+def get_batch(batch_id: int, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        try:
+            return _batch_dict(s, ps.get_batch(s, batch_id))
+        except ps.PanelError as exc:
+            raise _fail(exc)
+
+
+@router.patch("/batches/{batch_id}")
+def update_batch(batch_id: int, body: BatchUpdate, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        try:
+            row = ps.update_batch(
+                s, batch_id, name=body.name,
+                assignee_user_id=body.assignee_user_id,
+                set_assignee=body.set_assignee,
+            )
+            return _batch_dict(s, row)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+
+
+@router.delete("/batches/{batch_id}")
+def delete_batch(batch_id: int, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        try:
+            ps.delete_batch(s, batch_id)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+        return {"deleted": batch_id}
 
 
 @router.get("/panels/{panel_id}")
@@ -453,24 +550,3 @@ def resolve_note(note_id: int, body: NoteResolveBody, user=Depends(get_optional_
             raise _fail(exc)
 
 
-class AssignBody(BaseModel):
-    panel_ids: list[int]
-    #: None unassigns — "take these back off Quân" needs to be sayable.
-    user_id: Optional[uuid.UUID] = None
-
-
-@router.post("/projects/{project_id}/assign")
-def assign(project_id: int, body: AssignBody, user=Depends(get_optional_user)):
-    """Assign a batch of panels to one person.
-
-    Batched because the real decision is "artist 1 takes panels 1-30" — one row at
-    a time would be thirty round trips for one decision.
-    """
-    with get_session() as s:
-        resource_guard.require_signed_in(s, user)
-        try:
-            ps.get_project(s, project_id)
-        except ps.PanelError as exc:
-            raise _fail(exc)
-        n = ps.assign_panels(s, project_id, body.panel_ids, body.user_id)
-        return {"assigned": n, "user_id": str(body.user_id) if body.user_id else None}

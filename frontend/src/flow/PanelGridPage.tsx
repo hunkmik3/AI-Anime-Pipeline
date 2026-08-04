@@ -2,17 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import {
-  assignPanels,
-  listPanelAssignees,
-  listPanelProjects,
+  getBatch,
   listPanels,
   thumbUrl,
   type Panel,
+  type PanelBatch,
   type PanelStatus,
 } from "../api/client";
 import { PageHeader } from "../components/shell/PageHeader";
-import { PersonPicker } from "../components/PersonPicker";
-import { toast } from "../store/toast";
 
 /**
  * The panel grid — what replaces the Miro board.
@@ -41,30 +38,25 @@ const STATUS_ORDER: PanelStatus[] = [
 ];
 
 export function PanelGridPage() {
-  const { projectId } = useParams();
-  const pid = Number(projectId);
+  const { batchId } = useParams();
+  const bid = Number(batchId);
   const [panels, setPanels] = useState<Panel[] | null>(null);
-  const [projectName, setProjectName] = useState<string>("");
+  const [batch, setBatch] = useState<PanelBatch | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  const [assignees, setAssignees] = useState<{ user_id: string; name: string }[]>([]);
   const [status, setStatus] = useState<PanelStatus | "all">("all");
-  const [assignee, setAssignee] = useState<string | "all" | "none">("all");
-  const [selected, setSelected] = useState<Set<number>>(new Set());
 
   const load = useCallback(async () => {
     try {
-      const [rows, projects] = await Promise.all([listPanels(pid), listPanelProjects()]);
+      const [rows, b] = await Promise.all([listPanels(bid), getBatch(bid)]);
       setPanels(rows);
-      setProjectName(projects.find((p) => p.id === pid)?.name ?? "");
+      setBatch(b);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [pid]);
+  }, [bid]);
 
   useEffect(() => {
     void load();
-    void listPanelAssignees().then(setAssignees).catch(() => setAssignees([]));
   }, [load]);
 
   const counts = useMemo(() => {
@@ -73,64 +65,26 @@ export function PanelGridPage() {
     return c;
   }, [panels]);
 
-  // Assignee filter options come from the panels themselves rather than the whole
-  // user list: only people actually holding panels are worth filtering by.
-  const people = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const p of panels ?? []) {
-      if (p.assignee_user_id) m.set(p.assignee_user_id, p.assignee_name ?? "—");
-    }
-    return [...m.entries()];
-  }, [panels]);
-
-  const shown = useMemo(() => {
-    return (panels ?? []).filter((p) => {
-      if (status !== "all" && p.status !== status) return false;
-      if (assignee === "none" && p.assignee_user_id) return false;
-      if (assignee !== "all" && assignee !== "none" && p.assignee_user_id !== assignee)
-        return false;
-      return true;
-    });
-  }, [panels, status, assignee]);
-
-  function toggle(id: number, shift: boolean, index: number) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (shift && prev.size > 0) {
-        // Range select: the whole point is "artist 1 takes panels 1-30", so
-        // clicking one end and shift-clicking the other has to work.
-        const ids = shown.map((p) => p.id);
-        const last = ids.findIndex((x) => prev.has(x));
-        const [a, b] = [Math.min(last, index), Math.max(last, index)];
-        for (let i = a; i <= b; i++) next.add(ids[i]);
-        return next;
-      }
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  async function assignTo(userId: string | null) {
-    if (selected.size === 0) return;
-    try {
-      const r = await assignPanels(pid, [...selected], userId);
-      setSelected(new Set());
-      await load();
-      toast(`${r.assigned} panel(s) ${userId ? "assigned" : "unassigned"}.`);
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Assign failed");
-    }
-  }
+  const shown = useMemo(
+    () => (panels ?? []).filter((p) => status === "all" || p.status === status),
+    [panels, status],
+  );
 
   return (
     <div className="shellpage pn__page">
       <PageHeader
-        crumb={<Link to="/giantflow">Giantflow</Link>}
-        title={projectName || "Panels"}
+        crumb={
+          batch ? (
+            <Link to={`/giantflow/${batch.project_id}`}>← Batches</Link>
+          ) : (
+            <Link to="/giantflow">Giantflow</Link>
+          )
+        }
+        title={batch?.name || "Panels"}
         subtitle={
           panels
-            ? `${panels.length} panels · ${counts.approved ?? 0} approved`
+            ? `${panels.length} panels · ${counts.approved ?? 0} approved` +
+              (batch?.assignee_name ? ` · ${batch.assignee_name}` : " · unassigned")
             : undefined
         }
       />
@@ -140,8 +94,8 @@ export function PanelGridPage() {
 
       {panels !== null && panels.length === 0 ? (
         <div className="inbox__empty">
-          <b>No panels in this project.</b>
-          Import the cutter's folder from the Giantflow home page.
+          <b>No panels in this batch.</b>
+          Import this artist's folder from the batch list.
         </div>
       ) : null}
 
@@ -167,54 +121,11 @@ export function PanelGridPage() {
               ))}
             </div>
 
-            <select
-              className="inbox__input pn__select"
-              value={assignee}
-              onChange={(e) => setAssignee(e.target.value as typeof assignee)}
-            >
-              <option value="all">Everyone</option>
-              <option value="none">Unassigned</option>
-              {people.map(([id, label]) => (
-                <option key={id} value={id}>
-                  {label}
-                </option>
-              ))}
-            </select>
           </div>
 
-          {/* The assign bar only exists while something is selected — a control
-              that does nothing is worse than no control. */}
-          {selected.size > 0 ? (
-            <div className="pn__assignbar">
-              <span>
-                <b>{selected.size}</b> selected
-              </span>
-              <PersonPicker
-                label=""
-                value={null}
-                people={assignees}
-                noneLabel="Assign to…"
-                onChange={async (uid) => {
-                  await assignTo(uid);
-                }}
-              />
-              <button className="btn2" onClick={() => void assignTo(null)}>
-                Unassign
-              </button>
-              <button className="btn2" onClick={() => setSelected(new Set())}>
-                Clear
-              </button>
-            </div>
-          ) : null}
-
           <ul className="pn__grid">
-            {shown.map((p, i) => (
-              <PanelCard
-                key={p.id}
-                panel={p}
-                selected={selected.has(p.id)}
-                onToggle={(shift) => toggle(p.id, shift, i)}
-              />
+            {shown.map((p) => (
+              <PanelCard key={p.id} panel={p} />
             ))}
           </ul>
           {shown.length === 0 ? (
@@ -226,17 +137,9 @@ export function PanelGridPage() {
   );
 }
 
-function PanelCard({
-  panel,
-  selected,
-  onToggle,
-}: {
-  panel: Panel;
-  selected: boolean;
-  onToggle: (shift: boolean) => void;
-}) {
+function PanelCard({ panel }: { panel: Panel }) {
   return (
-    <li className={`pn__card pn__card--${panel.status}${selected ? " is-sel" : ""}`}>
+    <li className={`pn__card pn__card--${panel.status}`}>
       {/* Original and result side by side — the pairing every PM note is about
           ("BG bị lệch màu so với truyện gốc" only means something next to the
           original). */}
@@ -260,20 +163,8 @@ function PanelCard({
       </Link>
 
       <div className="pn__card-meta">
-        <label className="pn__pick" onClick={(e) => e.stopPropagation()}>
-          <input
-            type="checkbox"
-            checked={selected}
-            onChange={(e) =>
-              onToggle((e.nativeEvent as MouseEvent).shiftKey === true)
-            }
-            onClick={(e) => {
-              if ((e as unknown as MouseEvent).shiftKey) e.stopPropagation();
-            }}
-          />
-          <b>{panel.code}</b>
-        </label>
-        <span className="pn__who">{panel.assignee_name ?? "unassigned"}</span>
+        <b>{panel.code}</b>
+        <span className="pn__who">v{panel.version_count || 0}</span>
         {panel.unresolved_notes > 0 ? (
           <span className="pn__notes" title="Unresolved notes">
             {panel.unresolved_notes} note{panel.unresolved_notes === 1 ? "" : "s"}

@@ -354,6 +354,31 @@ class FlowProjectMember(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow)
 
 
+class FlowBatch(SQLModel, table=True):
+    """A work package inside a comic — one artist's share of it.
+
+    The PM creates a batch, hands it to an artist, and uploads THAT artist's
+    folder of panels into it. So the batch, not the project, owns an import: the
+    material arrives already divided by who is doing it, which is how the studio
+    actually hands work out. There is no range-splitting step because there is
+    never one big pile to split.
+
+    The assignee lives here and nowhere else. Keeping a copy on each panel too
+    would be two sources of truth for one fact, and they drift.
+    """
+
+    __tablename__ = "flow_batch"  # type: ignore[assignment]
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="flow_project.id", index=True)
+    name: str
+    assignee_user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="app_user.id", index=True
+    )
+    order_index: int = Field(default=0, index=True)
+    created_at: datetime = Field(default_factory=_utcnow, index=True)
+
+
 #: Panel lifecycle. ``approved`` is terminal for GENERATION — the app refuses new
 #: versions for an approved panel — but not irreversible: a PM can reopen it to
 #: ``changes_requested``, because one mis-click should not destroy the work.
@@ -376,18 +401,17 @@ class FlowPanel(SQLModel, table=True):
 
     __tablename__ = "flow_panel"  # type: ignore[assignment]
     __table_args__ = (
-        UniqueConstraint("project_id", "code", name="uq_flow_panel_code"),
+        UniqueConstraint("batch_id", "code", name="uq_flow_panel_code"),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    project_id: int = Field(foreign_key="flow_project.id", index=True)
+    #: The batch that owns it. Who works on this panel comes from the batch —
+    #: the panel deliberately does not carry its own assignee.
+    batch_id: int = Field(foreign_key="flow_batch.id", index=True)
     #: The cutter's own name for it ("PANEL006") — shown as-is so it matches
     #: their sheet and the Miro history it replaces.
     code: str = Field(index=True)
     order_index: int = Field(default=0, index=True)
-    assignee_user_id: Optional[uuid.UUID] = Field(
-        default=None, foreign_key="app_user.id", index=True
-    )
     status: str = Field(default="todo", index=True)
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)

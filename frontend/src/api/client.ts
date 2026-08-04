@@ -2332,8 +2332,27 @@ export interface PanelProject {
   id: number;
   name: string;
   created_at: string | null;
+  /** A project is a comic; its work is divided into batches, one per artist. */
+  batch_count: number;
   panel_count: number;
   approved_count: number;
+}
+
+/**
+ * One artist's share of a comic: its own name, its own imported folder of panels,
+ * one person. The batch — not the project — owns an import, because material
+ * arrives already divided by who is doing it.
+ */
+export interface PanelBatch {
+  id: number;
+  project_id: number;
+  name: string;
+  assignee_user_id: string | null;
+  assignee_name: string | null;
+  panel_count: number;
+  approved_count: number;
+  open_notes: number;
+  created_at: string | null;
 }
 
 export interface PanelNote {
@@ -2353,6 +2372,8 @@ export interface PanelVersion {
 
 export interface Panel {
   id: number;
+  batch_id: number;
+  batch_name: string;
   project_id: number;
   code: string;
   order_index: number;
@@ -2398,7 +2419,7 @@ export function deletePanelProject(id: number): Promise<{ deleted: number }> {
 }
 
 export interface ImportResult {
-  project_id: number;
+  batch_id: number;
   panels: Panel[];
   imported_files: number;
   skipped: string[];
@@ -2417,7 +2438,7 @@ export interface ImportResult {
  * their order through rather than sorting again.
  */
 export async function importPanelFolder(
-  projectId: number,
+  batchId: number,
   files: File[],
   onProgress?: (sent: number, total: number) => void,
 ): Promise<ImportResult> {
@@ -2431,7 +2452,7 @@ export async function importPanelFolder(
     form.append("paths", path);
   }
   onProgress?.(0, files.length);
-  const res = await fetch(`/api/flowstudio/projects/${projectId}/import`, {
+  const res = await fetch(`/api/flowstudio/batches/${batchId}/import`, {
     method: "POST",
     body: form,
   });
@@ -2446,25 +2467,50 @@ export function listPanelAssignees(): Promise<{ user_id: string; name: string }[
   return api<{ user_id: string; name: string }[]>("/api/flowstudio/assignable-users");
 }
 
-export function listPanels(projectId: number): Promise<Panel[]> {
-  return api<Panel[]>(`/api/flowstudio/projects/${projectId}/panels`);
+export function listPanels(batchId: number): Promise<Panel[]> {
+  return api<Panel[]>(`/api/flowstudio/batches/${batchId}/panels`);
+}
+
+export function listBatches(projectId: number): Promise<PanelBatch[]> {
+  return api<PanelBatch[]>(`/api/flowstudio/projects/${projectId}/batches`);
+}
+
+export function getBatch(batchId: number): Promise<PanelBatch> {
+  return api<PanelBatch>(`/api/flowstudio/batches/${batchId}`);
+}
+
+export function createBatch(
+  projectId: number,
+  name: string,
+  assigneeUserId?: string | null,
+): Promise<PanelBatch> {
+  return api<PanelBatch>(`/api/flowstudio/projects/${projectId}/batches`, {
+    method: "POST",
+    body: JSON.stringify({ name, assignee_user_id: assigneeUserId ?? null }),
+  });
+}
+
+/** `setAssignee` distinguishes "take it off them" (null) from "don't touch it". */
+export function updateBatch(
+  batchId: number,
+  patch: { name?: string; assignee_user_id?: string | null; set_assignee?: boolean },
+): Promise<PanelBatch> {
+  return api<PanelBatch>(`/api/flowstudio/batches/${batchId}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+export function deleteBatch(batchId: number): Promise<{ deleted: number }> {
+  return api<{ deleted: number }>(`/api/flowstudio/batches/${batchId}`, {
+    method: "DELETE",
+  });
 }
 
 export function getPanel(panelId: number): Promise<Panel> {
   return api<Panel>(`/api/flowstudio/panels/${panelId}`);
 }
 
-/** Assign a batch — `userId: null` takes them back off someone. */
-export function assignPanels(
-  projectId: number,
-  panelIds: number[],
-  userId: string | null,
-): Promise<{ assigned: number }> {
-  return api<{ assigned: number }>(`/api/flowstudio/projects/${projectId}/assign`, {
-    method: "POST",
-    body: JSON.stringify({ panel_ids: panelIds, user_id: userId }),
-  });
-}
 
 /** Engine settings for a panel generation. The panel imposes nothing — these are
  *  the artist's choices, passed straight through to the same engine the studio
