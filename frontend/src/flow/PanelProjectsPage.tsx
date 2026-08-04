@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import {
@@ -26,7 +26,6 @@ import { useDragOrder } from "./useDragOrder";
 export function PanelProjectsPage() {
   const [projects, setProjects] = useState<PanelProject[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -46,13 +45,12 @@ export function PanelProjectsPage() {
     await load();
   });
 
-  async function create() {
+  async function create(name: string) {
     const clean = name.trim();
     if (!clean) return;
     setBusy(true);
     try {
       await createPanelProject(clean);
-      setName("");
       await load();
       toast("Project created. Add a batch per artist inside it.");
     } catch (e) {
@@ -67,26 +65,6 @@ export function PanelProjectsPage() {
       <PageHeader
         title="Giantflow"
         subtitle="Comic adaptation, panel by panel. A project is one comic; inside it, a batch per artist carries that artist's panels."
-        actions={
-          <div className="pn__newrow">
-            <input
-              className="inbox__input"
-              placeholder="New project name…"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void create();
-              }}
-            />
-            <button
-              className="btn2 btn2--primary"
-              disabled={busy || !name.trim()}
-              onClick={() => void create()}
-            >
-              Create
-            </button>
-          </div>
-        }
       />
 
       {error ? <p className="inbox__err">{error}</p> : null}
@@ -109,8 +87,96 @@ export function PanelProjectsPage() {
             drag={dragProps(p.id)}
           />
         ))}
+        {/* Last, not first: the tiles are drag-reorderable and a fixed cell at the
+            front would sit in the middle of every drag. */}
+        <AddProjectTile busy={busy} onCreate={create} />
       </ul>
     </div>
+  );
+}
+
+/**
+ * The last cell of the grid: an outline tile that becomes the create form.
+ *
+ * The form used to sit in the page header, far from the row of tiles it adds to.
+ * Here the control is the same shape and place as the thing it makes, so the new
+ * project appears where you were already looking.
+ */
+function AddProjectTile({
+  busy,
+  onCreate,
+}: {
+  busy: boolean;
+  onCreate: (name: string) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
+
+  async function submit() {
+    if (!name.trim()) return;
+    await onCreate(name);
+    setName("");
+    setOpen(false);
+  }
+
+  if (!open) {
+    return (
+      <li className="pn__tile pn__add">
+        <button type="button" className="pn__add-btn" onClick={() => setOpen(true)}>
+          <span className="pn__add-plus" aria-hidden="true">+</span>
+          <span>Add Project</span>
+        </button>
+      </li>
+    );
+  }
+
+  return (
+    <li className="pn__tile pn__add is-open">
+      <div className="pn__add-form">
+        <button
+          type="button"
+          className="pn__add-close"
+          title="Cancel"
+          onClick={() => {
+            setName("");
+            setOpen(false);
+          }}
+        >
+          ✕
+        </button>
+        <span className="pn__add-plus" aria-hidden="true">+</span>
+        <input
+          ref={inputRef}
+          className="pn__add-input"
+          placeholder="Project name…"
+          value={name}
+          disabled={busy}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void submit();
+            // Escape closes without creating — the same thing the ✕ does, for
+            // someone whose hands are already on the keyboard.
+            if (e.key === "Escape") {
+              setName("");
+              setOpen(false);
+            }
+          }}
+        />
+        <button
+          type="button"
+          className="pn__add-create"
+          disabled={busy || !name.trim()}
+          onClick={() => void submit()}
+        >
+          {busy ? "Creating…" : "Create"}
+        </button>
+      </div>
+    </li>
   );
 }
 

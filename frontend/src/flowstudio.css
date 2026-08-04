@@ -1670,3 +1670,52 @@
 .pn__tile[draggable="true"]:active, .pn__project[draggable="true"]:active { opacity: .55; }
 /* Buttons and the picker inside a draggable card must stay clickable. */
 .pn__tile-acts, .pn__project-acts { cursor: default; }
+
+/* "Add Project" — the last cell of the grid, an outline where a tile will be.
+   Same 9:16 box as a real tile, so the row keeps its rhythm and the new project
+   appears exactly where the control was. */
+.pn__add {
+  border: 1px dashed rgba(255, 255, 255, 0.22);
+  background: transparent;
+  cursor: pointer;
+  /* No grab cursor and no lift: it is a button, not something to drag. */
+}
+.pn__add:hover { transform: none; border-color: rgba(255, 255, 255, 0.4); }
+.pn__add.is-open { border-style: solid; border-color: var(--border); background: var(--panel-high, #1d2129); }
+
+.pn__add-btn,
+.pn__add-form {
+  /* Match a tile: the 9:16 art box plus the meta strip underneath. */
+  aspect-ratio: 9 / 16;
+  width: 100%;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px;
+  background: none; border: 0; color: var(--muted);
+  font: inherit; cursor: pointer; padding: 16px;
+}
+.pn__add-btn:hover { color: var(--text); }
+.pn__add-plus { font-size: 30px; line-height: 1; font-weight: 300; }
+
+.pn__add-form { position: relative; cursor: default; gap: 12px; }
+.pn__add-close {
+  position: absolute; top: 8px; right: 8px;
+  background: none; border: 0; color: var(--muted);
+  font-size: 13px; cursor: pointer; padding: 4px 6px; border-radius: 6px;
+}
+.pn__add-close:hover { color: var(--text); background: rgba(255,255,255,.07); }
+
+.pn__add-input {
+  width: 100%; padding: 9px 11px; font: inherit; font-size: 13px;
+  color: var(--text); background: #11151b;
+  border: 2px solid var(--border); border-radius: 9px; outline: none;
+}
+.pn__add-input:focus { border-color: var(--accent, #00a76f); }
+.pn__add-input::placeholder { color: #56626f; }
+
+.pn__add-create {
+  width: 100%; padding: 9px 11px; font: inherit; font-size: 13px; font-weight: 600;
+  color: #06281c; background: var(--accent, #00a76f);
+  border: 0; border-radius: 9px; cursor: pointer;
+}
+.pn__add-create:hover:not(:disabled) { filter: brightness(1.08); }
+.pn__add-create:disabled { opacity: .5; cursor: default; }
