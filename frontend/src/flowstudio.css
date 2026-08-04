@@ -1526,3 +1526,70 @@
   padding: 1px 6px; border-radius: 6px;
   background: rgba(239, 68, 68, .16); color: #fca5a5;
 }
+
+/* Panel workspace — original | results | notes */
+.pn__ws-cols {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr) 300px;
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .pn__ws-cols { grid-template-columns: 1fr; }
+}
+.pn__ws-h {
+  margin: 0 0 8px; font-size: 12px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+  display: flex; align-items: center; gap: 8px;
+}
+.pn__ws-raw, .pn__ws-notes {
+  background: var(--panel-high, #1d2129);
+  border: 1px solid var(--border, #2a2e38);
+  border-radius: 10px; padding: 12px;
+}
+.pn__ws-raw { display: flex; flex-direction: column; gap: 8px; }
+
+.pn__ws-thumb {
+  position: relative; padding: 0; background: #11151b; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+}
+.pn__ws-thumb.is-on { border-color: var(--accent, #00a76f); }
+.pn__ws-thumb img { display: block; width: 100%; height: auto; }
+.pn__ws-thumb em {
+  position: absolute; right: 4px; bottom: 4px; font-style: normal; font-size: 10px;
+  padding: 1px 5px; border-radius: 5px; background: rgba(10,13,18,.8); color: #9aa7b4;
+}
+
+.pn__ws-main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+/* The stage is capped rather than free: a tall 9:16 result would otherwise push
+   the composer below the fold, and the composer is the point of the page. */
+.pn__ws-stage {
+  background: #0d1117; border: 1px solid var(--border); border-radius: 10px;
+  min-height: 240px; max-height: 52vh;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.pn__ws-stage img { max-width: 100%; max-height: 52vh; object-fit: contain; display: block; }
+.pn__ws-versions { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-start; }
+.pn__ws-versions .pn__ws-thumb { width: 84px; }
+
+.pn__composer {
+  background: var(--panel-high, #1d2129);
+  border: 1px solid var(--border, #2a2e38);
+  border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px;
+}
+.pn__composer-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.pn__composer-row .pn__select { min-width: 120px; max-width: 190px; }
+.pn__composer-row .btn2 { margin-left: auto; }
+.pn__check { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+
+.pn__notelist { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 8px; }
+.pn__note {
+  font-size: 13px; color: var(--text); line-height: 1.45;
+  padding-bottom: 8px; border-bottom: 1px solid var(--border);
+}
+.pn__note label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+.pn__note em { display: block; margin: 2px 0 0 22px; font-style: normal; font-size: 11px; color: var(--muted); }
+/* Resolved notes stay visible but recede — the Miro board kept them as history,
+   and "what was already fixed" is context a reviewer wants. */
+.pn__note.is-done span { text-decoration: line-through; color: var(--muted); }
+.pn__noteadd { display: flex; flex-direction: column; gap: 8px; }

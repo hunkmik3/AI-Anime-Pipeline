@@ -32,6 +32,7 @@ import { SeriesPage } from "./routes/SeriesPage";
 import { FlowApp } from "./flow/FlowApp";
 import { PanelProjectsPage } from "./flow/PanelProjectsPage";
 import { PanelGridPage } from "./flow/PanelGridPage";
+import { PanelWorkspacePage } from "./flow/PanelWorkspacePage";
 
 import { useProjectStore } from "./store/project";
 import { useAuthStore } from "./store/auth";
@@ -108,6 +109,7 @@ export function App() {
               /giantflow/studio until panel generation replaces it. */}
           <Route path="/giantflow" element={<PanelProjectsPage />} />
           <Route path="/giantflow/studio" element={<FlowApp />} />
+          <Route path="/giantflow/panel/:panelId" element={<PanelWorkspacePage />} />
           <Route path="/giantflow/:projectId" element={<PanelGridPage />} />
           {/* Phase 8.3: project hub (entry point) = SceneView. */}
           <Route path="/projects/:projectId" element={<SceneView />} />

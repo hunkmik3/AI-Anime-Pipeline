@@ -2465,3 +2465,83 @@ export function assignPanels(
     body: JSON.stringify({ panel_ids: panelIds, user_id: userId }),
   });
 }
+
+/** Engine settings for a panel generation. The panel imposes nothing — these are
+ *  the artist's choices, passed straight through to the same engine the studio
+ *  composer uses. */
+export interface PanelGenParams {
+  prompt: string;
+  provider?: string;
+  image_model?: string;
+  aspect_ratio?: string;
+  image_size?: string;
+  variant_count?: number;
+  preserve_colors?: boolean;
+  /** Extra references beyond the panel's own raw material, which is added
+   *  server-side. */
+  ref_media_ids?: string[];
+  source_media_id?: string;
+}
+
+/**
+ * Queue a generation for a panel.
+ *
+ * Goes through the panel rather than POST /api/requests so the approved-lock is
+ * checked BEFORE the money is spent — attaching results afterwards would find out
+ * too late. The panel's raw material is prepended to the references server-side.
+ */
+export function generateForPanel(
+  panelId: number,
+  params: PanelGenParams,
+): Promise<{ request_id: number; panel_id: number; references: number }> {
+  return api(`/api/flowstudio/panels/${panelId}/generate`, {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}
+
+/** File finished images against the panel as its next version(s). */
+export function addPanelVersions(
+  panelId: number,
+  mediaIds: string[],
+  modelUsed?: string | null,
+): Promise<Panel> {
+  return api<Panel>(`/api/flowstudio/panels/${panelId}/versions`, {
+    method: "POST",
+    body: JSON.stringify({ media_ids: mediaIds, model_used: modelUsed ?? null }),
+  });
+}
+
+export function submitPanel(panelId: number): Promise<Panel> {
+  return api<Panel>(`/api/flowstudio/panels/${panelId}/submit`, { method: "POST" });
+}
+
+export function reviewPanel(
+  panelId: number,
+  approve: boolean,
+  notes: string[] = [],
+): Promise<Panel> {
+  return api<Panel>(`/api/flowstudio/panels/${panelId}/review`, {
+    method: "POST",
+    body: JSON.stringify({ approve, notes }),
+  });
+}
+
+export function reopenPanel(panelId: number): Promise<Panel> {
+  return api<Panel>(`/api/flowstudio/panels/${panelId}/reopen`, { method: "POST" });
+}
+
+export function addPanelNote(panelId: number, body: string): Promise<Panel> {
+  return api<Panel>(`/api/flowstudio/panels/${panelId}/notes`, {
+    method: "POST",
+    body: JSON.stringify({ body }),
+  });
+}
+
+/** Tick or untick a remark — the Miro board's "Fixed". */
+export function resolvePanelNote(noteId: number, resolved: boolean): Promise<Panel> {
+  return api<Panel>(`/api/flowstudio/notes/${noteId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ resolved }),
+  });
+}

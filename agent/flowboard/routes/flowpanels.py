@@ -271,6 +271,188 @@ def assignable_users(user=Depends(get_optional_user)):
     ]
 
 
+# ── Generation ──────────────────────────────────────────────────────────────
+
+
+class GenerateBody(BaseModel):
+    """Engine settings, passed through untouched.
+
+    The panel imposes nothing — no aspect, model or size is stored on it and none
+    is forced. The artist has the same freedom the studio composer gives them; the
+    panel only supplies context (its raw material as the reference) and takes
+    custody of the results.
+    """
+
+    prompt: str = Field(min_length=1)
+    provider: Optional[str] = None
+    image_model: Optional[str] = None
+    aspect_ratio: Optional[str] = None
+    image_size: Optional[str] = None
+    variant_count: int = 1
+    preserve_colors: bool = False
+    #: Extra references beyond the panel's own raw material.
+    ref_media_ids: list[str] = []
+    #: Edit an existing version rather than generating fresh.
+    source_media_id: Optional[str] = None
+
+
+@router.post("/panels/{panel_id}/generate")
+def generate(panel_id: int, body: GenerateBody, user=Depends(get_optional_user)):
+    """Queue a generation for this panel and return the request to poll.
+
+    The request is created HERE rather than by the client calling /api/requests
+    directly, for one reason: the approved-lock has to be checked **before any
+    money is spent**. Attaching results afterwards would find out too late.
+
+    The panel's raw material is prepended to the references automatically —
+    matching the original is what every one of these generations is for, so it is
+    the default rather than a step the artist repeats by hand.
+    """
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        try:
+            panel = ps.get_panel(s, panel_id)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+        if panel.status == "approved":
+            raise HTTPException(
+                409,
+                "this panel is approved — ask the PM to reopen it before generating again",
+            )
+        raw = [i.media_id for i in ps.panel_images(s, panel_id, role="raw")]
+
+    refs = raw + [m for m in body.ref_media_ids if m and m not in raw]
+    params: dict = {
+        "prompt": body.prompt.strip(),
+        "provider": body.provider or "atrium",
+        "variant_count": max(1, min(int(body.variant_count or 1), 4)),
+        "__panel_id": panel_id,
+    }
+    if body.image_model:
+        params["image_model"] = body.image_model
+    if body.aspect_ratio:
+        params["aspect_ratio"] = body.aspect_ratio
+    if body.image_size and body.image_size != "1K":
+        params["image_size"] = body.image_size
+    if refs:
+        params["ref_media_ids"] = refs
+    if body.source_media_id:
+        params["source_media_id"] = body.source_media_id
+    # Colour preservation only means something with something to match against.
+    if body.preserve_colors and (refs or body.source_media_id):
+        params["preserve_colors"] = True
+
+    from flowboard.db.models import Request as RequestRow
+    from flowboard.worker.processor import get_worker
+
+    with get_session() as s:
+        req = RequestRow(type="flow_gen_image", params=params, status="queued")
+        s.add(req)
+        s.commit()
+        s.refresh(req)
+        rid = req.id
+    get_worker().enqueue(rid)
+    return {"request_id": rid, "panel_id": panel_id, "references": len(refs)}
+
+
+class VersionsBody(BaseModel):
+    media_ids: list[str]
+    model_used: Optional[str] = None
+
+
+@router.post("/panels/{panel_id}/versions")
+def add_versions(panel_id: int, body: VersionsBody, user=Depends(get_optional_user)):
+    """File finished images against the panel as its next version(s)."""
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        try:
+            ps.add_generated(
+                s,
+                panel_id,
+                body.media_ids,
+                model_used=body.model_used,
+                created_by=(user.id if user else None),
+            )
+            return _panel_dict(s, ps.get_panel(s, panel_id), with_images=True)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+
+
+# ── Review + notes ──────────────────────────────────────────────────────────
+
+
+class ReviewBody(BaseModel):
+    approve: bool
+    notes: list[str] = []
+
+
+@router.post("/panels/{panel_id}/submit")
+def submit(panel_id: int, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        try:
+            return _panel_dict(s, ps.submit_panel(s, panel_id), with_images=True)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+
+
+@router.post("/panels/{panel_id}/review")
+def review(panel_id: int, body: ReviewBody, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        try:
+            panel = ps.review_panel(
+                s, panel_id, approve=body.approve, notes=body.notes,
+                author_user_id=(user.id if user else None),
+            )
+            return _panel_dict(s, panel, with_images=True)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+
+
+@router.post("/panels/{panel_id}/reopen")
+def reopen(panel_id: int, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        try:
+            return _panel_dict(s, ps.reopen_panel(s, panel_id), with_images=True)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+
+
+class NoteBody(BaseModel):
+    body: str = Field(min_length=1)
+
+
+@router.post("/panels/{panel_id}/notes")
+def add_note(panel_id: int, body: NoteBody, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        try:
+            ps.add_note(s, panel_id, body.body, author_user_id=(user.id if user else None))
+            return _panel_dict(s, ps.get_panel(s, panel_id), with_images=True)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+
+
+class NoteResolveBody(BaseModel):
+    resolved: bool
+
+
+@router.patch("/notes/{note_id}")
+def resolve_note(note_id: int, body: NoteResolveBody, user=Depends(get_optional_user)):
+    """Tick or untick a remark — the Miro board's "Fixed"."""
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        try:
+            note = ps.set_note_resolved(
+                s, note_id, body.resolved, user_id=(user.id if user else None)
+            )
+            return _panel_dict(s, ps.get_panel(s, note.panel_id), with_images=True)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+
+
 class AssignBody(BaseModel):
     panel_ids: list[int]
     #: None unassigns — "take these back off Quân" needs to be sayable.
