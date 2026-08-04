@@ -62,10 +62,7 @@ export function PanelProjectsPage() {
 
   return (
     <div className="shellpage pn__wide">
-      <PageHeader
-        title="Giantflow"
-        subtitle="Comic adaptation, panel by panel. A project is one comic; inside it, a batch per artist carries that artist's panels."
-      />
+      <PageHeader title="Giantflow" />
 
       {error ? <p className="inbox__err">{error}</p> : null}
       {projects === null ? <p className="rfoot">Loading…</p> : null}
