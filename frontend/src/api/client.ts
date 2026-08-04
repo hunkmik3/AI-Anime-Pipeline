@@ -2416,6 +2416,30 @@ export function renamePanelProject(id: number, name: string): Promise<PanelProje
   });
 }
 
+/**
+ * Persist a hand-arranged order.
+ *
+ * Ids not named keep their relative order after the ones that are, so a partial
+ * list — a filtered view, a stale tab — reorders what it knows without
+ * scattering the rest.
+ */
+export function reorderPanelProjects(ids: number[]): Promise<{ reordered: number }> {
+  return api<{ reordered: number }>("/api/flowstudio/projects/reorder", {
+    method: "POST",
+    body: JSON.stringify({ ids }),
+  });
+}
+
+export function reorderBatches(
+  projectId: number,
+  ids: number[],
+): Promise<{ reordered: number }> {
+  return api<{ reordered: number }>(
+    `/api/flowstudio/projects/${projectId}/batches/reorder`,
+    { method: "POST", body: JSON.stringify({ ids }) },
+  );
+}
+
 /** Point the project card at an image; null falls back to the first panel. */
 export function setPanelProjectCover(
   id: number,

@@ -130,6 +130,31 @@ def delete_project(project_id: int, user=Depends(get_optional_user)):
         return {"deleted": project_id}
 
 
+class ReorderBody(BaseModel):
+    #: Ids in their new order. Omitted ids keep their relative order, after these.
+    ids: list[int]
+
+
+@router.post("/projects/reorder")
+def reorder_projects(body: ReorderBody, user=Depends(get_optional_user)):
+    """Persist a hand-arranged project grid."""
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        n = ps.reorder_projects(s, body.ids)
+        return {"reordered": n}
+
+
+@router.post("/projects/{project_id}/batches/reorder")
+def reorder_batches(project_id: int, body: ReorderBody, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        try:
+            n = ps.reorder_batches(s, project_id, body.ids)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+        return {"reordered": n}
+
+
 class CoverBody(BaseModel):
     #: None clears it, falling back to the first panel.
     media_id: Optional[str] = None

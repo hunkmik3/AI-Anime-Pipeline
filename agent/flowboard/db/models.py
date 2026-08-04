@@ -332,6 +332,9 @@ class FlowProject(SQLModel, table=True):
     #: first batch, so a project looks like itself without anyone uploading
     #: anything — the same rule the episode cards use.
     cover_media_id: Optional[str] = None
+    #: Where the tile sits in the grid. Hand-arranged, because "which show is
+    #: active right now" is not something a creation date knows.
+    order_index: int = Field(default=0, index=True)
     created_by: Optional[uuid.UUID] = Field(
         default=None, foreign_key="app_user.id", index=True
     )

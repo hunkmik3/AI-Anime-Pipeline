@@ -8,12 +8,14 @@ import {
   listBatches,
   listPanelAssignees,
   listPanelProjects,
+  reorderBatches,
   updateBatch,
   type PanelBatch,
 } from "../api/client";
 import { PageHeader } from "../components/shell/PageHeader";
 import { PersonPicker } from "../components/PersonPicker";
 import { toast } from "../store/toast";
+import { useDragOrder } from "./useDragOrder";
 
 /**
  * Inside a comic: its batches, one per artist.
@@ -63,6 +65,11 @@ export function PanelBatchesPage() {
       setBusy(false);
     }
   }
+
+  const { list, dragProps } = useDragOrder(batches ?? [], async (ids) => {
+    await reorderBatches(pid, ids);
+    await load();
+  });
 
   const totals = (batches ?? []).reduce(
     (a, b) => ({
@@ -115,8 +122,14 @@ export function PanelBatchesPage() {
       ) : null}
 
       <ul className="pn__projects">
-        {(batches ?? []).map((b) => (
-          <BatchRow key={b.id} batch={b} people={people} onChanged={load} />
+        {list.map((b) => (
+          <BatchRow
+            key={b.id}
+            batch={b}
+            people={people}
+            onChanged={load}
+            drag={dragProps(b.id)}
+          />
         ))}
       </ul>
     </div>
@@ -127,10 +140,12 @@ function BatchRow({
   batch,
   people,
   onChanged,
+  drag,
 }: {
   batch: PanelBatch;
   people: { user_id: string; name: string }[];
   onChanged: () => Promise<void>;
+  drag: Record<string, unknown>;
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [importing, setImporting] = useState<string | null>(null);
@@ -158,8 +173,12 @@ function BatchRow({
   }
 
   return (
-    <li className="pn__project">
-      <Link to={`/giantflow/batch/${batch.id}`} className="pn__project-body">
+    <li className="pn__project" {...drag}>
+      <Link
+        to={`/giantflow/batch/${batch.id}`}
+        className="pn__project-body"
+        draggable={false}
+      >
         <div className="pn__project-name">{batch.name}</div>
         <div className="pn__project-stat">
           {batch.panel_count === 0 ? (

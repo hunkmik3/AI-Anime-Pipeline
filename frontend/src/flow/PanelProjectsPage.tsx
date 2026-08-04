@@ -5,6 +5,7 @@ import {
   createPanelProject,
   deletePanelProject,
   listPanelProjects,
+  reorderPanelProjects,
   setPanelProjectCover,
   thumbUrl,
   uploadFlowImage,
@@ -12,6 +13,7 @@ import {
 } from "../api/client";
 import { PageHeader } from "../components/shell/PageHeader";
 import { toast } from "../store/toast";
+import { useDragOrder } from "./useDragOrder";
 
 /**
  * Giantflow home — one card per comic being adapted.
@@ -38,6 +40,11 @@ export function PanelProjectsPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const { list, dragProps } = useDragOrder(projects ?? [], async (ids) => {
+    await reorderPanelProjects(ids);
+    await load();
+  });
 
   async function create() {
     const clean = name.trim();
@@ -94,8 +101,13 @@ export function PanelProjectsPage() {
       ) : null}
 
       <ul className="pn__tiles">
-        {(projects ?? []).map((p) => (
-          <ProjectCard key={p.id} project={p} onChanged={load} />
+        {list.map((p) => (
+          <ProjectCard
+            key={p.id}
+            project={p}
+            onChanged={load}
+            drag={dragProps(p.id)}
+          />
         ))}
       </ul>
     </div>
@@ -117,9 +129,11 @@ function pickImage(): Promise<File | null> {
 function ProjectCard({
   project,
   onChanged,
+  drag,
 }: {
   project: PanelProject;
   onChanged: () => Promise<void>;
+  drag: Record<string, unknown>;
 }) {
   const [busy, setBusy] = useState(false);
   const pct = project.panel_count
@@ -144,7 +158,7 @@ function ProjectCard({
   }
 
   return (
-    <li className="pn__tile">
+    <li className="pn__tile" {...drag}>
       <Link to={`/giantflow/${project.id}`} className="pn__tile-body">
         <div className="pn__tile-thumb">
           {project.thumb_media_id ? (

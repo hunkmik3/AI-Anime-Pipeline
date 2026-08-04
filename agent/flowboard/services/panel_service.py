@@ -72,7 +72,55 @@ def get_project(session: Session, project_id: int) -> FlowProject:
 
 def list_projects(session: Session) -> list[FlowProject]:
     return list(
-        session.exec(select(FlowProject).order_by(FlowProject.created_at.desc())).all()  # type: ignore[attr-defined]
+        session.exec(
+            select(FlowProject).order_by(FlowProject.order_index, FlowProject.id)
+        ).all()
+    )
+
+
+def reorder(session: Session, model, ids: list[int], *, scope=None) -> int:
+    """Write a hand-arranged order.
+
+    Takes the ids in their new order and numbers them 0..n. Ids that don't belong
+    (deleted meanwhile, or from another project) are skipped rather than
+    rejected: a stale tab should not make the whole drag fail, and the rows it
+    does know about still end up in the right sequence.
+
+    Anything the caller omitted keeps a number past the end, so a partial list
+    reorders what it names without scattering the rest.
+    """
+    rows = {r.id: r for r in session.exec(
+        select(model) if scope is None else select(model).where(scope)
+    ).all()}
+    seen: set[int] = set()
+    i = 0
+    for rid in ids:
+        row = rows.get(rid)
+        if row is None or rid in seen:
+            continue
+        seen.add(rid)
+        row.order_index = i
+        session.add(row)
+        i += 1
+    # Everything not named keeps its relative order, after the named ones.
+    for rid, row in sorted(rows.items(), key=lambda kv: (kv[1].order_index, kv[0])):
+        if rid in seen:
+            continue
+        row.order_index = i
+        session.add(row)
+        i += 1
+    session.commit()
+    return len(seen)
+
+
+def reorder_projects(session: Session, ids: list[int]) -> int:
+    return reorder(session, FlowProject, ids)
+
+
+def reorder_batches(session: Session, project_id: int, ids: list[int]) -> int:
+    get_project(session, project_id)
+    return reorder(
+        session, FlowBatch, ids, scope=(FlowBatch.project_id == project_id)
     )
 
 

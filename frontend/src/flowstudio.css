@@ -1652,3 +1652,12 @@
 }
 .pn__tile-btn:hover { background: rgba(10,13,18,.95); }
 .pn__tile-btn--danger:hover { border-color: #ef4444; color: #fca5a5; }
+
+/* Drag-to-reorder. The cursor is the only affordance — a dedicated grab handle
+   would cost a corner of every tile for something the whole tile can do. */
+.pn__tile, .pn__project { cursor: grab; }
+.pn__tile:active, .pn__project:active { cursor: grabbing; }
+/* The card being dragged fades so the gap it will leave is visible. */
+.pn__tile[draggable="true"]:active, .pn__project[draggable="true"]:active { opacity: .55; }
+/* Buttons and the picker inside a draggable card must stay clickable. */
+.pn__tile-acts, .pn__project-acts { cursor: default; }
