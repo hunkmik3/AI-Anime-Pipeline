@@ -6,9 +6,9 @@ def test_lists_all_registered_models(client):
     resp = client.get("/api/video/models")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["default_model_id"] == "flow-default"
+    assert body["default_model_id"] == "seedance-2-0"
     ids = {m["model_id"] for m in body["models"]}
-    assert {"flow-default", "seedance-1-5-pro", "seedance-2-0"} <= ids
+    assert {"seedance-1-5-pro", "seedance-2-0"} <= ids
 
 
 def test_capability_block_is_present(client):

@@ -18,7 +18,7 @@ import httpx
 import pytest
 
 from flowboard.services.llm import secrets
-from flowboard.services.video import VideoError, dreamina, get_video_provider, registry as _r
+from flowboard.services.video import VideoError, avis, get_video_provider, registry as _r
 from flowboard.services.video.ref_ordering import resolve_primary_media_id
 from flowboard.worker import processor as proc
 from tests.conftest import make_shot
@@ -130,41 +130,39 @@ def test_custom_upload_variant_to_character_node(client):
 
 
 @pytest.fixture
-def _dreamina_env(monkeypatch, tmp_path):
+def _avis_env(monkeypatch, tmp_path):
     monkeypatch.setenv("FLOWBOARD_SECRETS_PATH", str(tmp_path / "secrets.json"))
-    secrets.set_api_key("dreamina", "ark-test-key")
+    secrets.set_api_key("avis", "avis-test-key")
     _r.register_defaults()
     yield
-    dreamina.reset_http_client_factory()
+    avis.reset_http_client_factory()
 
 
 @pytest.mark.asyncio
-async def test_standalone_custom_ref_in_video_gen(_dreamina_env):
+async def test_standalone_custom_ref_in_video_gen(_avis_env):
     """A standalone custom ref (just another media URL in reference_images)
     reaches the API as an additional reference_image block, after the
     canvas refs, preserving order."""
     seen: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.method == "POST" and request.url.path.endswith("/tasks"):
+        if request.method == "POST" and request.url.path.endswith("/video/generations"):
             seen.append(json.loads(request.content))
-            return httpx.Response(200, json={"id": "cgt-815"})
-        if request.method == "GET" and request.url.path.endswith("/tasks/cgt-815"):
-            return httpx.Response(200, json={
-                "id": "cgt-815", "status": "succeeded",
-                "content": {"video_url": "https://signed.example/c.mp4"},
-                "usage": {"completion_tokens": 108900},
-                "duration": 5, "resolution": "720p", "ratio": "16:9", "framespersecond": 24,
-            })
+            return httpx.Response(200, json={"data": {"taskId": "cgt-815"}, "success": True})
+        if request.method == "GET" and "/video/tasks/" in request.url.path:
+            return httpx.Response(200, json={"success": True, "data": {
+                "taskId": "cgt-815", "status": "succeeded",
+                "videoUrl": "https://signed.example/c.mp4",
+                "duration": 5, "resolution": "720p", "ratio": "16:9"}})
         if request.url.host == "signed.example":
             return httpx.Response(200, content=b"MP4" * 40)
         return httpx.Response(500, json={"error": "x"})
 
     transport = httpx.MockTransport(handler)
-    dreamina.set_http_client_factory(lambda: httpx.AsyncClient(transport=transport, timeout=5.0))
+    avis.set_http_client_factory(lambda: httpx.AsyncClient(transport=transport, timeout=5.0))
 
     result, err = await proc._handle_gen_video({
-        "model_id": "seedance-2-0-byteplus",
+        "model_id": "seedance-2-0",
         "motion_prompt": "@image1 @image2 in a room",
         "reference_images": ["https://e/kenji.png", "https://e/custom-upload.png"],
         "reference_labels": ["@image1", "@image2"],
@@ -175,12 +173,14 @@ async def test_standalone_custom_ref_in_video_gen(_dreamina_env):
     })
 
     assert err is None, result
-    img_blocks = [b for b in seen[0]["content"] if b["type"] == "image_url"]
-    assert [b["image_url"]["url"] for b in img_blocks] == [
+    # Avis' part naming; the point of the test is that a standalone custom
+    # upload rides alongside a canvas ref IN ORDER, which is provider-agnostic.
+    img_blocks = [b for b in seen[0]["content"] if b["type"] == "imageUrl"]
+    assert [b["url"] for b in img_blocks] == [
         "https://e/kenji.png",
         "https://e/custom-upload.png",
     ]
-    assert all(b.get("role") == "reference_image" for b in img_blocks)
+    assert all(b.get("role") == "referenceImage" for b in img_blocks)
 
 
 # ── Phase 8.1.5c: Seedance 2.0 duration range 4..15 ──────────────────────
@@ -188,18 +188,18 @@ async def test_standalone_custom_ref_in_video_gen(_dreamina_env):
 
 @pytest.mark.parametrize("dur", [4, 5, 7, 11, 15])
 @pytest.mark.asyncio
-async def test_seedance_2_0_accepts_duration_4_to_15(_dreamina_env, dur):
+async def test_seedance_2_0_accepts_duration_4_to_15(_avis_env, dur):
     """The expanded 4..15 capability lets the slider's values reach the API
     (top-level `duration` field). Live test confirms ARK actually honors them."""
     seen: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(json.loads(request.content))
-        return httpx.Response(200, json={"id": "cgt-dur"})
+        return httpx.Response(200, json={"data": {"taskId": "cgt-dur"}, "success": True})
 
     transport = httpx.MockTransport(handler)
-    dreamina.set_http_client_factory(lambda: httpx.AsyncClient(transport=transport, timeout=5.0))
-    provider = get_video_provider("seedance-2-0-byteplus")
+    avis.set_http_client_factory(lambda: httpx.AsyncClient(transport=transport, timeout=5.0))
+    provider = get_video_provider("seedance-2-0")
 
     await provider.submit({
         "reference_images": ["https://e/a.png", "https://e/b.png"],
@@ -213,9 +213,9 @@ async def test_seedance_2_0_accepts_duration_4_to_15(_dreamina_env, dur):
 
 @pytest.mark.parametrize("dur", [3, 16])
 @pytest.mark.asyncio
-async def test_seedance_2_0_rejects_out_of_range_duration(_dreamina_env, dur):
+async def test_seedance_2_0_rejects_out_of_range_duration(_avis_env, dur):
     """Outside 4..15 → bad_input before any HTTP call (capability gate)."""
-    provider = get_video_provider("seedance-2-0-byteplus")
+    provider = get_video_provider("seedance-2-0")
     with pytest.raises(VideoError) as exc:
         await provider.submit({
             "reference_images": ["https://e/a.png", "https://e/b.png"],

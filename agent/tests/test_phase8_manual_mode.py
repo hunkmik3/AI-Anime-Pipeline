@@ -24,7 +24,7 @@ from flowboard.db import get_session
 from flowboard.db.models import Node, Project, Scene, Shot
 from flowboard.services import prompt_synth
 from flowboard.services.llm import secrets
-from flowboard.services.video import dreamina, registry as _r
+from flowboard.services.video import avis, registry as _r
 from flowboard.services.video.ref_ordering import order_refs_by_label
 from flowboard.worker import processor as proc
 from tests.conftest import make_shot
@@ -34,12 +34,12 @@ from tests.conftest import make_shot
 
 
 @pytest.fixture
-def _dreamina_env(monkeypatch, tmp_path):
+def _avis_env(monkeypatch, tmp_path):
     monkeypatch.setenv("FLOWBOARD_SECRETS_PATH", str(tmp_path / "secrets.json"))
-    secrets.set_api_key("dreamina", "ark-test-key")
+    secrets.set_api_key("avis", "avis-test-key")
     _r.register_defaults()
     yield
-    dreamina.reset_http_client_factory()
+    avis.reset_http_client_factory()
 
 
 def _factory_with_handler(handler):
@@ -57,19 +57,18 @@ def _submit_poll_download_handler(seen_bodies: list[dict]):
     submit body into ``seen_bodies``."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.method == "POST" and request.url.path.endswith("/tasks"):
+        if request.method == "POST" and request.url.path.endswith("/video/generations"):
             seen_bodies.append(json.loads(request.content))
-            return httpx.Response(200, json={"id": "cgt-phase8-test"})
-        if request.method == "GET" and request.url.path.endswith("/tasks/cgt-phase8-test"):
-            return httpx.Response(200, json={
-                "id": "cgt-phase8-test",
-                "model": "dreamina-seedance-2-0-260128",
-                "status": "succeeded",
-                "content": {"video_url": "https://signed.example/clip.mp4"},
-                "usage": {"completion_tokens": 108900, "total_tokens": 108900},
-                "duration": 5, "resolution": "720p", "ratio": "16:9",
-                "framespersecond": 24, "seed": 1,
-            })
+            return httpx.Response(200, json={"data": {"taskId": "cgt-phase8-test"}, "success": True})
+        if request.method == "GET" and "/video/tasks/" in request.url.path:
+            return httpx.Response(200, json={"success": True, "data": {
+                    "taskId": "cgt-phase8-test",
+                    "status": "succeeded",
+                    "videoUrl": "https://signed.example/clip.mp4",
+                    "downloadUrl": "https://signed.example/clip.mp4",
+                    "usage": {"usdCost": 0.42},
+                    "duration": 5, "resolution": "720p", "ratio": "16:9",
+                }})
         if request.url.host == "signed.example":
             return httpx.Response(200, content=b"FAKE_MP4" * 50)
         return httpx.Response(500, json={"error": "unexpected"})
@@ -109,11 +108,11 @@ def test_order_refs_by_label_all_null_is_noop():
 
 
 @pytest.mark.asyncio
-async def test_manual_mode_uses_textarea_content_as_prompt(_dreamina_env):
+async def test_manual_mode_uses_textarea_content_as_prompt(_avis_env):
     """A manually-pasted prompt reaches the API text block verbatim — only
     the --rt/--rs inline flags are appended; no LLM rewrite, no Bible."""
     seen_bodies: list[dict] = []
-    dreamina.set_http_client_factory(
+    avis.set_http_client_factory(
         _factory_with_handler(_submit_poll_download_handler(seen_bodies))
     )
 
@@ -122,7 +121,7 @@ async def test_manual_mode_uses_textarea_content_as_prompt(_dreamina_env):
         "Visual Style: Makoto Shinkai. Shot 1 (0-5s): they walk."
     )
     result, err = await proc._handle_gen_video({
-        "model_id": "seedance-2-0-byteplus",
+        "model_id": "seedance-2-0",
         "motion_prompt": pasted,
         "reference_images": ["https://e/kenji.png", "https://e/ren.png"],
         "duration_seconds": 5,
@@ -133,26 +132,31 @@ async def test_manual_mode_uses_textarea_content_as_prompt(_dreamina_env):
 
     assert err is None, result
     text_block = next(b for b in seen_bodies[0]["content"] if b["type"] == "text")
-    # Prompt already carries @imageN tags → no positional tags prepended;
-    # only the inline aspect/resolution flags are appended.
-    assert text_block["text"] == f"{pasted} --rt 16:9 --rs 720p"
+    # Prompt already carries @imageN tags → no positional tags prepended, and
+    # nothing appended either: Avis takes aspect and resolution as structured
+    # fields, where the ARK-direct path used inline `--rt/--rs` flags. Verbatim
+    # is what this test is about, so that difference makes it stricter, not
+    # weaker.
+    assert text_block["text"] == pasted
+    assert seen_bodies[0]["ratio"] == "16:9"
+    assert seen_bodies[0]["resolution"] == "720p"
 
 
 # ── 4: worker reorders reference_image blocks by label (wiring) ──────────
 
 
 @pytest.mark.asyncio
-async def test_manual_mode_worker_reorders_refs_by_label(_dreamina_env):
+async def test_manual_mode_worker_reorders_refs_by_label(_avis_env):
     """The reference_labels param flows through the worker and reorders the
     reference_image content blocks before submit so @imageN binds right."""
     seen_bodies: list[dict] = []
-    dreamina.set_http_client_factory(
+    avis.set_http_client_factory(
         _factory_with_handler(_submit_poll_download_handler(seen_bodies))
     )
 
     # Edge order puts ren first, but ren is @image2 and kenji is @image1.
     result, err = await proc._handle_gen_video({
-        "model_id": "seedance-2-0-byteplus",
+        "model_id": "seedance-2-0",
         "motion_prompt": "@image1 and @image2 walk together",
         "reference_images": ["https://e/ren.png", "https://e/kenji.png"],
         "reference_labels": ["@image2", "@image1"],
@@ -163,10 +167,12 @@ async def test_manual_mode_worker_reorders_refs_by_label(_dreamina_env):
     })
 
     assert err is None, result
-    image_blocks = [b for b in seen_bodies[0]["content"] if b["type"] == "image_url"]
-    assert all(b.get("role") == "reference_image" for b in image_blocks)
-    # kenji (@image1) must now be the FIRST reference_image block.
-    assert [b["image_url"]["url"] for b in image_blocks] == [
+    # Avis names the part `imageUrl` and marks it `referenceImage`.
+    image_blocks = [b for b in seen_bodies[0]["content"] if b["type"] == "imageUrl"]
+    assert all(b.get("role") == "referenceImage" for b in image_blocks), seen_bodies[0]
+    # kenji (@image1) must now be FIRST — the ordering is the thing under test,
+    # and it is provider-independent.
+    assert [b["url"] for b in image_blocks] == [
         "https://e/kenji.png",
         "https://e/ren.png",
     ]

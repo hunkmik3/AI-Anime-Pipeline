@@ -156,7 +156,7 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
     """Thin dispatcher: resolve model → run provider → translate result.
 
     Phase 5 refactor — the heavy lifting moved into
-    ``services/video/{flow,dreamina}.py``. The handler:
+    ``services/video/avis.py``. The handler:
 
     1. Picks a model from ``params["model_id"]``, falling back to the
        process-wide default (``flow-default``). Per-project + per-node
@@ -180,7 +180,7 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
         get_video_model,
     )
     from flowboard.services.video import registry as _video_registry
-    from flowboard.services.video.dreamina import media_id_to_public_url
+    from flowboard.services.video.avis import media_id_to_public_url
 
     _video_registry.register_defaults()
 

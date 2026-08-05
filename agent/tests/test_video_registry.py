@@ -18,18 +18,29 @@ def _ensure_defaults_registered():
     yield
 
 
-def test_default_model_is_flow():
-    assert get_default_model_id() == "flow-default"
+def test_default_model_is_a_registered_model():
+    # The fallback must name a model `register_defaults` actually registers. It
+    # used to be "flow-default", which stopped existing when the Flow bridge was
+    # removed — an unset env var then failed at generation time, not at boot.
+    from flowboard.services.video.registry import FALLBACK_VIDEO_MODEL, is_registered
+
+    assert get_default_model_id() == FALLBACK_VIDEO_MODEL
+    assert is_registered(FALLBACK_VIDEO_MODEL)
 
 
 def test_models_registered_at_boot():
     ids = {m.model_id for m in list_video_models()}
+    # Everything routes through Avis since the Flow bridge and the BytePlus-direct
+    # path were removed.
     assert ids == {
-        "flow-default",
         "seedance-1-5-pro",
+        "seedance-1-0-pro",
+        "seedance-1-0-pro-fast",
         "seedance-2-0",
-        "seedance-2-0-byteplus",
+        "dreamina-seedance-2-0-fast",
+        "dreamina-seedance-2-0-mini",
     }
+    assert {m.provider_name for m in list_video_models()} == {"avis"}
 
 
 def test_unknown_model_raises_keyerror():
@@ -39,8 +50,9 @@ def test_unknown_model_raises_keyerror():
 
 def test_seedance_1_5_pro_is_i2v_only():
     entry = get_video_model("seedance-1-5-pro")
-    assert entry.provider_name == "dreamina"
-    assert entry.upstream_model_id == "seedance-1-5-pro-251215"
+    # Re-pointed to Avis; the BytePlus-direct entry it used to shadow is gone.
+    assert entry.provider_name == "avis"
+    assert entry.upstream_model_id == "seedance-1-5-pro"
     assert entry.capabilities.supports_multi_ref is False
     assert entry.capabilities.max_refs == 0
     # Per the contract §2.6 keyframe interpolation IS supported on 1.5 Pro
@@ -60,26 +72,8 @@ def test_seedance_2_0_routes_through_avis():
     assert entry.capabilities.supports_audio_ref is True
     # Person-driven (KYC) supported on Avis Seedance 2.0; not on the byteplus path.
     assert entry.capabilities.supports_kyc is True
-    assert get_video_model("seedance-2-0-byteplus").capabilities.supports_kyc is False
 
 
-def test_seedance_2_0_byteplus_keeps_direct_path():
-    # The BytePlus-direct path is retained under a distinct id, still r2v+audio.
-    entry = get_video_model("seedance-2-0-byteplus")
-    assert entry.provider_name == "dreamina"
-    assert entry.upstream_model_id == "dreamina-seedance-2-0-260128"
-    assert entry.capabilities.supports_multi_ref is True
-    assert entry.capabilities.supports_audio_ref is True
-
-
-def test_flow_capabilities_match_legacy_surface():
-    entry = get_video_model("flow-default")
-    assert entry.provider_name == "flow"
-    assert entry.capabilities.supports_multi_ref is False
-    assert entry.capabilities.supports_audio_toggle is False
-    # Aspect ratios are the human strings; the Flow provider translates
-    # them to the enum at submit time.
-    assert "16:9" in entry.capabilities.aspect_ratios
 
 
 def test_capability_is_frozen_dataclass():

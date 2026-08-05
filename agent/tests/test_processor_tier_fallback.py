@@ -99,23 +99,6 @@ async def test_gen_image_fails_loud_when_no_tier_signal_anywhere():
         m.return_value.gen_image.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_gen_video_fails_loud_when_no_tier_signal_anywhere():
-    """Same regression guard as above, gen_video path."""
-    flow_client._paygate_tier = None
-
-    with patch("flowboard.worker.processor.get_flow_sdk") as m:
-        m.return_value.gen_video = AsyncMock(return_value={
-            "operation_names": [],
-        })
-        result, err = await proc._handle_gen_video({
-            "prompt": "x",
-            "project_id": "8b62385c-4916-4abd-b01f-b28173d8eb04",
-            "start_media_id": "src-1",
-        })
-        assert err == "paygate_tier_unknown"
-        m.return_value.gen_video.assert_not_called()
-
 
 @pytest.mark.asyncio
 async def test_edit_image_fails_loud_when_no_tier_signal_anywhere():
@@ -135,28 +118,6 @@ async def test_edit_image_fails_loud_when_no_tier_signal_anywhere():
         assert err == "paygate_tier_unknown"
         m.return_value.edit_image.assert_not_called()
 
-
-@pytest.mark.asyncio
-async def test_gen_video_applies_same_resolution_chain():
-    """Resolution chain must be consistent across handlers — gen_video
-    has its own copy of the lookup, so verify it behaves the same."""
-    flow_client._paygate_tier = "PAYGATE_TIER_TWO"
-
-    with patch("flowboard.worker.processor.get_flow_sdk") as m:
-        # Stub the dispatch to return a synthesised "no operations"
-        # so the handler exits before polling. We only care about the
-        # tier arg passed to gen_video.
-        m.return_value.gen_video = AsyncMock(return_value={
-            "operation_names": [],
-        })
-        await proc._handle_gen_video({
-            "prompt": "x",
-            "project_id": "8b62385c-4916-4abd-b01f-b28173d8eb04",
-            "start_media_id": "src-1",
-            # no paygate_tier — fallback path
-        })
-        kwargs = m.return_value.gen_video.call_args.kwargs
-        assert kwargs["paygate_tier"] == "PAYGATE_TIER_TWO"
 
 
 @pytest.mark.asyncio

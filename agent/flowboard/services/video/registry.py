@@ -35,7 +35,7 @@ class VideoModelEntry:
     """One row in the model dispatch table."""
 
     model_id: str                           # frontend dropdown key (stable across redeploys)
-    provider_name: str                      # "flow" | "dreamina"
+    provider_name: str                      # "avis"
     display_name: str                       # human label for UI
     upstream_model_id: Optional[str]        # what gets sent to the provider API; None for Flow (model is implicit in extension config)
     capabilities: VideoProviderCapability
@@ -86,23 +86,27 @@ def get_default_model_id() -> str:
     """Process-wide default video model.
 
     Resolved from ``FLOWBOARD_DEFAULT_VIDEO_MODEL`` (config.DEFAULT_VIDEO_MODEL),
-    falling back to ``"flow-default"`` when unset or pointing at a model that
-    isn't registered. Per-project + per-node overrides happen above this layer
+    falling back to ``FALLBACK_VIDEO_MODEL`` when unset or pointing at a model
+    that isn't registered. That fallback used to be ``"flow-default"``, which
+    stopped being a registered model when the Flow bridge was turned off — so an
+    unset env var produced ``unknown_video_model:flow-default`` at generation
+    time rather than a working default. Per-project + per-node overrides happen above this layer
     (see worker resolution chain in processor._handle_gen_video).
     """
     from flowboard.config import DEFAULT_VIDEO_MODEL
 
     if DEFAULT_VIDEO_MODEL and DEFAULT_VIDEO_MODEL in _MODELS:
         return DEFAULT_VIDEO_MODEL
-    if DEFAULT_VIDEO_MODEL and DEFAULT_VIDEO_MODEL != "flow-default":
+    if DEFAULT_VIDEO_MODEL and DEFAULT_VIDEO_MODEL != FALLBACK_VIDEO_MODEL:
         import logging
 
         logging.getLogger(__name__).warning(
             "FLOWBOARD_DEFAULT_VIDEO_MODEL=%r is not a registered model; "
-            "falling back to flow-default",
+            "falling back to %s",
             DEFAULT_VIDEO_MODEL,
+            FALLBACK_VIDEO_MODEL,
         )
-    return "flow-default"
+    return FALLBACK_VIDEO_MODEL
 
 
 def is_registered(model_id: str) -> bool:
@@ -123,6 +127,11 @@ def reset_for_tests() -> None:
 # call to register_defaults() — invoked from main.py app startup AND
 # from worker module init — wires the registry.
 
+#: Used when nothing is configured. Must always name a model `register_defaults`
+#: actually registers — a fallback pointing at an absent model is worse than no
+#: fallback, because it fails at generation time instead of at boot.
+FALLBACK_VIDEO_MODEL = "seedance-2-0"
+
 _DEFAULTS_REGISTERED = False
 
 
@@ -133,27 +142,12 @@ def register_defaults() -> None:
         return
 
     # Local imports break the otherwise-circular registry→provider→base→registry chain.
-    from .dreamina import (
-        DreaminaVideoProvider,
-        SEEDANCE_1_5_PRO_CAPABILITY,
-        SEEDANCE_2_0_CAPABILITY,
-    )
     from .avis import (
         AvisVideoProvider,
         AVIS_SEEDANCE_2_0_CAPABILITY,
         AVIS_SEEDANCE_I2V_CAPABILITY,
     )
 
-    register(
-        VideoModelEntry(
-            model_id="seedance-1-5-pro",
-            provider_name="dreamina",
-            display_name="Dreamina Seedance 1.5 Pro (i2v)",
-            upstream_model_id="seedance-1-5-pro-251215",
-            capabilities=SEEDANCE_1_5_PRO_CAPABILITY,
-            factory=lambda entry: DreaminaVideoProvider(entry),
-        )
-    )
     register(
         VideoModelEntry(
             model_id="seedance-2-0",

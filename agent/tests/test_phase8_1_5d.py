@@ -19,18 +19,18 @@ import pytest
 
 from flowboard.services.llm import secrets
 from flowboard.services.video import get_video_model, get_video_provider, registry as _r
-from flowboard.services.video import dreamina
+from flowboard.services.video import avis
 from flowboard.worker import processor as proc
 from tests.conftest import make_shot
 
 
 @pytest.fixture
-def _dreamina_env(monkeypatch, tmp_path):
+def _avis_env(monkeypatch, tmp_path):
     monkeypatch.setenv("FLOWBOARD_SECRETS_PATH", str(tmp_path / "secrets.json"))
-    secrets.set_api_key("dreamina", "ark-test-key")
+    secrets.set_api_key("avis", "avis-test-key")
     _r.register_defaults()
     yield
-    dreamina.reset_http_client_factory()
+    avis.reset_http_client_factory()
 
 
 def _factory(handler):
@@ -41,25 +41,24 @@ def _factory(handler):
 # ── capability ───────────────────────────────────────────────────────────
 
 
-def test_seedance_2_0_supports_video_ref(_dreamina_env):
+def test_seedance_2_0_supports_video_ref(_avis_env):
     assert get_video_model("seedance-2-0").capabilities.supports_video_ref is True
     assert get_video_model("seedance-1-5-pro").capabilities.supports_video_ref is False
-    assert get_video_model("flow-default").capabilities.supports_video_ref is False
 
 
 # ── provider emits the block ──────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_video_ref_emits_reference_video_block(_dreamina_env):
+async def test_video_ref_emits_reference_video_block(_avis_env):
     seen: list[dict] = []
 
     def handler(req: httpx.Request) -> httpx.Response:
         seen.append(json.loads(req.content))
-        return httpx.Response(200, json={"id": "cgt-vref"})
+        return httpx.Response(200, json={"data": {"taskId": "cgt-vref"}, "success": True})
 
-    dreamina.set_http_client_factory(_factory(handler))
-    provider = get_video_provider("seedance-2-0-byteplus")
+    avis.set_http_client_factory(_factory(handler))
+    provider = get_video_provider("seedance-2-0")
     res = await provider.submit({
         "reference_images": ["https://e/kenji.png"],
         "reference_videos": ["https://e/clip.mp4"],
@@ -70,24 +69,26 @@ async def test_video_ref_emits_reference_video_block(_dreamina_env):
     })
     assert res["external_job_id"] == "cgt-vref"
     blocks = seen[0]["content"]
-    vblocks = [b for b in blocks if b.get("type") == "video_url"]
-    assert len(vblocks) == 1
-    assert vblocks[0]["role"] == "reference_video"
-    assert vblocks[0]["video_url"]["url"] == "https://e/clip.mp4"
-    # image ref still present → r2v (no first_frame block)
-    assert any(b.get("role") == "reference_image" for b in blocks)
-    assert not any(b.get("role") == "first_frame" for b in blocks)
+    # Avis' own shape, not ARK's: a flat `videoUrl` part rather than a
+    # `video_url` block carrying a `role`. The behaviour under test — that a
+    # reference video reaches the API — is the same one; only the wire is.
+    vblocks = [b for b in blocks if b.get("type") == "videoUrl"]
+    assert len(vblocks) == 1, blocks
+    assert vblocks[0]["url"] == "https://e/clip.mp4"
+    # image ref still present → r2v, so it is a referenceImage and not a start frame
+    assert any(b.get("role") == "referenceImage" for b in blocks), blocks
+    assert not any(b.get("role") == "firstFrame" for b in blocks), blocks
 
 
 @pytest.mark.asyncio
-async def test_video_ref_dropped_with_warning_on_1_5(_dreamina_env):
+async def test_video_ref_dropped_with_warning_on_1_5(_avis_env):
     seen: list[dict] = []
 
     def handler(req: httpx.Request) -> httpx.Response:
         seen.append(json.loads(req.content))
-        return httpx.Response(200, json={"id": "cgt-x"})
+        return httpx.Response(200, json={"data": {"taskId": "cgt-x"}, "success": True})
 
-    dreamina.set_http_client_factory(_factory(handler))
+    avis.set_http_client_factory(_factory(handler))
     provider = get_video_provider("seedance-1-5-pro")
     res = await provider.submit({
         "first_frame_url": "https://e/frame.png",
@@ -105,27 +106,34 @@ async def test_video_ref_dropped_with_warning_on_1_5(_dreamina_env):
 
 
 @pytest.mark.asyncio
-async def test_worker_forwards_reference_videos(_dreamina_env):
+async def test_worker_forwards_reference_videos(_avis_env):
     seen: list[dict] = []
 
     def handler(req: httpx.Request) -> httpx.Response:
-        if req.method == "POST" and req.url.path.endswith("/tasks"):
+        # Avis' endpoints and envelope, not ARK's: POST /video/generations to
+        # submit, GET /video/tasks/{id} to poll, and a flat `videoUrl`.
+        if req.method == "POST" and req.url.path.endswith("/video/generations"):
             seen.append(json.loads(req.content))
-            return httpx.Response(200, json={"id": "cgt-w"})
-        if req.method == "GET" and req.url.path.endswith("/tasks/cgt-w"):
+            return httpx.Response(200, json={"data": {"taskId": "cgt-w"}, "success": True})
+        if req.method == "GET" and "/video/tasks/" in req.url.path:
             return httpx.Response(200, json={
-                "id": "cgt-w", "status": "succeeded",
-                "content": {"video_url": "https://signed.example/c.mp4"},
-                "usage": {"completion_tokens": 108900},
-                "duration": 5, "resolution": "720p", "ratio": "16:9", "framespersecond": 24,
+                "success": True,
+                "data": {
+                    "taskId": "cgt-w",
+                    "status": "succeeded",
+                    "videoUrl": "https://signed.example/c.mp4",
+                    "duration": 5,
+                    "resolution": "720p",
+                    "ratio": "16:9",
+                },
             })
         if req.url.host == "signed.example":
             return httpx.Response(200, content=b"MP4" * 40)
         return httpx.Response(500, json={"error": "x"})
 
-    dreamina.set_http_client_factory(_factory(handler))
+    avis.set_http_client_factory(_factory(handler))
     result, err = await proc._handle_gen_video({
-        "model_id": "seedance-2-0-byteplus",
+        "model_id": "seedance-2-0",
         "motion_prompt": "@image1 + ref clip",
         "reference_images": ["https://e/a.png"],
         "reference_videos": ["https://e/clip.mp4"],
@@ -135,12 +143,12 @@ async def test_worker_forwards_reference_videos(_dreamina_env):
         "project_id": "8b62385c-4916-4abd-b01f-b28173d8eb04",
     })
     assert err is None, result
-    vblocks = [b for b in seen[0]["content"] if b.get("type") == "video_url"]
-    assert [b["video_url"]["url"] for b in vblocks] == ["https://e/clip.mp4"]
+    vblocks = [b for b in seen[0]["content"] if b.get("type") == "videoUrl"]
+    assert [b["url"] for b in vblocks] == ["https://e/clip.mp4"]
 
 
 @pytest.mark.asyncio
-async def test_avis_hoists_bare_video_ref_to_r2(_dreamina_env, monkeypatch):
+async def test_avis_hoists_bare_video_ref_to_r2(_avis_env, monkeypatch):
     """Avis sends image refs inline (no R2) but has NO inline video upload, so a
     bare media_id video ref MUST still be hoisted to a public R2 URL."""
     secrets.set_api_key("avis", "avis-test-key")
@@ -148,7 +156,7 @@ async def test_avis_hoists_bare_video_ref_to_r2(_dreamina_env, monkeypatch):
 
     # Fake the R2 hoist (function-level import in the worker reads this attr).
     monkeypatch.setattr(
-        dreamina,
+        avis,
         "media_id_to_public_url",
         lambda mid, project_id=None: f"https://r2.example/{mid}.mp4",
     )
@@ -183,12 +191,12 @@ async def test_avis_hoists_bare_video_ref_to_r2(_dreamina_env, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_video_refs_ordered_by_label(_dreamina_env, monkeypatch):
+async def test_video_refs_ordered_by_label(_avis_env, monkeypatch):
     """reference_videos reorder by @video label digit (parity with @image)."""
     secrets.set_api_key("avis", "k")
     _r.register_defaults()
     monkeypatch.setattr(
-        dreamina, "media_id_to_public_url",
+        avis, "media_id_to_public_url",
         lambda mid, project_id=None: f"https://r2/{mid}.mp4",
     )
     captured: dict = {}
