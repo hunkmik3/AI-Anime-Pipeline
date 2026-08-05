@@ -7,13 +7,21 @@ import {
   importPanelFolder,
   listBatches,
   listPanelAssignees,
+  exportProject,
+  listFlowMembers,
   listPanelProjects,
+  removeFlowMember,
   reorderBatches,
+  setFlowMember,
+  thumbUrl,
   updateBatch,
+  type FlowMember,
   type PanelBatch,
+  type PanelProject,
 } from "../api/client";
-import { PageHeader } from "../components/shell/PageHeader";
 import { PersonPicker } from "../components/PersonPicker";
+import { useGiantflowRole } from "../store/giantflowRole";
+import { PanelHero, STAGES, sumCounts } from "./PanelHero";
 import { toast } from "../store/toast";
 import { useDragOrder } from "./useDragOrder";
 
@@ -28,18 +36,20 @@ import { useDragOrder } from "./useDragOrder";
 export function PanelBatchesPage() {
   const { projectId } = useParams();
   const pid = Number(projectId);
+  const { can } = useGiantflowRole();
   const [batches, setBatches] = useState<PanelBatch[] | null>(null);
-  const [projectName, setProjectName] = useState("");
+  const [project, setProject] = useState<PanelProject | null>(null);
   const [people, setPeople] = useState<{ user_id: string; name: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [showMembers, setShowMembers] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const [rows, projects] = await Promise.all([listBatches(pid), listPanelProjects()]);
       setBatches(rows);
-      setProjectName(projects.find((p) => p.id === pid)?.name ?? "");
+      setProject(projects.find((p) => p.id === pid) ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -55,34 +65,80 @@ export function PanelBatchesPage() {
     await load();
   });
 
-  const totals = (batches ?? []).reduce(
+  const rows = batches ?? [];
+  const totals = rows.reduce(
     (a, b) => ({
       panels: a.panels + b.panel_count,
-      approved: a.approved + b.approved_count,
+      notes: a.notes + b.open_notes,
     }),
-    { panels: 0, approved: 0 },
+    { panels: 0, notes: 0 },
   );
+  // The project-wide spread, rolled up from its batches — no extra request, the
+  // batch list already carries each one's counts.
+  const counts = sumCounts(rows.map((b) => b.status_counts ?? {}));
 
   return (
     <div className="shellpage pn__wide">
-      <PageHeader
-        crumb={<Link to="/giantflow">Project</Link>}
-        title={projectName || "Project"}
-        subtitle={
-          batches
-            ? `${batches.length} batch${batches.length === 1 ? "" : "es"} · ${totals.approved} / ${totals.panels} panels approved`
-            : undefined
-        }
+      <PanelHero
+        crumb={<Link to="/giantflow">← Project</Link>}
+        title={project?.name || "Project"}
+        thumbMediaId={project?.thumb_media_id}
+        counts={counts}
+        total={totals.panels}
+        facts={[
+          `${rows.length} batch${rows.length === 1 ? "" : "es"}`,
+          `${totals.panels} panel${totals.panels === 1 ? "" : "s"}`,
+          ...(totals.notes ? [`${totals.notes} open note${totals.notes === 1 ? "" : "s"}`] : []),
+        ]}
         actions={
-          <button
-            className="btn2 btn2--primary"
-            disabled={adding}
-            onClick={() => setAdding(true)}
-          >
-            + Add batches
-          </button>
+          <>
+            {/* Always shown, disabled until there is something to take. Hiding
+                it until the first approval made the whole export feature
+                invisible to anyone who had not seen it work already. */}
+            <button
+              className="btn2"
+              disabled={!counts.approved}
+              title={
+                counts.approved
+                  ? `Download ${counts.approved} approved panel(s) as a zip`
+                  : "Nothing approved yet — approved panels are what gets exported"
+              }
+              onClick={async () => {
+                  try {
+                    const r = await exportProject(pid);
+                    toast(
+                      `${r.written} approved panel(s) downloaded.` +
+                        (r.skipped ? ` ${r.skipped} could not be read.` : ""),
+                    );
+                  } catch (e) {
+                    toast(e instanceof Error ? e.message : "Export failed");
+                  }
+                }}
+            >
+              ↓ Export approved{counts.approved ? ` (${counts.approved})` : ""}
+            </button>
+          {can("batch.manage") ? (
+            <>
+            <button
+              className="btn2"
+              onClick={() => setShowMembers((v) => !v)}
+            >
+              People
+            </button>
+            <button
+              className="btn2 btn2--primary"
+              disabled={adding}
+              onClick={() => setAdding(true)}
+            >
+              + Add batches
+            </button>
+            </>
+          ) : null}
+          </>
         }
       />
+
+      {showMembers ? <MembersPanel projectId={pid} people={people} /> : null}
 
       {adding ? (
         <BatchDraftPanel
@@ -115,14 +171,16 @@ export function PanelBatchesPage() {
         </div>
       ) : null}
 
-      <ul className="pn__projects">
+      <ul className="pn__batches">
         {list.map((b) => (
-          <BatchRow
+          <BatchCard
             key={b.id}
             batch={b}
             people={people}
             onChanged={load}
-            drag={dragProps(b.id)}
+            drag={can("batch.manage") ? dragProps(b.id) : {}}
+            manage={can("batch.manage")}
+            canImport={can("batch.import")}
           />
         ))}
       </ul>
@@ -245,22 +303,67 @@ function BatchDraftPanel({
   );
 }
 
-function BatchRow({
+/**
+ * One artist's share of a comic.
+ *
+ * A card rather than a full-width row: a row gave a name and one number an
+ * entire screen width, and the answer a PM wants — how far along is this, and
+ * who has it — was a single "0 / 45 approved" adrift in empty space.
+ *
+ * The bar is stacked across all five states, not just approved-vs-rest. A batch
+ * sitting untouched and a batch entirely awaiting review both read as "0
+ * approved", and they are nothing alike.
+ */
+function BatchCard({
   batch,
   people,
   onChanged,
   drag,
+  manage,
+  canImport,
 }: {
   batch: PanelBatch;
   people: { user_id: string; name: string }[];
   onChanged: () => Promise<void>;
   drag: Record<string, unknown>;
+  /** Naming a batch, assigning it and deleting it are the PM's decisions. */
+  manage: boolean;
+  canImport: boolean;
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [importing, setImporting] = useState<string | null>(null);
-  const pct = batch.panel_count
-    ? Math.round((batch.approved_count / batch.panel_count) * 100)
-    : 0;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(batch.name);
+  const nameRef = useRef<HTMLInputElement | null>(null);
+
+  const counts = batch.status_counts ?? {};
+  const total = batch.panel_count;
+  const stages = STAGES.map((s) => ({ ...s, n: counts[s.key] ?? 0 })).filter(
+    (s) => s.n > 0,
+  );
+  const pct = total ? Math.round((batch.approved_count / total) * 100) : 0;
+
+  useEffect(() => {
+    if (editing) {
+      setDraft(batch.name);
+      requestAnimationFrame(() => nameRef.current?.select());
+    }
+  }, [editing, batch.name]);
+
+  async function rename() {
+    const clean = draft.trim();
+    if (!clean || clean === batch.name) {
+      setEditing(false);
+      return;
+    }
+    try {
+      await updateBatch(batch.id, { name: clean });
+      setEditing(false);
+      await onChanged();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Rename failed");
+    }
+  }
 
   async function onPick(files: FileList | null) {
     if (!files || files.length === 0) return;
@@ -282,84 +385,281 @@ function BatchRow({
   }
 
   return (
-    <li className="pn__project" {...drag}>
+    <li className="pn__batch" {...drag}>
       <Link
         to={`/giantflow/batch/${batch.id}`}
-        className="pn__project-body"
+        className="pn__batch-cover"
         draggable={false}
       >
-        <div className="pn__project-name">{batch.name}</div>
-        <div className="pn__project-stat">
-          {batch.panel_count === 0 ? (
-            <span className="pn__muted">No panels yet — import a folder</span>
-          ) : (
-            <>
-              <b>{batch.approved_count}</b> / {batch.panel_count} approved
-              <span className="pn__bar">
-                <span className="pn__bar-fill" style={{ width: `${pct}%` }} />
-              </span>
-              {batch.open_notes > 0 ? (
-                <span className="pn__notes">{batch.open_notes} open notes</span>
-              ) : null}
-            </>
-          )}
-        </div>
+        {batch.thumb_media_id ? (
+          <img src={thumbUrl(batch.thumb_media_id, 420)} alt="" loading="lazy" />
+        ) : (
+          <span className="pn__batch-empty">No panels yet</span>
+        )}
+        {total > 0 ? <span className="pn__batch-count">{total} panels</span> : null}
+        {batch.open_notes > 0 ? (
+          <span className="pn__batch-notes">{batch.open_notes} notes</span>
+        ) : null}
       </Link>
 
-      <div className="pn__project-acts">
-        {/* One artist per batch — that is what a batch IS, so the picker sits on
-            the row rather than hidden behind an edit screen. */}
-        <PersonPicker
-          label=""
-          value={batch.assignee_user_id}
-          people={people}
-          onChange={async (uid) => {
-            await updateBatch(batch.id, { assignee_user_id: uid, set_assignee: true });
-            await onChanged();
-          }}
-        />
-        {batch.panel_count === 0 ? (
-          <>
+      <div className="pn__batch-body">
+        <div className="pn__batch-top">
+          {editing ? (
             <input
-              ref={fileRef}
-              type="file"
-              // Non-standard, but the only way to pick a FOLDER; each file's path
-              // inside it is what says which panel it belongs to.
-              {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
-              multiple
-              hidden
-              onChange={(e) => void onPick(e.target.files)}
+              ref={nameRef}
+              className="pn__batch-rename"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={() => void rename()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void rename();
+                if (e.key === "Escape") {
+                  setDraft(batch.name);
+                  setEditing(false);
+                }
+              }}
             />
-            <button
-              className="btn2"
-              disabled={!!importing}
-              onClick={() => fileRef.current?.click()}
+          ) : (
+            <Link
+              to={`/giantflow/batch/${batch.id}`}
+              className="pn__batch-name"
+              title={batch.name}
+              draggable={false}
             >
-              {importing ?? "Import panels"}
-            </button>
+              {batch.name}
+            </Link>
+          )}
+          <span className="pn__batch-pct">{pct}%</span>
+        </div>
+
+        {total > 0 ? (
+          <>
+            <div className="pn__stack" role="img"
+                 aria-label={stages.map((s) => `${s.n} ${s.label}`).join(", ")}>
+              {stages.map((s) => (
+                <span
+                  key={s.key}
+                  className={`pn__stack-seg is-${s.key}`}
+                  style={{ width: `${(s.n / total) * 100}%` }}
+                  title={`${s.n} ${s.label}`}
+                />
+              ))}
+            </div>
+            <div className="pn__legend">
+              {stages.map((s) => (
+                <span key={s.key} className={`pn__legend-item is-${s.key}`}>
+                  <i /> {s.n} {s.label}
+                </span>
+              ))}
+            </div>
           </>
-        ) : null}
-        <button
-          className="btn2 btn2--danger"
-          title="Delete this batch and its panels"
-          onClick={async () => {
-            if (
-              !window.confirm(
-                `Delete “${batch.name}” and its ${batch.panel_count} panel(s)?`,
-              )
-            )
-              return;
-            try {
-              await deleteBatch(batch.id);
+        ) : (
+          <p className="pn__batch-hint">Import this artist's folder to start.</p>
+        )}
+
+        <div className="pn__batch-foot">
+          {/* One artist per batch — that is what a batch IS, so the picker sits on
+              the card rather than hidden behind an edit screen. */}
+          <PersonPicker
+            label=""
+            value={batch.assignee_user_id}
+            people={people}
+            disabled={!manage}
+            onChange={async (uid) => {
+              await updateBatch(batch.id, { assignee_user_id: uid, set_assignee: true });
               await onChanged();
-            } catch (e) {
-              toast(e instanceof Error ? e.message : "Delete failed");
-            }
-          }}
-        >
-          ✕
-        </button>
+            }}
+          />
+          <span className="pn__batch-acts">
+            {total === 0 && canImport ? (
+              <>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  // Non-standard, but the only way to pick a FOLDER; each file's
+                  // path inside it is what says which panel it belongs to.
+                  {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+                  multiple
+                  hidden
+                  onChange={(e) => void onPick(e.target.files)}
+                />
+                <button
+                  type="button"
+                  className="pn__tile-btn"
+                  disabled={!!importing}
+                  onClick={() => fileRef.current?.click()}
+                >
+                  {importing ?? "Import"}
+                </button>
+              </>
+            ) : null}
+            {manage ? (
+              <button
+                type="button"
+                className="pn__tile-btn"
+                title="Rename this batch"
+                onClick={() => setEditing(true)}
+              >
+                Rename
+              </button>
+            ) : null}
+            {manage ? (
+            <button
+              type="button"
+              className="pn__tile-btn pn__tile-btn--danger"
+              title="Delete this batch and its panels"
+              onClick={async () => {
+                if (
+                  !window.confirm(
+                    `Delete “${batch.name}” and its ${batch.panel_count} panel(s)?`,
+                  )
+                )
+                  return;
+                try {
+                  await deleteBatch(batch.id);
+                  await onChanged();
+                } catch (e) {
+                  toast(e instanceof Error ? e.message : "Delete failed");
+                }
+              }}
+            >
+              ✕
+            </button>
+            ) : null}
+          </span>
+        </div>
       </div>
     </li>
   );
 }
+
+/**
+ * Who is on this comic, and as what.
+ *
+ * Separate from the per-batch assignee, which says who DOES a share of the work.
+ * This says what someone is allowed to do at all: an artist generates and
+ * submits, a PM rules on submissions, a viewer looks. Without a screen for it the
+ * roles existed only as rows nobody could reach.
+ *
+ * Anyone not listed still gets in as a viewer, and whoever a batch is assigned to
+ * counts as an artist without a row here — assigning work already says "this is
+ * yours", and making the PM repeat it would be one fact stored twice.
+ */
+function MembersPanel({
+  projectId,
+  people,
+}: {
+  projectId: number;
+  people: { user_id: string; name: string }[];
+}) {
+  const [rows, setRows] = useState<FlowMember[] | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setRows(await listFlowMembers(projectId));
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed");
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function put(userId: string, role: string) {
+    setBusy(true);
+    try {
+      await setFlowMember(projectId, userId, role);
+      await load();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const listed = new Set((rows ?? []).map((r) => r.user_id));
+  const rest = people.filter((p) => !listed.has(p.user_id));
+
+  return (
+    <div className="pn__draft">
+      <div className="pn__draft-head">
+        <b>People on this comic</b>
+        <span className="pn__muted">
+          Everyone else can look but not act.
+        </span>
+      </div>
+
+      <ul className="pn__draft-rows">
+        {(rows ?? []).map((m) => (
+          <li key={m.user_id} className="pn__draft-row">
+            <span className="pn__member-name">{m.name}</span>
+            <select
+              className="inbox__input pn__select"
+              value={m.role}
+              disabled={busy}
+              onChange={(e) => void put(m.user_id, e.target.value)}
+            >
+              {FLOW_ROLE_OPTIONS.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
+            <button
+              className="pn__add-close"
+              title="Remove from this comic"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await removeFlowMember(projectId, m.user_id);
+                  await load();
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              ✕
+            </button>
+          </li>
+        ))}
+        {rows !== null && rows.length === 0 ? (
+          <li className="pn__muted">Nobody added yet.</li>
+        ) : null}
+      </ul>
+
+      {rest.length > 0 ? (
+        <div className="pn__draft-foot">
+          <select
+            className="inbox__input pn__select"
+            defaultValue=""
+            disabled={busy}
+            onChange={(e) => {
+              if (e.target.value) void put(e.target.value, "artist");
+              e.target.value = "";
+            }}
+          >
+            <option value="">+ Add someone…</option>
+            {rest.map((p) => (
+              <option key={p.user_id} value={p.user_id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <span className="pn__muted">Added as Artist; change the role after.</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Mirrors `FLOW_ROLES` in services/flow_permissions.py. */
+const FLOW_ROLE_OPTIONS = [
+  { id: "producer", label: "PM" },
+  { id: "lead", label: "Lead" },
+  { id: "artist", label: "Artist" },
+  { id: "viewer", label: "Viewer" },
+];
+

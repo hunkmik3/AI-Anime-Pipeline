@@ -1473,11 +1473,17 @@
 
 /* The grid. Columns are narrow because a card holds two portrait-ish shots
    side by side — the point is density, so a PM sees a whole chapter at once. */
+/* Three per row, fixed — not auto-fill. This grid is for *reading* panels, and
+   the pair of images has to be big enough to judge a restyle against the
+   original; packing five columns in made every panel a thumbnail of a thumbnail.
+   Fewer columns on narrow screens so a card never falls below legible. */
 .pn__grid {
   list-style: none; margin: 0; padding: 0;
-  display: grid; gap: 12px;
-  grid-template-columns: repeat(auto-fill, minmax(228px, 1fr));
+  display: grid; gap: 18px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
+@media (max-width: 1120px) { .pn__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 720px)  { .pn__grid { grid-template-columns: minmax(0, 1fr); } }
 .pn__card {
   background: var(--panel-high, #1d2129);
   border: 1px solid var(--border, #2a2e38);
@@ -1500,25 +1506,28 @@
   display: grid; grid-template-columns: 1fr 1fr; gap: 1px;
   background: var(--border); text-decoration: none;
 }
+/* Square, because the panels are mixed: a 3/4 frame spent most of its height on
+   letterboxing the landscape ones, which are the majority here. */
 .pn__shot {
-  position: relative; aspect-ratio: 3 / 4; background: #11151b;
+  position: relative; aspect-ratio: 1 / 1; background: #11151b;
   display: flex; align-items: center; justify-content: center; overflow: hidden;
 }
 /* contain, not cover: panels range from wide establishing shots to tall
    close-ups, and the question this board answers is "does the result match
    the original" — which needs the WHOLE panel visible, not a filled cell. */
 .pn__shot img { width: 100%; height: 100%; object-fit: contain; display: block; }
-.pn__shot-empty { font-size: 10.5px; color: #56626f; font-style: normal; text-align: center; padding: 0 6px; }
+.pn__shot-empty { font-size: 12px; color: #56626f; font-style: normal; text-align: center; padding: 0 6px; }
 .pn__shot-tag {
-  position: absolute; left: 5px; bottom: 5px;
-  font-style: normal; font-size: 10px; letter-spacing: .02em;
-  padding: 1px 5px; border-radius: 5px;
+  position: absolute; left: 7px; bottom: 7px;
+  font-style: normal; font-size: 11px; letter-spacing: .02em;
+  padding: 2px 7px; border-radius: 5px;
   background: rgba(10, 13, 18, .78); color: #9aa7b4;
 }
 .pn__card-meta {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 8px 10px; font-size: 12px; color: var(--muted);
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  padding: 10px 13px; font-size: 13px; color: var(--muted);
 }
+.pn__card-meta b { font-size: 13.5px; color: var(--text); }
 .pn__pick { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .pn__pick b { color: var(--text); font-size: 12.5px; }
 .pn__who { margin-left: auto; }
@@ -1750,3 +1759,673 @@
   color: var(--text); background: #11151b;
   border: 1px solid var(--accent, #00a76f); border-radius: 7px; outline: none;
 }
+
+/* "View as" — a preview switch, admin-only. Quiet until it is actually in use,
+   then loud, because forgetting you are previewing a viewer's screen and then
+   reporting a missing button is the obvious failure. */
+.pn__viewas {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 12px; margin-bottom: 14px;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel-high, #1d2129);
+  font-size: 12.5px; color: var(--muted);
+}
+.pn__viewas.is-on { border-color: #f59e0b; background: rgba(245, 158, 11, 0.08); }
+.pn__viewas-label { font-weight: 600; color: var(--text); }
+.pn__viewas-note { color: #fbbf24; }
+
+/* ── Batch cards ───────────────────────────────────────────────────────────
+   A batch used to render as a full-width row, which gave a name and one number
+   the whole screen and left three batches floating in empty space. As cards
+   they tile, and the space goes to the two things that were missing: the first
+   panel, so the batch is recognisable, and the spread across all five states. */
+.pn__batches {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+.pn__batch {
+  display: flex; flex-direction: column;
+  background: var(--panel-high, #1d2129);
+  border: 1px solid var(--border, #2a2e38);
+  border-radius: 14px; overflow: hidden;
+  transition: border-color .15s, transform .15s;
+}
+.pn__batch:hover { border-color: var(--accent, #00a76f); transform: translateY(-2px); }
+
+.pn__batch-cover {
+  position: relative; display: block;
+  aspect-ratio: 3 / 2; background: var(--panel, #14171d);
+  border-bottom: 1px solid var(--border, #2a2e38);
+  /* Both are load-bearing: as a flex item the cover would otherwise be sized by
+     its content, and `min-height: auto` refuses to shrink below it — so one tall
+     panel image made its card's cover taller than the 3:2 the others got. */
+  flex: 0 0 auto; min-height: 0; overflow: hidden;
+}
+/* Out of flow, so the image can never dictate the frame's height — the frame is
+   3:2 whatever shape the panel is, and the panel is cropped to fit it. */
+.pn__batch-cover img {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.pn__batch-empty {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  font-size: 12.5px; color: var(--muted);
+}
+.pn__batch-count, .pn__batch-notes {
+  position: absolute; bottom: 8px;
+  padding: 2px 8px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 600;
+  background: rgba(0, 0, 0, .68); color: #fff;
+  backdrop-filter: blur(4px);
+}
+.pn__batch-count { left: 8px; }
+.pn__batch-notes { right: 8px; background: rgba(239, 68, 68, .9); }
+
+.pn__batch-body { display: flex; flex-direction: column; gap: 9px; padding: 12px 14px 13px; }
+.pn__batch-top { display: flex; align-items: baseline; gap: 8px; }
+.pn__batch-name {
+  flex: 1; min-width: 0;
+  font-weight: 600; font-size: 14.5px; color: var(--text);
+  text-decoration: none; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.pn__batch-name:hover { color: var(--accent, #00a76f); }
+.pn__batch-pct { font-size: 12px; font-weight: 600; color: var(--muted); }
+.pn__batch-rename {
+  flex: 1; min-width: 0;
+  background: var(--panel, #14171d); color: var(--text);
+  border: 1px solid var(--accent, #00a76f); border-radius: 7px;
+  padding: 3px 7px; font: inherit; font-weight: 600; font-size: 14.5px;
+}
+.pn__batch-hint { margin: 0; font-size: 12.5px; color: var(--muted); }
+
+/* Every state at once, stacked in the order work moves through them, so the bar
+   fills left to right as the batch advances. */
+.pn__stack {
+  display: flex; height: 6px; border-radius: 4px;
+  background: var(--border, #2a2e38); overflow: hidden;
+}
+.pn__stack-seg { display: block; height: 100%; }
+.pn__stack-seg.is-todo               { background: #3a4150; }
+.pn__stack-seg.is-in_progress        { background: #d99a26; }
+.pn__stack-seg.is-submitted          { background: #3b82f6; }
+.pn__stack-seg.is-changes_requested  { background: #ef4444; }
+.pn__stack-seg.is-approved           { background: var(--accent, #00a76f); }
+
+.pn__legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11.5px; color: var(--muted); }
+.pn__legend-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.pn__legend-item i { width: 7px; height: 7px; border-radius: 2px; }
+.pn__legend-item.is-todo i              { background: #3a4150; }
+.pn__legend-item.is-in_progress i       { background: #d99a26; }
+.pn__legend-item.is-submitted i         { background: #3b82f6; }
+.pn__legend-item.is-changes_requested i { background: #ef4444; }
+.pn__legend-item.is-approved i          { background: var(--accent, #00a76f); }
+
+.pn__batch-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-top: 2px; padding-top: 10px;
+  border-top: 1px solid var(--border, #2a2e38);
+}
+.pn__batch-foot .picker__select { max-width: 150px; }
+.pn__batch-acts { display: inline-flex; gap: 6px; align-items: center; }
+/* The destructive one stays quiet until you are actually on the card. */
+.pn__batch-acts .pn__tile-btn--danger { opacity: 0; transition: opacity .15s; }
+.pn__batch:hover .pn__tile-btn--danger,
+.pn__batch:focus-within .pn__tile-btn--danger { opacity: 1; }
+
+/* A textarea defaults to `resize: both`, and the width a drag produces is an
+   INLINE style — it beats `width: 100%` outright. Dragging either corner handle
+   here pulled the box straight out of its column and across the page.
+   Vertical only: a taller note box is a reasonable thing to want, a note box
+   wider than the column it lives in never is. */
+.pn__composer textarea,
+.pn__noteadd textarea {
+  resize: vertical;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+/* The stage is `max-height: 52vh`, so the notes column beside it can end up
+   taller than the panel it is discussing. Cap it and scroll instead. */
+.pn__noteadd textarea { max-height: 40vh; }
+.pn__ws-notes { max-height: calc(52vh + 190px); display: flex; flex-direction: column; }
+/* The list gives up the space, never the box you type into. */
+.pn__notelist { overflow-y: auto; min-height: 0; flex: 1 1 auto; }
+.pn__noteadd { flex: 0 0 auto; }
+
+/* ── The studio composer, reused inside a panel workspace ──────────────────
+   FlowComposer is rendered verbatim so it keeps every feature it has in the
+   studio. Only its placement differs: there it is a floating bar centred over
+   the grid (`position: absolute; left: 50%`), here it belongs to the column it
+   sits in. Sticky rather than static so it stays reachable while you scroll a
+   long version strip. */
+.pn__ws-main .fc {
+  position: sticky;
+  left: auto;
+  bottom: 12px;
+  transform: none;
+  width: 100%;
+  margin-top: 2px;
+}
+/* The floating bar earns a heavy drop shadow; in a column it just looks smudged. */
+.pn__ws-main .fc__bar { box-shadow: 0 6px 18px rgba(0, 0, 0, 0.32); }
+
+/* A generation still in flight, holding the slot its result will take. */
+.pn__ws-pending {
+  width: 84px;
+  aspect-ratio: 3 / 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: #11151b;
+}
+.pn__ws-pending em {
+  position: static;
+  background: none;
+  font-size: 10.5px;
+  color: var(--muted);
+  animation: pn-pulse 1.4s ease-in-out infinite;
+}
+@keyframes pn-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+
+/* ── Panel workspace: the studio, scoped to one panel ──────────────────────
+   Three columns like the studio, with one addition — the material column on the
+   left. The centre is `.fc-center` verbatim so the composer, the grid cards and
+   the drop overlay behave exactly as they do in the free-form studio. */
+.pn__studio {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr) 292px;
+  /* 52px is the app top bar; giantflow routes render without the project tree,
+     so the rest of the viewport is ours. */
+  height: calc(100dvh - 52px);
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+.pn__studio.is-narrow { grid-template-columns: 76px minmax(0, 1fr) 292px; }
+@media (max-width: 1180px) { .pn__studio { grid-template-columns: 300px minmax(0, 1fr) 250px; } }
+
+/* Centre: `.fc-center` sized for this page rather than the studio's own shell. */
+.pn__center { min-width: 0; }
+.pn__center-scroll { padding: 14px 18px 132px; }
+.pn__center .fc-banner { margin: 10px 18px 0; }
+
+/* A generation in flight, holding the slot its result will take. */
+.pn__card-pending {
+  aspect-ratio: 3 / 4;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11.5px; color: var(--muted);
+  border-style: dashed;
+  animation: pn-pulse 1.4s ease-in-out infinite;
+}
+@keyframes pn-pulse { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+.fc-badge--ver {
+  left: 6px; right: auto;
+  font-size: 10.5px; font-weight: 600;
+}
+
+/* Right: notes. */
+.pn__studio .pn__ws-notes {
+  max-height: none; height: 100%;
+  border: none; border-left: 1px solid var(--border); border-radius: 0;
+  background: var(--panel);
+  padding: 14px 12px;
+}
+
+/* Left rail — the studio's own `.fn`, listing this artist's batch panel by
+   panel. References do NOT live here: they belong in the composer's chip row,
+   which is where giantflow has always put them and the only place that stays
+   usable once there are more than three of them. */
+.pn__rail { padding: 12px 8px; overflow: hidden; }
+.pn__rail-back {
+  padding: 4px 6px 8px; font-size: 12px;
+  color: var(--muted); text-decoration: none; white-space: nowrap;
+}
+.pn__rail-back:hover { color: var(--text); }
+/* `.fn__projects` caps itself at 46vh — right for the studio, where a project
+   list sits above nav items, wrong here where it IS the rail. Two classes so it
+   wins on specificity rather than on which rule the bundler emitted last, and
+   `min-height: 0` because a flex child will not scroll without it. */
+.pn__rail .fn__projects {
+  max-height: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.pn__rail-row { padding: 6px; gap: 8px; align-items: center; }
+.pn__rail-thumb {
+  width: 40px; height: 40px; flex: none;
+  object-fit: cover; border-radius: 5px;
+  background: #11151b; border: 1px solid var(--border);
+}
+/* One line, and the rail is sized so the whole code fits on it. The ellipsis
+   stays only as a backstop for an unusually long code — it must not be what
+   normally happens, because the part that tells these rows apart is the END
+   ("…PANEL001" vs "…PANEL002") and that is exactly what an ellipsis eats. */
+.pn__rail-row .fn__prow-name {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.pn__rail-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: #4a5361; }
+.pn__rail-dot.is-in_progress { background: #3b82f6; }
+.pn__rail-dot.is-submitted { background: #f59e0b; }
+.pn__rail-dot.is-changes_requested { background: #ef4444; }
+.pn__rail-dot.is-approved { background: var(--accent, #00a76f); }
+
+/* Centre header: which panel, and where it stands. */
+.pn__top { padding: 12px 18px 8px; gap: 10px; }
+.pn__top-code { font-size: 14px; font-weight: 700; }
+.pn__top-status { font-size: 12px; color: var(--muted); }
+.pn__top-status.is-submitted { color: #f59e0b; }
+.pn__top-status.is-changes_requested { color: #ef4444; }
+.pn__top-status.is-approved { color: var(--accent, #00a76f); }
+
+/* Many references is the normal case, so the chip row wraps and scrolls in
+   place rather than pushing the prompt box off the bottom of the screen. */
+.pn__center .fc__refs { max-height: 128px; overflow-y: auto; }
+
+/* The original, sitting at the head of the version grid. Marked out because it
+   is a different kind of thing from the cards after it: those are attempts, this
+   is what they are attempts AT. */
+.pn__card-raw { border-color: rgba(255, 255, 255, 0.22); }
+.fc-badge--raw {
+  left: 6px; right: auto;
+  font-size: 10.5px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase;
+  background: rgba(10, 13, 18, .82); color: #cbd5e1;
+}
+.pn__center-hint {
+  margin: 16px 2px 0;
+  font-size: 12.5px; line-height: 1.5; color: var(--muted);
+}
+
+/* Reference material the artist brought in, as opposed to a version the panel
+   produced. Same card, different label — you must be able to tell at a glance
+   which images are input and which are output. */
+.fc-badge--ref {
+  left: 6px; right: auto;
+  font-size: 10.5px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase;
+  background: rgba(10, 13, 18, .82); color: #8b96a5;
+}
+
+/* ── Right column: material ────────────────────────────────────────────────
+   Two tiles per row. The single-column version of this failed: twenty
+   references became a scroll you travelled past to reach anything. */
+.pn__studio .pn__mat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  min-width: 0;
+  overflow-y: auto;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+}
+.pn__studio .pn__mat .pn__ws-h { margin: 8px 0 0; justify-content: space-between; }
+.pn__studio .pn__mat .pn__ws-h:first-child { margin-top: 0; }
+.pn__mat-hint { margin: 0 0 2px; font-size: 11px; line-height: 1.45; color: var(--muted); }
+.pn__mat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.pn__mat-add {
+  width: 22px; height: 22px; padding: 0;
+  font-size: 13px; line-height: 1;
+  color: var(--muted); background: var(--panel-high);
+  border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+}
+.pn__mat-add:hover { color: var(--text); border-color: var(--accent); }
+.pn__mat-tile {
+  position: relative;
+  border: 1px solid var(--border); border-radius: 9px;
+  overflow: hidden; background: #11151b;
+}
+.pn__mat-tile:hover { border-color: var(--accent, #00a76f); }
+.pn__mat-img {
+  display: block; width: 100%; aspect-ratio: 3 / 4;
+  padding: 0; border: none; background: none; cursor: zoom-in;
+}
+.pn__mat-img img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.pn__mat-foot {
+  display: flex; align-items: center; gap: 3px;
+  padding: 4px 4px 4px 6px; background: var(--panel-high);
+}
+.pn__mat-label {
+  flex: 1; min-width: 0; font-size: 10.5px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Detach stays quiet until you are on the tile — it is next to a button you
+   press often, and the two must not be equally inviting. */
+.pn__mat-x { opacity: 0; transition: opacity .12s; }
+.pn__mat-tile:hover .pn__mat-x, .pn__mat-tile:focus-within .pn__mat-x { opacity: 1; }
+
+/* ── Page hero for a container of panels ───────────────────────────────────
+   Replaces a generic title band whose one line of prose ("0 batches · 0 / 0
+   panels approved") was both the only content and a poor answer to the question
+   it was there to answer. The bar and the chips are that answer; the cover is
+   what makes the page recognisable at a glance. */
+.pn__hero {
+  display: flex;
+  gap: 16px;
+  align-items: stretch;
+  margin: 0 0 20px;
+  padding: 16px;
+  background: linear-gradient(
+    180deg,
+    var(--panel-high, #1d2129) 0%,
+    color-mix(in srgb, var(--panel-high, #1d2129) 88%, transparent) 100%
+  );
+  border: 1px solid var(--border, #2a2e38);
+  border-radius: 14px;
+}
+.pn__hero-cover {
+  flex: 0 0 auto;
+  width: 72px;
+  aspect-ratio: 9 / 16;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: #4b5563;
+  background: var(--panel, #14171d);
+  border: 1px solid var(--border, #2a2e38);
+  border-radius: 9px;
+}
+.pn__hero-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.pn__hero-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 9px;
+}
+.pn__hero-crumb { font-size: 12px; }
+.pn__hero-crumb a { color: var(--muted); text-decoration: none; }
+.pn__hero-crumb a:hover { color: var(--text); }
+.pn__hero-top { display: flex; align-items: baseline; gap: 12px; }
+.pn__hero-title {
+  margin: 0; min-width: 0;
+  font-size: 21px; font-weight: 700; letter-spacing: -0.01em;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.pn__hero-pct { font-size: 13px; font-weight: 600; color: var(--muted); }
+.pn__hero-acts { margin-left: auto; flex: 0 0 auto; }
+.pn__hero .pn__stack { height: 7px; }
+.pn__hero-facts {
+  display: flex; flex-wrap: wrap; gap: 5px 14px;
+  font-size: 12px; color: var(--muted);
+}
+/* Plain counts, set apart from the colour-keyed status chips beside them by a
+   dot rather than by another colour — the colours mean something here. */
+.pn__fact { display: inline-flex; align-items: center; gap: 6px; }
+.pn__fact::before {
+  content: "";
+  width: 3px; height: 3px; border-radius: 50%;
+  background: currentColor; opacity: .55;
+}
+
+@media (max-width: 720px) {
+  .pn__hero { flex-direction: column; }
+  .pn__hero-cover { width: 56px; }
+  .pn__hero-acts { margin-left: 0; }
+}
+
+/* Submit lives on the version card. Wider than the icon buttons beside it
+   because it is the one action on this page with a consequence. */
+.pn__submit { padding: 0 8px; width: auto; font-size: 11px; white-space: nowrap; }
+.pn__submit.is-on {
+  color: #0b1f17;
+  background: var(--accent, #00a76f);
+  border-color: var(--accent, #00a76f);
+}
+.fc-badge--final {
+  left: 6px; right: auto; top: 30px;
+  font-size: 10px; font-weight: 700; letter-spacing: .03em;
+  background: var(--accent, #00a76f); color: #0b1f17;
+}
+/* No model recorded = it came in as a file rather than from the engine. */
+.fc-badge--hand { right: 6px; left: auto; font-size: 11px; }
+
+.pn__review { display: inline-flex; align-items: center; gap: 6px; }
+.pn__review--ask { flex: 1; min-width: 220px; }
+.pn__review--ask .inbox__input { flex: 1; min-width: 0; }
+.pn__upver { white-space: nowrap; }
+.pn__top { flex-wrap: wrap; }
+.pn__top .fc-count { margin-left: auto; }
+
+/* ── PM review queue ───────────────────────────────────────────────────────
+   A row is the comparison a verdict is made on, so the two images are the row's
+   main content and sit side by side at a size you can actually judge. */
+.pn__queue { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+.pn__qrow {
+  display: grid;
+  grid-template-columns: minmax(0, 420px) minmax(0, 1fr) 200px;
+  gap: 16px;
+  padding: 14px;
+  background: var(--panel-high, #1d2129);
+  border: 1px solid var(--border, #2a2e38);
+  border-left: 3px solid #f59e0b;
+  border-radius: 12px;
+}
+.pn__qshots { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.pn__qshot {
+  position: relative; display: block; aspect-ratio: 1 / 1;
+  background: #11151b; border: 1px solid var(--border); border-radius: 8px;
+  overflow: hidden;
+}
+.pn__qshot img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.pn__qshot em {
+  position: absolute; left: 6px; bottom: 6px;
+  font-style: normal; font-size: 10.5px;
+  padding: 1px 6px; border-radius: 5px;
+  background: rgba(10, 13, 18, .8); color: #9aa7b4;
+}
+.pn__qmeta { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.pn__qcode { font-size: 15px; font-weight: 600; color: var(--text); text-decoration: none; }
+.pn__qcode:hover { color: var(--accent, #00a76f); }
+.pn__qsub, .pn__qwho { font-size: 12px; color: var(--muted); }
+.pn__qwho { font-weight: 600; }
+.pn__qnotes {
+  list-style: none; margin: 6px 0 0; padding: 8px 10px;
+  font-size: 12.5px; line-height: 1.5; color: #fca5a5;
+  background: rgba(239, 68, 68, .1);
+  border-left: 2px solid rgba(239, 68, 68, .6);
+  border-radius: 0 6px 6px 0;
+}
+.pn__qacts { display: flex; flex-direction: column; gap: 8px; }
+.pn__qbtns { display: flex; flex-direction: column; gap: 6px; }
+@media (max-width: 980px) {
+  .pn__qrow { grid-template-columns: minmax(0, 1fr); }
+  .pn__qbtns { flex-direction: row; }
+}
+
+/* ── The artist's results ──────────────────────────────────────────────────
+   The PM's remark is the reason this page exists, so it is on the card rather
+   than behind a click. */
+.pn__mysec { margin: 0 0 26px; }
+.pn__mysec-h {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 0 4px; font-size: 13px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.pn__mysec-h span {
+  padding: 1px 7px; border-radius: 999px;
+  font-size: 11px; font-weight: 600;
+  background: var(--panel-high); color: var(--muted);
+}
+.pn__mysec-h.is-back { color: #ef4444; }
+.pn__mysec-h.is-wait { color: #f59e0b; }
+.pn__mysec-h.is-done { color: var(--accent, #00a76f); }
+.pn__mysec-hint { margin: 0 0 10px; font-size: 12.5px; color: var(--muted); }
+.pn__mygrid {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+.pn__mycard {
+  display: flex; gap: 12px; padding: 10px;
+  background: var(--panel-high, #1d2129);
+  border: 1px solid var(--border, #2a2e38);
+  border-left-width: 3px; border-radius: 11px;
+}
+.pn__mycard.is-back { border-left-color: #ef4444; }
+.pn__mycard.is-wait { border-left-color: #f59e0b; }
+.pn__mycard.is-done { border-left-color: var(--accent, #00a76f); }
+.pn__mycard-img {
+  position: relative; flex: 0 0 auto;
+  width: 76px; aspect-ratio: 3 / 4;
+  background: #11151b; border: 1px solid var(--border);
+  border-radius: 7px; overflow: hidden;
+}
+.pn__mycard-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pn__mycard-img em {
+  position: absolute; left: 4px; bottom: 4px;
+  font-style: normal; font-size: 10px;
+  padding: 1px 5px; border-radius: 4px;
+  background: rgba(10, 13, 18, .8); color: #9aa7b4;
+}
+.pn__mycard-body { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.pn__mycard-code {
+  font-size: 13px; font-weight: 600; color: var(--text); text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.pn__mycard-code:hover { color: var(--accent, #00a76f); }
+.pn__mycard-sub { font-size: 11.5px; color: var(--muted); }
+.pn__mycard-note {
+  margin: 4px 0 0; padding: 6px 8px;
+  font-size: 12px; line-height: 1.45; color: #fca5a5;
+  background: rgba(239, 68, 68, .1);
+  border-radius: 6px;
+}
+.pn__mycard-note em { font-style: normal; color: var(--muted); }
+
+/* The three doors into giantflow, in the same place on every one of them. */
+.pn__nav { display: flex; gap: 4px; margin: 0 0 14px; }
+.pn__nav-tab {
+  padding: 6px 13px; border-radius: 8px;
+  font-size: 13px; font-weight: 500;
+  color: var(--muted); text-decoration: none;
+  border: 1px solid transparent;
+}
+.pn__nav-tab:hover { color: var(--text); background: var(--panel-high); }
+.pn__nav-tab.is-on {
+  color: var(--text);
+  background: var(--panel-high, #1d2129);
+  border-color: var(--border, #2a2e38);
+}
+
+/* Nav strip + the role preview share one row. */
+.pn__navbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap; margin: 0 0 14px;
+}
+.pn__navbar .pn__nav { margin: 0; }
+
+/* The role preview. Deliberately loud once it is ON — a page that is lying to
+   you about what you can do must say so at a glance, or you will file a bug
+   against the permissions instead of turning the preview off. */
+.pn__viewas {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 4px 8px; border-radius: 9px;
+  border: 1px solid transparent;
+  font-size: 12px; color: var(--muted);
+}
+.pn__viewas.is-on {
+  color: #fbbf24;
+  background: rgba(245, 158, 11, .1);
+  border-color: rgba(245, 158, 11, .45);
+}
+.pn__viewas-label { font-weight: 600; letter-spacing: .02em; }
+.pn__viewas-note { font-size: 11.5px; }
+
+.pn__member-name { flex: 1; min-width: 0; font-size: 13px; color: var(--text); }
+
+/* Download one panel, from its card in the grid. */
+.pn__dl {
+  margin-left: auto;
+  width: 22px; height: 22px; padding: 0;
+  font-size: 12px; line-height: 1;
+  color: var(--muted); background: var(--panel);
+  border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+}
+.pn__dl:hover { color: var(--text); border-color: var(--accent, #00a76f); }
+.pn__hero-acts { display: flex; gap: 8px; align-items: center; }
+
+/* ── All panels: a management table ────────────────────────────────────────
+   A table rather than cards. At two hundred rows the job is scanning and
+   comparing across a column, and a card grid gives that up for pictures you
+   have already seen. */
+.pn__allbar { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
+.pn__allsearch { width: auto; flex: 1; min-width: 180px; max-width: 320px; }
+
+.pn__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.pn__table th {
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .04em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border, #2a2e38);
+}
+.pn__table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border, #2a2e38);
+  vertical-align: middle;
+}
+.pn__table tbody tr:hover { background: var(--panel-high, #1d2129); }
+.pn__tcode { color: var(--text); text-decoration: none; font-weight: 500; }
+.pn__tcode:hover { color: var(--accent, #00a76f); }
+.pn__tmuted { color: var(--muted); font-size: 12px; }
+
+/* Status as a pill, colour-keyed the same way the bars are, so the two views
+   teach the same vocabulary. */
+.pn__pill {
+  display: inline-block; padding: 2px 9px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; white-space: nowrap;
+}
+.pn__pill.is-todo { background: rgba(74, 83, 97, .3); color: #9aa7b4; }
+.pn__pill.is-in_progress { background: rgba(217, 154, 38, .18); color: #fbbf24; }
+.pn__pill.is-submitted { background: rgba(59, 130, 246, .18); color: #93c5fd; }
+.pn__pill.is-changes_requested { background: rgba(239, 68, 68, .18); color: #fca5a5; }
+.pn__pill.is-approved { background: rgba(0, 167, 111, .18); color: #6ee7b7; }
+
+/* Panels are not square and cropping them to a thumbnail defeats the point: the
+   column exists so you can SEE the picture, so each one keeps its own shape and
+   is bounded by a box instead of forced into one. Rows end up different heights,
+   which is exactly what the Miro board looked like. */
+.pn__table--miro td { padding: 8px 10px; }
+.pn__tshot { width: 320px; }
+.pn__tshot button {
+  display: block; padding: 0; margin: 0;
+  background: #11151b; border: 1px solid var(--border, #2a2e38);
+  border-radius: 7px; overflow: hidden; cursor: zoom-in;
+  line-height: 0;
+}
+.pn__tshot button:hover { border-color: var(--accent, #00a76f); }
+.pn__tshot img {
+  display: block;
+  max-width: 300px;
+  max-height: 230px;
+  width: auto;
+  height: auto;
+}
+/* Below this the two image columns would squeeze the text ones out; drop the
+   cap rather than let the pictures shrink back to unreadable. */
+@media (max-width: 1500px) {
+  .pn__tshot { width: 240px; }
+  .pn__tshot img { max-width: 224px; max-height: 175px; }
+}
+.pn__tcomic { min-width: 180px; }
+.pn__tbatch { font-size: 11px; opacity: .75; }

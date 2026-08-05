@@ -2355,7 +2355,11 @@ export interface PanelBatch {
   assignee_name: string | null;
   panel_count: number;
   approved_count: number;
+  /** Panels per status — the whole spread, not just how many are approved. */
+  status_counts: Record<string, number>;
   open_notes: number;
+  /** First panel's raw image, so a batch is recognisable without opening it. */
+  thumb_media_id: string | null;
   created_at: string | null;
 }
 
@@ -2389,6 +2393,12 @@ export interface Panel {
   raw_count: number;
   /** Newest generated version, or null before anything is generated. */
   latest_media_id: string | null;
+  /** What the panel delivers: the submitted pick, else the latest version.
+   *  Grids and covers read THIS — never latest_media_id. */
+  delivered_media_id: string | null;
+  delivered_version: number;
+  /** Null until someone submits; the version the artist actually chose. */
+  final_media_id: string | null;
   version_count: number;
   unresolved_notes: number;
   updated_at: string | null;
@@ -2604,6 +2614,27 @@ export function generateForPanel(
 }
 
 /** File finished images against the panel as its next version(s). */
+/** This panel's pictures as library references — the shape the studio grid and
+ *  viewer act on (tag, pin, refine, attach-to-prompt). */
+export async function listPanelAssets(panelId: number): Promise<ReferenceItem[]> {
+  const rows = await api<ReferenceRowWire[]>(`/api/flowstudio/panels/${panelId}/assets`);
+  return rows.map(mapReferenceRow);
+}
+
+/** Attach an uploaded image to this panel as reference material (NOT a version:
+ *  a version is a result, this is input the artist brought along). */
+export async function addPanelAsset(
+  panelId: number,
+  mediaId: string,
+  label?: string,
+): Promise<ReferenceItem> {
+  const row = await api<ReferenceRowWire>(`/api/flowstudio/panels/${panelId}/assets`, {
+    method: "POST",
+    body: JSON.stringify({ media_id: mediaId, label: label ?? null }),
+  });
+  return mapReferenceRow(row);
+}
+
 export function addPanelVersions(
   panelId: number,
   mediaIds: string[],
@@ -2615,8 +2646,146 @@ export function addPanelVersions(
   });
 }
 
-export function submitPanel(panelId: number): Promise<Panel> {
-  return api<Panel>(`/api/flowstudio/panels/${panelId}/submit`, { method: "POST" });
+/**
+ * Export downloads.
+ *
+ * Fetched rather than linked: these endpoints are authorised, and an `<a href>`
+ * cannot carry the Bearer header. The patched `window.fetch` adds it, so the
+ * bytes arrive here and are handed to the browser as a blob. The cost is that a
+ * large zip passes through memory once — acceptable next to the alternative,
+ * which is putting a token in a URL that lands in history and server logs.
+ *
+ * The filename comes from the server's Content-Disposition, so what the studio
+ * gets on disk is the cutter's own panel code.
+ */
+async function download(url: string): Promise<{ written: number; skipped: number }> {
+  const res = await fetch(url);
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try {
+      detail = ((await res.json()) as { detail?: string }).detail ?? detail;
+    } catch {
+      /* not json — keep the status */
+    }
+    throw new Error(detail);
+  }
+  const disp = res.headers.get("content-disposition") ?? "";
+  const name = /filename="([^"]+)"/.exec(disp)?.[1] ?? "download";
+  const blob = await res.blob();
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoked on the next tick, not immediately: Safari cancels an in-flight
+  // download if the object URL dies in the same frame as the click.
+  setTimeout(() => URL.revokeObjectURL(href), 1000);
+  return {
+    written: Number(res.headers.get("x-export-written") ?? 1),
+    skipped: Number(res.headers.get("x-export-skipped") ?? 0),
+  };
+}
+
+/** The one image this panel delivers. */
+export function downloadPanel(panelId: number) {
+  return download(`/api/flowstudio/panels/${panelId}/download`);
+}
+
+/** Every approved panel in one artist's batch, as a zip. */
+export function exportBatch(batchId: number) {
+  return download(`/api/flowstudio/batches/${batchId}/export`);
+}
+
+/** Every approved panel in the comic, foldered by batch. */
+export function exportProject(projectId: number) {
+  return download(`/api/flowstudio/projects/${projectId}/export`);
+}
+
+/** What the signed-in account may do in giantflow. Advisory — every capability
+ *  is enforced per request as well; this only stops the UI offering buttons that
+ *  would 403. */
+export interface GiantflowMe {
+  user_id: string | null;
+  system_role: string | null;
+  best_role: string;
+  capabilities: Record<string, boolean>;
+  /** Per comic, because authority is per comic. */
+  projects: Record<string, string>;
+}
+
+export function giantflowMe(): Promise<GiantflowMe> {
+  return api<GiantflowMe>("/api/flowstudio/me");
+}
+
+export interface FlowMember {
+  user_id: string;
+  name: string;
+  role: string;
+}
+
+export function listFlowMembers(projectId: number): Promise<FlowMember[]> {
+  return api<FlowMember[]>(`/api/flowstudio/projects/${projectId}/members`);
+}
+
+export function setFlowMember(
+  projectId: number,
+  userId: string,
+  role: string,
+): Promise<FlowMember> {
+  return api<FlowMember>(`/api/flowstudio/projects/${projectId}/members`, {
+    method: "PUT",
+    body: JSON.stringify({ user_id: userId, role }),
+  });
+}
+
+export function removeFlowMember(projectId: number, userId: string): Promise<{ ok: boolean }> {
+  return api(`/api/flowstudio/projects/${projectId}/members/${userId}`, { method: "DELETE" });
+}
+
+/** A panel as it appears in a review queue: the pairing, who made it, and any
+ *  unresolved remarks. */
+export interface QueuePanel extends Panel {
+  project_name: string;
+}
+
+/** Every panel, with its state — the management view. `status` takes several. */
+export function allPanels(filters: {
+  status?: string[];
+  project_id?: number;
+  assignee?: string;
+  q?: string;
+} = {}): Promise<QueuePanel[]> {
+  const s = new URLSearchParams();
+  if (filters.status?.length) s.set("status", filters.status.join(","));
+  if (filters.project_id !== undefined) s.set("project_id", String(filters.project_id));
+  if (filters.assignee) s.set("assignee", filters.assignee);
+  if (filters.q?.trim()) s.set("q", filters.q.trim());
+  const qs = s.toString();
+  return api<QueuePanel[]>(`/api/flowstudio/panels${qs ? `?${qs}` : ""}`);
+}
+
+/** Everything handed in and waiting on a verdict, across every artist. */
+export function reviewQueue(projectId?: number): Promise<QueuePanel[]> {
+  const qs = projectId === undefined ? "" : `?project_id=${projectId}`;
+  return api<QueuePanel[]>(`/api/flowstudio/review-queue${qs}`);
+}
+
+/** The signed-in artist's own panels, grouped by what the PM said. */
+export function myWork(): Promise<{
+  changes_requested: QueuePanel[];
+  submitted: QueuePanel[];
+  approved: QueuePanel[];
+}> {
+  return api(`/api/flowstudio/my-work`);
+}
+
+export function submitPanel(panelId: number, mediaId?: string | null): Promise<Panel> {
+  return api<Panel>(`/api/flowstudio/panels/${panelId}/submit`, {
+    method: "POST",
+    body: JSON.stringify({ media_id: mediaId ?? null }),
+  });
 }
 
 export function reviewPanel(

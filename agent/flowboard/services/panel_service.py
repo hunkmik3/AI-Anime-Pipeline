@@ -445,6 +445,75 @@ def list_panels(session: Session, batch_id: int) -> list[FlowPanel]:
     )
 
 
+def search_panels(
+    session: Session,
+    *,
+    statuses: Optional[list[str]] = None,
+    project_id: Optional[int] = None,
+    batch_id: Optional[int] = None,
+    assignee_user_id: Optional[uuid.UUID] = None,
+    q: Optional[str] = None,
+    limit: int = 1000,
+) -> list[FlowPanel]:
+    """Every panel matching the filters, across batches and comics.
+
+    The per-batch grid answers "how is this share going"; this answers "where is
+    anything, right now" — which panel of Quân's came back, how many of the whole
+    comic nobody has started. Neither the batch grid nor the two queues could say
+    that: one is nailed to a single batch, the others to a single status.
+
+    Ordered by the studio's own numbering (``order_index``) rather than by
+    recency, because a manager reading a comic reads it in page order.
+    """
+    stmt = select(FlowPanel).join(FlowBatch, FlowBatch.id == FlowPanel.batch_id)
+    if statuses:
+        stmt = stmt.where(FlowPanel.status.in_(statuses))
+    if project_id is not None:
+        stmt = stmt.where(FlowBatch.project_id == project_id)
+    if batch_id is not None:
+        stmt = stmt.where(FlowPanel.batch_id == batch_id)
+    if assignee_user_id is not None:
+        stmt = stmt.where(FlowBatch.assignee_user_id == assignee_user_id)
+    if q and q.strip():
+        stmt = stmt.where(FlowPanel.code.ilike(f"%{q.strip()}%"))
+    stmt = stmt.order_by(
+        FlowBatch.project_id, FlowBatch.order_index, FlowPanel.order_index, FlowPanel.id
+    ).limit(limit)
+    return list(session.exec(stmt).all())
+
+
+def panels_by_status(
+    session: Session,
+    statuses: list[str],
+    *,
+    assignee_user_id: Optional[uuid.UUID] = None,
+    project_id: Optional[int] = None,
+    limit: int = 500,
+) -> list[FlowPanel]:
+    """Panels in any of ``statuses``, across every batch, newest activity first.
+
+    A queue, not a tree. Review at this studio's scale means 300 panels handed in
+    by several artists, and walking project → batch → panel to find the ones
+    waiting is the shape of the Miro board this replaces, not an improvement on
+    it. Ordered by ``updated_at`` because the thing a reviewer wants is what
+    changed, and an artist wants the verdict that just landed.
+
+    ``assignee_user_id`` filters to one artist's own work — the batch carries the
+    assignee, so the join goes through it.
+    """
+    stmt = (
+        select(FlowPanel)
+        .join(FlowBatch, FlowBatch.id == FlowPanel.batch_id)
+        .where(FlowPanel.status.in_(statuses))
+    )
+    if assignee_user_id is not None:
+        stmt = stmt.where(FlowBatch.assignee_user_id == assignee_user_id)
+    if project_id is not None:
+        stmt = stmt.where(FlowBatch.project_id == project_id)
+    stmt = stmt.order_by(FlowPanel.updated_at.desc(), FlowPanel.id.desc()).limit(limit)
+    return list(session.exec(stmt).all())
+
+
 def list_project_panels(session: Session, project_id: int) -> list[FlowPanel]:
     """Every panel in a comic, batch by batch, each batch in its own order."""
     out: list[FlowPanel] = []
@@ -471,6 +540,27 @@ def panel_images(
 
 def latest_generated(session: Session, panel_id: int) -> Optional[FlowPanelImage]:
     rows = panel_images(session, panel_id, role="generated")
+    return rows[-1] if rows else None
+
+
+def delivered(session: Session, panel_id: int) -> Optional[FlowPanelImage]:
+    """The version this panel is actually delivering.
+
+    The one the artist submitted, when they have picked one — otherwise the most
+    recent. The fallback is not a default so much as a description of what a
+    panel submitted before ``final_media_id`` existed was submitted under, and it
+    is also the honest answer for a panel still being worked on.
+
+    Every surface that shows "the result" — the batch grid, the batch card, the
+    project cover, export — must go through this rather than
+    ``latest_generated``, or a PM reviews one image and sees another.
+    """
+    panel = get_panel(session, panel_id)
+    rows = panel_images(session, panel_id, role="generated")
+    if panel.final_media_id:
+        for r in rows:
+            if r.media_id == panel.final_media_id:
+                return r
     return rows[-1] if rows else None
 
 
@@ -522,12 +612,33 @@ def add_generated(
 # ── Review ──────────────────────────────────────────────────────────────────
 
 
-def submit_panel(session: Session, panel_id: int) -> FlowPanel:
+def submit_panel(
+    session: Session, panel_id: int, *, media_id: Optional[str] = None
+) -> FlowPanel:
+    """Hand a panel to the PM, naming the version being handed over.
+
+    ``media_id`` is the whole point: submitting IS choosing. Ten generations and
+    a submit used to say nothing about which of the ten was meant, so every
+    reader fell back to the newest — the artist's seventh try was invisible.
+
+    Omitting it keeps the existing pick, or takes the latest when there is none,
+    so a caller with a single version does not have to name it.
+    """
     panel = get_panel(session, panel_id)
     if panel.status == "approved":
         raise PanelError("closed", "this panel is already approved")
-    if not panel_images(session, panel_id, role="generated"):
+    rows = panel_images(session, panel_id, role="generated")
+    if not rows:
         raise PanelError("bad_input", "nothing to review — generate a version first")
+    if media_id:
+        # Must be one of THIS panel's versions: a submission pointing at another
+        # panel's image, or at raw material, would sail through review and be
+        # exported as the deliverable.
+        if media_id not in {r.media_id for r in rows}:
+            raise PanelError("bad_input", "that image is not a version of this panel")
+        panel.final_media_id = media_id
+    elif not panel.final_media_id:
+        panel.final_media_id = rows[-1].media_id
     panel.status = "submitted"
     panel.updated_at = _utcnow()
     session.add(panel)

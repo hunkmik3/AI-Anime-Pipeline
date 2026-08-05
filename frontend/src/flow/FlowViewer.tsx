@@ -75,7 +75,7 @@ function clampView(v: View, rect: DOMRect | null, maxScale: number): View {
   return { scale, tx, ty };
 }
 
-export function FlowViewer() {
+export function FlowViewer({ viewOnly = false }: { viewOnly?: boolean } = {}) {
   const mediaId = useFlowStudioStore((s) => s.selectedMediaId);
   const assets = useFlowStudioStore((s) => s.assets);
   const asset = useFlowStudioStore((s) =>
@@ -637,7 +637,10 @@ export function FlowViewer() {
         </button>
       </div>
 
-      {/* Bottom edit composer — Flow-style pill. */}
+        {/* Bottom edit composer — Flow-style pill. Hidden when the viewer is
+            opened purely to LOOK: a management table is not a place to spend
+            money, and an edit box there invites a generation nobody asked for. */}
+        {viewOnly ? null : (
       <div className="fv__bar" onPointerDown={(e) => e.stopPropagation()}>
         {editRefs.length > 0 && (
           <div className="fv__bar-refs">
@@ -727,6 +730,7 @@ export function FlowViewer() {
           </button>
         </div>
       </div>
+        )}
     </div>
   );
 }

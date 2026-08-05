@@ -1,53 +1,82 @@
-import { useCallback, useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 
 import {
-  addPanelNote,
   addPanelVersions,
-  generateForPanel,
   getPanel,
-  getRequest,
-  mediaUrl,
-  resolvePanelNote,
+  listPanels,
+  reopenPanel,
+  reviewPanel,
+  submitPanel,
   thumbUrl,
+  uploadFlowImage,
   type Panel,
 } from "../api/client";
-import { PageHeader } from "../components/shell/PageHeader";
 import {
-  FLOW_ASPECTS,
-  FLOW_MODELS,
-  FLOW_SIZES,
-  modelMaxSize,
-  modelProvider,
-  type FlowAspect,
-  type FlowSize,
+  CHAR_PREFIX,
+  REF_PREFIX,
+  SCENE_PREFIX,
+  groupName,
+  humanizeGenError,
+  resumePanelGens,
+  sanitizeErrorDetail,
+  useFlowStudioStore,
 } from "../store/flowStudio";
+import { useGiantflowRole } from "../store/giantflowRole";
 import { toast } from "../store/toast";
+import { FlowComposer } from "./FlowComposer";
+import { FlowViewer } from "./FlowViewer";
 
 /**
- * One panel's workspace — where the artist actually works.
+ * One panel's workspace — the giantflow studio, scoped to a panel.
  *
- * This is the point of the whole refactor: the board that replaced Miro is not a
- * tracker you look at and then go elsewhere to generate. Original on the left,
- * results in the middle, the PM's notes on the right, and the composer bound to
- * THIS panel — its raw material is attached as the reference automatically,
- * because "match the original" is what every one of these generations is for.
+ * Deliberately the studio itself and not a variant of it: the same composer, the
+ * same grid cards, the same viewer, so every affordance they carry comes along —
+ * several references on one generation, @mentions, tagging an image as a
+ * character or a scene, pinning, refining, annotating, downloading.
  *
- * The panel imposes nothing on how you generate: model, size, aspect and variant
- * count are the artist's, exactly as in the free-form studio.
+ * Input on the right, output in the middle. The centre grid holds versions and
+ * nothing else, because a reference image and a finished version sitting in the
+ * same grid read as the same kind of thing and they are not — one is what you
+ * are working from, the other is what you made. Material lives in its own column
+ * as a two-up grid; a one-per-row column was tried and turned twenty references
+ * into a scroll you had to travel past to reach anything.
+ *
+ * The raw cut is pinned at the top of that column and is not detachable: the
+ * backend prepends it to the references on every call, so a ✕ on it would be a
+ * control that does nothing. What the artist brings along is detachable.
  */
 export function PanelWorkspacePage() {
   const { panelId } = useParams();
+  const navigate = useNavigate();
   const pid = Number(panelId);
+  const { can } = useGiantflowRole();
   const [panel, setPanel] = useState<Panel | null>(null);
+  const [siblings, setSiblings] = useState<Panel[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [big, setBig] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+
+  const setPanelSink = useFlowStudioStore((s) => s.setPanelSink);
+  const loadPanelAssets = useFlowStudioStore((s) => s.loadPanelAssets);
+  const assets = useFlowStudioStore((s) => s.assets);
+  const genJobs = useFlowStudioStore((s) => s.genJobs);
+  const genError = useFlowStudioStore((s) => s.error);
+  const notice = useFlowStudioStore((s) => s.notice);
+  const clearGenError = useFlowStudioStore((s) => s.clearError);
+  const clearNotice = useFlowStudioStore((s) => s.clearNotice);
+  const selectedMediaId = useFlowStudioStore((s) => s.selectedMediaId);
+  const select = useFlowStudioStore((s) => s.select);
+  const tagToPrompt = useFlowStudioStore((s) => s.tagToPrompt);
+  const reusePrompt = useFlowStudioStore((s) => s.reusePrompt);
+  const uploadAsset = useFlowStudioStore((s) => s.uploadAsset);
+  const addRef = useFlowStudioStore((s) => s.addRef);
+  const removeAsset = useFlowStudioStore((s) => s.remove);
+  const inFlight = genJobs.length;
 
   const load = useCallback(async () => {
     try {
-      const p = await getPanel(pid);
-      setPanel(p);
-      setBig((cur) => cur ?? p.latest_media_id ?? p.raw?.[0]?.media_id ?? null);
+      return setPanel(await getPanel(pid));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -57,81 +86,374 @@ export function PanelWorkspacePage() {
     void load();
   }, [load]);
 
+  // Point the studio composer at this panel for as long as the page is open, and
+  // let go on the way out so the studio grid gets its generations back.
+  useEffect(() => {
+    setPanelSink(pid);
+    void loadPanelAssets(pid);
+    resumePanelGens(pid);
+    return () => setPanelSink(null);
+  }, [pid, setPanelSink, loadPanelAssets]);
+
+  // The rail: the rest of this artist's batch, so moving between panels doesn't
+  // mean going back out to the grid every time.
+  useEffect(() => {
+    if (!panel) return;
+    void listPanels(panel.batch_id).then(setSiblings).catch(() => setSiblings([]));
+  }, [panel?.batch_id, panel]);
+
+  const prevInFlight = useRef(0);
+  useEffect(() => {
+    if (prevInFlight.current > 0 && inFlight === 0) {
+      void load();
+      void loadPanelAssets(pid);
+    }
+    prevInFlight.current = inFlight;
+  }, [inFlight, load, loadPanelAssets, pid]);
+
+  /** Hand this version over. Submitting IS choosing — that is why the button
+   *  lives on a card and not in the header. */
+  async function submit(mediaId: string) {
+    try {
+      setPanel(await submitPanel(pid, mediaId));
+      toast("Submitted for review.");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Submit failed");
+    }
+  }
+
+  /** A file that came back from Photoshop enters as a VERSION, not a reference.
+   *  That collapses the external round-trip into the one submit mechanic: an
+   *  outside edit is just another version that happens not to be machine-made. */
+  async function uploadVersion(files: File[]) {
+    const images = files.filter((f) => f.type.startsWith("image/"));
+    if (!images.length) return;
+    try {
+      for (const f of images) {
+        const { media_id } = await uploadFlowImage(f);
+        // model_used stays null on purpose: it is how a PM tells a retouched
+        // file from a generated one.
+        await addPanelVersions(pid, [media_id], null);
+      }
+      await load();
+      await loadPanelAssets(pid);
+      toast(`${images.length} version(s) added from file.`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Upload failed");
+    }
+  }
+
+  async function ingest(files: File[]) {
+    const images = files.filter((f) => f.type.startsWith("image/"));
+    for (const f of images) {
+      const id = await uploadAsset(f);
+      // Attached straight away: you dropped it here to use it, not to file it.
+      if (id) addRef(id);
+    }
+  }
+
   if (error) return <p className="inbox__err">{error}</p>;
   if (!panel) return <p className="rfoot">Loading…</p>;
 
-  const locked = panel.status === "approved";
+  // Two different reasons the tools are unavailable, and they must stay
+  // distinguishable: the work is signed off, versus this role never generates.
+  const locked = panel.status === "approved" || !can("panel.generate");
+  const versions = [...(panel.versions ?? [])].reverse(); // newest first
+  const rawIds = new Set((panel.raw ?? []).map((r) => r.media_id));
+  const versionIds = new Set((panel.versions ?? []).map((v) => v.media_id));
+  // Input, as opposed to output: whatever is in this panel's library that it did
+  // not produce and did not arrive with. The store keeps it newest-first and
+  // pushes uploads onto the front, so a dropped image appears without a reload.
+  const refs = assets.filter((a) => !rawIds.has(a.mediaId) && !versionIds.has(a.mediaId));
 
   return (
-    <div className="shellpage pn__ws">
-      <PageHeader
-        crumb={<Link to={`/giantflow/${panel.project_id}`}>← All panels</Link>}
-        title={panel.code}
-        subtitle={`${STATUS_TEXT[panel.status]}${
-          panel.assignee_name ? ` · ${panel.assignee_name}` : ""
-        }`}
-      />
+    <div className={`pn__studio${collapsed ? " is-narrow" : ""}`}>
+      {/* ── left rail: the batch, panel by panel ── */}
+      <aside className="fn pn__rail">
+        <Link to={`/giantflow/batch/${panel.batch_id}`} className="pn__rail-back">
+          {collapsed ? "«" : "← All panels"}
+        </Link>
 
-      {locked ? (
-        <div className="callout callout--ok">
-          <b>Approved.</b> Generation is closed for this panel. A PM can reopen it
-          if it needs more work.
-        </div>
-      ) : null}
-
-      <div className="pn__ws-cols">
-        {/* Original — pinned, because it is what the result is judged against. */}
-        <aside className="pn__ws-raw">
-          <h3 className="pn__ws-h">Raw material</h3>
-          {(panel.raw ?? []).map((r) => (
-            <button
-              key={r.media_id}
-              type="button"
-              className={`pn__ws-thumb${big === r.media_id ? " is-on" : ""}`}
-              onClick={() => setBig(r.media_id)}
+        <div className="fn__projects pn__rail-list">
+          {siblings.map((p) => (
+            <div
+              key={p.id}
+              className={`fn__prow pn__rail-row${p.id === pid ? " is-on" : ""}`}
+              title={p.code}
+              onClick={() => p.id !== pid && navigate(`/giantflow/panel/${p.id}`)}
             >
-              <img src={thumbUrl(r.media_id, 320)} alt="" />
-            </button>
+              {p.raw_media_id ? (
+                <img className="pn__rail-thumb" src={thumbUrl(p.raw_media_id, 96)} alt="" loading="lazy" />
+              ) : (
+                <span className="pn__rail-thumb" />
+              )}
+              {!collapsed && (
+                <>
+                  <span className="fn__prow-name">{p.code}</span>
+                  <span className={`pn__rail-dot is-${p.status}`} title={STATUS_TEXT[p.status]} />
+                </>
+              )}
+            </div>
           ))}
-        </aside>
+        </div>
 
-        <section className="pn__ws-main">
-          <div className="pn__ws-stage">
-            {big ? <img src={mediaUrl(big)} alt="" /> : <p className="rfoot">Nothing yet.</p>}
+        <div className="fn__spacer" />
+        <button
+          type="button"
+          className="fn__ghost"
+          onClick={() => setCollapsed((c) => !c)}
+          title={collapsed ? "Expand" : "Collapse"}
+        >
+          {collapsed ? "»" : "« Collapse"}
+        </button>
+      </aside>
+
+      {/* ── centre: grid + composer, exactly as the studio has it ── */}
+      <main
+        className="fc-center pn__center"
+        onDragEnter={(e) => {
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragOver={(e) => e.preventDefault()}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false);
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          void ingest(Array.from(e.dataTransfer.files ?? []));
+        }}
+      >
+        {dragOver ? (
+          <div className="fc-drop">
+            <div className="fc-drop__inner">⬇ Drop images to use as references</div>
           </div>
+        ) : null}
 
-          <div className="pn__ws-versions">
-            {(panel.versions ?? []).length === 0 ? (
-              <span className="pn__muted">No versions generated yet.</span>
-            ) : (
-              (panel.versions ?? []).map((v) => (
-                <button
+        <div className="fc-top pn__top">
+          <b className="pn__top-code" title={panel.code}>
+            {panel.code}
+          </b>
+          <span className={`pn__top-status is-${panel.status}`}>{STATUS_TEXT[panel.status]}</span>
+          <span className="fc-count">
+            {versions.length} version{versions.length === 1 ? "" : "s"}
+          </span>
+          {/* The way back in from outside software: download a version, retouch
+              it, bring the file here and it becomes the next version. */}
+          {!locked && can("panel.submit") ? <UploadVersionButton onFiles={uploadVersion} /> : null}
+          {can("panel.review") ? <ReviewBar panel={panel} onChanged={setPanel} /> : null}
+        </div>
+
+        {/* Two reasons the tools are gone, and they must not share a message: a
+            viewer being told the panel is "approved" would be a plain lie. */}
+        {panel.status === "approved" ? (
+          <div className="fc-banner fc-banner--info">
+            ✓ Approved — generation is closed. A PM can reopen this panel.
+          </div>
+        ) : !can("panel.generate") ? (
+          <div className="fc-banner fc-banner--info">
+            👁 Read-only — this role does not generate. You can open any image.
+          </div>
+        ) : null}
+        {genError ? (
+          <div
+            className="fc-banner fc-banner--err"
+            onClick={clearGenError}
+            role="alert"
+            title={sanitizeErrorDetail(genError)}
+          >
+            ⚠ {humanizeGenError(genError) ?? sanitizeErrorDetail(genError)}
+            <span className="fc-banner__x">✕</span>
+          </div>
+        ) : null}
+        {notice ? (
+          <div className="fc-banner fc-banner--info" onClick={clearNotice} role="status">
+            ℹ {notice}
+            <span className="fc-banner__x">✕</span>
+          </div>
+        ) : null}
+
+        <div className="fc-scroll pn__center-scroll">
+          {/* Results only. Material moved to the right column: mixing input and
+              output in one grid meant a reference image and a finished version
+              looked like the same kind of thing, and they are not. */}
+          <div className="fc-grid">
+            {genJobs.map((j) => (
+              <div key={j.id} className="fc-card pn__card-pending" title={j.prompt}>
+                <span>generating…</span>
+              </div>
+            ))}
+            {versions.map((v) => {
+              const asset = assets.find((a) => a.mediaId === v.media_id);
+              return (
+                <div
                   key={v.media_id}
-                  type="button"
-                  className={`pn__ws-thumb${big === v.media_id ? " is-on" : ""}`}
+                  role="button"
+                  tabIndex={0}
+                  className={`fc-card${selectedMediaId === v.media_id ? " is-selected" : ""}`}
                   title={v.model_used ?? undefined}
-                  onClick={() => setBig(v.media_id)}
+                  onClick={() => select(v.media_id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      select(v.media_id);
+                    }
+                  }}
                 >
-                  <img src={thumbUrl(v.media_id, 220)} alt="" />
-                  <em>v{v.version}</em>
-                </button>
-              ))
-            )}
+                  <img src={thumbUrl(v.media_id, 400)} alt="" loading="lazy" decoding="async" />
+                  <span className="fc-badge fc-badge--ver">v{v.version}</span>
+                  {/* A generated version records the model; a file retouched
+                      outside and brought back does not. That absence is the only
+                      way a PM can tell the two apart, so it is shown. */}
+                  {!v.model_used ? (
+                    <span className="fc-badge fc-badge--hand" title="Uploaded file, not generated">
+                      ✎
+                    </span>
+                  ) : null}
+                  {panel.final_media_id === v.media_id ? (
+                    <span className="fc-badge fc-badge--final" title="This is the version submitted">
+                      ✓ submitted
+                    </span>
+                  ) : null}
+                  {asset?.pinned ? <span className="fc-badge fc-badge--pin">📌</span> : null}
+                  {asset && groupName(asset.tags, CHAR_PREFIX) ? (
+                    <span className="fc-badge">👤</span>
+                  ) : null}
+                  {asset && groupName(asset.tags, SCENE_PREFIX) ? (
+                    <span className="fc-badge fc-badge--scene">🎬</span>
+                  ) : null}
+                  <div className="fc-card__bar">
+                    <button
+                      type="button"
+                      className="fc-card__act"
+                      title="Add this image to the prompt as a reference"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        tagToPrompt(`v${v.version}`, v.media_id, [v.media_id]);
+                      }}
+                    >
+                      @
+                    </button>
+                    {/* The submit button is HERE, on the version, and nowhere
+                        else. A submit button in the header cannot say which of
+                        ten tries was meant — which is the whole problem. */}
+                    {!locked && can("panel.submit") ? (
+                      <button
+                        type="button"
+                        className={`fc-card__act pn__submit${
+                          panel.final_media_id === v.media_id ? " is-on" : ""
+                        }`}
+                        title={
+                          panel.final_media_id === v.media_id
+                            ? "This is the version submitted"
+                            : "Submit this version for review"
+                        }
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void submit(v.media_id);
+                        }}
+                      >
+                        {panel.final_media_id === v.media_id ? "✓ submitted" : "Submit this"}
+                      </button>
+                    ) : null}
+                    {asset?.prompt ? (
+                      <button
+                        type="button"
+                        className="fc-card__act"
+                        title="Reuse this prompt and its references"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          reusePrompt(
+                            asset.prompt ?? "",
+                            asset.tags
+                              .filter((x) => x.startsWith(REF_PREFIX))
+                              .map((x) => x.slice(REF_PREFIX.length)),
+                          );
+                        }}
+                      >
+                        ↩
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
           </div>
 
-          <Composer panel={panel} disabled={locked} onDone={load} />
-        </section>
+          {versions.length === 0 && inFlight === 0 ? (
+            <p className="pn__center-hint">
+              Nothing generated yet — describe the restyle below. Every generation
+              is made against the original, which is pinned on the right.
+            </p>
+          ) : null}
+        </div>
 
-        <aside className="pn__ws-notes">
-          <h3 className="pn__ws-h">
-            Notes
-            {panel.unresolved_notes > 0 ? (
-              <span className="pn__notes">{panel.unresolved_notes} open</span>
-            ) : null}
-          </h3>
-          <NoteList panel={panel} onChanged={load} />
-        </aside>
-      </div>
+        {locked ? null : <FlowComposer />}
+      </main>
+
+      {/* ── right: material — the input this panel works from ──
+          A two-up grid, not a single column. The column that was tried on the
+          left failed for exactly that reason: one tile per row turned twenty
+          references into a scroll you had to travel past to reach anything. */}
+      <aside className="pn__mat">
+        <h3 className="pn__ws-h">Raw material</h3>
+        <p className="pn__mat-hint">Attached to every generation.</p>
+        <div className="pn__mat-grid">
+          {(panel.raw ?? []).map((r) => (
+            <MaterialTile
+              key={r.media_id}
+              mediaId={r.media_id}
+              label="raw"
+              onOpen={() => select(r.media_id)}
+              onTag={() => tagToPrompt("raw", r.media_id, [r.media_id])}
+            />
+          ))}
+        </div>
+
+        <h3 className="pn__ws-h">
+          References
+          <UploadButton onFiles={ingest} />
+        </h3>
+        {refs.length === 0 ? (
+          <p className="pn__mat-hint">
+            Drop, paste or upload a character sheet, an environment plate, an
+            approved neighbouring panel — then <b>@</b> it into the prompt.
+          </p>
+        ) : (
+          <div className="pn__mat-grid">
+            {refs.map((a) => {
+              const name =
+                groupName(a.tags, CHAR_PREFIX) ||
+                groupName(a.tags, SCENE_PREFIX) ||
+                a.label ||
+                "image";
+              return (
+                <MaterialTile
+                  key={a.refId}
+                  mediaId={a.mediaId}
+                  label={name}
+                  pinned={a.pinned}
+                  onOpen={() => select(a.mediaId)}
+                  onTag={() => tagToPrompt(name, a.mediaId, [a.mediaId])}
+                  onRemove={async () => {
+                    try {
+                      await removeAsset(a.refId);
+                    } catch (e) {
+                      toast(e instanceof Error ? e.message : "Failed");
+                    }
+                  }}
+                />
+              );
+            })}
+          </div>
+        )}
+      </aside>
+
+      {/* The studio's own viewer: zoom, annotate, refine, download, and the
+          character / scene tagging. Driven by `selectedMediaId`, so mounting it
+          is all the wiring it needs. */}
+      <FlowViewer />
     </div>
   );
 }
@@ -144,216 +466,207 @@ const STATUS_TEXT: Record<Panel["status"], string> = {
   approved: "Approved",
 };
 
-/** The engine, bound to this panel. Same controls as the studio composer. */
-function Composer({
-  panel,
-  disabled,
-  onDone,
+/** One picture of material: open it, @ it into the prompt, or detach it. */
+function MaterialTile({
+  mediaId,
+  label,
+  pinned,
+  onOpen,
+  onTag,
+  onRemove,
 }: {
-  panel: Panel;
-  disabled: boolean;
-  onDone: () => Promise<void>;
+  mediaId: string;
+  label: string;
+  pinned?: boolean;
+  onOpen: () => void;
+  onTag: () => void;
+  onRemove?: () => Promise<void>;
 }) {
-  const [prompt, setPrompt] = useState("");
-  const [model, setModel] = useState(FLOW_MODELS[0].id);
-  const [aspect, setAspect] = useState<FlowAspect>("9:16");
-  const [size, setSize] = useState<FlowSize>("1K");
-  const [count, setCount] = useState(1);
-  const [preserve, setPreserve] = useState(true);
-  const [busy, setBusy] = useState<string | null>(null);
-
-  const cap = modelMaxSize(model);
-  const sizes = FLOW_SIZES.filter(
-    (s) => s === "1K" || cap === "4K" || (cap === "2K" && s === "2K"),
-  );
-
-  async function run() {
-    const text = prompt.trim();
-    if (!text) return;
-    setBusy("Queuing…");
-    try {
-      const { request_id } = await generateForPanel(panel.id, {
-        prompt: text,
-        provider: modelProvider(model),
-        image_model: model,
-        aspect_ratio: aspect,
-        image_size: size,
-        variant_count: count,
-        preserve_colors: preserve,
-      });
-      // Poll the shared request queue, the same way the studio does; the panel
-      // takes custody of the result once it lands.
-      let row = await getRequest(request_id);
-      for (let i = 0; i < 400 && (row.status === "queued" || row.status === "running"); i++) {
-        setBusy(row.status === "running" ? "Generating…" : "Waiting for a slot…");
-        await new Promise((r) => setTimeout(r, i < 10 ? 800 : 2000));
-        row = await getRequest(request_id);
-      }
-      if (row.status !== "done") throw new Error(row.error || "generation failed");
-      const result = (row.result ?? {}) as Record<string, unknown>;
-      const ids = (result.media_ids as string[] | undefined) ?? [];
-      const one = result.media_id as string | undefined;
-      const media = ids.length ? ids : one ? [one] : [];
-      if (!media.length) throw new Error("no image came back");
-      await addPanelVersions(panel.id, media, (result.image_model as string) ?? model);
-      await onDone();
-      toast(`${media.length} version(s) added.`);
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Generation failed");
-    } finally {
-      setBusy(null);
-    }
-  }
-
   return (
-    <div className="pn__composer">
-      <textarea
-        className="inbox__input"
-        rows={2}
-        placeholder={
-          disabled
-            ? "This panel is approved — reopen it to generate again."
-            : "Describe the restyle… (the raw panel is attached as the reference automatically)"
-        }
-        value={prompt}
-        disabled={disabled || !!busy}
-        onChange={(e) => setPrompt(e.target.value)}
-      />
-      <div className="pn__composer-row">
-        <select
-          className="inbox__input pn__select"
-          value={model}
-          disabled={disabled || !!busy}
-          onChange={(e) => {
-            setModel(e.target.value);
-            // Drop an unsupported size rather than silently sending one the model
-            // ignores — 4K on a 2K model quietly returns 1K.
-            const nextCap = modelMaxSize(e.target.value);
-            if (size === "4K" && nextCap !== "4K") setSize("2K");
-            if (size === "2K" && nextCap === "1K") setSize("1K");
-          }}
-        >
-          {FLOW_MODELS.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label}
-            </option>
-          ))}
-        </select>
-        <select
-          className="inbox__input pn__select"
-          value={aspect}
-          disabled={disabled || !!busy}
-          onChange={(e) => setAspect(e.target.value as FlowAspect)}
-        >
-          {FLOW_ASPECTS.map((a) => (
-            <option key={a} value={a}>
-              {a}
-            </option>
-          ))}
-        </select>
-        <select
-          className="inbox__input pn__select"
-          value={size}
-          disabled={disabled || !!busy}
-          onChange={(e) => setSize(e.target.value as FlowSize)}
-        >
-          {sizes.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
-        <select
-          className="inbox__input pn__select"
-          value={count}
-          disabled={disabled || !!busy}
-          onChange={(e) => setCount(Number(e.target.value))}
-        >
-          {[1, 2, 3, 4].map((n) => (
-            <option key={n} value={n}>
-              {n} image{n > 1 ? "s" : ""}
-            </option>
-          ))}
-        </select>
-        <label className="pn__check">
-          <input
-            type="checkbox"
-            checked={preserve}
-            disabled={disabled || !!busy}
-            onChange={(e) => setPreserve(e.target.checked)}
-          />
-          Keep original colours
-        </label>
-        <button
-          className="btn2 btn2--primary"
-          disabled={disabled || !!busy || !prompt.trim()}
-          onClick={() => void run()}
-        >
-          {busy ?? "Generate"}
+    <div className="pn__mat-tile" title={label}>
+      <button type="button" className="pn__mat-img" onClick={onOpen} title="Open">
+        <img src={thumbUrl(mediaId, 240)} alt="" loading="lazy" />
+      </button>
+      {pinned ? <span className="fc-badge fc-badge--pin">📌</span> : null}
+      <div className="pn__mat-foot">
+        <span className="pn__mat-label">{label}</span>
+        <button type="button" className="fc-card__act" title="Add to the prompt" onClick={onTag}>
+          @
         </button>
+        {onRemove ? (
+          <button
+            type="button"
+            className="fc-card__act pn__mat-x"
+            title="Remove from this panel"
+            onClick={() => void onRemove()}
+          >
+            ✕
+          </button>
+        ) : null}
       </div>
     </div>
   );
 }
 
-function NoteList({ panel, onChanged }: { panel: Panel; onChanged: () => Promise<void> }) {
-  const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
-
+function UploadButton({ onFiles }: { onFiles: (files: File[]) => Promise<void> }) {
+  const ref = useRef<HTMLInputElement | null>(null);
   return (
     <>
-      <ul className="pn__notelist">
-        {(panel.notes ?? []).length === 0 ? (
-          <li className="pn__muted">No notes yet.</li>
-        ) : null}
-        {(panel.notes ?? []).map((n) => (
-          <li key={n.id} className={`pn__note${n.resolved ? " is-done" : ""}`}>
-            <label>
-              <input
-                type="checkbox"
-                checked={n.resolved}
-                onChange={async (e) => {
-                  try {
-                    await resolvePanelNote(n.id, e.target.checked);
-                    await onChanged();
-                  } catch (err) {
-                    toast(err instanceof Error ? err.message : "Failed");
-                  }
-                }}
-              />
-              <span>{n.body}</span>
-            </label>
-            <em>{n.author_name ?? ""}</em>
-          </li>
-        ))}
-      </ul>
-      <div className="pn__noteadd">
-        <textarea
-          className="inbox__input"
-          rows={2}
-          placeholder="Add a note…"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-        />
-        <button
-          className="btn2"
-          disabled={busy || !text.trim()}
-          onClick={async () => {
-            setBusy(true);
-            try {
-              await addPanelNote(panel.id, text.trim());
-              setText("");
-              await onChanged();
-            } catch (e) {
-              toast(e instanceof Error ? e.message : "Failed");
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          Add
-        </button>
-      </div>
+      <input
+        ref={ref}
+        type="file"
+        accept="image/*"
+        multiple
+        hidden
+        onChange={(e) => {
+          const files = Array.from(e.target.files ?? []);
+          e.target.value = "";
+          void onFiles(files);
+        }}
+      />
+      <button
+        type="button"
+        className="pn__mat-add"
+        title="Upload reference images"
+        onClick={() => ref.current?.click()}
+      >
+        ＋
+      </button>
     </>
   );
 }
+
+/** Bring a file in from outside software as the next VERSION. */
+function UploadVersionButton({ onFiles }: { onFiles: (files: File[]) => Promise<void> }) {
+  const ref = useRef<HTMLInputElement | null>(null);
+  const [busy, setBusy] = useState(false);
+  return (
+    <>
+      <input
+        ref={ref}
+        type="file"
+        accept="image/*"
+        multiple
+        hidden
+        onChange={async (e) => {
+          const files = Array.from(e.target.files ?? []);
+          e.target.value = "";
+          setBusy(true);
+          try {
+            await onFiles(files);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      />
+      <button
+        type="button"
+        className="btn2 pn__upver"
+        title="Add a retouched file as the next version"
+        disabled={busy}
+        onClick={() => ref.current?.click()}
+      >
+        {busy ? "Uploading…" : "↥ Upload version"}
+      </button>
+    </>
+  );
+}
+
+/**
+ * The PM's verdict, and the artist's way back out of it.
+ *
+ * Approve is one click. Sending back is not: it needs a reason, because a
+ * rejection with no note is precisely what the Miro board did and what left the
+ * artist guessing. The service enforces that too — this is the affordance, not
+ * the rule.
+ */
+function ReviewBar({ panel, onChanged }: { panel: Panel; onChanged: (p: Panel) => void }) {
+  const [note, setNote] = useState("");
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function run(fn: () => Promise<Panel>, ok: string) {
+    setBusy(true);
+    try {
+      onChanged(await fn());
+      toast(ok);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (panel.status === "approved") {
+    return (
+      <span className="pn__review">
+        <button
+          type="button"
+          className="btn2"
+          disabled={busy}
+          onClick={() => void run(() => reopenPanel(panel.id), "Reopened for changes.")}
+        >
+          Reopen
+        </button>
+      </span>
+    );
+  }
+
+  // Nothing to rule on until it has been handed over.
+  if (panel.status !== "submitted") return null;
+
+  if (asking) {
+    return (
+      <span className="pn__review pn__review--ask">
+        <input
+          className="inbox__input"
+          autoFocus
+          placeholder="What needs changing?"
+          value={note}
+          disabled={busy}
+          onChange={(e) => setNote(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && note.trim()) {
+              void run(() => reviewPanel(panel.id, false, [note.trim()]), "Sent back.");
+              setNote("");
+              setAsking(false);
+            }
+            if (e.key === "Escape") setAsking(false);
+          }}
+        />
+        <button
+          type="button"
+          className="btn2 btn2--danger"
+          disabled={busy || !note.trim()}
+          onClick={() => {
+            void run(() => reviewPanel(panel.id, false, [note.trim()]), "Sent back.");
+            setNote("");
+            setAsking(false);
+          }}
+        >
+          Send back
+        </button>
+        <button type="button" className="btn2" onClick={() => setAsking(false)}>
+          Cancel
+        </button>
+      </span>
+    );
+  }
+
+  return (
+    <span className="pn__review">
+      <button
+        type="button"
+        className="btn2 btn2--primary"
+        disabled={busy}
+        onClick={() => void run(() => reviewPanel(panel.id, true), "Approved.")}
+      >
+        ✓ Approve
+      </button>
+      <button type="button" className="btn2" disabled={busy} onClick={() => setAsking(true)}>
+        Send back
+      </button>
+    </span>
+  );
+}
+

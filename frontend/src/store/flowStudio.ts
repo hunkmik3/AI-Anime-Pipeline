@@ -7,6 +7,10 @@ import {
   patchReference,
   deleteReference,
   uploadFlowImage,
+  addPanelAsset,
+  addPanelVersions,
+  generateForPanel,
+  listPanelAssets,
   type ReferenceItem,
 } from "../api/client";
 import { useFlowProjectsStore } from "./flowProjects";
@@ -156,6 +160,15 @@ interface FlowStudioState {
   pendingCaretApply: number | null;
   recentPrompts: string[]; // lightweight "history" in the composer
   settings: FlowGenSettings;
+  /**
+   * When set, generations go to THIS panel instead of the studio grid.
+   *
+   * The panel workspace reuses the studio composer whole — @mentions, extra
+   * references, paste-to-attach, the settings popover, all of it — and this is
+   * the single switch that redirects where the result lands. Rebuilding a
+   * lesser composer for panels is what the artists were complaining about.
+   */
+  panelSink: number | null;
 
   load(): Promise<void>;
   setTab(tab: FlowTab): void;
@@ -177,6 +190,10 @@ interface FlowStudioState {
   // Reuse a past prompt: load its text AND re-attach + re-tag the images it
   // referenced (from the asset's ref: tags), so @tokens light up again.
   reusePrompt(prompt: string, refMediaIds: string[]): void;
+  /** Point generations at a panel (null = back to the studio grid). */
+  setPanelSink(panelId: number | null): void;
+  /** Load a panel's own library (its raw material + versions) into `assets`. */
+  loadPanelAssets(panelId: number): Promise<void>;
   generate(prompt: string): Promise<void>;
   regenerate(mediaId: string): Promise<void>;
   refine(mediaId: string, prompt: string, refs?: string[]): Promise<void>;
@@ -252,6 +269,9 @@ interface PendingGen {
   refs: string[]; // material/reference ids to store as tags on the result
   model: string | null;
   provider: string | null;
+  //: Set when the generation was fired from a panel workspace rather than a
+  //: board, so a refresh mid-flight re-attaches it to the right place.
+  panelId?: number | null;
   ts: number;
 }
 
@@ -397,6 +417,7 @@ async function trackGen(
     refs: string[];
     model: string | null;
     provider: string | null;
+    panelId?: number | null;
     startedAt?: number; // set when resuming after an F5, so the bar keeps its place
   },
 ): Promise<FlowAsset[]> {
@@ -424,6 +445,18 @@ async function trackGen(
     );
     // Skip any media already on-screen — an F5 that landed after the row was
     // persisted but before its pending entry was cleared must not re-create it.
+    // A panel keeps its OWN version history, and that is the record. Also
+    // writing every attempt into the shared asset library would bury it: 136
+    // panels at four tries each is 544 rows nobody asked for.
+    if (meta.panelId != null) {
+      if (mediaIds.length) {
+        await addPanelVersions(meta.panelId, mediaIds, meta.model ?? modelUsed ?? null);
+      }
+      useFlowStudioStore.setState((s) => ({
+        notice: fallbackNotice(meta.provider ?? "", providerUsed) ?? s.notice,
+      }));
+      return [];
+    }
     const have = new Set(useFlowStudioStore.getState().assets.map((a) => a.mediaId));
     const fresh = mediaIds.filter((m) => !have.has(m));
     const created = fresh.length
@@ -456,13 +489,32 @@ async function runOneGen(
 ): Promise<FlowAsset[]> {
   const persistRefs = opts.persistRefs ?? genRefs;
   const aspect = opts.aspect === undefined ? settings.aspect : opts.aspect;
+  const panelId = useFlowStudioStore.getState().panelSink;
   let requestId: number;
   try {
-    const req = await createRequest({
-      type: "flow_gen_image",
-      params: genParams(text, { ...settings, count: 1 }, genRefs, opts.extra ?? {}),
-    });
-    requestId = req.id;
+    if (panelId !== null) {
+      // Deliberately NOT /api/requests: the panel endpoint refuses an approved
+      // panel before the request is created, so the lock is enforced before any
+      // money is spent. It also prepends the panel's raw material to the refs.
+      const { request_id } = await generateForPanel(panelId, {
+        prompt: text,
+        provider: settings.provider,
+        image_model: settings.model,
+        aspect_ratio: aspect ?? undefined,
+        image_size: settings.size,
+        variant_count: 1,
+        preserve_colors: settings.preserveColors,
+        ref_media_ids: genRefs,
+        source_media_id: (opts.extra?.source_media_id as string | undefined) ?? undefined,
+      });
+      requestId = request_id;
+    } else {
+      const req = await createRequest({
+        type: "flow_gen_image",
+        params: genParams(text, { ...settings, count: 1 }, genRefs, opts.extra ?? {}),
+      });
+      requestId = req.id;
+    }
   } catch (err) {
     useFlowStudioStore.setState({ error: err instanceof Error ? err.message : "generation failed" });
     return [];
@@ -475,6 +527,7 @@ async function runOneGen(
     refs: persistRefs,
     model: settings.model,
     provider: settings.provider,
+    panelId,
     ts: Date.now(),
   });
   return trackGen(requestId, {
@@ -483,6 +536,7 @@ async function runOneGen(
     refs: persistRefs,
     model: settings.model,
     provider: settings.provider,
+    panelId,
   });
 }
 
@@ -491,6 +545,7 @@ async function runOneGen(
 function resumePendingGens(): void {
   const boardId = currentBoardId();
   for (const p of loadPendingGens()) {
+    if (p.panelId != null) continue; // a panel's own page resumes those
     if (p.boardId !== boardId) continue;
     void trackGen(p.requestId, {
       prompt: p.prompt,
@@ -574,6 +629,26 @@ export const useFlowStudioStore = create<FlowStudioState>((set, get) => ({
   pendingCaretApply: null,
   recentPrompts: initial.recentPrompts,
   settings: initial.settings,
+  panelSink: null,
+
+  async loadPanelAssets(panelId) {
+    set({ loading: true });
+    try {
+      const refs = await listPanelAssets(panelId);
+      // Newest first, same as the studio grid: the version you just made is the
+      // one you are looking for.
+      set({ assets: refs.map(toAsset).reverse(), loading: false });
+    } catch (err) {
+      set({ loading: false, error: err instanceof Error ? err.message : "failed to load panel assets" });
+    }
+  },
+
+  setPanelSink(panelId) {
+    // Entering or leaving a panel clears the composer: references attached for
+    // one panel are meaningless on the next, and carrying them over silently
+    // would send the wrong material to the engine.
+    set({ panelSink: panelId, composerRefs: [], composerMentions: [], composerPrompt: "" });
+  },
 
   async load() {
     const boardId = currentBoardId();
@@ -766,6 +841,14 @@ export const useFlowStudioStore = create<FlowStudioState>((set, get) => ({
     set({ error: null });
     try {
       const { media_id } = await uploadFlowImage(file);
+      const panelId = get().panelSink;
+      if (panelId !== null) {
+        // A panel has no board to file this under, and the unscoped library is
+        // not the artist's to write to — the panel's own endpoint is the gate.
+        const asset = toAsset(await addPanelAsset(panelId, media_id, file.name.slice(0, 60)));
+        set((s) => ({ assets: [asset, ...s.assets.filter((a) => a.refId !== asset.refId)] }));
+        return media_id;
+      }
       const ref = await createReference({
         media_id,
         kind: "image",
@@ -909,4 +992,22 @@ async function persistGenerated(
 
 function pushRecent(recent: string[], prompt: string): string[] {
   return [prompt, ...recent.filter((p) => p !== prompt)].slice(0, 8);
+}
+
+/** Re-attach generations that were in flight for this panel when the page was
+ *  reloaded. The board equivalent runs inside `load()`; a panel has no board, so
+ *  its workspace calls this directly. */
+export function resumePanelGens(panelId: number): void {
+  for (const p of loadPendingGens()) {
+    if (p.panelId !== panelId) continue;
+    void trackGen(p.requestId, {
+      prompt: p.prompt,
+      aspect: p.aspect,
+      refs: p.refs,
+      model: p.model,
+      provider: p.provider,
+      panelId,
+      startedAt: p.ts,
+    });
+  }
 }

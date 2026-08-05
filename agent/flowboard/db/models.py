@@ -420,6 +420,11 @@ class FlowPanel(SQLModel, table=True):
     code: str = Field(index=True)
     order_index: int = Field(default=0, index=True)
     status: str = Field(default="todo", index=True)
+    #: The version being delivered. Set by submitting, because submitting IS
+    #: choosing — an artist who made ten tries and preferred the seventh had no
+    #: way to say so before, and every surface fell back to the most recent one.
+    #: NULL means nobody has picked yet; readers fall back to the latest version.
+    final_media_id: Optional[str] = Field(default=None)
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 

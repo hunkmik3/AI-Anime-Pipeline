@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import {
+  downloadPanel,
+  exportBatch,
   getBatch,
   listPanels,
   thumbUrl,
@@ -9,7 +11,8 @@ import {
   type PanelBatch,
   type PanelStatus,
 } from "../api/client";
-import { PageHeader } from "../components/shell/PageHeader";
+import { PanelHero } from "./PanelHero";
+import { toast } from "../store/toast";
 
 /**
  * The panel grid — what replaces the Miro board.
@@ -72,21 +75,47 @@ export function PanelGridPage() {
 
   return (
     <div className="shellpage pn__wide pn__page">
-      <PageHeader
+      <PanelHero
         crumb={
           batch ? (
             <Link to={`/giantflow/${batch.project_id}`}>← Batches</Link>
           ) : (
-            <Link to="/giantflow">Project</Link>
+            <Link to="/giantflow">← Project</Link>
           )
         }
         title={batch?.name || "Panels"}
-        subtitle={
-          panels
-            ? `${panels.length} panels · ${counts.approved ?? 0} approved` +
-              (batch?.assignee_name ? ` · ${batch.assignee_name}` : " · unassigned")
-            : undefined
+        thumbMediaId={batch?.thumb_media_id}
+        counts={counts}
+        total={panels?.length ?? 0}
+        actions={
+            <button
+              className="btn2"
+              disabled={!counts.approved}
+              title={
+                counts.approved
+                  ? `Download ${counts.approved} approved panel(s) as a zip`
+                  : "Nothing approved yet — approved panels are what gets exported"
+              }
+              onClick={async () => {
+                try {
+                  const r = await exportBatch(bid);
+                  toast(
+                    `${r.written} approved panel(s) downloaded.` +
+                      (r.skipped ? ` ${r.skipped} could not be read.` : ""),
+                  );
+                } catch (e) {
+                  toast(e instanceof Error ? e.message : "Export failed");
+                }
+              }}
+            >
+              ↓ Export approved{counts.approved ? ` (${counts.approved})` : ""}
+            </button>
         }
+        facts={[
+          `${panels?.length ?? 0} panel${(panels?.length ?? 0) === 1 ? "" : "s"}`,
+          batch?.assignee_name ?? "unassigned",
+          ...(batch?.open_notes ? [`${batch.open_notes} open notes`] : []),
+        ]}
       />
 
       {error ? <p className="inbox__err">{error}</p> : null}
@@ -146,24 +175,48 @@ function PanelCard({ panel }: { panel: Panel }) {
       <Link to={`/giantflow/panel/${panel.id}`} className="pn__card-shots">
         <span className="pn__shot">
           {panel.raw_media_id ? (
-            <img src={thumbUrl(panel.raw_media_id, 220)} alt="" loading="lazy" />
+            <img src={thumbUrl(panel.raw_media_id, 520)} alt="" loading="lazy" />
           ) : null}
           <em className="pn__shot-tag">raw{panel.raw_count > 1 ? ` ×${panel.raw_count}` : ""}</em>
         </span>
         <span className="pn__shot">
-          {panel.latest_media_id ? (
-            <img src={thumbUrl(panel.latest_media_id, 220)} alt="" loading="lazy" />
+          {/* What the panel DELIVERS, not its most recent attempt: a PM opening
+              this grid must see the image that was actually submitted. */}
+          {panel.delivered_media_id ? (
+            <img src={thumbUrl(panel.delivered_media_id, 520)} alt="" loading="lazy" />
           ) : (
             <em className="pn__shot-empty">not generated</em>
           )}
           {panel.version_count > 0 ? (
-            <em className="pn__shot-tag">v{panel.version_count}</em>
+            <em className="pn__shot-tag">
+              v{panel.delivered_version}
+              {panel.final_media_id ? " ✓" : ""}
+            </em>
           ) : null}
         </span>
       </Link>
 
       <div className="pn__card-meta">
         <b>{panel.code}</b>
+        {/* One panel, on its own: the common case is "the PM wants THIS one
+            now", long before the batch is finished. */}
+        {panel.delivered_media_id ? (
+          <button
+            type="button"
+            className="pn__dl"
+            title="Download this panel's delivered version"
+            onClick={async (e) => {
+              e.preventDefault();
+              try {
+                await downloadPanel(panel.id);
+              } catch (err) {
+                toast(err instanceof Error ? err.message : "Download failed");
+              }
+            }}
+          >
+            ↓
+          </button>
+        ) : null}
         <span className="pn__who">v{panel.version_count || 0}</span>
         {panel.unresolved_notes > 0 ? (
           <span className="pn__notes" title="Unresolved notes">

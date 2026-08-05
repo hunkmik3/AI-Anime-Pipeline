@@ -13,6 +13,8 @@ import {
   type PanelProject,
 } from "../api/client";
 import { PageHeader } from "../components/shell/PageHeader";
+import { GiantflowNav } from "./GiantflowNav";
+import { useGiantflowRole } from "../store/giantflowRole";
 import { toast } from "../store/toast";
 import { useDragOrder } from "./useDragOrder";
 
@@ -25,6 +27,7 @@ import { useDragOrder } from "./useDragOrder";
  * a chapter in one pile and splitting it afterwards.
  */
 export function PanelProjectsPage() {
+  const { can } = useGiantflowRole();
   const [projects, setProjects] = useState<PanelProject[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -63,6 +66,7 @@ export function PanelProjectsPage() {
 
   return (
     <div className="shellpage pn__wide">
+      <GiantflowNav />
       <PageHeader title="Project" />
 
       {error ? <p className="inbox__err">{error}</p> : null}
@@ -82,12 +86,13 @@ export function PanelProjectsPage() {
             key={p.id}
             project={p}
             onChanged={load}
-            drag={dragProps(p.id)}
+            drag={can("project.manage") ? dragProps(p.id) : {}}
+            manage={can("project.manage")}
           />
         ))}
         {/* Last, not first: the tiles are drag-reorderable and a fixed cell at the
             front would sit in the middle of every drag. */}
-        <AddProjectTile busy={busy} onCreate={create} />
+        {can("project.manage") ? <AddProjectTile busy={busy} onCreate={create} /> : null}
       </ul>
     </div>
   );
@@ -194,10 +199,13 @@ function ProjectCard({
   project,
   onChanged,
   drag,
+  manage,
 }: {
   project: PanelProject;
   onChanged: () => Promise<void>;
   drag: Record<string, unknown>;
+  /** Creating, renaming, re-covering and deleting a comic is an admin's call. */
+  manage: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -310,6 +318,7 @@ function ProjectCard({
         </div>
       </Link>
 
+      {manage ? (
       <div className="pn__tile-acts">
         <button
           type="button"
@@ -373,6 +382,7 @@ function ProjectCard({
           ✕
         </button>
       </div>
+      ) : null}
     </li>
   );
 }
