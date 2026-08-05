@@ -657,11 +657,22 @@ def review_panel(
 ) -> FlowPanel:
     """A PM's verdict.
 
+    Only on a panel that has been HANDED OVER. A verdict is a reply, and without
+    this check two things went wrong: an untouched panel could be approved —
+    locking generation on work nobody had made, and putting a row in the export
+    with no image behind it — and work still in progress could be ruled on and
+    taken away from the artist mid-edit.
+
     Approving locks generation. Sending back requires at least one note — a
     rejection with no reason is the thing the Miro board never did, and it is
     what makes an artist guess.
     """
     panel = get_panel(session, panel_id)
+    if panel.status != "submitted":
+        raise PanelError(
+            "bad_input",
+            "this panel has not been submitted — there is nothing to rule on yet",
+        )
     clean = [n.strip() for n in (notes or []) if n and n.strip()]
     if approve:
         panel.status = "approved"
@@ -766,7 +777,7 @@ def list_members(session: Session, project_id: int) -> list[FlowProjectMember]:
 def set_member(
     session: Session, project_id: int, user_id: uuid.UUID, role: str
 ) -> FlowProjectMember:
-    from flowboard.services import permissions
+    from flowboard.services import flow_permissions as fp
 
     row = session.exec(
         select(FlowProjectMember).where(
@@ -776,7 +787,9 @@ def set_member(
     ).first()
     if row is None:
         row = FlowProjectMember(project_id=project_id, user_id=user_id)
-    row.role = permissions.normalize_role(role)
+    # flow_permissions, not permissions: this is a giantflow member row, and the
+    # two modules deliberately govern different tables.
+    row.role = fp.normalize_member_role(role)
     session.add(row)
     session.commit()
     session.refresh(row)

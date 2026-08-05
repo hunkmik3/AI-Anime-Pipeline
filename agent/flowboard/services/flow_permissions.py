@@ -65,9 +65,24 @@ CAPABILITIES: dict[str, str] = {
 
 
 def normalize_role(role: Optional[str]) -> str:
-    """Coerce anything stored or submitted into a role this module knows."""
+    """Coerce a role string into one this module ranks. Accepts ``admin``,
+    because a SYSTEM role legitimately passes through here."""
     r = (role or "").strip().lower()
     return r if r in _RANK else ARTIST
+
+
+def normalize_member_role(role: Optional[str]) -> str:
+    """The same, for a value stored on a member row — where ``admin`` is not a
+    legal answer.
+
+    ``admin`` is a system role. Letting a ``flow_project_member`` row carry it
+    would mean one row on one comic granted the right to delete everybody
+    else's, which is the opposite of what a per-project role is for. The write
+    path coerces and the route validates; this is the third lock, on the read
+    side, so a row inserted by any other means still cannot escalate.
+    """
+    r = (role or "").strip().lower()
+    return r if r in FLOW_ROLES else ARTIST
 
 
 def role_for(session: Session, user: Optional[User], project_id: Optional[int]) -> str:
@@ -87,7 +102,7 @@ def role_for(session: Session, user: Optional[User], project_id: Optional[int]) 
         )
     ).first()
     if row is not None:
-        return normalize_role(row.role)
+        return normalize_member_role(row.role)
     assigned = session.exec(
         select(FlowBatch).where(
             FlowBatch.project_id == project_id,
@@ -135,8 +150,8 @@ def best_role(session: Session, user: Optional[User]) -> str:
     ).all()
     best = VIEWER
     for r in rows:
-        if _RANK[normalize_role(r.role)] > _RANK[best]:
-            best = normalize_role(r.role)
+        if _RANK[normalize_member_role(r.role)] > _RANK[best]:
+            best = normalize_member_role(r.role)
     if _RANK[best] < _RANK[ARTIST]:
         owns = session.exec(
             select(FlowBatch).where(FlowBatch.assignee_user_id == user.id)
@@ -157,6 +172,7 @@ __all__ = [
     "allows",
     "best_role",
     "capability_map",
+    "normalize_member_role",
     "normalize_role",
     "require",
     "role_for",
