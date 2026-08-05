@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import {
+  addPanelNote,
+  resolvePanelNote,
   reviewPanel,
   reviewQueue,
   thumbUrl,
@@ -120,7 +122,22 @@ export function PanelReviewPage() {
 function ReviewRow({ panel, onDone }: { panel: QueuePanel; onDone: () => Promise<void> }) {
   const [note, setNote] = useState("");
   const [asking, setAsking] = useState(false);
+  const [noting, setNoting] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  async function addNote() {
+    setBusy(true);
+    try {
+      await addPanelNote(panel.id, note.trim());
+      setNote("");
+      setNoting(false);
+      await onDone();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function verdict(approve: boolean, notes: string[] = []) {
     setBusy(true);
@@ -164,10 +181,58 @@ function ReviewRow({ panel, onDone }: { panel: QueuePanel; onDone: () => Promise
         {(panel.notes ?? []).length > 0 ? (
           <ul className="pn__qnotes">
             {(panel.notes ?? []).map((n) => (
-              <li key={n.id}>{n.body}</li>
+              <li key={n.id}>
+                {n.body}
+                {/* A PM can retract their own remark; the artist ticks theirs off
+                    from My work. Either way the open count has to be able to go
+                    down, or the red badge it feeds is a ratchet. */}
+                <button
+                  type="button"
+                  title="Mark as dealt with"
+                  onClick={async () => {
+                    try {
+                      await resolvePanelNote(n.id, true);
+                      await onDone();
+                    } catch (e) {
+                      toast(e instanceof Error ? e.message : "Failed");
+                    }
+                  }}
+                >
+                  ✓
+                </button>
+              </li>
             ))}
           </ul>
         ) : null}
+
+        {/* Not every remark is a rejection. "Watch the colour on the next one"
+            belongs on the panel without sending it back. */}
+        {noting ? (
+          <div className="pn__qnoteadd">
+            <input
+              className="inbox__input"
+              autoFocus
+              placeholder="Add a note (does not send it back)…"
+              value={note}
+              disabled={busy}
+              onChange={(e) => setNote(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setNoting(false);
+                if (e.key === "Enter" && note.trim()) void addNote();
+              }}
+            />
+            <button className="btn2" disabled={busy || !note.trim()} onClick={() => void addNote()}>
+              Add
+            </button>
+            <button className="btn2" disabled={busy} onClick={() => setNoting(false)}>
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button type="button" className="pn__qnotebtn" onClick={() => setNoting(true)}>
+            ＋ Note
+          </button>
+        )}
       </div>
 
       <div className="pn__qacts">

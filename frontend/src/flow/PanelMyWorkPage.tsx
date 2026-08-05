@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { myWork, thumbUrl, type QueuePanel } from "../api/client";
+import { myWork, resolvePanelNote, thumbUrl, type QueuePanel } from "../api/client";
 import { PageHeader } from "../components/shell/PageHeader";
 import { GiantflowNav } from "./GiantflowNav";
+import { toast } from "../store/toast";
 
 /**
  * The artist's side of the handover: what came back, and why.
@@ -70,12 +71,13 @@ export function PanelMyWorkPage() {
 
       <Section
         title="Sent back"
-        hint="The PM's reason is on each card. Fix it, then submit the new version."
+        hint="The PM's reason is on each card. Fix it, tick it off, then submit again."
         tone="back"
         panels={back}
+        onChanged={load}
       />
-      <Section title="Waiting on the PM" tone="wait" panels={waiting} />
-      <Section title="Approved" tone="done" panels={done} />
+      <Section title="Waiting on the PM" tone="wait" panels={waiting} onChanged={load} />
+      <Section title="Approved" tone="done" panels={done} onChanged={load} />
     </div>
   );
 }
@@ -85,11 +87,13 @@ function Section({
   hint,
   tone,
   panels,
+  onChanged,
 }: {
   title: string;
   hint?: string;
   tone: "back" | "wait" | "done";
   panels: QueuePanel[];
+  onChanged: () => Promise<void>;
 }) {
   if (panels.length === 0) return null;
   return (
@@ -114,12 +118,29 @@ function Section({
               <div className="pn__mycard-sub">
                 {p.project_name} · {p.batch_name}
               </div>
-              {/* The whole reason this page exists. */}
+              {/* The whole reason this page exists. Ticking one off is the other
+                  half: `unresolved_notes` drives the red badge on the batch card
+                  and the project header, and with no way to clear a remark that
+                  count could only ever climb. */}
               {(p.notes ?? []).map((n) => (
-                <p key={n.id} className="pn__mycard-note">
-                  {n.body}
-                  {n.author_name ? <em> — {n.author_name}</em> : null}
-                </p>
+                <label key={n.id} className="pn__mycard-note">
+                  <input
+                    type="checkbox"
+                    title="Mark this as fixed"
+                    onChange={async (e) => {
+                      try {
+                        await resolvePanelNote(n.id, e.target.checked);
+                        await onChanged();
+                      } catch (err) {
+                        toast(err instanceof Error ? err.message : "Failed");
+                      }
+                    }}
+                  />
+                  <span>
+                    {n.body}
+                    {n.author_name ? <em> — {n.author_name}</em> : null}
+                  </span>
+                </label>
               ))}
             </div>
           </li>

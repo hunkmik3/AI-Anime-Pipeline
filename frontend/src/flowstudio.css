@@ -2429,3 +2429,28 @@
 }
 .pn__tcomic { min-width: 180px; }
 .pn__tbatch { font-size: 11px; opacity: .75; }
+
+/* Notes: adding one without a rejection, and clearing one that is dealt with.
+   The open count feeds a red badge on the batch card and the project header —
+   without a way down it is a ratchet, not a signal. */
+.pn__qnotes li { display: flex; align-items: flex-start; gap: 8px; }
+.pn__qnotes li button {
+  flex: none; width: 20px; height: 20px; padding: 0;
+  font-size: 11px; line-height: 1; cursor: pointer;
+  color: #fca5a5; background: transparent;
+  border: 1px solid rgba(239, 68, 68, .45); border-radius: 5px;
+}
+.pn__qnotes li button:hover { color: var(--accent, #00a76f); border-color: var(--accent, #00a76f); }
+.pn__qnoteadd { display: flex; gap: 6px; margin-top: 8px; }
+.pn__qnoteadd .inbox__input { flex: 1; min-width: 0; }
+.pn__qnotebtn {
+  align-self: flex-start; margin-top: 8px;
+  padding: 3px 9px; font-size: 11.5px;
+  color: var(--muted); background: transparent;
+  border: 1px dashed var(--border, #2a2e38); border-radius: 7px; cursor: pointer;
+}
+.pn__qnotebtn:hover { color: var(--text); border-color: var(--accent, #00a76f); }
+
+/* The tick sits beside the remark rather than under it. */
+.pn__mycard-note { display: flex; align-items: flex-start; gap: 7px; cursor: pointer; }
+.pn__mycard-note input { margin-top: 2px; flex: none; }
