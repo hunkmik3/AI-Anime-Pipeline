@@ -46,6 +46,14 @@ export function PanelReviewPage() {
     void load();
   }, [load]);
 
+  // Switching the previewed role changes what the SERVER returns, so the page
+  // has to ask again — otherwise you keep looking at the previous role's data.
+  useEffect(() => {
+    const onSwitch = () => void load();
+    window.addEventListener("flowboard:view-as-changed", onSwitch);
+    return () => window.removeEventListener("flowboard:view-as-changed", onSwitch);
+  }, [load]);
+
   const all = rows ?? [];
   const artists = [...new Set(all.map((p) => p.assignee_name ?? "Unassigned"))].sort();
   const shown = artist === "all" ? all : all.filter((p) => (p.assignee_name ?? "Unassigned") === artist);

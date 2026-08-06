@@ -27,6 +27,7 @@ anything. Reading is open; acting requires being on the project.
 """
 from __future__ import annotations
 
+import contextvars
 import uuid
 from typing import Optional
 
@@ -85,8 +86,40 @@ def normalize_member_role(role: Optional[str]) -> str:
     return r if r in FLOW_ROLES else ARTIST
 
 
+#: A role an admin is previewing, for this request only. Set from the
+#: ``X-Giantflow-View-As`` header; see ``cap_to_preview``.
+_preview: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "giantflow_view_as", default=None
+)
+
+
+def set_preview(role: Optional[str]) -> None:
+    _preview.set(normalize_role(role) if role else None)
+
+
+def cap_to_preview(role: str) -> str:
+    """Lower ``role`` to the previewed one, never raise it.
+
+    "View as" used to change only what the browser drew, so an admin checking
+    the artist's view still got the admin's answers from the server: the review
+    queue stayed full and every endpoint kept saying yes. The preview could not
+    show the one thing it existed to show.
+
+    Capping — rather than substituting — is what makes honouring a header safe.
+    The worst a forged header can do is take rights away from whoever sent it.
+    """
+    want = _preview.get()
+    if want is None:
+        return role
+    return want if _RANK[normalize_role(want)] < _RANK[normalize_role(role)] else role
+
+
 def role_for(session: Session, user: Optional[User], series_id: Optional[int]) -> str:
-    """This user's authority on this comic. See the module docstring for order."""
+    """This user's authority on this comic, capped by any active preview."""
+    return cap_to_preview(_role_for(session, user, series_id))
+
+
+def _role_for(session: Session, user: Optional[User], series_id: Optional[int]) -> str:
     # No auth configured (dev, and the whole existing test suite) — behave as the
     # single-user app always did rather than inventing a lockout.
     if user is None:
@@ -147,7 +180,7 @@ def best_role(session: Session, user: Optional[User]) -> str:
     Review tab at all. Per-project answers still come from ``role_for``.
     """
     if user is None or getattr(user, "role", None) == ADMIN:
-        return ADMIN
+        return cap_to_preview(ADMIN)
     rows = session.exec(
         select(FlowSeriesMember).where(FlowSeriesMember.user_id == user.id)
     ).all()
@@ -161,7 +194,7 @@ def best_role(session: Session, user: Optional[User]) -> str:
         ).first()
         if owns is not None:
             best = ARTIST
-    return best
+    return cap_to_preview(best)
 
 
 __all__ = [
@@ -174,9 +207,11 @@ __all__ = [
     "VIEWER",
     "allows",
     "best_role",
+    "cap_to_preview",
     "capability_map",
     "normalize_member_role",
     "normalize_role",
     "require",
     "role_for",
+    "set_preview",
 ]

@@ -18,7 +18,16 @@ import re
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+)
 from pydantic import BaseModel, Field
 from sqlmodel import select
 
@@ -33,7 +42,30 @@ from flowboard.services import user_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/flowstudio", tags=["flow-panels"])
+async def _apply_view_as(request: Request) -> None:
+    """Honour ``X-Giantflow-View-As`` for the whole request.
+
+    A router-wide dependency rather than a parameter on 34 handlers: the header
+    has to reach `flow_permissions.role_for`, which is called from deep inside
+    the service layer and has no access to the request.
+
+    **async on purpose.** FastAPI runs a *sync* dependency in a worker thread,
+    which gets a COPY of the context — a `ContextVar.set` there is discarded the
+    moment the thread returns, so the header silently did nothing. Declared
+    async, this runs in the request's own coroutine, where the set sticks and is
+    then copied into the handler's threadpool call.
+
+    Safe to trust because it can only ever LOWER the caller's role — see
+    `cap_to_preview`. A forged header takes rights away from whoever sends it.
+    """
+    fp.set_preview(request.headers.get("x-giantflow-view-as"))
+
+
+router = APIRouter(
+    prefix="/api/flowstudio",
+    tags=["flow-panels"],
+    dependencies=[Depends(_apply_view_as)],
+)
 
 _ERROR_STATUS = {
     "not_found": 404,

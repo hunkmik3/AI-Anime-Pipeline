@@ -7,6 +7,9 @@
  * threading the header through ~20 fetch call sites.
  */
 const TOKEN_KEY = "flowboard_token";
+//: Same key `store/giantflowRole.ts` writes; read here rather than imported
+//: because this module installs before React mounts.
+const VIEW_AS_KEY = "flowboard.giantflow.viewAs";
 
 export function getToken(): string | null {
   try {
@@ -31,6 +34,16 @@ function urlOf(input: RequestInfo | URL): string {
   return input.url;
 }
 
+/** Read straight from storage rather than importing the role store: this module
+ *  is installed before React mounts, and an import cycle here would be silent. */
+function readViewAs(): string | null {
+  try {
+    return localStorage.getItem(VIEW_AS_KEY);
+  } catch {
+    return null;
+  }
+}
+
 function isApiUrl(url: string): boolean {
   return url.startsWith("/api") || url.startsWith(`${window.location.origin}/api`);
 }
@@ -53,6 +66,13 @@ export function installAuthFetch(): void {
       if (token && !headers.has("Authorization")) {
         headers.set("Authorization", `Bearer ${token}`);
       }
+        // The giantflow role preview. Sent on every /api call so the SERVER
+        // answers as that role — filtered lists, real 403s — instead of the
+        // browser merely hiding buttons over the admin's own data. The backend
+        // can only LOWER a caller's role with it, never raise one, which is
+        // what makes trusting a header here safe.
+        const viewAs = readViewAs();
+        if (viewAs) headers.set("X-Giantflow-View-As", viewAs);
       // Data endpoints must never be served from the browser HTTP cache — a
       // cached list is exactly why an admin edit (e.g. a member's budget) only
       // showed up after F5. Media (thumbnails/clips) load via <img>/<video>

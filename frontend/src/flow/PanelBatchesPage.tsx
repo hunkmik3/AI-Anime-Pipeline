@@ -571,6 +571,14 @@ function MembersPanel({
     void load();
   }, [load]);
 
+  // Switching the previewed role changes what the SERVER returns, so the page
+  // has to ask again — otherwise you keep looking at the previous role's data.
+  useEffect(() => {
+    const onSwitch = () => void load();
+    window.addEventListener("flowboard:view-as-changed", onSwitch);
+    return () => window.removeEventListener("flowboard:view-as-changed", onSwitch);
+  }, [load]);
+
   async function put(userId: string, role: string) {
     setBusy(true);
     try {

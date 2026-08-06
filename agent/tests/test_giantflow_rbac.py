@@ -184,3 +184,65 @@ def test_a_role_on_one_comic_grants_nothing_on_another(client):
         other_panel = ps.import_panels(s, other_batch.id, entries=[("P.png", "media-9")])[0].id
     body = {"approve": True, "notes": []}
     assert client.post(f"/api/flowstudio/panels/{other_panel}/review", json=body, headers=h["pm"]).status_code == 403
+
+
+# ── the "view as" preview ─────────────────────────────────────────────────
+
+
+def _as(role):
+    return {"X-Giantflow-View-As": role}
+
+
+def test_view_as_makes_the_server_answer_as_that_role(client):
+    """The preview used to change only what the browser drew, so an admin
+    checking the artist's view still got the admin's answers — every endpoint
+    said yes and the review queue stayed full. It could not show the one thing
+    it existed for."""
+    (series_id, _, panel_id), h = _fixture(client)
+    admin = h["admin"]
+
+    # Admin, previewing nobody: allowed.
+    assert client.post("/api/flowstudio/projects", json={"name": "P"}, headers=admin).status_code in (200, 201)
+
+    # Previewing a PM: a PM cannot create a project.
+    hdr = {**admin, **_as("producer")}
+    assert client.post("/api/flowstudio/projects", json={"name": "P2"}, headers=hdr).status_code == 403
+
+    # Previewing an artist: cannot rule on a panel either.
+    hdr = {**admin, **_as("artist")}
+    body = {"approve": True, "notes": []}
+    assert client.post(f"/api/flowstudio/panels/{panel_id}/review", json=body, headers=hdr).status_code == 403
+
+    # Reading stays open at every level.
+    for role in ("producer", "artist", "viewer"):
+        assert client.get("/api/flowstudio/series", headers={**admin, **_as(role)}).status_code == 200
+
+
+def test_view_as_can_only_take_rights_away(client):
+    """What makes trusting a header safe. A viewer forging `admin` must gain
+    nothing — the cap lowers, it never raises."""
+    (series_id, _, _), h = _fixture(client)
+    forged = {**h["viewer"], **_as("admin")}
+    assert client.post("/api/flowstudio/projects", json={"name": "X"}, headers=forged).status_code == 403
+    assert client.post(
+        f"/api/flowstudio/series/{series_id}/chapters", json={"name": "C"}, headers=forged
+    ).status_code == 403
+
+
+def test_me_reports_the_previewed_role(client):
+    """The nav strip decides which tabs to show from this."""
+    _, h = _fixture(client)
+    assert client.get("/api/flowstudio/me", headers=h["admin"]).json()["best_role"] == "admin"
+    got = client.get("/api/flowstudio/me", headers={**h["admin"], **_as("artist")}).json()
+    assert got["best_role"] == "artist"
+    assert got["capabilities"]["panel.review"] is False
+    assert got["capabilities"]["panel.generate"] is True
+
+
+def test_a_nonsense_view_as_header_does_not_escalate(client):
+    """An unknown role normalises to artist, which is a demotion for an admin —
+    never a promotion."""
+    (series_id, _, _), h = _fixture(client)
+    hdr = {**h["admin"], **_as("wizard")}
+    assert client.post("/api/flowstudio/projects", json={"name": "X"}, headers=hdr).status_code == 403
+

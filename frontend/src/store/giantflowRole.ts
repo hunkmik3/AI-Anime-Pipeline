@@ -74,6 +74,11 @@ const listeners = new Set<() => void>();
 
 export function setViewAs(role: GiantflowRole | null): void {
   preview = role;
+  // The server now answers as the previewed role, so what it told us a moment
+  // ago is stale — re-ask, and let every page reload its data.
+  void loadRealRole(true).then(() => {
+    window.dispatchEvent(new Event("flowboard:view-as-changed"));
+  });
   try {
     if (role) localStorage.setItem(KEY, role);
     else localStorage.removeItem(KEY);
