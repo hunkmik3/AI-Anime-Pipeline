@@ -2817,6 +2817,8 @@ export interface GiantflowMe {
   user_id: string | null;
   system_role: string | null;
   best_role: string;
+  /** Uncapped by any preview — what the switch itself reads. */
+  true_role?: string;
   capabilities: Record<string, boolean>;
   /** Per comic, because authority is per comic. */
   projects: Record<string, string>;

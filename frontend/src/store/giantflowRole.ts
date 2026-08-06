@@ -110,7 +110,10 @@ export async function loadRealRole(force = false): Promise<void> {
   loaded = true;
   try {
     const me = await giantflowMe();
-    realRole = (me.best_role in RANK ? me.best_role : "viewer") as GiantflowRole;
+    // `true_role`, not `best_role`: the latter is capped by whatever is being
+    // previewed, and reading it here made the switch hide itself on first use.
+    const real = me.true_role ?? me.best_role;
+    realRole = (real in RANK ? real : "viewer") as GiantflowRole;
     projectRoles = Object.fromEntries(
       Object.entries(me.projects).map(([k, v]) => [k, (v in RANK ? v : "viewer") as GiantflowRole]),
     );

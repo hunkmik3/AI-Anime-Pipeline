@@ -246,3 +246,15 @@ def test_a_nonsense_view_as_header_does_not_escalate(client):
     hdr = {**h["admin"], **_as("wizard")}
     assert client.post("/api/flowstudio/projects", json={"name": "X"}, headers=hdr).status_code == 403
 
+
+def test_the_preview_never_hides_its_own_switch(client):
+    """`best_role` is capped by the preview, so reading it to decide whether to
+    offer the switch made the control disappear on first use — an admin who
+    picked "Artist" was stuck there with nothing left to click. `true_role` is
+    the uncapped answer, and it is what the switch reads."""
+    _, h = _fixture(client)
+    for role in ("producer", "artist", "viewer"):
+        got = client.get("/api/flowstudio/me", headers={**h["admin"], **_as(role)}).json()
+        assert got["best_role"] == role          # what the UI draws for
+        assert got["true_role"] == "admin"       # who is really holding the switch
+

@@ -173,6 +173,20 @@ def capability_map(role: Optional[str]) -> dict[str, bool]:
     return {cap: allows(role, cap) for cap in CAPABILITIES}
 
 
+def uncapped_best_role(session: Session, user: Optional[User]) -> str:
+    """``best_role`` ignoring any preview.
+
+    The switch itself needs this: it is offered to admins, and if it read the
+    capped answer it would disappear the instant an admin previewed anything
+    lower — locking them into the preview with no control to leave it.
+    """
+    token = _preview.set(None)
+    try:
+        return best_role(session, user)
+    finally:
+        _preview.reset(token)
+
+
 def best_role(session: Session, user: Optional[User]) -> str:
     """The strongest role this user holds on any comic.
 
@@ -207,6 +221,7 @@ __all__ = [
     "VIEWER",
     "allows",
     "best_role",
+    "uncapped_best_role",
     "cap_to_preview",
     "capability_map",
     "normalize_member_role",

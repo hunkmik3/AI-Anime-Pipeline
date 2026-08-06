@@ -799,10 +799,15 @@ def whoami(user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
         best = fp.best_role(s, user)
+        # The UNCAPPED role, so the preview switch can still see it is an admin
+        # holding the switch. Reporting only the capped role hid the control the
+        # moment it was used, with no way back.
+        true_role = fp.uncapped_best_role(s, user)
         return {
             "user_id": str(user.id) if user else None,
             "system_role": getattr(user, "role", None) if user else "admin",
             "best_role": best,
+            "true_role": true_role,
             "capabilities": fp.capability_map(best),
             # Per comic, because authority is per comic — the global answer above
             # is only for deciding whether to show the Review tab at all.
