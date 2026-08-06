@@ -2454,3 +2454,15 @@
 /* The tick sits beside the remark rather than under it. */
 .pn__mycard-note { display: flex; align-items: flex-start; gap: 7px; cursor: pointer; }
 .pn__mycard-note input { margin-top: 2px; flex: none; }
+
+/* The batch name is shown, not typed — it comes from the studio's convention,
+   and the server applies the same rule, so this is the name and not a guess. */
+.pn__draft-name {
+  flex: 1; min-width: 0;
+  padding: 8px 11px;
+  font-size: 12.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--muted);
+  background: var(--panel); border: 1px dashed var(--border, #2a2e38);
+  border-radius: 8px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}

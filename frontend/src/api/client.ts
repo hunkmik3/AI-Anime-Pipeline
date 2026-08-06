@@ -2336,6 +2336,9 @@ export interface FlowChapter {
   thumb_media_id: string | null;
   has_cover: boolean;
   batch_count: number;
+  /** What a new batch here will be called, minus the number — so the form shows
+   *  the exact name instead of guessing at the convention. */
+  batch_name_prefix: string;
   panel_count: number;
   approved_count: number;
   status_counts: Record<string, number>;
@@ -2653,7 +2656,7 @@ export function createBatch(
  */
 export function createBatches(
   chapterId: number,
-  batches: { name: string; assignee_user_id?: string | null }[],
+  batches: { name?: string | null; assignee_user_id?: string | null }[],
 ): Promise<PanelBatch[]> {
   return api<PanelBatch[]>(`/api/flowstudio/chapters/${chapterId}/batches/bulk`, {
     method: "POST",

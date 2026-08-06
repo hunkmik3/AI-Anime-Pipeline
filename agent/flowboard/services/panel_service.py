@@ -372,6 +372,33 @@ def list_chapter_panels(session: Session, chapter_id: int) -> list[FlowPanel]:
     return [p for b in list_batches(session, chapter_id) for p in list_panels(session, b.id)]
 
 
+_NAME_TOKEN = re.compile(r"[^A-Za-z0-9]+")
+
+
+def _token(text: str) -> str:
+    """One path segment of a batch name: letters and digits, joined by dashes."""
+    return _NAME_TOKEN.sub("-", (text or "").strip()).strip("-") or "x"
+
+
+def batch_name_prefix(session: Session, chapter_id: int) -> str:
+    """``Project_Series_Chapter`` for this chapter, as a batch-name stem.
+
+    Built server-side because only the server knows all four tiers and how many
+    batches already exist. Typed names were the alternative and they drift:
+    "Quân", "quan", "26004_UL-X-MEN_Quân" all appeared in the same comic, and
+    exported folders inherit whatever was typed.
+    """
+    chapter = get_chapter(session, chapter_id)
+    series = get_series(session, chapter.series_id)
+    project = get_project(session, series.project_id)
+    return f"{_token(project.name)}_{_token(series.name)}_{_token(chapter.name)}"
+
+
+def default_batch_name(session: Session, chapter_id: int, seq: int) -> str:
+    """``Project_Series_Chapter_batchNN``. ``seq`` is 1-based."""
+    return f"{batch_name_prefix(session, chapter_id)}_batch{seq:02d}"
+
+
 def create_batch(
     session: Session,
     chapter_id: int,
@@ -379,11 +406,11 @@ def create_batch(
     *,
     assignee_user_id: Optional[uuid.UUID] = None,
 ) -> FlowBatch:
-    clean = (name or "").strip()
-    if not clean:
-        raise PanelError("bad_input", "a batch name is required")
     get_chapter(session, chapter_id)
     n = len(list_batches(session, chapter_id))
+    # A blank name is the normal case now: the studio wanted one convention, not
+    # whatever each PM typed.
+    clean = (name or "").strip() or default_batch_name(session, chapter_id, n + 1)
     row = FlowBatch(
         chapter_id=chapter_id,
         name=clean,
@@ -412,16 +439,18 @@ def create_batches(
     division in place.
     """
     get_chapter(session, chapter_id)
-    clean = [(n.strip(), a) for n, a in rows if n and n.strip()]
-    if not clean:
-        raise PanelError("bad_input", "give at least one batch a name")
+    if not rows:
+        raise PanelError("bad_input", "add at least one batch")
 
     start = len(list_batches(session, chapter_id))
     made: list[FlowBatch] = []
-    for i, (name, assignee) in enumerate(clean):
+    for i, (name, assignee) in enumerate(rows):
+        # Blank means "name it by the convention" rather than "skip me": with
+        # names generated, the only thing a row carries is who it is for.
+        given = (name or "").strip()
         row = FlowBatch(
             chapter_id=chapter_id,
-            name=name,
+            name=given or default_batch_name(session, chapter_id, start + i + 1),
             assignee_user_id=assignee,
             order_index=start + i,
         )

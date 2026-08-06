@@ -151,6 +151,8 @@ export function PanelBatchesPage() {
 
       {adding ? (
         <BatchDraftPanel
+          namePrefix={chapter?.batch_name_prefix ?? ""}
+          startAt={(chapter?.batch_count ?? 0) + 1}
           people={people}
           busy={busy}
           onCancel={() => setAdding(false)}
@@ -205,25 +207,34 @@ export function PanelBatchesPage() {
  * and one artist. Starts with three rows because "one" would imply this is the
  * single-create form wearing a hat.
  */
+/** ``Project_Series_Chapter_batchNN`` — the same rule the server applies, so the
+ *  preview and the created row cannot disagree. */
+function previewName(prefix: string, seq: number): string {
+  return `${prefix}_batch${String(seq).padStart(2, "0")}`;
+}
+
 function BatchDraftPanel({
+  namePrefix,
+  startAt,
   people,
   busy,
   onCancel,
   onCreate,
 }: {
+  namePrefix: string;
+  startAt: number;
   people: { user_id: string; name: string }[];
   busy: boolean;
   onCancel: () => void;
-  onCreate: (rows: { name: string; assignee_user_id: string | null }[]) => Promise<void>;
+  onCreate: (rows: { assignee_user_id: string | null }[]) => Promise<void>;
 }) {
-  const [rows, setRows] = useState<{ name: string; assignee: string | null }[]>([
-    { name: "", assignee: null },
-    { name: "", assignee: null },
-    { name: "", assignee: null },
+  const [rows, setRows] = useState<{ assignee: string | null }[]>([
+    { assignee: null },
+    { assignee: null },
+    { assignee: null },
   ]);
-  const filled = rows.filter((r) => r.name.trim()).length;
 
-  function patch(i: number, next: Partial<{ name: string; assignee: string | null }>) {
+  function patch(i: number, next: Partial<{ assignee: string | null }>) {
     setRows((cur) => cur.map((r, k) => (k === i ? { ...r, ...next } : r)));
   }
 
@@ -232,7 +243,7 @@ function BatchDraftPanel({
       <div className="pn__draft-head">
         <b>New batches</b>
         <span className="pn__muted">
-          One per artist. Blank rows are ignored.
+          One per artist. Names follow the studio convention — you pick who.
         </span>
         <button className="pn__add-close" title="Cancel" onClick={onCancel}>
           ✕
@@ -242,21 +253,11 @@ function BatchDraftPanel({
       <ul className="pn__draft-rows">
         {rows.map((r, i) => (
           <li key={i} className="pn__draft-row">
-            <input
-              className="inbox__input"
-              placeholder={`Batch ${i + 1} name…`}
-              value={r.name}
-              disabled={busy}
-              autoFocus={i === 0}
-              onChange={(e) => patch(i, { name: e.target.value })}
-              onKeyDown={(e) => {
-                // Enter on the last row adds another, so a whole division can be
-                // typed without reaching for the mouse.
-                if (e.key === "Enter" && i === rows.length - 1) {
-                  setRows((cur) => [...cur, { name: "", assignee: null }]);
-                }
-              }}
-            />
+            {/* The name is shown, not typed. The server applies the same rule,
+                so this is the actual name and not a suggestion. */}
+            <code className="pn__draft-name" title="Named by the studio convention">
+              {previewName(namePrefix, startAt + i)}
+            </code>
             <select
               className="inbox__input pn__select"
               value={r.assignee ?? ""}
@@ -286,26 +287,20 @@ function BatchDraftPanel({
         <button
           className="btn2"
           disabled={busy}
-          onClick={() => setRows((cur) => [...cur, { name: "", assignee: null }])}
+          onClick={() => setRows((cur) => [...cur, { assignee: null }])}
         >
           + Add row
         </button>
         <button
           className="btn2 btn2--primary"
-          disabled={busy || filled === 0}
+          disabled={busy || rows.length === 0}
           onClick={() =>
-            void onCreate(
-              rows
-                .filter((r) => r.name.trim())
-                .map((r) => ({ name: r.name.trim(), assignee_user_id: r.assignee })),
-            )
+            // Every row counts now: with names generated, an unassigned row is
+            // still a real share of the work waiting for someone.
+            void onCreate(rows.map((r) => ({ assignee_user_id: r.assignee })))
           }
         >
-          {busy
-            ? "Creating…"
-            : filled === 0
-              ? "Create batches"
-              : `Create ${filled} batch${filled === 1 ? "" : "es"}`}
+          {busy ? "Creating…" : `Create ${rows.length} batch${rows.length === 1 ? "" : "es"}`}
         </button>
       </div>
     </div>

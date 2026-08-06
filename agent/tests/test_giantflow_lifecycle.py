@@ -467,3 +467,65 @@ def test_series_counts_are_reached_through_its_chapters(client, studio):
     assert series["chapter_count"] == 1
     assert series["batch_count"] == 2
 
+
+def test_batches_are_named_by_the_studio_convention(client, studio):
+    """One rule, applied server-side.
+
+    Typed names drifted — "Quân", "quan" and "26004_UL-X-MEN_Quân" all appeared
+    in one comic — and the export folders inherit whatever was typed. The name
+    now comes from the tiers above plus a running number, and numbering
+    continues rather than restarting.
+    """
+    h, series_id = studio["h"], studio["series_id"]
+    chapter = client.post(
+        f"/api/flowstudio/series/{series_id}/chapters",
+        json={"name": "Chapter 1"},
+        headers=h["pm"],
+    ).json()
+
+    first = client.post(
+        f"/api/flowstudio/chapters/{chapter['id']}/batches/bulk",
+        json={"batches": [{}, {}]},
+        headers=h["pm"],
+    )
+    assert first.status_code in (200, 201), first.text
+    names = [b["name"] for b in first.json()]
+    assert names == [
+        f"{chapter['batch_name_prefix']}_batch01",
+        f"{chapter['batch_name_prefix']}_batch02",
+    ], names
+
+    # A second round continues the count instead of colliding on batch01.
+    more = client.post(
+        f"/api/flowstudio/chapters/{chapter['id']}/batches/bulk",
+        json={"batches": [{}]},
+        headers=h["pm"],
+    ).json()
+    assert more[0]["name"] == f"{chapter['batch_name_prefix']}_batch03"
+
+    # A name given explicitly still wins — renaming one afterwards must work.
+    named = client.post(
+        f"/api/flowstudio/chapters/{chapter['id']}/batches",
+        json={"name": "Special"},
+        headers=h["pm"],
+    ).json()
+    assert named["name"] == "Special"
+
+
+def test_the_name_preview_matches_what_the_server_creates(client, studio):
+    """The form previews the name from `batch_name_prefix`. If the two rules ever
+    disagree the user is shown one thing and given another."""
+    h, series_id = studio["h"], studio["series_id"]
+    chapter = client.post(
+        f"/api/flowstudio/series/{series_id}/chapters",
+        json={"name": "Ch 2"},
+        headers=h["pm"],
+    ).json()
+    preview = f"{chapter['batch_name_prefix']}_batch01"
+    made = client.post(
+        f"/api/flowstudio/chapters/{chapter['id']}/batches",
+        json={},
+        headers=h["pm"],
+    ).json()
+    assert made["name"] == preview
+

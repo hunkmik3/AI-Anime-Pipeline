@@ -475,7 +475,11 @@ def list_panels(batch_id: int, user=Depends(get_optional_user)):
 
 
 class BatchCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
+    #: Optional: omitted, the server names it by the studio's convention
+    #: (``Project_Series_Chapter_batchNN``). Typed names drifted — "Quân",
+    #: "quan" and "26004_UL-X-MEN_Quân" all appeared in one comic, and the
+    #: export folders inherit whatever was typed.
+    name: Optional[str] = Field(default=None, max_length=200)
     assignee_user_id: Optional[uuid.UUID] = None
 
 
@@ -931,6 +935,9 @@ def _chapter_dict(session, row) -> dict:
         "thumb_media_id": ps.chapter_cover_media_id(session, row),
         "has_cover": bool(row.cover_media_id),
         "batch_count": len(ps.list_batches(session, row.id)),
+        #: What a new batch here will be called, minus the number. Sent so the
+        #: form shows the exact name rather than re-deriving the convention.
+        "batch_name_prefix": ps.batch_name_prefix(session, row.id),
         "panel_count": len(panels),
         "approved_count": counts.get("approved", 0),
         "status_counts": counts,
