@@ -11,6 +11,7 @@ import {
   type PanelBatch,
   type PanelStatus,
 } from "../api/client";
+import { GiantflowNav } from "./GiantflowNav";
 import { PanelHero } from "./PanelHero";
 import { toast } from "../store/toast";
 
@@ -75,6 +76,7 @@ export function PanelGridPage() {
 
   return (
     <div className="shellpage pn__wide pn__page">
+      <GiantflowNav />
       <PanelHero
         crumb={
           batch ? (

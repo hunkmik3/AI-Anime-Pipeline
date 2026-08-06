@@ -25,6 +25,7 @@ import {
 import { useGiantflowRole } from "../store/giantflowRole";
 import { toast } from "../store/toast";
 import { FlowComposer } from "./FlowComposer";
+import { ViewAsBar } from "./ViewAsBar";
 import { FlowViewer } from "./FlowViewer";
 
 /**
@@ -239,6 +240,10 @@ export function PanelWorkspacePage() {
           <span className="fc-count">
             {versions.length} version{versions.length === 1 ? "" : "s"}
           </span>
+          {/* No room for the nav strip in a three-pane studio, but this is the
+              page where seeing the artist's view matters most — so the switch
+              comes along on its own. */}
+          <ViewAsBar />
           {/* The way back in from outside software: download a version, retouch
               it, bring the file here and it becomes the next version. */}
           {!locked && can("panel.submit") ? <UploadVersionButton onFiles={uploadVersion} /> : null}

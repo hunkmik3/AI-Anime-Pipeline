@@ -21,6 +21,7 @@ import {
 } from "../api/client";
 import { PersonPicker } from "../components/PersonPicker";
 import { useGiantflowRole } from "../store/giantflowRole";
+import { GiantflowNav } from "./GiantflowNav";
 import { PanelHero, STAGES, sumCounts } from "./PanelHero";
 import { toast } from "../store/toast";
 import { useDragOrder } from "./useDragOrder";
@@ -79,6 +80,7 @@ export function PanelBatchesPage() {
 
   return (
     <div className="shellpage pn__wide">
+      <GiantflowNav />
       <PanelHero
         crumb={
           chapter ? (

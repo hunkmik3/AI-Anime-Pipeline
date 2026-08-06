@@ -15,6 +15,7 @@ import {
 } from "../api/client";
 import { useGiantflowRole } from "../store/giantflowRole";
 import { toast } from "../store/toast";
+import { GiantflowNav } from "./GiantflowNav";
 import { PanelHero, sumCounts } from "./PanelHero";
 import { useDragOrder } from "./useDragOrder";
 
@@ -83,6 +84,7 @@ export function PanelChaptersPage() {
 
   return (
     <div className="shellpage pn__wide">
+      <GiantflowNav />
       <PanelHero
         crumb={
           series ? (

@@ -2483,3 +2483,10 @@
   line-height: 1.35;
 }
 .pn__table--miro .pn__tcomic { min-width: 220px; }
+
+/* In the workspace the switch rides in the centre top bar, so it has to stay
+   compact and never push the panel code off the row. */
+.pn__top .pn__viewas { padding: 2px 6px; font-size: 11px; }
+.pn__top .pn__viewas .seg__btn { padding: 2px 7px; font-size: 11px; }
+.pn__top .pn__viewas-note { display: none; }
+.pn__top .pn__viewas.is-on .pn__viewas-note { display: inline; font-size: 10.5px; }
