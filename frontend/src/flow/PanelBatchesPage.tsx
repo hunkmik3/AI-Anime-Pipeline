@@ -7,9 +7,9 @@ import {
   importPanelFolder,
   listBatches,
   listPanelAssignees,
-  exportSeries,
   listFlowMembers,
-  listPanelSeries,
+  getChapter,
+  exportChapter,
   removeFlowMember,
   reorderBatches,
   setFlowMember,
@@ -17,7 +17,7 @@ import {
   updateBatch,
   type FlowMember,
   type PanelBatch,
-  type PanelSeries,
+  type FlowChapter,
 } from "../api/client";
 import { PersonPicker } from "../components/PersonPicker";
 import { useGiantflowRole } from "../store/giantflowRole";
@@ -34,11 +34,11 @@ import { useDragOrder } from "./useDragOrder";
  * split.
  */
 export function PanelBatchesPage() {
-  const { seriesId } = useParams();
-  const pid = Number(seriesId);
+  const { chapterId } = useParams();
+  const pid = Number(chapterId);
   const { can } = useGiantflowRole();
   const [batches, setBatches] = useState<PanelBatch[] | null>(null);
-  const [series, setSeries] = useState<PanelSeries | null>(null);
+  const [chapter, setChapter] = useState<FlowChapter | null>(null);
   const [people, setPeople] = useState<{ user_id: string; name: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -47,9 +47,9 @@ export function PanelBatchesPage() {
 
   const load = useCallback(async () => {
     try {
-      const [rows, all] = await Promise.all([listBatches(pid), listPanelSeries()]);
+      const [rows, ch] = await Promise.all([listBatches(pid), getChapter(pid)]);
       setBatches(rows);
-      setSeries(all.find((p) => p.id === pid) ?? null);
+      setChapter(ch);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -81,14 +81,14 @@ export function PanelBatchesPage() {
     <div className="shellpage pn__wide">
       <PanelHero
         crumb={
-          series ? (
-            <Link to={`/giantflow/p/${series.project_id}`}>← Series</Link>
+          chapter ? (
+            <Link to={`/giantflow/s/${chapter.series_id}`}>← Chapters</Link>
           ) : (
             <Link to="/giantflow">← Projects</Link>
           )
         }
-        title={series?.name || "Series"}
-        thumbMediaId={series?.thumb_media_id}
+        title={chapter?.name || "Chapter"}
+        thumbMediaId={chapter?.thumb_media_id}
         counts={counts}
         total={totals.panels}
         facts={[
@@ -111,7 +111,7 @@ export function PanelBatchesPage() {
               }
               onClick={async () => {
                   try {
-                    const r = await exportSeries(pid);
+                    const r = await exportChapter(pid);
                     toast(
                       `${r.written} approved panel(s) downloaded.` +
                         (r.skipped ? ` ${r.skipped} could not be read.` : ""),
@@ -144,7 +144,10 @@ export function PanelBatchesPage() {
         }
       />
 
-      {showMembers ? <MembersPanel seriesId={pid} people={people} /> : null}
+      {showMembers && chapter ? (
+        // Membership lives on the SERIES; a chapter borrows its comic's people.
+        <MembersPanel seriesId={chapter.series_id} people={people} />
+      ) : null}
 
       {adding ? (
         <BatchDraftPanel

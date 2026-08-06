@@ -26,6 +26,7 @@ from sqlmodel import Session, select
 
 from flowboard.db.models import (
     FlowBatch,
+    FlowChapter,
     FlowPanel,
     FlowPanelImage,
     FlowPanelNote,
@@ -211,10 +212,10 @@ def reorder_series(session: Session, ids: list[int]) -> int:
     return reorder(session, FlowSeries, ids)
 
 
-def reorder_batches(session: Session, series_id: int, ids: list[int]) -> int:
-    get_series(session, series_id)
+def reorder_batches(session: Session, chapter_id: int, ids: list[int]) -> int:
+    get_chapter(session, chapter_id)
     return reorder(
-        session, FlowBatch, ids, scope=(FlowBatch.series_id == series_id)
+        session, FlowBatch, ids, scope=(FlowBatch.chapter_id == chapter_id)
     )
 
 
@@ -276,9 +277,102 @@ def delete_series(session: Session, series_id: int) -> None:
 # ── Batches (one artist's share of a comic) ─────────────────────────────────
 
 
+# ── Chapters — the tier work is divided on ─────────────────────────────────
+
+
+def list_chapters(session: Session, series_id: int) -> list[FlowChapter]:
+    return list(
+        session.exec(
+            select(FlowChapter)
+            .where(FlowChapter.series_id == series_id)
+            .order_by(FlowChapter.order_index, FlowChapter.id)
+        ).all()
+    )
+
+
+def get_chapter(session: Session, chapter_id: int) -> FlowChapter:
+    row = session.get(FlowChapter, chapter_id)
+    if row is None:
+        raise PanelError("not_found", "chapter not found")
+    return row
+
+
+def create_chapter(session: Session, series_id: int, name: str) -> FlowChapter:
+    clean = (name or "").strip()
+    if not clean:
+        raise PanelError("bad_input", "a chapter name is required")
+    get_series(session, series_id)
+    nxt = len(list_chapters(session, series_id))
+    row = FlowChapter(series_id=series_id, name=clean, order_index=nxt)
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def update_chapter(
+    session: Session,
+    chapter_id: int,
+    *,
+    name: Optional[str] = None,
+    cover_media_id: Optional[str] = None,
+    set_cover: bool = False,
+) -> FlowChapter:
+    row = get_chapter(session, chapter_id)
+    if name is not None:
+        clean = name.strip()
+        if not clean:
+            raise PanelError("bad_input", "a chapter name is required")
+        row.name = clean
+    if set_cover:
+        row.cover_media_id = cover_media_id
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def delete_chapter(session: Session, chapter_id: int) -> None:
+    """Takes its batches, and through them their panels."""
+    row = get_chapter(session, chapter_id)
+    for b in list_batches(session, chapter_id):
+        delete_batch(session, b.id)
+    session.delete(row)
+    session.commit()
+
+
+def reorder_chapters(session: Session, ordered_ids: list[int]) -> None:
+    for i, cid in enumerate(ordered_ids):
+        row = session.get(FlowChapter, cid)
+        if row is not None:
+            row.order_index = i
+            session.add(row)
+    session.commit()
+
+
+def chapter_cover_media_id(session: Session, chapter: FlowChapter) -> Optional[str]:
+    """Hand-picked cover, else the first panel of its first batch."""
+    if chapter.cover_media_id:
+        return chapter.cover_media_id
+    for batch in list_batches(session, chapter.id):
+        for panel in list_panels(session, batch.id):
+            raws = panel_images(session, panel.id, role="raw")
+            if raws:
+                return raws[0].media_id
+    return None
+
+
+def series_of_chapter(session: Session, chapter_id: int) -> FlowSeries:
+    return get_series(session, get_chapter(session, chapter_id).series_id)
+
+
+def list_chapter_panels(session: Session, chapter_id: int) -> list[FlowPanel]:
+    return [p for b in list_batches(session, chapter_id) for p in list_panels(session, b.id)]
+
+
 def create_batch(
     session: Session,
-    series_id: int,
+    chapter_id: int,
     name: str,
     *,
     assignee_user_id: Optional[uuid.UUID] = None,
@@ -286,10 +380,10 @@ def create_batch(
     clean = (name or "").strip()
     if not clean:
         raise PanelError("bad_input", "a batch name is required")
-    get_series(session, series_id)
-    n = len(list_batches(session, series_id))
+    get_chapter(session, chapter_id)
+    n = len(list_batches(session, chapter_id))
     row = FlowBatch(
-        series_id=series_id,
+        chapter_id=chapter_id,
         name=clean,
         assignee_user_id=assignee_user_id,
         order_index=n,
@@ -302,7 +396,7 @@ def create_batch(
 
 def create_batches(
     session: Session,
-    series_id: int,
+    chapter_id: int,
     rows: list[tuple[str, Optional[uuid.UUID]]],
 ) -> list[FlowBatch]:
     """Create several batches at once — the way work is actually handed out.
@@ -315,16 +409,16 @@ def create_batches(
     All or nothing: one commit, so a failure halfway does not leave half a
     division in place.
     """
-    get_series(session, series_id)
+    get_chapter(session, chapter_id)
     clean = [(n.strip(), a) for n, a in rows if n and n.strip()]
     if not clean:
         raise PanelError("bad_input", "give at least one batch a name")
 
-    start = len(list_batches(session, series_id))
+    start = len(list_batches(session, chapter_id))
     made: list[FlowBatch] = []
     for i, (name, assignee) in enumerate(clean):
         row = FlowBatch(
-            series_id=series_id,
+            chapter_id=chapter_id,
             name=name,
             assignee_user_id=assignee,
             order_index=start + i,
@@ -337,11 +431,11 @@ def create_batches(
     return made
 
 
-def list_batches(session: Session, series_id: int) -> list[FlowBatch]:
+def list_batches(session: Session, chapter_id: int) -> list[FlowBatch]:
     return list(
         session.exec(
             select(FlowBatch)
-            .where(FlowBatch.series_id == series_id)
+            .where(FlowBatch.chapter_id == chapter_id)
             .order_by(FlowBatch.order_index, FlowBatch.id)
         ).all()
     )
@@ -393,7 +487,8 @@ def delete_batch(session: Session, batch_id: int) -> None:
 
 
 def series_of_batch(session: Session, batch_id: int) -> FlowSeries:
-    return get_series(session, get_batch(session, batch_id).series_id)
+    """The comic a batch belongs to, reached through its chapter."""
+    return series_of_chapter(session, get_batch(session, batch_id).chapter_id)
 
 
 # ── Import ──────────────────────────────────────────────────────────────────
@@ -563,7 +658,10 @@ def search_panels(
     if statuses:
         stmt = stmt.where(FlowPanel.status.in_(statuses))
     if series_id is not None:
-        stmt = stmt.where(FlowBatch.series_id == series_id)
+        # A batch reaches its comic through its chapter now.
+        stmt = stmt.join(FlowChapter, FlowChapter.id == FlowBatch.chapter_id).where(
+            FlowChapter.series_id == series_id
+        )
     if batch_id is not None:
         stmt = stmt.where(FlowPanel.batch_id == batch_id)
     if assignee_user_id is not None:
@@ -571,7 +669,7 @@ def search_panels(
     if q and q.strip():
         stmt = stmt.where(FlowPanel.code.ilike(f"%{q.strip()}%"))
     stmt = stmt.order_by(
-        FlowBatch.series_id, FlowBatch.order_index, FlowPanel.order_index, FlowPanel.id
+        FlowBatch.chapter_id, FlowBatch.order_index, FlowPanel.order_index, FlowPanel.id
     ).limit(limit)
     return list(session.exec(stmt).all())
 
@@ -603,16 +701,18 @@ def panels_by_status(
     if assignee_user_id is not None:
         stmt = stmt.where(FlowBatch.assignee_user_id == assignee_user_id)
     if series_id is not None:
-        stmt = stmt.where(FlowBatch.series_id == series_id)
+        stmt = stmt.join(FlowChapter, FlowChapter.id == FlowBatch.chapter_id).where(
+            FlowChapter.series_id == series_id
+        )
     stmt = stmt.order_by(FlowPanel.updated_at.desc(), FlowPanel.id.desc()).limit(limit)
     return list(session.exec(stmt).all())
 
 
 def list_series_panels(session: Session, series_id: int) -> list[FlowPanel]:
-    """Every panel in a comic, batch by batch, each batch in its own order."""
+    """Every panel in a comic — chapter by chapter, batch by batch, in order."""
     out: list[FlowPanel] = []
-    for b in list_batches(session, series_id):
-        out.extend(list_panels(session, b.id))
+    for c in list_chapters(session, series_id):
+        out.extend(list_chapter_panels(session, c.id))
     return out
 
 

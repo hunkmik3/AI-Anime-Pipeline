@@ -33,7 +33,7 @@ from typing import Optional
 from fastapi import HTTPException
 from sqlmodel import Session, select
 
-from flowboard.db.models import FlowBatch, FlowSeriesMember, User
+from flowboard.db.models import FlowBatch, FlowChapter, FlowSeriesMember, User
 
 ADMIN = "admin"
 PRODUCER = "producer"
@@ -104,8 +104,11 @@ def role_for(session: Session, user: Optional[User], series_id: Optional[int]) -
     if row is not None:
         return normalize_member_role(row.role)
     assigned = session.exec(
-        select(FlowBatch).where(
-            FlowBatch.series_id == series_id,
+        # A batch reaches its comic through its chapter now.
+        select(FlowBatch)
+        .join(FlowChapter, FlowChapter.id == FlowBatch.chapter_id)
+        .where(
+            FlowChapter.series_id == series_id,
             FlowBatch.assignee_user_id == user.id,
         )
     ).first()

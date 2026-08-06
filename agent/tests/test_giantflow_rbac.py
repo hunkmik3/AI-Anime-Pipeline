@@ -20,6 +20,13 @@ def _series(session, name):
     return ps.create_series(session, project.id, name)
 
 
+def _chapter(session, name="Comic"):
+    """A batch hangs off a chapter now; tests that only care about batches take
+    the shortest path to one."""
+    series = _series(session, name)
+    return ps.create_chapter(session, series.id, "Chapter 1")
+
+
 def _login(client, username, password="pw123456"):
     r = client.post("/api/account/login", json={"username": username, "password": password})
     assert r.status_code == 200, r.text
@@ -35,7 +42,8 @@ def _fixture(client):
 
     with get_session() as s:
         series = _series(s, "Comic")
-        batch = ps.create_batch(s, series.id, "Batch")
+        chapter = ps.create_chapter(s, series.id, "Chapter 1")
+        batch = ps.create_batch(s, chapter.id, "Batch")
         panel = ps.import_panels(s, batch.id, entries=[("PANEL001.png", "media-1")])[0]
         ps.set_member(s, series.id, pm.id, "producer")
         ps.set_member(s, series.id, artist.id, "artist")
@@ -114,10 +122,20 @@ def test_review_is_refused_to_artists_over_http(client):
 
 def test_batch_management_is_refused_to_artists(client):
     (series_id, batch_id, _), h = _fixture(client)
+    with get_session() as s:
+        chapter_id = ps.list_chapters(s, series_id)[0].id
     body = {"name": "New"}
-    assert client.post(f"/api/flowstudio/series/{series_id}/batches", json=body, headers=h["artist"]).status_code == 403
+    assert client.post(f"/api/flowstudio/chapters/{chapter_id}/batches", json=body, headers=h["artist"]).status_code == 403
     assert client.delete(f"/api/flowstudio/batches/{batch_id}", headers=h["artist"]).status_code == 403
-    assert client.post(f"/api/flowstudio/series/{series_id}/batches", json=body, headers=h["pm"]).status_code in (200, 201)
+    assert client.post(f"/api/flowstudio/chapters/{chapter_id}/batches", json=body, headers=h["pm"]).status_code in (200, 201)
+
+
+def test_creating_a_chapter_is_refused_to_artists(client):
+    """A chapter is a division of work, so it is the PM's to make."""
+    (series_id, _, _), h = _fixture(client)
+    body = {"name": "Chapter 2"}
+    assert client.post(f"/api/flowstudio/series/{series_id}/chapters", json=body, headers=h["artist"]).status_code == 403
+    assert client.post(f"/api/flowstudio/series/{series_id}/chapters", json=body, headers=h["pm"]).status_code in (200, 201)
 
 
 def test_only_an_admin_manages_the_comic_itself(client):
@@ -161,7 +179,8 @@ def test_a_role_on_one_comic_grants_nothing_on_another(client):
     (_, _, _), h = _fixture(client)
     with get_session() as s:
         other = _series(s, "Other comic")
-        other_batch = ps.create_batch(s, other.id, "B")
+        other_chapter = ps.create_chapter(s, other.id, "Chapter 1")
+        other_batch = ps.create_batch(s, other_chapter.id, "B")
         other_panel = ps.import_panels(s, other_batch.id, entries=[("P.png", "media-9")])[0].id
     body = {"approve": True, "notes": []}
     assert client.post(f"/api/flowstudio/panels/{other_panel}/review", json=body, headers=h["pm"]).status_code == 403

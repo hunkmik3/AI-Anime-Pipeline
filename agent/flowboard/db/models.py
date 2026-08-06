@@ -387,6 +387,25 @@ class FlowSeriesMember(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow)
 
 
+class FlowChapter(SQLModel, table=True):
+    """One instalment of a comic.
+
+    The tier the work is actually divided on: a chapter arrives, gets split among
+    artists, and ships. Batches hang off this rather than off the series, because
+    "artist X takes panels 1-45" is a statement about a chapter, not about the
+    whole comic.
+    """
+
+    __tablename__ = "flow_chapter"  # type: ignore[assignment]
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    series_id: int = Field(foreign_key="flow_series.id", index=True)
+    name: str
+    cover_media_id: Optional[str] = None
+    order_index: int = Field(default=0, index=True)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 class FlowBatch(SQLModel, table=True):
     """A work package inside a comic — one artist's share of it.
 
@@ -403,7 +422,7 @@ class FlowBatch(SQLModel, table=True):
     __tablename__ = "flow_batch"  # type: ignore[assignment]
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    series_id: int = Field(foreign_key="flow_series.id", index=True)
+    chapter_id: int = Field(foreign_key="flow_chapter.id", index=True)
     name: str
     assignee_user_id: Optional[uuid.UUID] = Field(
         default=None, foreign_key="app_user.id", index=True

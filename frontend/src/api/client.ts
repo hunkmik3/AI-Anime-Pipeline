@@ -2328,6 +2328,61 @@ export type PanelStatus =
   | "changes_requested"
   | "approved";
 
+/** One instalment of a comic — the tier the work is divided on. */
+export interface FlowChapter {
+  id: number;
+  series_id: number;
+  name: string;
+  thumb_media_id: string | null;
+  has_cover: boolean;
+  batch_count: number;
+  panel_count: number;
+  approved_count: number;
+  status_counts: Record<string, number>;
+  created_at: string | null;
+}
+
+export function listChapters(seriesId: number): Promise<FlowChapter[]> {
+  return api<FlowChapter[]>(`/api/flowstudio/series/${seriesId}/chapters`);
+}
+
+export function getChapter(chapterId: number): Promise<FlowChapter> {
+  return api<FlowChapter>(`/api/flowstudio/chapters/${chapterId}`);
+}
+
+export function createChapter(seriesId: number, name: string): Promise<FlowChapter> {
+  return api<FlowChapter>(`/api/flowstudio/series/${seriesId}/chapters`, {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function updateChapter(
+  chapterId: number,
+  patch: { name?: string; cover_media_id?: string | null; set_cover?: boolean },
+): Promise<FlowChapter> {
+  return api<FlowChapter>(`/api/flowstudio/chapters/${chapterId}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+export function deleteChapter(chapterId: number): Promise<{ ok: boolean }> {
+  return api(`/api/flowstudio/chapters/${chapterId}`, { method: "DELETE" });
+}
+
+export function reorderChapters(seriesId: number, ids: number[]): Promise<{ ok: boolean }> {
+  return api(`/api/flowstudio/series/${seriesId}/chapters/reorder`, {
+    method: "POST",
+    body: JSON.stringify({ ids }),
+  });
+}
+
+/** Every approved panel in one chapter, foldered by batch. */
+export function exportChapter(chapterId: number) {
+  return download(`/api/flowstudio/chapters/${chapterId}/export`);
+}
+
 /** The slate — the container every comic hangs off. */
 export interface FlowProject {
   id: number;
@@ -2488,11 +2543,11 @@ export function reorderPanelSeries(ids: number[]): Promise<{ reordered: number }
 }
 
 export function reorderBatches(
-  seriesId: number,
+  chapterId: number,
   ids: number[],
 ): Promise<{ reordered: number }> {
   return api<{ reordered: number }>(
-    `/api/flowstudio/series/${seriesId}/batches/reorder`,
+    `/api/flowstudio/chapters/${chapterId}/batches/reorder`,
     { method: "POST", body: JSON.stringify({ ids }) },
   );
 }
@@ -2567,8 +2622,8 @@ export function listPanels(batchId: number): Promise<Panel[]> {
   return api<Panel[]>(`/api/flowstudio/batches/${batchId}/panels`);
 }
 
-export function listBatches(seriesId: number): Promise<PanelBatch[]> {
-  return api<PanelBatch[]>(`/api/flowstudio/series/${seriesId}/batches`);
+export function listBatches(chapterId: number): Promise<PanelBatch[]> {
+  return api<PanelBatch[]>(`/api/flowstudio/chapters/${chapterId}/batches`);
 }
 
 export function getBatch(batchId: number): Promise<PanelBatch> {
@@ -2576,11 +2631,11 @@ export function getBatch(batchId: number): Promise<PanelBatch> {
 }
 
 export function createBatch(
-  seriesId: number,
+  chapterId: number,
   name: string,
   assigneeUserId?: string | null,
 ): Promise<PanelBatch> {
-  return api<PanelBatch>(`/api/flowstudio/series/${seriesId}/batches`, {
+  return api<PanelBatch>(`/api/flowstudio/chapters/${chapterId}/batches`, {
     method: "POST",
     body: JSON.stringify({ name, assignee_user_id: assigneeUserId ?? null }),
   });
@@ -2595,10 +2650,10 @@ export function createBatch(
  * itself.
  */
 export function createBatches(
-  seriesId: number,
+  chapterId: number,
   batches: { name: string; assignee_user_id?: string | null }[],
 ): Promise<PanelBatch[]> {
-  return api<PanelBatch[]>(`/api/flowstudio/series/${seriesId}/batches/bulk`, {
+  return api<PanelBatch[]>(`/api/flowstudio/chapters/${chapterId}/batches/bulk`, {
     method: "POST",
     body: JSON.stringify({ batches }),
   });

@@ -94,7 +94,7 @@ def _batch_dict(session, row) -> dict:
             break
     return {
         "id": row.id,
-        "series_id": row.series_id,
+        "chapter_id": row.chapter_id,
         "name": row.name,
         "assignee_user_id": str(row.assignee_user_id) if row.assignee_user_id else None,
         "assignee_name": _user_name(row.assignee_user_id),
@@ -262,13 +262,13 @@ def reorder_series(body: ReorderBody, user=Depends(get_optional_user)):
         return {"reordered": n}
 
 
-@router.post("/series/{series_id}/batches/reorder")
-def reorder_batches(series_id: int, body: ReorderBody, user=Depends(get_optional_user)):
+@router.post("/chapters/{chapter_id}/batches/reorder")
+def reorder_batches(chapter_id: int, body: ReorderBody, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, series_id, "batch.manage")
+        _guard(s, user, _series_of_chapter(s, chapter_id), "batch.manage")
         try:
-            n = ps.reorder_batches(s, series_id, body.ids)
+            n = ps.reorder_batches(s, chapter_id, body.ids)
         except ps.PanelError as exc:
             raise _fail(exc)
         return {"reordered": n}
@@ -367,8 +367,13 @@ async def import_folder(
 # ── Panels ──────────────────────────────────────────────────────────────────
 
 
+def _series_of_chapter(session, chapter_id: int) -> int:
+    return ps.get_chapter(session, chapter_id).series_id
+
+
 def _series_of_batch(session, batch_id: int) -> int:
-    return ps.get_batch(session, batch_id).series_id
+    """A batch reaches its comic through its chapter now."""
+    return _series_of_chapter(session, ps.get_batch(session, batch_id).chapter_id)
 
 
 def _series_of_panel(session, panel_id: int) -> int:
@@ -387,11 +392,14 @@ def _panel_dict(session, panel, *, with_images: bool = False) -> dict:
     latest = ps.latest_generated(session, panel.id)
     shown = ps.delivered(session, panel.id)
     batch = ps.get_batch(session, panel.batch_id)
+    chapter = ps.get_chapter(session, batch.chapter_id)
     d = {
         "id": panel.id,
         "batch_id": panel.batch_id,
         "batch_name": batch.name,
-        "series_id": batch.series_id,
+        "chapter_id": chapter.id,
+        "chapter_name": chapter.name,
+        "series_id": chapter.series_id,
         "code": panel.code,
         "order_index": panel.order_index,
         "status": panel.status,
@@ -470,26 +478,26 @@ class BatchUpdate(BaseModel):
     set_assignee: bool = False
 
 
-@router.get("/series/{series_id}/batches")
-def list_batches(series_id: int, user=Depends(get_optional_user)):
+@router.get("/chapters/{chapter_id}/batches")
+def list_batches(chapter_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, series_id, "panel.read")
+        _guard(s, user, _series_of_chapter(s, chapter_id), "panel.read")
         try:
-            ps.get_series(s, series_id)
+            ps.get_series(s, chapter_id)
         except ps.PanelError as exc:
             raise _fail(exc)
-        return [_batch_dict(s, b) for b in ps.list_batches(s, series_id)]
+        return [_batch_dict(s, b) for b in ps.list_batches(s, chapter_id)]
 
 
-@router.post("/series/{series_id}/batches")
-def create_batch(series_id: int, body: BatchCreate, user=Depends(get_optional_user)):
+@router.post("/chapters/{chapter_id}/batches")
+def create_batch(chapter_id: int, body: BatchCreate, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, series_id, "batch.manage")
+        _guard(s, user, _series_of_chapter(s, chapter_id), "batch.manage")
         try:
             row = ps.create_batch(
-                s, series_id, body.name, assignee_user_id=body.assignee_user_id
+                s, chapter_id, body.name, assignee_user_id=body.assignee_user_id
             )
             return _batch_dict(s, row)
         except ps.PanelError as exc:
@@ -502,15 +510,15 @@ class BatchesCreate(BaseModel):
     batches: list[BatchCreate]
 
 
-@router.post("/series/{series_id}/batches/bulk")
-def create_batches(series_id: int, body: BatchesCreate, user=Depends(get_optional_user)):
-    """Create several batches in one commit — dividing a comic is one decision."""
+@router.post("/chapters/{chapter_id}/batches/bulk")
+def create_batches(chapter_id: int, body: BatchesCreate, user=Depends(get_optional_user)):
+    """Create several batches in one commit — dividing a chapter is one decision."""
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, series_id, "batch.manage")
+        _guard(s, user, _series_of_chapter(s, chapter_id), "batch.manage")
         try:
             rows = ps.create_batches(
-                s, series_id, [(b.name, b.assignee_user_id) for b in body.batches]
+                s, chapter_id, [(b.name, b.assignee_user_id) for b in body.batches]
             )
         except ps.PanelError as exc:
             raise _fail(exc)
@@ -820,8 +828,7 @@ def _queue_dict(session, panel) -> dict:
         for n in ps.list_notes(session, panel.id)
         if not n.resolved
     ]
-    batch = ps.get_batch(session, panel.batch_id)
-    d["series_name"] = ps.get_series(session, batch.series_id).name
+    d["series_name"] = ps.series_of_batch(session, panel.batch_id).name
     return d
 
 
@@ -895,6 +902,130 @@ def my_work(user=Depends(get_optional_user)):
             rows = ps.panels_by_status(s, [status], assignee_user_id=user.id)
             out[status] = [_queue_dict(s, p) for p in rows]
         return out
+
+
+# ── Chapters ────────────────────────────────────────────────────────────────
+
+
+def _chapter_dict(session, row) -> dict:
+    panels = ps.list_chapter_panels(session, row.id)
+    counts = {s: 0 for s in PANEL_STATUSES}
+    for p in panels:
+        counts[p.status] = counts.get(p.status, 0) + 1
+    return {
+        "id": row.id,
+        "series_id": row.series_id,
+        "name": row.name,
+        "thumb_media_id": ps.chapter_cover_media_id(session, row),
+        "has_cover": bool(row.cover_media_id),
+        "batch_count": len(ps.list_batches(session, row.id)),
+        "panel_count": len(panels),
+        "approved_count": counts.get("approved", 0),
+        "status_counts": counts,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+@router.get("/series/{series_id}/chapters")
+def list_chapters(series_id: int, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, series_id, "panel.read")
+        return [_chapter_dict(s, c) for c in ps.list_chapters(s, series_id)]
+
+
+class ChapterBody(BaseModel):
+    name: str = Field(min_length=1)
+
+
+@router.post("/series/{series_id}/chapters")
+def create_chapter(series_id: int, body: ChapterBody, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, series_id, "batch.manage")
+        try:
+            return _chapter_dict(s, ps.create_chapter(s, series_id, body.name))
+        except ps.PanelError as exc:
+            raise _fail(exc)
+
+
+@router.get("/chapters/{chapter_id}")
+def get_chapter(chapter_id: int, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, _series_of_chapter(s, chapter_id), "panel.read")
+        try:
+            return _chapter_dict(s, ps.get_chapter(s, chapter_id))
+        except ps.PanelError as exc:
+            raise _fail(exc)
+
+
+class ChapterPatch(BaseModel):
+    name: Optional[str] = None
+    cover_media_id: Optional[str] = None
+    set_cover: bool = False
+
+
+@router.patch("/chapters/{chapter_id}")
+def update_chapter(chapter_id: int, body: ChapterPatch, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, _series_of_chapter(s, chapter_id), "batch.manage")
+        try:
+            row = ps.update_chapter(
+                s, chapter_id, name=body.name,
+                cover_media_id=body.cover_media_id, set_cover=body.set_cover,
+            )
+            return _chapter_dict(s, row)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+
+
+@router.delete("/chapters/{chapter_id}")
+def delete_chapter(chapter_id: int, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, _series_of_chapter(s, chapter_id), "batch.manage")
+        try:
+            ps.delete_chapter(s, chapter_id)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+        return {"ok": True}
+
+
+@router.post("/series/{series_id}/chapters/reorder")
+def reorder_chapters(series_id: int, body: ReorderBody, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, series_id, "batch.manage")
+        ps.reorder_chapters(s, body.ids)
+        return {"ok": True}
+
+
+@router.get("/chapters/{chapter_id}/export")
+async def export_chapter(chapter_id: int, user=Depends(get_optional_user)):
+    """Every approved panel in one chapter, foldered by batch."""
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, _series_of_chapter(s, chapter_id), "panel.read")
+        try:
+            chapter = ps.get_chapter(s, chapter_id)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+        panels = [p for p in ps.list_chapter_panels(s, chapter_id) if p.status == "approved"]
+        if not panels:
+            raise HTTPException(404, "no approved panels in this chapter yet")
+        data, written, skipped = await _zip_panels(s, panels, folders=True)
+        name = _safe_filename(chapter.name)
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{name}_approved.zip"',
+            "X-Export-Written": str(written),
+            "X-Export-Skipped": str(skipped),
+        },
+    )
 
 
 # ── The panel's own asset library ────────────────────────────────────────────

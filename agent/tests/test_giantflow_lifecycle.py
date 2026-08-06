@@ -63,9 +63,18 @@ def test_a_comic_from_import_to_export(client, studio, tmp_path, monkeypatch):
 
     h, series_id, artist = studio["h"], studio["series_id"], studio["artist"]
 
+    # A chapter first — that is the tier the work is divided on.
+    ch = client.post(
+        f"/api/flowstudio/series/{series_id}/chapters",
+        json={"name": "Chapter 1"},
+        headers=h["pm"],
+    )
+    assert ch.status_code in (200, 201), ch.text
+    chapter_id = ch.json()["id"]
+
     # PM divides the work and hands a share to the artist.
     r = client.post(
-        f"/api/flowstudio/series/{series_id}/batches",
+        f"/api/flowstudio/chapters/{chapter_id}/batches",
         json={"name": "Quân", "assignee_user_id": str(artist.id)},
         headers=h["pm"],
     )
@@ -147,7 +156,8 @@ def test_a_comic_from_import_to_export(client, studio, tmp_path, monkeypatch):
 def test_reopening_returns_the_panel_to_work_without_losing_the_pick(client, studio):
     h, series_id = studio["h"], studio["series_id"]
     with get_session() as s:
-        batch = ps.create_batch(s, series_id, "B")
+        chapter = ps.create_chapter(s, series_id, "Chapter 1")
+        batch = ps.create_batch(s, chapter.id, "B")
         panel_id = ps.import_panels(s, batch.id, entries=[("P.png", "raw")])[0].id
         ps.add_generated(s, panel_id, ["g1", "g2"])
         ps.submit_panel(s, panel_id, media_id="g1")
@@ -170,7 +180,8 @@ def test_a_panel_with_no_versions_cannot_be_approved(client, studio):
     puts a row into the export with no image behind it."""
     h, series_id = studio["h"], studio["series_id"]
     with get_session() as s:
-        batch = ps.create_batch(s, series_id, "B")
+        chapter = ps.create_chapter(s, series_id, "Chapter 1")
+        batch = ps.create_batch(s, chapter.id, "B")
         panel_id = ps.import_panels(s, batch.id, entries=[("P.png", "raw")])[0].id
         assert ps.get_panel(s, panel_id).status == "todo"
 
@@ -190,7 +201,8 @@ def test_a_panel_nobody_submitted_cannot_be_ruled_on(client, studio):
     it away from the artist mid-edit."""
     h, series_id = studio["h"], studio["series_id"]
     with get_session() as s:
-        batch = ps.create_batch(s, series_id, "B")
+        chapter = ps.create_chapter(s, series_id, "Chapter 1")
+        batch = ps.create_batch(s, chapter.id, "B")
         panel_id = ps.import_panels(s, batch.id, entries=[("P.png", "raw")])[0].id
         ps.add_generated(s, panel_id, ["g1"])  # in_progress, never submitted
 
@@ -232,7 +244,8 @@ def test_a_member_row_can_never_confer_admin(client, studio):
 def test_deleting_a_batch_takes_its_panels_and_notes_with_it(client, studio):
     h, series_id = studio["h"], studio["series_id"]
     with get_session() as s:
-        batch = ps.create_batch(s, series_id, "B")
+        chapter = ps.create_chapter(s, series_id, "Chapter 1")
+        batch = ps.create_batch(s, chapter.id, "B")
         batch_id = batch.id
         panel_id = ps.import_panels(s, batch_id, entries=[("P.png", "raw")])[0].id
         ps.add_generated(s, panel_id, ["g1"])
@@ -256,7 +269,8 @@ def test_reassigning_a_batch_moves_the_work_to_the_new_artist(client, studio):
     first = studio["artist"]
     second = user_service.create_user("lc_artist2", "pw123456", role="user")
     with get_session() as s:
-        batch = ps.create_batch(s, series_id, "B", assignee_user_id=first.id)
+        chapter = ps.create_chapter(s, series_id, "Chapter 1")
+        batch = ps.create_batch(s, chapter.id, "B", assignee_user_id=first.id)
         panel_id = ps.import_panels(s, batch.id, entries=[("P.png", "raw")])[0].id
         ps.add_generated(s, panel_id, ["g1"])
         ps.submit_panel(s, panel_id)
@@ -279,7 +293,8 @@ def test_export_skips_an_image_it_cannot_read_instead_of_failing(client, studio,
 
     h, series_id = studio["h"], studio["series_id"]
     with get_session() as s:
-        batch = ps.create_batch(s, series_id, "B")
+        chapter = ps.create_chapter(s, series_id, "Chapter 1")
+        batch = ps.create_batch(s, chapter.id, "B")
         panels = ps.import_panels(
             s, batch.id, entries=[("A.png", "raw-a"), ("B.png", "raw-b")]
         )
@@ -309,7 +324,8 @@ def test_a_second_import_into_the_same_batch_is_refused(client, studio):
     """Two numbering schemes interleaved cannot be untangled by hand."""
     _, series_id = studio["h"], studio["series_id"]
     with get_session() as s:
-        batch = ps.create_batch(s, series_id, "B")
+        chapter = ps.create_chapter(s, series_id, "Chapter 1")
+        batch = ps.create_batch(s, chapter.id, "B")
         ps.import_panels(s, batch.id, entries=[("A.png", "raw-a")])
         with pytest.raises(ps.PanelError):
             ps.import_panels(s, batch.id, entries=[("B.png", "raw-b")])
@@ -320,8 +336,10 @@ def test_two_batches_may_each_have_their_own_PANEL001(client, studio):
     at one."""
     _, series_id = studio["h"], studio["series_id"]
     with get_session() as s:
-        a = ps.create_batch(s, series_id, "A")
-        b = ps.create_batch(s, series_id, "B")
+        chapter = ps.create_chapter(s, series_id, "Chapter 1")
+        a = ps.create_batch(s, chapter.id, "A")
+        chapter = ps.create_chapter(s, series_id, "Chapter 1")
+        b = ps.create_batch(s, chapter.id, "B")
         ps.import_panels(s, a.id, entries=[("PANEL001.png", "raw-1")])
         ps.import_panels(s, b.id, entries=[("PANEL001.png", "raw-2")])
         assert len(ps.list_series_panels(s, series_id)) == 2
@@ -332,7 +350,8 @@ def test_import_sorts_by_the_cutters_numbering_not_arrival_order(client, studio)
     PANEL111, PANEL105, PANEL065…"""
     _, series_id = studio["h"], studio["series_id"]
     with get_session() as s:
-        batch = ps.create_batch(s, series_id, "B")
+        chapter = ps.create_chapter(s, series_id, "Chapter 1")
+        batch = ps.create_batch(s, chapter.id, "B")
         ps.import_panels(
             s,
             batch.id,
@@ -345,7 +364,8 @@ def test_import_sorts_by_the_cutters_numbering_not_arrival_order(client, studio)
 def test_deleting_a_comic_leaves_nothing_behind(client, studio):
     h, series_id = studio["h"], studio["series_id"]
     with get_session() as s:
-        batch = ps.create_batch(s, series_id, "B")
+        chapter = ps.create_chapter(s, series_id, "Chapter 1")
+        batch = ps.create_batch(s, chapter.id, "B")
         ps.import_panels(s, batch.id, entries=[("P.png", "raw")])
         batch_id = batch.id
 

@@ -34,6 +34,7 @@ import { PanelProjectsPage } from "./flow/PanelProjectsPage";
 import { PanelBatchesPage } from "./flow/PanelBatchesPage";
 import { PanelGridPage } from "./flow/PanelGridPage";
 import { PanelAllPage } from "./flow/PanelAllPage";
+import { PanelChaptersPage } from "./flow/PanelChaptersPage";
 import { PanelSeriesPage } from "./flow/PanelSeriesPage";
 import { PanelMyWorkPage } from "./flow/PanelMyWorkPage";
 import { PanelReviewPage } from "./flow/PanelReviewPage";
@@ -120,7 +121,8 @@ export function App() {
           <Route path="/giantflow/my-work" element={<PanelMyWorkPage />} />
           <Route path="/giantflow/batch/:batchId" element={<PanelGridPage />} />
           <Route path="/giantflow/p/:projectId" element={<PanelSeriesPage />} />
-          <Route path="/giantflow/s/:seriesId" element={<PanelBatchesPage />} />
+          <Route path="/giantflow/s/:seriesId" element={<PanelChaptersPage />} />
+          <Route path="/giantflow/c/:chapterId" element={<PanelBatchesPage />} />
           {/* Phase 8.3: project hub (entry point) = SceneView. */}
           <Route path="/projects/:projectId" element={<SceneView />} />
           <Route

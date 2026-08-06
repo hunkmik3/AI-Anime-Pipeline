@@ -19,6 +19,13 @@ def _series(session, name):
     return ps.create_series(session, project.id, name)
 
 
+def _chapter(session, name="Comic"):
+    """A batch hangs off a chapter now; tests that only care about batches take
+    the shortest path to one."""
+    series = _series(session, name)
+    return ps.create_chapter(session, series.id, "Chapter 1")
+
+
 def _login(client, username, password="pw123456"):
     r = client.post("/api/account/login", json={"username": username, "password": password})
     assert r.status_code == 200, r.text
@@ -34,8 +41,9 @@ def _studio(client):
     out = {}
     with get_session() as s:
         series = _series(s, "X-MEN")
+        chapter = ps.create_chapter(s, series.id, "Chapter 1")
         for who, user in (("quan", quan), ("phat", phat)):
-            batch = ps.create_batch(s, series.id, f"Batch {who}", assignee_user_id=user.id)
+            batch = ps.create_batch(s, chapter.id, f"Batch {who}", assignee_user_id=user.id)
             panels = ps.import_panels(
                 s,
                 batch.id,
@@ -74,7 +82,8 @@ def test_review_queue_can_be_narrowed_to_one_comic(client):
     ids, _ = _studio(client)
     with get_session() as s:
         other = _series(s, "Other")
-        other_batch = ps.create_batch(s, other.id, "B")
+        other_chapter = ps.create_chapter(s, other.id, "Chapter 1")
+        other_batch = ps.create_batch(s, other_chapter.id, "B")
         other_panel = ps.import_panels(s, other_batch.id, entries=[("O.png", "raw-o")])[0]
         ps.add_generated(s, other_panel.id, ["gen-o"])
         ps.submit_panel(s, other_panel.id)
