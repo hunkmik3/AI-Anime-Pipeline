@@ -1824,11 +1824,16 @@
 
 .pn__batch-body { display: flex; flex-direction: column; gap: 9px; padding: 12px 14px 13px; }
 .pn__batch-top { display: flex; align-items: baseline; gap: 8px; }
+.pn__batch-pct { flex: none; }
+/* Generated names are long — `Project_Series_Chapter_batchNN` — and the part
+   that tells two cards apart is the LAST segment, which is exactly what an
+   ellipsis eats. Wrap instead of truncating. */
 .pn__batch-name {
   flex: 1; min-width: 0;
-  font-weight: 600; font-size: 14.5px; color: var(--text);
-  text-decoration: none; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 600; font-size: 13.5px; line-height: 1.3; color: var(--text);
+  text-decoration: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .pn__batch-name:hover { color: var(--accent, #00a76f); }
 .pn__batch-pct { font-size: 12px; font-weight: 600; color: var(--muted); }
@@ -1836,7 +1841,7 @@
   flex: 1; min-width: 0;
   background: var(--panel, #14171d); color: var(--text);
   border: 1px solid var(--accent, #00a76f); border-radius: 7px;
-  padding: 3px 7px; font: inherit; font-weight: 600; font-size: 14.5px;
+  padding: 3px 7px; font: inherit; font-weight: 600; font-size: 13.5px;
 }
 .pn__batch-hint { margin: 0; font-size: 12.5px; color: var(--muted); }
 
@@ -2466,3 +2471,15 @@
   border-radius: 8px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* Generated batch names are long everywhere they appear, and the distinguishing
+   segment is always at the end. Wrap rather than clip — the same reason as on
+   the batch card. */
+.pn__tbatch,
+.pn__qsub,
+.pn__mycard-sub {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+.pn__table--miro .pn__tcomic { min-width: 220px; }
