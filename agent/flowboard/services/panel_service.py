@@ -228,11 +228,13 @@ def series_cover_media_id(session: Session, series: FlowSeries) -> Optional[str]
     """
     if series.cover_media_id:
         return series.cover_media_id
-    for batch in list_batches(session, series.id):
-        for panel in list_panels(session, batch.id):
-            raws = panel_images(session, panel.id, role="raw")
-            if raws:
-                return raws[0].media_id
+    # Through the chapters: batches no longer hang off the series, and passing a
+    # series id to `list_batches` returns whatever batch happens to sit under the
+    # chapter with that id — a wrong answer that never raises.
+    for chapter in list_chapters(session, series.id):
+        got = chapter_cover_media_id(session, chapter)
+        if got:
+            return got
     return None
 
 

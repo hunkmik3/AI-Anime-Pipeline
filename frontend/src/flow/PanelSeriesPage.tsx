@@ -311,9 +311,9 @@ function SeriesCard({
             </div>
           )}
           <div className="pn__tile-sub">
-            {series.batch_count === 0
-              ? "No batches yet"
-              : `${series.batch_count} batch${series.batch_count === 1 ? "" : "es"} · ${series.approved_count}/${series.panel_count} approved`}
+            {series.chapter_count === 0
+              ? "No chapters yet"
+              : `${series.chapter_count} chapter${series.chapter_count === 1 ? "" : "s"} · ${series.approved_count}/${series.panel_count} approved`}
           </div>
           {series.panel_count > 0 ? (
             <div className="pn__tile-bar">

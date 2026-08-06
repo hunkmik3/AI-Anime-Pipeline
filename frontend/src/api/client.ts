@@ -2437,7 +2437,9 @@ export interface PanelSeries {
   /** True only when someone uploaded one — drives Change vs Thumbnail. */
   has_cover: boolean;
   created_at: string | null;
-  /** A project is a comic; its work is divided into batches, one per artist. */
+  /** A comic ships an instalment at a time; each chapter is divided into a
+   *  batch per artist. */
+  chapter_count: number;
   batch_count: number;
   panel_count: number;
   approved_count: number;

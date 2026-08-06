@@ -414,3 +414,56 @@ def test_every_tier_is_reachable_over_http(client, studio):
     assert client.get(f"/api/flowstudio/batches/{batch_id}", headers=h["pm"]).status_code == 200
     assert client.get(f"/api/flowstudio/batches/{batch_id}/panels", headers=h["pm"]).status_code == 200
 
+
+def test_every_dto_carries_the_tier_above_it(client, studio):
+    """Each level has to name its parent, or the UI cannot build a link back.
+
+    A missing `project_id` on the series DTO produced `/giantflow/p/undefined`,
+    which then asked the API for project "NaN" — an error two screens away from
+    the field that was actually absent.
+    """
+    h, series_id = studio["h"], studio["series_id"]
+    ch = client.post(
+        f"/api/flowstudio/series/{series_id}/chapters",
+        json={"name": "Chapter 1"},
+        headers=h["pm"],
+    )
+    chapter_id = ch.json()["id"]
+    batch = client.post(
+        f"/api/flowstudio/chapters/{chapter_id}/batches",
+        json={"name": "B"},
+        headers=h["pm"],
+    ).json()
+
+    series = next(
+        s for s in client.get("/api/flowstudio/series", headers=h["pm"]).json()
+        if s["id"] == series_id
+    )
+    assert isinstance(series["project_id"], int)
+    assert client.get(f"/api/flowstudio/chapters/{chapter_id}", headers=h["pm"]).json()["series_id"] == series_id
+    assert batch["chapter_id"] == chapter_id
+
+
+def test_series_counts_are_reached_through_its_chapters(client, studio):
+    """`list_batches` takes a CHAPTER id. Handing it a series id returned the
+    batches of whichever chapter shared that number — never an error, just a
+    wrong count on the card."""
+    h, series_id = studio["h"], studio["series_id"]
+    ch = client.post(
+        f"/api/flowstudio/series/{series_id}/chapters",
+        json={"name": "Chapter 1"},
+        headers=h["pm"],
+    ).json()
+    for name in ("A", "B"):
+        client.post(
+            f"/api/flowstudio/chapters/{ch['id']}/batches",
+            json={"name": name},
+            headers=h["pm"],
+        )
+    series = next(
+        s for s in client.get("/api/flowstudio/series", headers=h["pm"]).json()
+        if s["id"] == series_id
+    )
+    assert series["chapter_count"] == 1
+    assert series["batch_count"] == 2
+

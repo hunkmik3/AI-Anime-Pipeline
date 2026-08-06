@@ -62,16 +62,25 @@ class ProjectBody(BaseModel):
 
 
 def _series_dict(session, row) -> dict:
-    batches = ps.list_batches(session, row.id)
+    # Batches hang off CHAPTERS now. `list_batches(session, row.id)` still ran
+    # and still returned rows — it matched batches whose chapter id happened to
+    # equal this series id — which is the shape of wrong answer that never
+    # raises. Count them through the chapters instead.
+    chapters = ps.list_chapters(session, row.id)
+    batches = [b for c in chapters for b in ps.list_batches(session, c.id)]
     panels = ps.list_series_panels(session, row.id)
     return {
         "id": row.id,
+        #: The slate above it. Without this the breadcrumb built
+        #: `/giantflow/p/undefined` and the series page asked for project NaN.
+        "project_id": row.project_id,
         "name": row.name,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         # Hand-picked cover, else the comic's opening panel.
         "thumb_media_id": ps.series_cover_media_id(session, row),
         "has_cover": bool(row.cover_media_id),
-        # The three numbers a PM opens this list for.
+        # The numbers a PM opens this list for.
+        "chapter_count": len(chapters),
         "batch_count": len(batches),
         "panel_count": len(panels),
         "approved_count": len([p for p in panels if p.status == "approved"]),
