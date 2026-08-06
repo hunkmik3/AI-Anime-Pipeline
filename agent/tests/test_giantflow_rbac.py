@@ -159,11 +159,23 @@ def test_viewer_cannot_generate_or_submit(client):
     assert client.post(f"/api/flowstudio/panels/{panel_id}/submit", json={}, headers=h["viewer"]).status_code == 403
 
 
-def test_everyone_signed_in_can_read(client):
+def test_reading_is_open_within_your_scope(client):
+    """Was "everyone signed in can read", and that stopped being true when
+    artists became scoped to their own share. Admins, PMs and viewers still see
+    the whole slate; an artist sees the batch handed to them."""
     (_, batch_id, panel_id), h = _fixture(client)
-    for who in ("admin", "pm", "artist", "viewer"):
+    for who in ("admin", "pm", "viewer"):
         assert client.get(f"/api/flowstudio/panels/{panel_id}", headers=h[who]).status_code == 200
         assert client.get(f"/api/flowstudio/batches/{batch_id}/panels", headers=h[who]).status_code == 200
+
+    # Nothing is assigned to the artist yet, so this batch is outside their scope.
+    assert client.get(f"/api/flowstudio/panels/{panel_id}", headers=h["artist"]).status_code == 403
+
+    artist = user_service.get_by_username("gf_artist")
+    with get_session() as s:
+        ps.update_batch(s, batch_id, assignee_user_id=artist.id, set_assignee=True)
+    assert client.get(f"/api/flowstudio/panels/{panel_id}", headers=h["artist"]).status_code == 200
+    assert client.get(f"/api/flowstudio/batches/{batch_id}/panels", headers=h["artist"]).status_code == 200
 
 
 def test_membership_is_managed_by_the_pm_not_the_artist(client):
@@ -257,4 +269,59 @@ def test_the_preview_never_hides_its_own_switch(client):
         got = client.get("/api/flowstudio/me", headers={**h["admin"], **_as(role)}).json()
         assert got["best_role"] == role          # what the UI draws for
         assert got["true_role"] == "admin"       # who is really holding the switch
+
+
+# ── what each role can SEE ────────────────────────────────────────────────
+
+
+def _two_batch_comic(client):
+    """One chapter, two batches — one handed to the artist, one not."""
+    (series_id, batch_id, _), h = _fixture(client)
+    artist = user_service.get_by_username("gf_artist")
+    with get_session() as s:
+        chapter_id = ps.list_chapters(s, series_id)[0].id
+        ps.update_batch(s, batch_id, assignee_user_id=artist.id, set_assignee=True)
+        other = ps.create_batch(s, chapter_id, "Someone else's")
+        ps.import_panels(s, other.id, entries=[("X.png", "raw-x")])
+        other_id = other.id
+    return series_id, batch_id, other_id, h
+
+
+def test_an_artist_sees_only_their_own_share(client):
+    """Scope, not layout: 320 panels of which 45 are yours is a worse view of
+    your own work than 45 panels is."""
+    series_id, batch_id, other_id, h = _two_batch_comic(client)
+
+    mine = client.get("/api/flowstudio/panels", headers=h["artist"]).json()
+    assert {p["batch_id"] for p in mine} == {batch_id}
+
+    seen = client.get(f"/api/flowstudio/chapters/{ps_first_chapter(series_id)}/batches", headers=h["artist"]).json()
+    assert [b["id"] for b in seen] == [batch_id]
+
+
+def ps_first_chapter(series_id: int) -> int:
+    with get_session() as s:
+        return ps.list_chapters(s, series_id)[0].id
+
+
+def test_a_pm_and_an_admin_see_everything(client):
+    series_id, batch_id, other_id, h = _two_batch_comic(client)
+    for who in ("admin", "pm"):
+        rows = client.get("/api/flowstudio/panels", headers=h[who]).json()
+        assert {r["batch_id"] for r in rows} >= {batch_id, other_id}, who
+
+
+def test_a_viewer_sees_everything_read_only(client):
+    """A viewer is a spectator on the project as a whole; the artist scope is
+    about focus, not secrecy, so it does not apply to them."""
+    series_id, batch_id, other_id, h = _two_batch_comic(client)
+    rows = client.get("/api/flowstudio/panels", headers=h["viewer"]).json()
+    assert {r["batch_id"] for r in rows} >= {batch_id, other_id}
+
+
+def test_the_scope_is_a_rule_not_a_filtered_list(client):
+    """Filtering only the lists would leave the panel one guessed URL away."""
+    series_id, batch_id, other_id, h = _two_batch_comic(client)
+    assert client.get(f"/api/flowstudio/batches/{other_id}", headers=h["artist"]).status_code == 403
+    assert client.get(f"/api/flowstudio/batches/{batch_id}", headers=h["artist"]).status_code == 200
 

@@ -179,7 +179,19 @@ def _project_dict(session, row) -> dict:
 def list_projects(user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        return [_project_dict(s, r) for r in ps.list_projects(s)]
+        mine = _scoped_to_own_work(s, user)
+        rows = ps.list_projects(s)
+        if mine is not None:
+            rows = [
+                pr for pr in rows
+                if any(
+                    b.id in mine
+                    for sr in ps.list_series(s, pr.id)
+                    for c in ps.list_chapters(s, sr.id)
+                    for b in ps.list_batches(s, c.id)
+                )
+            ]
+        return [_project_dict(s, r) for r in rows]
 
 
 class ProjectBody(BaseModel):
@@ -250,7 +262,18 @@ def list_series(project_id: Optional[int] = None, user=Depends(get_optional_user
     """The comics on one slate, or every comic when no project is named."""
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        return [_series_dict(s, r) for r in ps.list_series(s, project_id)]
+        mine = _scoped_to_own_work(s, user)
+        rows = ps.list_series(s, project_id)
+        if mine is not None:
+            rows = [
+                sr for sr in rows
+                if any(
+                    b.id in mine
+                    for c in ps.list_chapters(s, sr.id)
+                    for b in ps.list_batches(s, c.id)
+                )
+            ]
+        return [_series_dict(s, r) for r in rows]
 
 
 @router.post("/series")
@@ -421,6 +444,33 @@ def _series_of_panel(session, panel_id: int) -> int:
     return _series_of_batch(session, ps.get_panel(session, panel_id).batch_id)
 
 
+def _scoped_to_own_work(session, user) -> Optional[set[int]]:
+    """Batch ids this caller may see, or ``None`` when they see everything.
+
+    Applied to the LISTS and to the reads. Filtering only the lists would be a
+    tidier screen rather than a scope: the panel is still one guessed URL away,
+    and "artists see their own work" would be a layout decision instead of a
+    rule.
+    """
+    # `best_role`, not `role_for(..., None)`: with no project named the latter
+    # answers VIEWER for anyone who is not a system admin — and a viewer sees
+    # everything, so a real artist would have been handed the whole slate. The
+    # live check missed it because an ADMIN previewing "artist" resolves through
+    # a different branch and scoped correctly.
+    role = fp.best_role(session, user)
+    if fp.sees_everything(role):
+        return None
+    return fp.assigned_batch_ids(session, user)
+
+
+def _guard_batch_read(session, user, batch_id: int) -> None:
+    """Refuse a batch outside this caller's scope."""
+    _guard(session, user, _series_of_batch(session, batch_id), "panel.read")
+    mine = _scoped_to_own_work(session, user)
+    if mine is not None and batch_id not in mine:
+        raise HTTPException(403, "this batch is not assigned to you")
+
+
 def _guard(session, user, series_id, capability: str) -> str:
     """Server-side capability check. The UI's role switch is a drawing hint; this
     is the rule. A button the frontend declines to render is still a reachable
@@ -495,7 +545,7 @@ def _panel_dict(session, panel, *, with_images: bool = False) -> dict:
 def list_panels(batch_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _series_of_batch(s, batch_id), "panel.read")
+        _guard_batch_read(s, user, batch_id)
         try:
             ps.get_batch(s, batch_id)
         except ps.PanelError as exc:
@@ -535,7 +585,11 @@ def list_batches(chapter_id: int, user=Depends(get_optional_user)):
             ps.get_chapter(s, chapter_id)
         except ps.PanelError as exc:
             raise _fail(exc)
-        return [_batch_dict(s, b) for b in ps.list_batches(s, chapter_id)]
+        mine = _scoped_to_own_work(s, user)
+        rows = ps.list_batches(s, chapter_id)
+        if mine is not None:
+            rows = [b for b in rows if b.id in mine]
+        return [_batch_dict(s, b) for b in rows]
 
 
 @router.post("/chapters/{chapter_id}/batches")
@@ -577,7 +631,7 @@ def create_batches(chapter_id: int, body: BatchesCreate, user=Depends(get_option
 def get_batch(batch_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _series_of_batch(s, batch_id), "panel.read")
+        _guard_batch_read(s, user, batch_id)
         try:
             return _batch_dict(s, ps.get_batch(s, batch_id))
         except ps.PanelError as exc:
@@ -616,7 +670,7 @@ def delete_batch(batch_id: int, user=Depends(get_optional_user)):
 def get_panel(panel_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _series_of_panel(s, panel_id), "panel.read")
+        _guard_batch_read(s, user, ps.get_panel(s, panel_id).batch_id)
         try:
             return _panel_dict(s, ps.get_panel(s, panel_id), with_images=True)
         except ps.PanelError as exc:
@@ -727,7 +781,7 @@ async def export_batch(batch_id: int, user=Depends(get_optional_user)):
     """Every approved panel in one artist's batch, as a zip."""
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _series_of_batch(s, batch_id), "panel.read")
+        _guard_batch_read(s, user, batch_id)
         try:
             batch = ps.get_batch(s, batch_id)
         except ps.PanelError as exc:
@@ -904,6 +958,7 @@ def all_panels(
         raise HTTPException(400, f"unknown status {bad[0]!r}")
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
+        mine = _scoped_to_own_work(s, user)
         rows = ps.search_panels(
             s,
             statuses=statuses or None,
@@ -911,6 +966,8 @@ def all_panels(
             assignee_user_id=assignee,
             q=q,
         )
+        if mine is not None:
+            rows = [r for r in rows if r.batch_id in mine]
         # Filtered, not refused: someone who can read one comic and not another
         # gets the first rather than a 403 for the whole page.
         return [
@@ -987,7 +1044,15 @@ def list_chapters(series_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
         _guard(s, user, series_id, "panel.read")
-        return [_chapter_dict(s, c) for c in ps.list_chapters(s, series_id)]
+        mine = _scoped_to_own_work(s, user)
+        rows = ps.list_chapters(s, series_id)
+        if mine is not None:
+            # A chapter is visible when something inside it is yours.
+            rows = [
+                c for c in rows
+                if any(b.id in mine for b in ps.list_batches(s, c.id))
+            ]
+        return [_chapter_dict(s, c) for c in rows]
 
 
 class ChapterBody(BaseModel):

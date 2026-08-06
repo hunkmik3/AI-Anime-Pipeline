@@ -148,6 +148,27 @@ def _role_for(session: Session, user: Optional[User], series_id: Optional[int]) 
     return ARTIST if assigned is not None else VIEWER
 
 
+#: Roles that see the whole slate. An artist is scoped to their own share —
+#: focus, not secrecy: 320 panels of which 45 are yours is a worse view of your
+#: own work than 45 panels is. A viewer is a spectator on the project as a whole,
+#: so they see everything read-only.
+FULL_VIEW: frozenset = frozenset({ADMIN, PRODUCER, LEAD, VIEWER})
+
+
+def sees_everything(role: Optional[str]) -> bool:
+    return normalize_role(role) in FULL_VIEW
+
+
+def assigned_batch_ids(session: Session, user: Optional[User]) -> set[int]:
+    """Batches handed to this account. The unit an artist's world is scoped to."""
+    if user is None:
+        return set()
+    rows = session.exec(
+        select(FlowBatch.id).where(FlowBatch.assignee_user_id == user.id)
+    ).all()
+    return {r for r in rows}
+
+
 def allows(role: Optional[str], capability: str) -> bool:
     if capability not in CAPABILITIES:
         # Unknown capability is a programming error; refusing is the safe read.
