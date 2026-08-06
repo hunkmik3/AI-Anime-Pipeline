@@ -8,6 +8,7 @@ import {
   type PanelEvent,
   type QueuePanel,
 } from "../api/client";
+import { relativeTime } from "../components/activity/activity-meta";
 import { PageHeader } from "../components/shell/PageHeader";
 import { useFlowStudioStore } from "../store/flowStudio";
 import { FlowViewer } from "./FlowViewer";
@@ -145,6 +146,28 @@ function Section({
               <div className="pn__mycard-sub">
                 {p.series_name} · {p.batch_name}
               </div>
+              {/* The last thing that happened, and when — an artist opening this
+                  page is asking "what changed and how long ago". */}
+              {(() => {
+                const last = [...(p.history ?? [])]
+                  .reverse()
+                  .find((e) =>
+                    ["approved", "changes_requested", "submitted", "reopened"].includes(e.kind),
+                  );
+                if (!last) return null;
+                return (
+                  <div className="pn__mycard-when">
+                    {VERB[last.kind] ?? last.kind}
+                    {last.actor_name ? <> by <b>{last.actor_name}</b></> : null}
+                    {last.created_at ? (
+                      <time dateTime={last.created_at}
+                            title={new Date(last.created_at).toLocaleString()}>
+                        {" · "}{relativeTime(last.created_at)}
+                      </time>
+                    ) : null}
+                  </div>
+                );
+              })()}
               {/* The whole reason this page exists. Ticking one off is the other
                   half: `unresolved_notes` drives the red badge on the batch card
                   and the project header, and with no way to clear a remark that
@@ -177,6 +200,13 @@ function Section({
     </section>
   );
 }
+
+const VERB: Record<string, string> = {
+  submitted: "Submitted",
+  approved: "Approved",
+  changes_requested: "Sent back",
+  reopened: "Reopened",
+};
 
 const EVENT_TEXT: Record<string, string> = {
   submitted: "submitted",

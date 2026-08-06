@@ -10,6 +10,7 @@ import {
   type PanelEvent,
   type QueuePanel,
 } from "../api/client";
+import { relativeTime } from "../components/activity/activity-meta";
 import { PageHeader } from "../components/shell/PageHeader";
 import { useFlowStudioStore } from "../store/flowStudio";
 import { useGiantflowRole } from "../store/giantflowRole";
@@ -155,6 +156,9 @@ function ReviewRow({ panel, onDone }: { panel: QueuePanel; onDone: () => Promise
 
   const open = panel.notes ?? [];
   const history = panel.history ?? [];
+  // Who actually handed it over and when. `assignee_name` is whose BATCH it is,
+  // which is usually but not always the same person, and never a time.
+  const handover = [...history].reverse().find((e) => e.kind === "submitted");
 
   return (
     <li className="pn__qrow">
@@ -177,7 +181,21 @@ function ReviewRow({ panel, onDone }: { panel: QueuePanel; onDone: () => Promise
         <div className="pn__qsub">
           {panel.series_name} · {panel.batch_name}
         </div>
-        <div className="pn__qwho">{panel.assignee_name ?? "Unassigned"}</div>
+        <div className="pn__qwho">
+          {handover ? (
+            <>
+              Submitted by <b>{handover.actor_name ?? "someone"}</b>
+              {handover.created_at ? (
+                <time dateTime={handover.created_at}
+                      title={new Date(handover.created_at).toLocaleString()}>
+                  {" · "}{relativeTime(handover.created_at)}
+                </time>
+              ) : null}
+            </>
+          ) : (
+            <>Assigned to {panel.assignee_name ?? "nobody"}</>
+          )}
+        </div>
 
         {open.length > 0 ? (
           <ul className="pn__qnotes">

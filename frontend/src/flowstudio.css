@@ -2557,3 +2557,10 @@
 .pn__mycard-img:hover { border-color: var(--accent, #00a76f); }
 .pn__mycard-body .pn__qhist-toggle { margin-top: 6px; }
 .pn__mycard-body .pn__qhist { padding-left: 12px; }
+
+/* Who handed it over and when. `assignee_name` alone answers neither — it is
+   whose batch it is, and carries no time. */
+.pn__qwho time, .pn__mycard-when time { opacity: .75; font-style: normal; }
+.pn__mycard-when { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
+.pn__mycard-when b { color: #cbd5e1; font-weight: 600; }
+.pn__qwho b { color: var(--text); }
