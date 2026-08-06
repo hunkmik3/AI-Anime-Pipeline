@@ -63,7 +63,7 @@ export function PanelMyWorkPage() {
   const total = back.length + waiting.length + done.length;
 
   return (
-    <div className="shellpage pn__wide">
+    <div className="shellpage pn__full">
       <GiantflowNav />
       <PageHeader
         title="My work"

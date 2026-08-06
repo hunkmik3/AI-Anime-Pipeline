@@ -2224,13 +2224,19 @@
 .pn__mysec-h.is-wait { color: #f59e0b; }
 .pn__mysec-h.is-done { color: var(--accent, #00a76f); }
 .pn__mysec-hint { margin: 0 0 10px; font-size: 12.5px; color: var(--muted); }
+/* Cards big enough to read the picture and the remark without leaning in. At
+   280px the thumbnail was a stamp and the batch name — which is long now, by
+   design — wrapped to three lines under it. */
 .pn__mygrid {
   list-style: none; margin: 0; padding: 0;
-  display: grid; gap: 14px;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  display: grid; gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(440px, 1fr));
+}
+@media (max-width: 1000px) {
+  .pn__mygrid { grid-template-columns: minmax(0, 1fr); }
 }
 .pn__mycard {
-  display: flex; gap: 12px; padding: 10px;
+  display: flex; gap: 14px; padding: 13px;
   background: var(--panel-high, #1d2129);
   border: 1px solid var(--border, #2a2e38);
   border-left-width: 3px; border-radius: 11px;
@@ -2240,7 +2246,7 @@
 .pn__mycard.is-done { border-left-color: var(--accent, #00a76f); }
 .pn__mycard-img {
   position: relative; flex: 0 0 auto;
-  width: 76px; aspect-ratio: 3 / 4;
+  width: 132px; aspect-ratio: 3 / 4;
   background: #11151b; border: 1px solid var(--border);
   border-radius: 7px; overflow: hidden;
 }
@@ -2253,16 +2259,16 @@
 }
 .pn__mycard-body { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .pn__mycard-code {
-  font-size: 13px; font-weight: 600; color: var(--text); text-decoration: none;
+  font-size: 14.5px; font-weight: 600; color: var(--text); text-decoration: none;
   overflow-wrap: anywhere;
 }
 .pn__mycard-code:hover { color: var(--accent, #00a76f); }
-.pn__mycard-sub { font-size: 11.5px; color: var(--muted); }
+.pn__mycard-sub { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .pn__mycard-note {
-  margin: 4px 0 0; padding: 6px 8px;
-  font-size: 12px; line-height: 1.45; color: #fca5a5;
+  margin: 6px 0 0; padding: 8px 10px;
+  font-size: 12.5px; line-height: 1.5; color: #fca5a5;
   background: rgba(239, 68, 68, .1);
-  border-radius: 6px;
+  border-radius: 7px;
 }
 .pn__mycard-note em { font-style: normal; color: var(--muted); }
 
@@ -2564,3 +2570,11 @@
 .pn__mycard-when { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
 .pn__mycard-when b { color: #cbd5e1; font-weight: 600; }
 .pn__qwho b { color: var(--text); }
+
+/* The queue pages read across the full window. They are lists of work to get
+   through, not documents — a 1480px column in the middle of a 2000px screen
+   just makes each row narrower for no reason. */
+.shellpage.pn__full { max-width: none; padding-left: 32px; padding-right: 32px; }
+.shellpage.pn__full .pn__qrow {
+  grid-template-columns: minmax(0, 520px) minmax(0, 1fr) minmax(260px, 320px);
+}

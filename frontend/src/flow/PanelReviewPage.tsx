@@ -66,7 +66,7 @@ export function PanelReviewPage() {
   // should be told where their own work is, not shown a pile they cannot act on.
   if (!can("panel.review")) {
     return (
-      <div className="shellpage pn__wide">
+      <div className="shellpage pn__full">
         <GiantflowNav />
         <div className="inbox__empty">
           <b>Reviewing is the PM's job.</b>
@@ -77,7 +77,7 @@ export function PanelReviewPage() {
   }
 
   return (
-    <div className="shellpage pn__wide">
+    <div className="shellpage pn__full">
       <GiantflowNav />
       <PageHeader
         title="Review"
