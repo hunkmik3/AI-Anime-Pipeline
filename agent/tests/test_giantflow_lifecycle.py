@@ -376,3 +376,41 @@ def test_deleting_a_comic_leaves_nothing_behind(client, studio):
 
         assert s.exec(select(FlowBatch).where(FlowBatch.id == batch_id)).all() == []
         assert s.exec(select(FlowPanel).where(FlowPanel.batch_id == batch_id)).all() == []
+
+
+def test_every_tier_is_reachable_over_http(client, studio):
+    """Walk the whole tree through the API.
+
+    Every id in this hierarchy is a plain int, so handing a chapter id to a
+    series lookup type-checks, runs, and 404s on something that exists — which is
+    exactly what shipped on the batches endpoint. Walking each tier is the cheap
+    way to catch that class of mistake.
+    """
+    h, series_id = studio["h"], studio["series_id"]
+    ch = client.post(
+        f"/api/flowstudio/series/{series_id}/chapters",
+        json={"name": "Chapter 1"},
+        headers=h["pm"],
+    )
+    assert ch.status_code in (200, 201), ch.text
+    chapter_id = ch.json()["id"]
+
+    assert client.get("/api/flowstudio/projects", headers=h["pm"]).status_code == 200
+    assert client.get("/api/flowstudio/series", headers=h["pm"]).status_code == 200
+    assert client.get(f"/api/flowstudio/series/{series_id}/chapters", headers=h["pm"]).status_code == 200
+    assert client.get(f"/api/flowstudio/chapters/{chapter_id}", headers=h["pm"]).status_code == 200
+    # The one that was broken: a chapter id validated against the series table.
+    r = client.get(f"/api/flowstudio/chapters/{chapter_id}/batches", headers=h["pm"])
+    assert r.status_code == 200, r.text
+
+    made = client.post(
+        f"/api/flowstudio/chapters/{chapter_id}/batches",
+        json={"name": "B"},
+        headers=h["pm"],
+    )
+    assert made.status_code in (200, 201), made.text
+    batch_id = made.json()["id"]
+    assert made.json()["chapter_id"] == chapter_id
+    assert client.get(f"/api/flowstudio/batches/{batch_id}", headers=h["pm"]).status_code == 200
+    assert client.get(f"/api/flowstudio/batches/{batch_id}/panels", headers=h["pm"]).status_code == 200
+

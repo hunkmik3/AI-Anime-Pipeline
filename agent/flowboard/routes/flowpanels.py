@@ -484,7 +484,10 @@ def list_batches(chapter_id: int, user=Depends(get_optional_user)):
         resource_guard.require_signed_in(s, user)
         _guard(s, user, _series_of_chapter(s, chapter_id), "panel.read")
         try:
-            ps.get_series(s, chapter_id)
+            # The CHAPTER, not the series. Both are plain ints, so passing one
+            # where the other belongs type-checks and runs — it just 404s on an
+            # id that is perfectly valid for the other table.
+            ps.get_chapter(s, chapter_id)
         except ps.PanelError as exc:
             raise _fail(exc)
         return [_batch_dict(s, b) for b in ps.list_batches(s, chapter_id)]
