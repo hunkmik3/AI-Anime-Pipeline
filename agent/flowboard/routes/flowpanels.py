@@ -516,6 +516,7 @@ def _panel_dict(session, panel, *, with_images: bool = False) -> dict:
         "updated_at": panel.updated_at.isoformat() if panel.updated_at else None,
     }
     if with_images:
+        d["history"] = _history(session, panel.id)
         d["raw"] = [
             {"media_id": i.media_id, "version": i.version} for i in raws
         ]
@@ -920,6 +921,22 @@ def delete_member(series_id: int, user_id: uuid.UUID, user=Depends(get_optional_
 # project tree. The tree is for organising work; these are for doing it.
 
 
+def _history(session, panel_id: int) -> list[dict]:
+    """What happened, oldest first. Versions and remarks each carry a timestamp,
+    but only this says which remark answered which version."""
+    return [
+        {
+            "id": e.id,
+            "kind": e.kind,
+            "actor_name": _user_name(e.actor_user_id),
+            "media_id": e.media_id,
+            "body": e.body,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+        }
+        for e in ps.list_events(session, panel_id)
+    ]
+
+
 def _queue_dict(session, panel) -> dict:
     """A panel as it appears in a queue: the pairing, who, and the verdict."""
     d = _panel_dict(session, panel)
@@ -936,6 +953,7 @@ def _queue_dict(session, panel) -> dict:
         if not n.resolved
     ]
     d["series_name"] = ps.series_of_batch(session, panel.batch_id).name
+    d["history"] = _history(session, panel.id)
     return d
 
 
@@ -1434,7 +1452,11 @@ def submit(panel_id: int, body: SubmitBody | None = None, user=Depends(get_optio
         resource_guard.require_signed_in(s, user)
         _guard(s, user, _series_of_panel(s, panel_id), "panel.submit")
         try:
-            panel = ps.submit_panel(s, panel_id, media_id=(body.media_id if body else None))
+            panel = ps.submit_panel(
+                s, panel_id,
+                media_id=(body.media_id if body else None),
+                actor_user_id=(user.id if user else None),
+            )
             return _panel_dict(s, panel, with_images=True)
         except ps.PanelError as exc:
             raise _fail(exc)
@@ -1461,7 +1483,8 @@ def reopen(panel_id: int, user=Depends(get_optional_user)):
         resource_guard.require_signed_in(s, user)
         _guard(s, user, _series_of_panel(s, panel_id), "panel.review")
         try:
-            return _panel_dict(s, ps.reopen_panel(s, panel_id), with_images=True)
+            panel = ps.reopen_panel(s, panel_id, actor_user_id=(user.id if user else None))
+            return _panel_dict(s, panel, with_images=True)
         except ps.PanelError as exc:
             raise _fail(exc)
 

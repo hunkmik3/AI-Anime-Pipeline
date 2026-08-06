@@ -29,6 +29,7 @@ from flowboard.db.models import (
     FlowChapter,
     FlowPanel,
     FlowPanelImage,
+    FlowPanelEvent,
     FlowPanelNote,
     FlowProject,
     FlowSeries,
@@ -836,14 +837,58 @@ def add_generated(
     session.commit()
     for row in out:
         session.refresh(row)
+    for row in out:
+        record_event(
+            session, panel_id, "version_added",
+            actor_user_id=created_by, media_id=row.media_id,
+            body=(model_used or "uploaded file"),
+        )
+
     return out
 
 
 # ── Review ──────────────────────────────────────────────────────────────────
 
 
+# ── History ─────────────────────────────────────────────────────────────────
+
+
+def record_event(
+    session: Session,
+    panel_id: int,
+    kind: str,
+    *,
+    actor_user_id: Optional[uuid.UUID] = None,
+    media_id: Optional[str] = None,
+    body: Optional[str] = None,
+) -> FlowPanelEvent:
+    row = FlowPanelEvent(
+        panel_id=panel_id, kind=kind, actor_user_id=actor_user_id,
+        media_id=media_id, body=body,
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def list_events(session: Session, panel_id: int) -> list[FlowPanelEvent]:
+    """Oldest first — a history reads forwards."""
+    return list(
+        session.exec(
+            select(FlowPanelEvent)
+            .where(FlowPanelEvent.panel_id == panel_id)
+            .order_by(FlowPanelEvent.created_at, FlowPanelEvent.id)
+        ).all()
+    )
+
+
 def submit_panel(
-    session: Session, panel_id: int, *, media_id: Optional[str] = None
+    session: Session,
+    panel_id: int,
+    *,
+    media_id: Optional[str] = None,
+    actor_user_id: Optional[uuid.UUID] = None,
 ) -> FlowPanel:
     """Hand a panel to the PM, naming the version being handed over.
 
@@ -874,6 +919,10 @@ def submit_panel(
     session.add(panel)
     session.commit()
     session.refresh(panel)
+    record_event(
+        session, panel_id, "submitted",
+        actor_user_id=actor_user_id, media_id=panel.final_media_id,
+    )
     return panel
 
 
@@ -918,10 +967,19 @@ def review_panel(
     session.add(panel)
     session.commit()
     session.refresh(panel)
+    record_event(
+        session, panel_id,
+        "approved" if approve else "changes_requested",
+        actor_user_id=author_user_id,
+        media_id=panel.final_media_id,
+        body=" · ".join(clean) or None,
+    )
     return panel
 
 
-def reopen_panel(session: Session, panel_id: int) -> FlowPanel:
+def reopen_panel(
+    session: Session, panel_id: int, *, actor_user_id: Optional[uuid.UUID] = None
+) -> FlowPanel:
     """Un-approve, so an approved panel can be worked on again.
 
     Exists because approval would otherwise be irreversible and one mis-click
@@ -935,6 +993,7 @@ def reopen_panel(session: Session, panel_id: int) -> FlowPanel:
     session.add(panel)
     session.commit()
     session.refresh(panel)
+    record_event(session, panel_id, "reopened", actor_user_id=actor_user_id)
     return panel
 
 

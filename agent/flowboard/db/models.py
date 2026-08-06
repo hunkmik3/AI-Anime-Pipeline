@@ -502,6 +502,29 @@ class FlowPanelImage(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow, index=True)
 
 
+class FlowPanelEvent(SQLModel, table=True):
+    """One thing that happened to a panel, append-only.
+
+    Versions carry timestamps and notes carry authors, but neither records the
+    handover: who submitted which version, who ruled on it, when it came back.
+    Deriving that afterwards is guesswork — "there are three versions and the
+    panel is approved" does not say which version was approved.
+    """
+
+    __tablename__ = "flow_panel_event"  # type: ignore[assignment]
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    panel_id: int = Field(foreign_key="flow_panel.id", index=True)
+    #: submitted | approved | changes_requested | reopened | version_added
+    kind: str
+    actor_user_id: Optional[uuid.UUID] = Field(default=None, foreign_key="app_user.id")
+    #: The version this is about, when it is about one.
+    media_id: Optional[str] = None
+    #: The reason, for a send-back.
+    body: Optional[str] = None
+    created_at: datetime = Field(default_factory=_utcnow, index=True)
+
+
 class FlowPanelNote(SQLModel, table=True):
     """One PM remark on a panel, and whether it has been dealt with.
 

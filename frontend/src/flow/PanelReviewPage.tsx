@@ -7,10 +7,13 @@ import {
   reviewPanel,
   reviewQueue,
   thumbUrl,
+  type PanelEvent,
   type QueuePanel,
 } from "../api/client";
 import { PageHeader } from "../components/shell/PageHeader";
+import { useFlowStudioStore } from "../store/flowStudio";
 import { useGiantflowRole } from "../store/giantflowRole";
+import { FlowViewer } from "./FlowViewer";
 import { GiantflowNav } from "./GiantflowNav";
 import { toast } from "../store/toast";
 
@@ -123,23 +126,26 @@ export function PanelReviewPage() {
           <ReviewRow key={p.id} panel={p} onDone={load} />
         ))}
       </ul>
+
+      {/* Look only: this page is for ruling on work, not making it. */}
+      <FlowViewer viewOnly />
     </div>
   );
 }
 
 function ReviewRow({ panel, onDone }: { panel: QueuePanel; onDone: () => Promise<void> }) {
   const [note, setNote] = useState("");
-  const [asking, setAsking] = useState(false);
-  const [noting, setNoting] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [busy, setBusy] = useState(false);
+  const select = useFlowStudioStore((s) => s.select);
 
-  async function addNote() {
+  async function run(fn: () => Promise<unknown>, ok: string) {
     setBusy(true);
     try {
-      await addPanelNote(panel.id, note.trim());
+      await fn();
       setNote("");
-      setNoting(false);
       await onDone();
+      toast(ok);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Failed");
     } finally {
@@ -147,35 +153,21 @@ function ReviewRow({ panel, onDone }: { panel: QueuePanel; onDone: () => Promise
     }
   }
 
-  async function verdict(approve: boolean, notes: string[] = []) {
-    setBusy(true);
-    try {
-      await reviewPanel(panel.id, approve, notes);
-      await onDone();
-      toast(approve ? `${panel.code} approved.` : `${panel.code} sent back.`);
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Failed");
-      setBusy(false);
-    }
-  }
+  const open = panel.notes ?? [];
+  const history = panel.history ?? [];
 
   return (
     <li className="pn__qrow">
       {/* Original beside the submitted version — a verdict is a comparison, and
-          it cannot be made from the result alone. */}
+          it cannot be made from the result alone. Both open full size: a border
+          that is "slightly off" is not judgeable at 200px. */}
       <div className="pn__qshots">
-        <span className="pn__qshot">
-          {panel.raw_media_id ? (
-            <img src={thumbUrl(panel.raw_media_id, 400)} alt="" loading="lazy" />
-          ) : null}
-          <em>original</em>
-        </span>
-        <span className="pn__qshot">
-          {panel.delivered_media_id ? (
-            <img src={thumbUrl(panel.delivered_media_id, 400)} alt="" loading="lazy" />
-          ) : null}
-          <em>v{panel.delivered_version}</em>
-        </span>
+        <Shot mediaId={panel.raw_media_id} label="original" onOpen={select} />
+        <Shot
+          mediaId={panel.delivered_media_id}
+          label={`v${panel.delivered_version}`}
+          onOpen={select}
+        />
       </div>
 
       <div className="pn__qmeta">
@@ -186,25 +178,17 @@ function ReviewRow({ panel, onDone }: { panel: QueuePanel; onDone: () => Promise
           {panel.series_name} · {panel.batch_name}
         </div>
         <div className="pn__qwho">{panel.assignee_name ?? "Unassigned"}</div>
-        {(panel.notes ?? []).length > 0 ? (
+
+        {open.length > 0 ? (
           <ul className="pn__qnotes">
-            {(panel.notes ?? []).map((n) => (
+            {open.map((n) => (
               <li key={n.id}>
-                {n.body}
-                {/* A PM can retract their own remark; the artist ticks theirs off
-                    from My work. Either way the open count has to be able to go
-                    down, or the red badge it feeds is a ratchet. */}
+                <span>{n.body}</span>
                 <button
                   type="button"
                   title="Mark as dealt with"
-                  onClick={async () => {
-                    try {
-                      await resolvePanelNote(n.id, true);
-                      await onDone();
-                    } catch (e) {
-                      toast(e instanceof Error ? e.message : "Failed");
-                    }
-                  }}
+                  disabled={busy}
+                  onClick={() => void run(() => resolvePanelNote(n.id, true), "Note cleared.")}
                 >
                   ✓
                 </button>
@@ -213,79 +197,119 @@ function ReviewRow({ panel, onDone }: { panel: QueuePanel; onDone: () => Promise
           </ul>
         ) : null}
 
-        {/* Not every remark is a rejection. "Watch the colour on the next one"
-            belongs on the panel without sending it back. */}
-        {noting ? (
-          <div className="pn__qnoteadd">
-            <input
-              className="inbox__input"
-              autoFocus
-              placeholder="Add a note (does not send it back)…"
-              value={note}
-              disabled={busy}
-              onChange={(e) => setNote(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") setNoting(false);
-                if (e.key === "Enter" && note.trim()) void addNote();
-              }}
-            />
-            <button className="btn2" disabled={busy || !note.trim()} onClick={() => void addNote()}>
-              Add
+        {history.length > 0 ? (
+          <>
+            <button
+              type="button"
+              className="pn__qhist-toggle"
+              onClick={() => setShowHistory((v) => !v)}
+            >
+              {showHistory ? "▾" : "▸"} History ({history.length})
             </button>
-            <button className="btn2" disabled={busy} onClick={() => setNoting(false)}>
-              Cancel
-            </button>
-          </div>
-        ) : (
-          <button type="button" className="pn__qnotebtn" onClick={() => setNoting(true)}>
-            ＋ Note
-          </button>
-        )}
+            {showHistory ? <History events={history} /> : null}
+          </>
+        ) : null}
       </div>
 
+      {/* ONE box. It used to be two — a standalone "+ Note" beside a separate
+          send-back field — and which one you were typing in decided whether the
+          panel came back, which is not something a text box should hide. Now the
+          remark is written once and the button says what to do with it. */}
       <div className="pn__qacts">
-        {asking ? (
-          <>
-            <textarea
-              className="inbox__input"
-              rows={2}
-              autoFocus
-              placeholder="What needs changing?"
-              value={note}
-              disabled={busy}
-              onChange={(e) => setNote(e.target.value)}
-            />
-            <div className="pn__qbtns">
-              <button
-                className="btn2 btn2--danger"
-                disabled={busy || !note.trim()}
-                onClick={() => void verdict(false, [note.trim()])}
-              >
-                Send back
-              </button>
-              <button className="btn2" disabled={busy} onClick={() => setAsking(false)}>
-                Cancel
-              </button>
-            </div>
-          </>
-        ) : (
-          <div className="pn__qbtns">
-            <button
-              className="btn2 btn2--primary"
-              disabled={busy}
-              onClick={() => void verdict(true)}
-            >
-              ✓ Approve
-            </button>
-            {/* Sending back opens a box rather than doing it: the reason is
-                required, and a button that fails after the click would be
-                teaching the rule the hard way. */}
-            <button className="btn2" disabled={busy} onClick={() => setAsking(true)}>
-              Send back
-            </button>
-          </div>
-        )}
+        <textarea
+          className="inbox__input pn__qnote-input"
+          rows={3}
+          placeholder="Add a note…"
+          value={note}
+          disabled={busy}
+          onChange={(e) => setNote(e.target.value)}
+        />
+        <div className="pn__qbtns">
+          <button
+            className="btn2 btn2--primary"
+            disabled={busy}
+            onClick={() => void run(() => reviewPanel(panel.id, true), `${panel.code} approved.`)}
+          >
+            ✓ Approve
+          </button>
+          <button
+            className="btn2 btn2--danger"
+            disabled={busy || !note.trim()}
+            title={note.trim() ? "Send it back with this note" : "A send-back needs a reason"}
+            onClick={() =>
+              void run(
+                () => reviewPanel(panel.id, false, [note.trim()]),
+                `${panel.code} sent back.`,
+              )
+            }
+          >
+            ↩ Send back
+          </button>
+          <button
+            className="btn2"
+            disabled={busy || !note.trim()}
+            title="Leave the remark without sending it back"
+            onClick={() =>
+              void run(() => addPanelNote(panel.id, note.trim()), "Note added.")
+            }
+          >
+            Note only
+          </button>
+        </div>
       </div>
     </li>
+  );
+}
+
+/** One picture, click to open full size in the studio viewer. */
+function Shot({
+  mediaId,
+  label,
+  onOpen,
+}: {
+  mediaId: string | null;
+  label: string;
+  onOpen: (id: string) => void;
+}) {
+  if (!mediaId) return <span className="pn__qshot" />;
+  return (
+    <button
+      type="button"
+      className="pn__qshot"
+      title="Open full size — scroll to zoom, drag to pan"
+      onClick={() => onOpen(mediaId)}
+    >
+      <img src={thumbUrl(mediaId, 520)} alt="" loading="lazy" />
+      <em>{label}</em>
+    </button>
+  );
+}
+
+const EVENT_TEXT: Record<string, string> = {
+  submitted: "submitted",
+  approved: "approved",
+  changes_requested: "sent back",
+  reopened: "reopened",
+  version_added: "new version",
+};
+
+/** The handovers, oldest first. Which remark answered which version is the one
+ *  thing versions and notes cannot say between them. */
+function History({ events }: { events: PanelEvent[] }) {
+  return (
+    <ol className="pn__qhist">
+      {events.map((e) => (
+        <li key={e.id} className={`is-${e.kind}`}>
+          <b>{EVENT_TEXT[e.kind] ?? e.kind}</b>
+          {e.actor_name ? <span> · {e.actor_name}</span> : null}
+          {e.created_at ? (
+            <time dateTime={e.created_at}>
+              {new Date(e.created_at).toLocaleString()}
+            </time>
+          ) : null}
+          {e.body ? <p>{e.body}</p> : null}
+        </li>
+      ))}
+    </ol>
   );
 }

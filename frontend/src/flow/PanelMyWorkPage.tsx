@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { myWork, resolvePanelNote, thumbUrl, type QueuePanel } from "../api/client";
+import {
+  myWork,
+  resolvePanelNote,
+  thumbUrl,
+  type PanelEvent,
+  type QueuePanel,
+} from "../api/client";
 import { PageHeader } from "../components/shell/PageHeader";
+import { useFlowStudioStore } from "../store/flowStudio";
+import { FlowViewer } from "./FlowViewer";
 import { GiantflowNav } from "./GiantflowNav";
 import { toast } from "../store/toast";
 
@@ -86,6 +94,9 @@ export function PanelMyWorkPage() {
       />
       <Section title="Waiting on the PM" tone="wait" panels={waiting} onChanged={load} />
       <Section title="Approved" tone="done" panels={done} onChanged={load} />
+
+      {/* Look only: this page is for reacting to a verdict, not making work. */}
+      <FlowViewer viewOnly />
     </div>
   );
 }
@@ -103,6 +114,7 @@ function Section({
   panels: QueuePanel[];
   onChanged: () => Promise<void>;
 }) {
+  const select = useFlowStudioStore((s) => s.select);
   if (panels.length === 0) return null;
   return (
     <section className="pn__mysec">
@@ -113,12 +125,19 @@ function Section({
       <ul className="pn__mygrid">
         {panels.map((p) => (
           <li key={p.id} className={`pn__mycard is-${tone}`}>
-            <Link to={`/giantflow/panel/${p.id}`} className="pn__mycard-img">
+            {/* Click opens it full size. Reading "the border is off" and then
+                having to leave the page to see the border is the whole problem. */}
+            <button
+              type="button"
+              className="pn__mycard-img"
+              title="Open full size — scroll to zoom, drag to pan"
+              onClick={() => p.delivered_media_id && select(p.delivered_media_id)}
+            >
               {p.delivered_media_id ? (
                 <img src={thumbUrl(p.delivered_media_id, 400)} alt="" loading="lazy" />
               ) : null}
               <em>v{p.delivered_version}</em>
-            </Link>
+            </button>
             <div className="pn__mycard-body">
               <Link to={`/giantflow/panel/${p.id}`} className="pn__mycard-code">
                 {p.code}
@@ -150,6 +169,7 @@ function Section({
                   </span>
                 </label>
               ))}
+              {(p.history ?? []).length > 0 ? <MyHistory events={p.history ?? []} /> : null}
             </div>
           </li>
         ))}
@@ -157,3 +177,43 @@ function Section({
     </section>
   );
 }
+
+const EVENT_TEXT: Record<string, string> = {
+  submitted: "submitted",
+  approved: "approved",
+  changes_requested: "sent back",
+  reopened: "reopened",
+  version_added: "new version",
+};
+
+/** The rounds this panel has been through, oldest first. */
+function MyHistory({ events }: { events: PanelEvent[] }) {
+  const [open, setOpen] = useState(false);
+  if (!open) {
+    return (
+      <button type="button" className="pn__qhist-toggle" onClick={() => setOpen(true)}>
+        ▸ History ({events.length})
+      </button>
+    );
+  }
+  return (
+    <>
+      <button type="button" className="pn__qhist-toggle" onClick={() => setOpen(false)}>
+        ▾ History ({events.length})
+      </button>
+      <ol className="pn__qhist">
+        {events.map((e) => (
+          <li key={e.id} className={`is-${e.kind}`}>
+            <b>{EVENT_TEXT[e.kind] ?? e.kind}</b>
+            {e.actor_name ? <span> · {e.actor_name}</span> : null}
+            {e.created_at ? (
+              <time dateTime={e.created_at}>{new Date(e.created_at).toLocaleString()}</time>
+            ) : null}
+            {e.body ? <p>{e.body}</p> : null}
+          </li>
+        ))}
+      </ol>
+    </>
+  );
+}
+

@@ -2206,52 +2206,6 @@
 .pn__top { flex-wrap: wrap; }
 .pn__top .fc-count { margin-left: auto; }
 
-/* ── PM review queue ───────────────────────────────────────────────────────
-   A row is the comparison a verdict is made on, so the two images are the row's
-   main content and sit side by side at a size you can actually judge. */
-.pn__queue { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
-.pn__qrow {
-  display: grid;
-  grid-template-columns: minmax(0, 420px) minmax(0, 1fr) 200px;
-  gap: 16px;
-  padding: 14px;
-  background: var(--panel-high, #1d2129);
-  border: 1px solid var(--border, #2a2e38);
-  border-left: 3px solid #f59e0b;
-  border-radius: 12px;
-}
-.pn__qshots { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.pn__qshot {
-  position: relative; display: block; aspect-ratio: 1 / 1;
-  background: #11151b; border: 1px solid var(--border); border-radius: 8px;
-  overflow: hidden;
-}
-.pn__qshot img { width: 100%; height: 100%; object-fit: contain; display: block; }
-.pn__qshot em {
-  position: absolute; left: 6px; bottom: 6px;
-  font-style: normal; font-size: 10.5px;
-  padding: 1px 6px; border-radius: 5px;
-  background: rgba(10, 13, 18, .8); color: #9aa7b4;
-}
-.pn__qmeta { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.pn__qcode { font-size: 15px; font-weight: 600; color: var(--text); text-decoration: none; }
-.pn__qcode:hover { color: var(--accent, #00a76f); }
-.pn__qsub, .pn__qwho { font-size: 12px; color: var(--muted); }
-.pn__qwho { font-weight: 600; }
-.pn__qnotes {
-  list-style: none; margin: 6px 0 0; padding: 8px 10px;
-  font-size: 12.5px; line-height: 1.5; color: #fca5a5;
-  background: rgba(239, 68, 68, .1);
-  border-left: 2px solid rgba(239, 68, 68, .6);
-  border-radius: 0 6px 6px 0;
-}
-.pn__qacts { display: flex; flex-direction: column; gap: 8px; }
-.pn__qbtns { display: flex; flex-direction: column; gap: 6px; }
-@media (max-width: 980px) {
-  .pn__qrow { grid-template-columns: minmax(0, 1fr); }
-  .pn__qbtns { flex-direction: row; }
-}
-
 /* ── The artist's results ──────────────────────────────────────────────────
    The PM's remark is the reason this page exists, so it is on the card rather
    than behind a click. */
@@ -2490,3 +2444,116 @@
 .pn__top .pn__viewas .seg__btn { padding: 2px 7px; font-size: 11px; }
 .pn__top .pn__viewas-note { display: none; }
 .pn__top .pn__viewas.is-on .pn__viewas-note { display: inline; font-size: 10.5px; }
+
+/* ── PM review queue ───────────────────────────────────────────────────────
+   A row is one verdict. Left: the comparison it is made on, big enough to
+   judge. Middle: what it is and what has already been said. Right: one note box
+   and the three things you can do with it. */
+.pn__queue { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; }
+.pn__qrow {
+  display: grid;
+  grid-template-columns: minmax(0, 460px) minmax(0, 1fr) minmax(240px, 300px);
+  gap: 18px;
+  padding: 16px;
+  background: var(--panel-high, #1d2129);
+  border: 1px solid var(--border, #2a2e38);
+  border-left: 3px solid #f59e0b;
+  border-radius: 12px;
+  align-items: start;
+}
+.pn__qshots { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pn__qshot {
+  position: relative; display: block; padding: 0;
+  aspect-ratio: 3 / 4;
+  background: #11151b; border: 1px solid var(--border);
+  border-radius: 9px; overflow: hidden; cursor: zoom-in;
+}
+.pn__qshot:hover { border-color: var(--accent, #00a76f); }
+.pn__qshot img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.pn__qshot em {
+  position: absolute; left: 7px; bottom: 7px;
+  font-style: normal; font-size: 11px; font-weight: 600;
+  padding: 2px 7px; border-radius: 5px;
+  background: rgba(10, 13, 18, .82); color: #cbd5e1;
+}
+
+.pn__qmeta { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.pn__qcode {
+  font-size: 15px; font-weight: 600; color: var(--text); text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.pn__qcode:hover { color: var(--accent, #00a76f); }
+.pn__qsub, .pn__qwho { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.pn__qwho { font-weight: 600; color: #cbd5e1; }
+
+.pn__qnotes {
+  list-style: none; margin: 8px 0 0; padding: 0;
+  display: grid; gap: 6px;
+}
+.pn__qnotes li {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 10px;
+  font-size: 12.5px; line-height: 1.5; color: #fca5a5;
+  background: rgba(239, 68, 68, .1);
+  border-left: 2px solid rgba(239, 68, 68, .55);
+  border-radius: 0 7px 7px 0;
+}
+.pn__qnotes li span { flex: 1; min-width: 0; }
+.pn__qnotes li button {
+  flex: none; width: 20px; height: 20px; padding: 0;
+  font-size: 11px; line-height: 1; cursor: pointer;
+  color: #fca5a5; background: transparent;
+  border: 1px solid rgba(239, 68, 68, .45); border-radius: 5px;
+}
+.pn__qnotes li button:hover { color: var(--accent, #00a76f); border-color: var(--accent, #00a76f); }
+
+/* History: which remark answered which version — the one thing versions and
+   notes cannot say between them. Folded away because most panels went round
+   once and there is nothing to read. */
+.pn__qhist-toggle {
+  align-self: flex-start; margin-top: 8px;
+  padding: 2px 8px; font-size: 11.5px;
+  color: var(--muted); background: transparent;
+  border: 1px solid var(--border, #2a2e38); border-radius: 7px; cursor: pointer;
+}
+.pn__qhist-toggle:hover { color: var(--text); border-color: var(--accent, #00a76f); }
+.pn__qhist {
+  list-style: none; margin: 8px 0 0; padding: 0 0 0 14px;
+  display: grid; gap: 9px;
+  border-left: 1px solid var(--border, #2a2e38);
+}
+.pn__qhist li { position: relative; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.pn__qhist li::before {
+  content: ""; position: absolute; left: -18px; top: 5px;
+  width: 7px; height: 7px; border-radius: 50%; background: #4a5361;
+}
+.pn__qhist li.is-submitted::before { background: #f59e0b; }
+.pn__qhist li.is-approved::before { background: var(--accent, #00a76f); }
+.pn__qhist li.is-changes_requested::before { background: #ef4444; }
+.pn__qhist li.is-version_added::before { background: #3b82f6; }
+.pn__qhist b { color: var(--text); font-weight: 600; }
+.pn__qhist time { display: block; font-size: 11px; opacity: .7; }
+.pn__qhist p {
+  margin: 3px 0 0; padding: 5px 8px;
+  color: #fca5a5; background: rgba(239, 68, 68, .09); border-radius: 6px;
+}
+
+/* One box, three things to do with it. It used to be two boxes — a standalone
+   "+ Note" and a separate send-back field — and which one you typed in decided
+   whether the panel came back. */
+.pn__qacts { display: flex; flex-direction: column; gap: 8px; }
+.pn__qnote-input { resize: vertical; min-height: 62px; }
+.pn__qbtns { display: grid; gap: 6px; }
+.pn__qbtns .btn2 { width: 100%; }
+
+@media (max-width: 1100px) {
+  .pn__qrow { grid-template-columns: minmax(0, 1fr); }
+  .pn__qshots { max-width: 460px; }
+  .pn__qbtns { grid-template-columns: repeat(3, 1fr); }
+}
+
+/* My work: the picture opens too. */
+.pn__mycard-img { padding: 0; border: 1px solid var(--border); cursor: zoom-in; }
+.pn__mycard-img:hover { border-color: var(--accent, #00a76f); }
+.pn__mycard-body .pn__qhist-toggle { margin-top: 6px; }
+.pn__mycard-body .pn__qhist { padding-left: 12px; }

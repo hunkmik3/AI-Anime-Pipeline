@@ -2512,6 +2512,7 @@ export interface Panel {
   raw?: { media_id: string; version: number }[];
   versions?: PanelVersion[];
   notes?: PanelNote[];
+  history?: PanelEvent[];
 }
 
 export function listPanelSeries(projectId?: number): Promise<PanelSeries[]> {
@@ -2858,8 +2859,20 @@ export function removeFlowMember(seriesId: number, userId: string): Promise<{ ok
 
 /** A panel as it appears in a review queue: the pairing, who made it, and any
  *  unresolved remarks. */
+/** One thing that happened to a panel. Versions and remarks each carry a
+ *  timestamp, but only this says which remark answered which version. */
+export interface PanelEvent {
+  id: number;
+  kind: "submitted" | "approved" | "changes_requested" | "reopened" | "version_added";
+  actor_name: string | null;
+  media_id: string | null;
+  body: string | null;
+  created_at: string | null;
+}
+
 export interface QueuePanel extends Panel {
   series_name: string;
+  history?: PanelEvent[];
 }
 
 /** Every panel, with its state — the management view. `status` takes several. */
