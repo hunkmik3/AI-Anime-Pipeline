@@ -208,8 +208,12 @@ def reorder(session: Session, model, ids: list[int], *, scope=None) -> int:
     return len(seen)
 
 
-def reorder_series(session: Session, ids: list[int]) -> int:
-    return reorder(session, FlowSeries, ids)
+def reorder_series(session: Session, project_id: int, ids: list[int]) -> int:
+    """Scoped to the slate, for the same reason chapters are scoped to a comic."""
+    get_project(session, project_id)
+    return reorder(
+        session, FlowSeries, ids, scope=(FlowSeries.project_id == project_id)
+    )
 
 
 def reorder_batches(session: Session, chapter_id: int, ids: list[int]) -> int:
@@ -343,13 +347,14 @@ def delete_chapter(session: Session, chapter_id: int) -> None:
     session.commit()
 
 
-def reorder_chapters(session: Session, ordered_ids: list[int]) -> None:
-    for i, cid in enumerate(ordered_ids):
-        row = session.get(FlowChapter, cid)
-        if row is not None:
-            row.order_index = i
-            session.add(row)
-    session.commit()
+def reorder_chapters(session: Session, series_id: int, ids: list[int]) -> int:
+    """Scoped to the comic. An unscoped version accepted any chapter id, so a
+    drag on one comic renumbered another's — the ids carry no ownership and
+    nothing was checking."""
+    get_series(session, series_id)
+    return reorder(
+        session, FlowChapter, ids, scope=(FlowChapter.series_id == series_id)
+    )
 
 
 def chapter_cover_media_id(session: Session, chapter: FlowChapter) -> Optional[str]:

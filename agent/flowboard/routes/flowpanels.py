@@ -316,13 +316,13 @@ def delete_series(series_id: int, user=Depends(get_optional_user)):
 
 
 
-@router.post("/series/reorder")
-def reorder_series(body: ReorderBody, user=Depends(get_optional_user)):
+@router.post("/projects/{project_id}/series/reorder")
+def reorder_series(project_id: int, body: ReorderBody, user=Depends(get_optional_user)):
     """Persist a hand-arranged project grid."""
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
         _guard(s, user, None, "project.manage")
-        n = ps.reorder_series(s, body.ids)
+        n = ps.reorder_series(s, project_id, body.ids)
         return {"reordered": n}
 
 
@@ -1119,7 +1119,7 @@ def reorder_chapters(series_id: int, body: ReorderBody, user=Depends(get_optiona
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
         _guard(s, user, series_id, "batch.manage")
-        ps.reorder_chapters(s, body.ids)
+        ps.reorder_chapters(s, series_id, body.ids)
         return {"ok": True}
 
 

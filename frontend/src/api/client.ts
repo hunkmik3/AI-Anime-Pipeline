@@ -2540,8 +2540,11 @@ export function renamePanelSeries(id: number, name: string): Promise<PanelSeries
  * list — a filtered view, a stale tab — reorders what it knows without
  * scattering the rest.
  */
-export function reorderPanelSeries(ids: number[]): Promise<{ reordered: number }> {
-  return api<{ reordered: number }>("/api/flowstudio/series/reorder", {
+export function reorderPanelSeries(
+  projectId: number,
+  ids: number[],
+): Promise<{ reordered: number }> {
+  return api<{ reordered: number }>(`/api/flowstudio/projects/${projectId}/series/reorder`, {
     method: "POST",
     body: JSON.stringify({ ids }),
   });

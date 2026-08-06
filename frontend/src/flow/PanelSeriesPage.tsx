@@ -55,7 +55,7 @@ export function PanelSeriesPage() {
   }, [load]);
 
   const { list, dragProps } = useDragOrder(series ?? [], async (ids) => {
-    await reorderPanelSeries(ids);
+    await reorderPanelSeries(pid, ids);
     await load();
   });
 
