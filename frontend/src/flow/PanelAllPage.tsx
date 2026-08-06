@@ -3,9 +3,9 @@ import { Link } from "react-router-dom";
 
 import {
   allPanels,
-  listPanelProjects,
+  listPanelSeries,
   thumbUrl,
-  type PanelProject,
+  type PanelSeries,
   type QueuePanel,
 } from "../api/client";
 import { PageHeader } from "../components/shell/PageHeader";
@@ -30,7 +30,7 @@ import { STAGES } from "./PanelHero";
  */
 export function PanelAllPage() {
   const [rows, setRows] = useState<QueuePanel[] | null>(null);
-  const [projects, setProjects] = useState<PanelProject[]>([]);
+  const [projects, setProjects] = useState<PanelSeries[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const [status, setStatus] = useState<string | "all">("all");
@@ -47,7 +47,7 @@ export function PanelAllPage() {
       // not showing; the status counts below come from an unfiltered pass.
       setRows(
         await allPanels({
-          project_id: project === "all" ? undefined : project,
+          series_id: project === "all" ? undefined : project,
           q,
         }),
       );
@@ -61,7 +61,7 @@ export function PanelAllPage() {
   }, [load]);
 
   useEffect(() => {
-    void listPanelProjects().then(setProjects).catch(() => setProjects([]));
+    void listPanelSeries().then(setProjects).catch(() => setProjects([]));
   }, []);
 
   const all = rows ?? [];
@@ -173,7 +173,7 @@ export function PanelAllPage() {
             {shown.map((p) => (
               <tr key={p.id}>
                 <td className="pn__tmuted pn__tcomic">
-                  <div>{p.project_name}</div>
+                  <div>{p.series_name}</div>
                   <div className="pn__tbatch">{p.batch_name}</div>
                 </td>
                 <td>

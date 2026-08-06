@@ -1400,8 +1400,8 @@ export function createSeries(
 
 /** One series — used by the episode page for its breadcrumb, and by the series
  *  page itself. */
-export function getSeries(seriesId: string): Promise<SeriesDTO> {
-  return api<SeriesDTO>(`/api/series/${seriesId}`);
+export function getSeries(projectId: string): Promise<SeriesDTO> {
+  return api<SeriesDTO>(`/api/series/${projectId}`);
 }
 
 export function patchSeries(
@@ -1425,8 +1425,8 @@ export function deleteSeries(id: string): Promise<{ deleted: string }> {
 }
 
 /** Episodes/Chapters under a series (same shape as listScenes). */
-export function listSeriesEpisodes(seriesId: string): Promise<SceneDTO[]> {
-  return api<SceneDTO[]>(`/api/series/${seriesId}/episodes`);
+export function listSeriesEpisodes(projectId: string): Promise<SceneDTO[]> {
+  return api<SceneDTO[]>(`/api/series/${projectId}/episodes`);
 }
 
 /** Distinct crew names across all episodes — the CRM crew-dropdown pool. */
@@ -1437,7 +1437,7 @@ export function getCrewNames(): Promise<{ names: string[] }> {
 /** Bulk-plan a series: ensure `episodes` Episodes, each with
  *  `sequences_per_episode` Sequences (idempotent; only creates what's missing). */
 export function generateSeriesStructure(
-  seriesId: string,
+  projectId: string,
   input: { episodes: number; sequences_per_episode: number },
 ): Promise<{
   episodes_created: number;
@@ -1445,7 +1445,7 @@ export function generateSeriesStructure(
   total_episodes: number;
   sequences_per_episode: number;
 }> {
-  return api(`/api/series/${seriesId}/generate-structure`, {
+  return api(`/api/series/${projectId}/generate-structure`, {
     method: "POST",
     body: JSON.stringify(input),
   });
@@ -1825,10 +1825,10 @@ export function setEpisodeAssignee(
 
 /** PM sets the Series Producer (first reviewer in the approver chain). */
 export function setSeriesProducer(
-  seriesId: string,
+  projectId: string,
   userId: string | null,
 ): Promise<{ id: string; producer_user_id: string | null; producer_name: string | null }> {
-  return api(`/api/series/${seriesId}/producer`, {
+  return api(`/api/series/${projectId}/producer`, {
     method: "PATCH",
     body: JSON.stringify({ user_id: userId }),
   });
@@ -2039,8 +2039,8 @@ export function getProjectKpi(
   return api(`/api/kpi/projects/${projectId}`);
 }
 
-export function getSeriesKpi(seriesId: string): Promise<SeriesKpiDTO> {
-  return api(`/api/kpi/series/${seriesId}`);
+export function getSeriesKpi(projectId: string): Promise<SeriesKpiDTO> {
+  return api(`/api/kpi/series/${projectId}`);
 }
 
 // ── CSV export ─────────────────────────────────────────────────────────────
@@ -2328,8 +2328,54 @@ export type PanelStatus =
   | "changes_requested"
   | "approved";
 
-export interface PanelProject {
+/** The slate — the container every comic hangs off. */
+export interface FlowProject {
   id: number;
+  name: string;
+  thumb_media_id: string | null;
+  has_cover: boolean;
+  series_count: number;
+  panel_count: number;
+  approved_count: number;
+  created_at: string | null;
+}
+
+export function listFlowProjects(): Promise<FlowProject[]> {
+  return api<FlowProject[]>("/api/flowstudio/projects");
+}
+
+export function createFlowProject(name: string): Promise<FlowProject> {
+  return api<FlowProject>("/api/flowstudio/projects", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function updateFlowProject(
+  id: number,
+  patch: { name?: string; cover_media_id?: string | null; set_cover?: boolean },
+): Promise<FlowProject> {
+  return api<FlowProject>(`/api/flowstudio/projects/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+export function deleteFlowProject(id: number): Promise<{ ok: boolean }> {
+  return api(`/api/flowstudio/projects/${id}`, { method: "DELETE" });
+}
+
+export function reorderFlowProjects(ids: number[]): Promise<{ ok: boolean }> {
+  return api("/api/flowstudio/projects/reorder", {
+    method: "POST",
+    body: JSON.stringify({ ids }),
+  });
+}
+
+export interface PanelSeries {
+  id: number;
+  /** The slate it hangs off. */
+  project_id: number;
   name: string;
   /** Hand-picked cover, else the comic's opening panel; null when neither. */
   thumb_media_id: string | null;
@@ -2408,19 +2454,20 @@ export interface Panel {
   notes?: PanelNote[];
 }
 
-export function listPanelProjects(): Promise<PanelProject[]> {
-  return api<PanelProject[]>("/api/flowstudio/projects");
+export function listPanelSeries(projectId?: number): Promise<PanelSeries[]> {
+  const qs = projectId === undefined ? "" : `?project_id=${projectId}`;
+  return api<PanelSeries[]>(`/api/flowstudio/series${qs}`);
 }
 
-export function createPanelProject(name: string): Promise<PanelProject> {
-  return api<PanelProject>("/api/flowstudio/projects", {
+export function createPanelSeries(projectId: number, name: string): Promise<PanelSeries> {
+  return api<PanelSeries>("/api/flowstudio/series", {
     method: "POST",
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ project_id: projectId, name }),
   });
 }
 
-export function renamePanelProject(id: number, name: string): Promise<PanelProject> {
-  return api<PanelProject>(`/api/flowstudio/projects/${id}`, {
+export function renamePanelSeries(id: number, name: string): Promise<PanelSeries> {
+  return api<PanelSeries>(`/api/flowstudio/series/${id}`, {
     method: "PATCH",
     body: JSON.stringify({ name }),
   });
@@ -2433,36 +2480,36 @@ export function renamePanelProject(id: number, name: string): Promise<PanelProje
  * list — a filtered view, a stale tab — reorders what it knows without
  * scattering the rest.
  */
-export function reorderPanelProjects(ids: number[]): Promise<{ reordered: number }> {
-  return api<{ reordered: number }>("/api/flowstudio/projects/reorder", {
+export function reorderPanelSeries(ids: number[]): Promise<{ reordered: number }> {
+  return api<{ reordered: number }>("/api/flowstudio/series/reorder", {
     method: "POST",
     body: JSON.stringify({ ids }),
   });
 }
 
 export function reorderBatches(
-  projectId: number,
+  seriesId: number,
   ids: number[],
 ): Promise<{ reordered: number }> {
   return api<{ reordered: number }>(
-    `/api/flowstudio/projects/${projectId}/batches/reorder`,
+    `/api/flowstudio/series/${seriesId}/batches/reorder`,
     { method: "POST", body: JSON.stringify({ ids }) },
   );
 }
 
 /** Point the project card at an image; null falls back to the first panel. */
-export function setPanelProjectCover(
+export function setPanelSeriesCover(
   id: number,
   mediaId: string | null,
-): Promise<PanelProject> {
-  return api<PanelProject>(`/api/flowstudio/projects/${id}/cover`, {
+): Promise<PanelSeries> {
+  return api<PanelSeries>(`/api/flowstudio/series/${id}/cover`, {
     method: "POST",
     body: JSON.stringify({ media_id: mediaId }),
   });
 }
 
-export function deletePanelProject(id: number): Promise<{ deleted: number }> {
-  return api<{ deleted: number }>(`/api/flowstudio/projects/${id}`, {
+export function deletePanelSeries(id: number): Promise<{ deleted: number }> {
+  return api<{ deleted: number }>(`/api/flowstudio/series/${id}`, {
     method: "DELETE",
   });
 }
@@ -2520,8 +2567,8 @@ export function listPanels(batchId: number): Promise<Panel[]> {
   return api<Panel[]>(`/api/flowstudio/batches/${batchId}/panels`);
 }
 
-export function listBatches(projectId: number): Promise<PanelBatch[]> {
-  return api<PanelBatch[]>(`/api/flowstudio/projects/${projectId}/batches`);
+export function listBatches(seriesId: number): Promise<PanelBatch[]> {
+  return api<PanelBatch[]>(`/api/flowstudio/series/${seriesId}/batches`);
 }
 
 export function getBatch(batchId: number): Promise<PanelBatch> {
@@ -2529,11 +2576,11 @@ export function getBatch(batchId: number): Promise<PanelBatch> {
 }
 
 export function createBatch(
-  projectId: number,
+  seriesId: number,
   name: string,
   assigneeUserId?: string | null,
 ): Promise<PanelBatch> {
-  return api<PanelBatch>(`/api/flowstudio/projects/${projectId}/batches`, {
+  return api<PanelBatch>(`/api/flowstudio/series/${seriesId}/batches`, {
     method: "POST",
     body: JSON.stringify({ name, assignee_user_id: assigneeUserId ?? null }),
   });
@@ -2548,10 +2595,10 @@ export function createBatch(
  * itself.
  */
 export function createBatches(
-  projectId: number,
+  seriesId: number,
   batches: { name: string; assignee_user_id?: string | null }[],
 ): Promise<PanelBatch[]> {
-  return api<PanelBatch[]>(`/api/flowstudio/projects/${projectId}/batches/bulk`, {
+  return api<PanelBatch[]>(`/api/flowstudio/series/${seriesId}/batches/bulk`, {
     method: "POST",
     body: JSON.stringify({ batches }),
   });
@@ -2699,8 +2746,8 @@ export function exportBatch(batchId: number) {
 }
 
 /** Every approved panel in the comic, foldered by batch. */
-export function exportProject(projectId: number) {
-  return download(`/api/flowstudio/projects/${projectId}/export`);
+export function exportSeries(seriesId: number) {
+  return download(`/api/flowstudio/series/${seriesId}/export`);
 }
 
 /** What the signed-in account may do in giantflow. Advisory — every capability
@@ -2725,41 +2772,41 @@ export interface FlowMember {
   role: string;
 }
 
-export function listFlowMembers(projectId: number): Promise<FlowMember[]> {
-  return api<FlowMember[]>(`/api/flowstudio/projects/${projectId}/members`);
+export function listFlowMembers(seriesId: number): Promise<FlowMember[]> {
+  return api<FlowMember[]>(`/api/flowstudio/series/${seriesId}/members`);
 }
 
 export function setFlowMember(
-  projectId: number,
+  seriesId: number,
   userId: string,
   role: string,
 ): Promise<FlowMember> {
-  return api<FlowMember>(`/api/flowstudio/projects/${projectId}/members`, {
+  return api<FlowMember>(`/api/flowstudio/series/${seriesId}/members`, {
     method: "PUT",
     body: JSON.stringify({ user_id: userId, role }),
   });
 }
 
-export function removeFlowMember(projectId: number, userId: string): Promise<{ ok: boolean }> {
-  return api(`/api/flowstudio/projects/${projectId}/members/${userId}`, { method: "DELETE" });
+export function removeFlowMember(seriesId: number, userId: string): Promise<{ ok: boolean }> {
+  return api(`/api/flowstudio/series/${seriesId}/members/${userId}`, { method: "DELETE" });
 }
 
 /** A panel as it appears in a review queue: the pairing, who made it, and any
  *  unresolved remarks. */
 export interface QueuePanel extends Panel {
-  project_name: string;
+  series_name: string;
 }
 
 /** Every panel, with its state — the management view. `status` takes several. */
 export function allPanels(filters: {
   status?: string[];
-  project_id?: number;
+  series_id?: number;
   assignee?: string;
   q?: string;
 } = {}): Promise<QueuePanel[]> {
   const s = new URLSearchParams();
   if (filters.status?.length) s.set("status", filters.status.join(","));
-  if (filters.project_id !== undefined) s.set("project_id", String(filters.project_id));
+  if (filters.series_id !== undefined) s.set("series_id", String(filters.series_id));
   if (filters.assignee) s.set("assignee", filters.assignee);
   if (filters.q?.trim()) s.set("q", filters.q.trim());
   const qs = s.toString();
@@ -2767,8 +2814,8 @@ export function allPanels(filters: {
 }
 
 /** Everything handed in and waiting on a verdict, across every artist. */
-export function reviewQueue(projectId?: number): Promise<QueuePanel[]> {
-  const qs = projectId === undefined ? "" : `?project_id=${projectId}`;
+export function reviewQueue(seriesId?: number): Promise<QueuePanel[]> {
+  const qs = seriesId === undefined ? "" : `?project_id=${seriesId}`;
   return api<QueuePanel[]>(`/api/flowstudio/review-queue${qs}`);
 }
 

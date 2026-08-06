@@ -14,6 +14,12 @@ from flowboard.services import user_service
 from flowboard.db import get_session
 
 
+def _series(session, name):
+    """A comic needs a slate above it now; tests do not care which one."""
+    project = ps.create_project(session, f"Slate for {name}")
+    return ps.create_series(session, project.id, name)
+
+
 def _login(client, username, password="pw123456"):
     r = client.post("/api/account/login", json={"username": username, "password": password})
     assert r.status_code == 200, r.text
@@ -28,12 +34,12 @@ def _fixture(client):
     viewer = user_service.create_user("gf_viewer", "pw123456", role="user")
 
     with get_session() as s:
-        project = ps.create_project(s, "Comic")
-        batch = ps.create_batch(s, project.id, "Batch")
+        series = _series(s, "Comic")
+        batch = ps.create_batch(s, series.id, "Batch")
         panel = ps.import_panels(s, batch.id, entries=[("PANEL001.png", "media-1")])[0]
-        ps.set_member(s, project.id, pm.id, "producer")
-        ps.set_member(s, project.id, artist.id, "artist")
-        ids = (project.id, batch.id, panel.id)
+        ps.set_member(s, series.id, pm.id, "producer")
+        ps.set_member(s, series.id, artist.id, "artist")
+        ids = (series.id, batch.id, panel.id)
 
     return ids, {
         "admin": _login(client, "gf_admin"),
@@ -75,21 +81,21 @@ def test_unknown_role_string_never_outranks_anyone():
 
 
 def test_batch_assignee_is_an_artist_without_a_member_row(client):
-    (project_id, batch_id, _), _ = _fixture(client)
+    (series_id, batch_id, _), _ = _fixture(client)
     hand = user_service.create_user("gf_hand", "pw123456", role="user")
     with get_session() as s:
-        assert fp.role_for(s, hand, project_id) == fp.VIEWER
+        assert fp.role_for(s, hand, series_id) == fp.VIEWER
         ps.update_batch(s, batch_id, assignee_user_id=hand.id, set_assignee=True)
         # Assigning work already says "this is yours"; a membership row saying it
         # again would be the same fact stored twice.
-        assert fp.role_for(s, hand, project_id) == fp.ARTIST
+        assert fp.role_for(s, hand, series_id) == fp.ARTIST
 
 
 def test_signed_in_stranger_can_read_but_not_act(client):
-    (project_id, _, _), _ = _fixture(client)
+    (series_id, _, _), _ = _fixture(client)
     stranger = user_service.create_user("gf_stranger", "pw123456", role="user")
     with get_session() as s:
-        role = fp.role_for(s, stranger, project_id)
+        role = fp.role_for(s, stranger, series_id)
     assert role == fp.VIEWER
     assert fp.allows(role, "panel.read")
     assert not fp.allows(role, "panel.generate")
@@ -107,18 +113,26 @@ def test_review_is_refused_to_artists_over_http(client):
 
 
 def test_batch_management_is_refused_to_artists(client):
-    (project_id, batch_id, _), h = _fixture(client)
+    (series_id, batch_id, _), h = _fixture(client)
     body = {"name": "New"}
-    assert client.post(f"/api/flowstudio/projects/{project_id}/batches", json=body, headers=h["artist"]).status_code == 403
+    assert client.post(f"/api/flowstudio/series/{series_id}/batches", json=body, headers=h["artist"]).status_code == 403
     assert client.delete(f"/api/flowstudio/batches/{batch_id}", headers=h["artist"]).status_code == 403
-    assert client.post(f"/api/flowstudio/projects/{project_id}/batches", json=body, headers=h["pm"]).status_code in (200, 201)
+    assert client.post(f"/api/flowstudio/series/{series_id}/batches", json=body, headers=h["pm"]).status_code in (200, 201)
 
 
 def test_only_an_admin_manages_the_comic_itself(client):
-    (project_id, _, _), h = _fixture(client)
-    assert client.delete(f"/api/flowstudio/projects/{project_id}", headers=h["pm"]).status_code == 403
-    assert client.post("/api/flowstudio/projects", json={"name": "X"}, headers=h["artist"]).status_code == 403
-    assert client.post("/api/flowstudio/projects", json={"name": "X"}, headers=h["admin"]).status_code in (200, 201)
+    (series_id, _, _), h = _fixture(client)
+    assert client.delete(f"/api/flowstudio/series/{series_id}", headers=h["pm"]).status_code == 403
+    body = {"project_id": 1, "name": "X"}
+    assert client.post("/api/flowstudio/series", json=body, headers=h["artist"]).status_code == 403
+    # A slate of their own, to prove the admin path works end to end.
+    made = client.post("/api/flowstudio/projects", json={"name": "Slate"}, headers=h["admin"])
+    assert made.status_code in (200, 201), made.text
+    assert client.post(
+        "/api/flowstudio/series",
+        json={"project_id": made.json()["id"], "name": "X"},
+        headers=h["admin"],
+    ).status_code in (200, 201)
 
 
 def test_viewer_cannot_generate_or_submit(client):
@@ -135,18 +149,18 @@ def test_everyone_signed_in_can_read(client):
 
 
 def test_membership_is_managed_by_the_pm_not_the_artist(client):
-    (project_id, _, _), h = _fixture(client)
+    (series_id, _, _), h = _fixture(client)
     someone = user_service.create_user("gf_new", "pw123456", role="user")
     body = {"user_id": str(someone.id), "role": "artist"}
-    assert client.put(f"/api/flowstudio/projects/{project_id}/members", json=body, headers=h["artist"]).status_code == 403
-    assert client.put(f"/api/flowstudio/projects/{project_id}/members", json=body, headers=h["pm"]).status_code == 200
+    assert client.put(f"/api/flowstudio/series/{series_id}/members", json=body, headers=h["artist"]).status_code == 403
+    assert client.put(f"/api/flowstudio/series/{series_id}/members", json=body, headers=h["pm"]).status_code == 200
 
 
 def test_a_role_on_one_comic_grants_nothing_on_another(client):
     """Authority is per comic. A PM elsewhere must not review here."""
     (_, _, _), h = _fixture(client)
     with get_session() as s:
-        other = ps.create_project(s, "Other comic")
+        other = _series(s, "Other comic")
         other_batch = ps.create_batch(s, other.id, "B")
         other_panel = ps.import_panels(s, other_batch.id, entries=[("P.png", "media-9")])[0].id
     body = {"approve": True, "notes": []}

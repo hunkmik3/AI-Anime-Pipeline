@@ -14,6 +14,12 @@ from flowboard.db import get_session
 from flowboard.services import panel_service as ps
 
 
+def _series(session, name):
+    """A comic needs a slate above it now; these tests do not care which one."""
+    project = ps.create_project(session, f"Slate for {name}")
+    return ps.create_series(session, project.id, name)
+
+
 def _panel(n_versions: int = 3, extra_panels: int = 0):
     """A comic whose first panel has ``n_versions`` generated versions.
 
@@ -23,8 +29,8 @@ def _panel(n_versions: int = 3, extra_panels: int = 0):
     entries = [("PANEL001.png", "raw-1")]
     entries += [(f"PANEL{i + 2:03d}.png", f"raw-{i + 2}") for i in range(extra_panels)]
     with get_session() as s:
-        project = ps.create_project(s, "Comic")
-        batch = ps.create_batch(s, project.id, "Batch")
+        series = _series(s, "Comic")
+        batch = ps.create_batch(s, series.id, "Batch")
         panel = ps.import_panels(s, batch.id, entries=entries)[0]
         ps.add_generated(
             s,
@@ -32,7 +38,7 @@ def _panel(n_versions: int = 3, extra_panels: int = 0):
             [f"gen-{i}" for i in range(1, n_versions + 1)],
             model_used="test-model",
         )
-        return project.id, batch.id, panel.id
+        return series.id, batch.id, panel.id
 
 
 # ── choosing ──────────────────────────────────────────────────────────────

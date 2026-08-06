@@ -13,6 +13,12 @@ from flowboard.services import panel_service as ps
 from flowboard.services import user_service
 
 
+def _series(session, name):
+    """A comic needs a slate above it now; tests do not care which one."""
+    project = ps.create_project(session, f"Slate for {name}")
+    return ps.create_series(session, project.id, name)
+
+
 def _login(client, username, password="pw123456"):
     r = client.post("/api/account/login", json={"username": username, "password": password})
     assert r.status_code == 200, r.text
@@ -27,9 +33,9 @@ def _studio(client):
 
     out = {}
     with get_session() as s:
-        project = ps.create_project(s, "X-MEN")
+        series = _series(s, "X-MEN")
         for who, user in (("quan", quan), ("phat", phat)):
-            batch = ps.create_batch(s, project.id, f"Batch {who}", assignee_user_id=user.id)
+            batch = ps.create_batch(s, series.id, f"Batch {who}", assignee_user_id=user.id)
             panels = ps.import_panels(
                 s,
                 batch.id,
@@ -38,7 +44,7 @@ def _studio(client):
             for p in panels:
                 ps.add_generated(s, p.id, [f"gen-{who}-{p.id}"], model_used="m")
             out[who] = [p.id for p in panels]
-        out["project_id"] = project.id
+        out["series_id"] = series.id
     return out, {"quan": quan, "phat": phat, "pm": pm}
 
 
@@ -61,20 +67,20 @@ def test_review_queue_holds_only_submitted_work(client):
     for r in rows:
         assert r["raw_media_id"]
         assert r["delivered_media_id"]
-        assert r["project_name"] == "X-MEN"
+        assert r["series_name"] == "X-MEN"
 
 
 def test_review_queue_can_be_narrowed_to_one_comic(client):
     ids, _ = _studio(client)
     with get_session() as s:
-        other = ps.create_project(s, "Other")
+        other = _series(s, "Other")
         other_batch = ps.create_batch(s, other.id, "B")
         other_panel = ps.import_panels(s, other_batch.id, entries=[("O.png", "raw-o")])[0]
         ps.add_generated(s, other_panel.id, ["gen-o"])
         ps.submit_panel(s, other_panel.id)
         ps.submit_panel(s, ids["quan"][0])
 
-    only = client.get(f"/api/flowstudio/review-queue?project_id={ids['project_id']}").json()
+    only = client.get(f"/api/flowstudio/review-queue?series_id={ids['series_id']}").json()
     assert [r["id"] for r in only] == [ids["quan"][0]]
 
 

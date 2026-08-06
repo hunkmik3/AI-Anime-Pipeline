@@ -34,14 +34,24 @@ def studio(client):
         "pm": _login(client, "lc_pm"),
         "artist": _login(client, "lc_artist"),
     }
-    r = client.post("/api/flowstudio/projects", json={"name": "MAGMEL"}, headers=h["admin"])
-    project_id = r.json()["id"]
+    # A comic needs a slate above it now.
+    proj = client.post(
+        "/api/flowstudio/projects", json={"name": "Global Comix"}, headers=h["admin"]
+    )
+    assert proj.status_code in (200, 201), proj.text
+    r = client.post(
+        "/api/flowstudio/series",
+        json={"project_id": proj.json()["id"], "name": "MAGMEL"},
+        headers=h["admin"],
+    )
+    assert r.status_code in (200, 201), r.text
+    series_id = r.json()["id"]
     client.put(
-        f"/api/flowstudio/projects/{project_id}/members",
+        f"/api/flowstudio/series/{series_id}/members",
         json={"user_id": str(pm.id), "role": "producer"},
         headers=h["admin"],
     )
-    return {"h": h, "project_id": project_id, "pm": pm, "artist": artist}
+    return {"h": h, "series_id": series_id, "pm": pm, "artist": artist}
 
 
 # ── the whole road ────────────────────────────────────────────────────────
@@ -51,11 +61,11 @@ def test_a_comic_from_import_to_export(client, studio, tmp_path, monkeypatch):
     """The path the studio walks every day, in one test, over HTTP only."""
     from flowboard.services import media as media_service
 
-    h, project_id, artist = studio["h"], studio["project_id"], studio["artist"]
+    h, series_id, artist = studio["h"], studio["series_id"], studio["artist"]
 
     # PM divides the work and hands a share to the artist.
     r = client.post(
-        f"/api/flowstudio/projects/{project_id}/batches",
+        f"/api/flowstudio/series/{series_id}/batches",
         json={"name": "Quân", "assignee_user_id": str(artist.id)},
         headers=h["pm"],
     )
@@ -68,7 +78,7 @@ def test_a_comic_from_import_to_export(client, studio, tmp_path, monkeypatch):
         )
         panel_id = panels[0].id
         # Being handed a batch is what makes them an artist here.
-        assert fp.role_for(s, artist, project_id) == fp.ARTIST
+        assert fp.role_for(s, artist, series_id) == fp.ARTIST
 
     # Artist generates three tries and hands over the second.
     with get_session() as s:
@@ -135,9 +145,9 @@ def test_a_comic_from_import_to_export(client, studio, tmp_path, monkeypatch):
 
 
 def test_reopening_returns_the_panel_to_work_without_losing_the_pick(client, studio):
-    h, project_id = studio["h"], studio["project_id"]
+    h, series_id = studio["h"], studio["series_id"]
     with get_session() as s:
-        batch = ps.create_batch(s, project_id, "B")
+        batch = ps.create_batch(s, series_id, "B")
         panel_id = ps.import_panels(s, batch.id, entries=[("P.png", "raw")])[0].id
         ps.add_generated(s, panel_id, ["g1", "g2"])
         ps.submit_panel(s, panel_id, media_id="g1")
@@ -158,9 +168,9 @@ def test_reopening_returns_the_panel_to_work_without_losing_the_pick(client, stu
 def test_a_panel_with_no_versions_cannot_be_approved(client, studio):
     """Approving untouched work locks generation on a panel nobody has made, and
     puts a row into the export with no image behind it."""
-    h, project_id = studio["h"], studio["project_id"]
+    h, series_id = studio["h"], studio["series_id"]
     with get_session() as s:
-        batch = ps.create_batch(s, project_id, "B")
+        batch = ps.create_batch(s, series_id, "B")
         panel_id = ps.import_panels(s, batch.id, entries=[("P.png", "raw")])[0].id
         assert ps.get_panel(s, panel_id).status == "todo"
 
@@ -178,9 +188,9 @@ def test_a_panel_with_no_versions_cannot_be_approved(client, studio):
 def test_a_panel_nobody_submitted_cannot_be_ruled_on(client, studio):
     """A verdict is a reply to a handover. Ruling on work still in progress takes
     it away from the artist mid-edit."""
-    h, project_id = studio["h"], studio["project_id"]
+    h, series_id = studio["h"], studio["series_id"]
     with get_session() as s:
-        batch = ps.create_batch(s, project_id, "B")
+        batch = ps.create_batch(s, series_id, "B")
         panel_id = ps.import_panels(s, batch.id, entries=[("P.png", "raw")])[0].id
         ps.add_generated(s, panel_id, ["g1"])  # in_progress, never submitted
 
@@ -196,12 +206,12 @@ def test_a_member_row_can_never_confer_admin(client, studio):
     """`flow_project_member.role` is a project role. If a stored `admin` string
     resolved to system admin, one member row would grant the right to delete
     other people's comics."""
-    h, project_id = studio["h"], studio["project_id"]
+    h, series_id = studio["h"], studio["series_id"]
     someone = user_service.create_user("lc_x", "pw123456", role="user")
 
     # The route refuses it outright.
     r = client.put(
-        f"/api/flowstudio/projects/{project_id}/members",
+        f"/api/flowstudio/series/{series_id}/members",
         json={"user_id": str(someone.id), "role": "admin"},
         headers=h["pm"],
     )
@@ -209,20 +219,20 @@ def test_a_member_row_can_never_confer_admin(client, studio):
 
     # And if one ever got in by another path, it must not resolve to admin.
     with get_session() as s:
-        from flowboard.db.models import FlowProjectMember
+        from flowboard.db.models import FlowSeriesMember
         from sqlmodel import select
 
-        s.add(FlowProjectMember(project_id=project_id, user_id=someone.id, role="admin"))
+        s.add(FlowSeriesMember(series_id=series_id, user_id=someone.id, role="admin"))
         s.commit()
-        role = fp.role_for(s, someone, project_id)
+        role = fp.role_for(s, someone, series_id)
         assert select is not None
     assert role != fp.ADMIN, "a member row granted system-admin authority"
 
 
 def test_deleting_a_batch_takes_its_panels_and_notes_with_it(client, studio):
-    h, project_id = studio["h"], studio["project_id"]
+    h, series_id = studio["h"], studio["series_id"]
     with get_session() as s:
-        batch = ps.create_batch(s, project_id, "B")
+        batch = ps.create_batch(s, series_id, "B")
         batch_id = batch.id
         panel_id = ps.import_panels(s, batch_id, entries=[("P.png", "raw")])[0].id
         ps.add_generated(s, panel_id, ["g1"])
@@ -242,11 +252,11 @@ def test_deleting_a_batch_takes_its_panels_and_notes_with_it(client, studio):
 def test_reassigning_a_batch_moves_the_work_to_the_new_artist(client, studio):
     """`my-work` reads the batch's assignee, so a hand-over must be complete —
     the old artist keeps nothing, the new one inherits everything."""
-    h, project_id = studio["h"], studio["project_id"]
+    h, series_id = studio["h"], studio["series_id"]
     first = studio["artist"]
     second = user_service.create_user("lc_artist2", "pw123456", role="user")
     with get_session() as s:
-        batch = ps.create_batch(s, project_id, "B", assignee_user_id=first.id)
+        batch = ps.create_batch(s, series_id, "B", assignee_user_id=first.id)
         panel_id = ps.import_panels(s, batch.id, entries=[("P.png", "raw")])[0].id
         ps.add_generated(s, panel_id, ["g1"])
         ps.submit_panel(s, panel_id)
@@ -267,9 +277,9 @@ def test_export_skips_an_image_it_cannot_read_instead_of_failing(client, studio,
     """One broken file must not cost a producer the other two hundred."""
     from flowboard.services import media as media_service
 
-    h, project_id = studio["h"], studio["project_id"]
+    h, series_id = studio["h"], studio["series_id"]
     with get_session() as s:
-        batch = ps.create_batch(s, project_id, "B")
+        batch = ps.create_batch(s, series_id, "B")
         panels = ps.import_panels(
             s, batch.id, entries=[("A.png", "raw-a"), ("B.png", "raw-b")]
         )
@@ -297,9 +307,9 @@ def test_export_skips_an_image_it_cannot_read_instead_of_failing(client, studio,
 
 def test_a_second_import_into_the_same_batch_is_refused(client, studio):
     """Two numbering schemes interleaved cannot be untangled by hand."""
-    _, project_id = studio["h"], studio["project_id"]
+    _, series_id = studio["h"], studio["series_id"]
     with get_session() as s:
-        batch = ps.create_batch(s, project_id, "B")
+        batch = ps.create_batch(s, series_id, "B")
         ps.import_panels(s, batch.id, entries=[("A.png", "raw-a")])
         with pytest.raises(ps.PanelError):
             ps.import_panels(s, batch.id, entries=[("B.png", "raw-b")])
@@ -308,21 +318,21 @@ def test_a_second_import_into_the_same_batch_is_refused(client, studio):
 def test_two_batches_may_each_have_their_own_PANEL001(client, studio):
     """Codes are unique per batch, not per comic — every artist's folder starts
     at one."""
-    _, project_id = studio["h"], studio["project_id"]
+    _, series_id = studio["h"], studio["series_id"]
     with get_session() as s:
-        a = ps.create_batch(s, project_id, "A")
-        b = ps.create_batch(s, project_id, "B")
+        a = ps.create_batch(s, series_id, "A")
+        b = ps.create_batch(s, series_id, "B")
         ps.import_panels(s, a.id, entries=[("PANEL001.png", "raw-1")])
         ps.import_panels(s, b.id, entries=[("PANEL001.png", "raw-2")])
-        assert len(ps.list_project_panels(s, project_id)) == 2
+        assert len(ps.list_series_panels(s, series_id)) == 2
 
 
 def test_import_sorts_by_the_cutters_numbering_not_arrival_order(client, studio):
     """A browser hands folders over in filesystem order. Trusting it produced
     PANEL111, PANEL105, PANEL065…"""
-    _, project_id = studio["h"], studio["project_id"]
+    _, series_id = studio["h"], studio["series_id"]
     with get_session() as s:
-        batch = ps.create_batch(s, project_id, "B")
+        batch = ps.create_batch(s, series_id, "B")
         ps.import_panels(
             s,
             batch.id,
@@ -333,13 +343,13 @@ def test_import_sorts_by_the_cutters_numbering_not_arrival_order(client, studio)
 
 
 def test_deleting_a_comic_leaves_nothing_behind(client, studio):
-    h, project_id = studio["h"], studio["project_id"]
+    h, series_id = studio["h"], studio["series_id"]
     with get_session() as s:
-        batch = ps.create_batch(s, project_id, "B")
+        batch = ps.create_batch(s, series_id, "B")
         ps.import_panels(s, batch.id, entries=[("P.png", "raw")])
         batch_id = batch.id
 
-    assert client.delete(f"/api/flowstudio/projects/{project_id}", headers=h["admin"]).status_code == 200
+    assert client.delete(f"/api/flowstudio/series/{series_id}", headers=h["admin"]).status_code == 200
     with get_session() as s:
         from flowboard.db.models import FlowBatch, FlowPanel
         from sqlmodel import select

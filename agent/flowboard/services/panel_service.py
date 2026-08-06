@@ -9,7 +9,7 @@ alongside.
 Three rules shape everything here:
 
 1. **The panel is the unit of work** — assigned, statused, noted, exported. The
-   project is just the comic it belongs to.
+   series is just the comic it belongs to.
 2. **Order comes from the cutter**, via filename. The app preserves what it was
    given and never re-derives reading order.
 3. **Approved locks generation.** The lock is enforced here, not in the UI, or it
@@ -30,7 +30,8 @@ from flowboard.db.models import (
     FlowPanelImage,
     FlowPanelNote,
     FlowProject,
-    FlowProjectMember,
+    FlowSeries,
+    FlowSeriesMember,
     PANEL_STATUSES,
 )
 
@@ -50,24 +51,7 @@ def _utcnow() -> datetime:
 # ── Projects ────────────────────────────────────────────────────────────────
 
 
-def create_project(
-    session: Session, name: str, *, created_by: Optional[uuid.UUID] = None
-) -> FlowProject:
-    clean = (name or "").strip()
-    if not clean:
-        raise PanelError("bad_input", "a project name is required")
-    row = FlowProject(name=clean, created_by=created_by)
-    session.add(row)
-    session.commit()
-    session.refresh(row)
-    return row
-
-
-def get_project(session: Session, project_id: int) -> FlowProject:
-    row = session.get(FlowProject, project_id)
-    if row is None:
-        raise PanelError("not_found", "project not found")
-    return row
+# ── Projects — the slate every series hangs off ─────────────────────────────
 
 
 def list_projects(session: Session) -> list[FlowProject]:
@@ -78,11 +62,121 @@ def list_projects(session: Session) -> list[FlowProject]:
     )
 
 
+def get_project(session: Session, project_id: int) -> FlowProject:
+    row = session.get(FlowProject, project_id)
+    if row is None:
+        raise PanelError("not_found", "project not found")
+    return row
+
+
+def create_project(session: Session, name: str) -> FlowProject:
+    clean = (name or "").strip()
+    if not clean:
+        raise PanelError("bad_input", "a project name is required")
+    nxt = len(list_projects(session))
+    row = FlowProject(name=clean, order_index=nxt)
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def update_project(
+    session: Session,
+    project_id: int,
+    *,
+    name: Optional[str] = None,
+    cover_media_id: Optional[str] = None,
+    set_cover: bool = False,
+) -> FlowProject:
+    row = get_project(session, project_id)
+    if name is not None:
+        clean = name.strip()
+        if not clean:
+            raise PanelError("bad_input", "a project name is required")
+        row.name = clean
+    #: `set_cover` distinguishes "clear it" from "leave it alone" — the same
+    #: reason `update_batch` carries `set_assignee`.
+    if set_cover:
+        row.cover_media_id = cover_media_id
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def delete_project(session: Session, project_id: int) -> None:
+    """Deletes its series, and through them their batches and panels."""
+    row = get_project(session, project_id)
+    for s in list_series(session, project_id):
+        delete_series(session, s.id)
+    session.delete(row)
+    session.commit()
+
+
+def reorder_projects(session: Session, ordered_ids: list[int]) -> None:
+    for i, pid in enumerate(ordered_ids):
+        row = session.get(FlowProject, pid)
+        if row is not None:
+            row.order_index = i
+            session.add(row)
+    session.commit()
+
+
+def project_cover_media_id(session: Session, project_id: int) -> Optional[str]:
+    """Hand-set cover, else the first cover found among its series."""
+    row = get_project(session, project_id)
+    if row.cover_media_id:
+        return row.cover_media_id
+    for s in list_series(session, project_id):
+        # Takes the row, not its id — it reads `cover_media_id` off it.
+        got = series_cover_media_id(session, s)
+        if got:
+            return got
+    return None
+
+
+def create_series(
+    session: Session,
+    project_id: int,
+    name: str,
+    *,
+    created_by: Optional[uuid.UUID] = None,
+) -> FlowSeries:
+    clean = (name or "").strip()
+    if not clean:
+        raise PanelError("bad_input", "a series name is required")
+    get_project(session, project_id)  # 404 rather than a dangling foreign key
+    nxt = len(list_series(session, project_id))
+    row = FlowSeries(
+        project_id=project_id, name=clean, created_by=created_by, order_index=nxt
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def get_series(session: Session, series_id: int) -> FlowSeries:
+    row = session.get(FlowSeries, series_id)
+    if row is None:
+        raise PanelError("not_found", "series not found")
+    return row
+
+
+def list_series(session: Session, project_id: Optional[int] = None) -> list[FlowSeries]:
+    """The comics on a slate, or every comic when no project is named."""
+    stmt = select(FlowSeries)
+    if project_id is not None:
+        stmt = stmt.where(FlowSeries.project_id == project_id)
+    return list(session.exec(stmt.order_by(FlowSeries.order_index, FlowSeries.id)).all())
+
+
 def reorder(session: Session, model, ids: list[int], *, scope=None) -> int:
     """Write a hand-arranged order.
 
     Takes the ids in their new order and numbers them 0..n. Ids that don't belong
-    (deleted meanwhile, or from another project) are skipped rather than
+    (deleted meanwhile, or from another series) are skipped rather than
     rejected: a stale tab should not make the whole drag fail, and the rows it
     does know about still end up in the right sequence.
 
@@ -113,27 +207,27 @@ def reorder(session: Session, model, ids: list[int], *, scope=None) -> int:
     return len(seen)
 
 
-def reorder_projects(session: Session, ids: list[int]) -> int:
-    return reorder(session, FlowProject, ids)
+def reorder_series(session: Session, ids: list[int]) -> int:
+    return reorder(session, FlowSeries, ids)
 
 
-def reorder_batches(session: Session, project_id: int, ids: list[int]) -> int:
-    get_project(session, project_id)
+def reorder_batches(session: Session, series_id: int, ids: list[int]) -> int:
+    get_series(session, series_id)
     return reorder(
-        session, FlowBatch, ids, scope=(FlowBatch.project_id == project_id)
+        session, FlowBatch, ids, scope=(FlowBatch.series_id == series_id)
     )
 
 
-def project_cover_media_id(session: Session, project: FlowProject) -> Optional[str]:
-    """What to show on a project's card.
+def series_cover_media_id(session: Session, series: FlowSeries) -> Optional[str]:
+    """What to show on a series's card.
 
     A hand-picked cover always wins — someone chose it. Otherwise fall back to the
     **first panel of the first batch**, which is the comic's opening image and
     needs no upload step. Same rule as the episode cards.
     """
-    if project.cover_media_id:
-        return project.cover_media_id
-    for batch in list_batches(session, project.id):
+    if series.cover_media_id:
+        return series.cover_media_id
+    for batch in list_batches(session, series.id):
         for panel in list_panels(session, batch.id):
             raws = panel_images(session, panel.id, role="raw")
             if raws:
@@ -141,11 +235,11 @@ def project_cover_media_id(session: Session, project: FlowProject) -> Optional[s
     return None
 
 
-def set_project_cover(
-    session: Session, project_id: int, media_id: Optional[str]
-) -> FlowProject:
+def set_series_cover(
+    session: Session, series_id: int, media_id: Optional[str]
+) -> FlowSeries:
     """Set, or clear with None (back to the first-panel fallback)."""
-    row = get_project(session, project_id)
+    row = get_series(session, series_id)
     row.cover_media_id = (media_id or "").strip() or None
     session.add(row)
     session.commit()
@@ -153,11 +247,11 @@ def set_project_cover(
     return row
 
 
-def rename_project(session: Session, project_id: int, name: str) -> FlowProject:
+def rename_series(session: Session, series_id: int, name: str) -> FlowSeries:
     clean = (name or "").strip()
     if not clean:
-        raise PanelError("bad_input", "a project name is required")
-    row = get_project(session, project_id)
+        raise PanelError("bad_input", "a series name is required")
+    row = get_series(session, series_id)
     row.name = clean
     session.add(row)
     session.commit()
@@ -165,16 +259,16 @@ def rename_project(session: Session, project_id: int, name: str) -> FlowProject:
     return row
 
 
-def delete_project(session: Session, project_id: int) -> None:
-    """Delete a project and everything under it.
+def delete_series(session: Session, series_id: int) -> None:
+    """Delete a series and everything under it.
 
     Panels, their images and notes go with it (FK CASCADE) — unlike the old
     board delete, which detached a shared library. Here the panels ARE the
-    project: keeping them without it would leave rows nothing can reach. The
+    series: keeping them without it would leave rows nothing can reach. The
     cached media files are untouched, so the pixels survive a mistaken delete
     even though the catalogue does not.
     """
-    row = get_project(session, project_id)
+    row = get_series(session, series_id)
     session.delete(row)
     session.commit()
 
@@ -184,7 +278,7 @@ def delete_project(session: Session, project_id: int) -> None:
 
 def create_batch(
     session: Session,
-    project_id: int,
+    series_id: int,
     name: str,
     *,
     assignee_user_id: Optional[uuid.UUID] = None,
@@ -192,10 +286,10 @@ def create_batch(
     clean = (name or "").strip()
     if not clean:
         raise PanelError("bad_input", "a batch name is required")
-    get_project(session, project_id)
-    n = len(list_batches(session, project_id))
+    get_series(session, series_id)
+    n = len(list_batches(session, series_id))
     row = FlowBatch(
-        project_id=project_id,
+        series_id=series_id,
         name=clean,
         assignee_user_id=assignee_user_id,
         order_index=n,
@@ -208,7 +302,7 @@ def create_batch(
 
 def create_batches(
     session: Session,
-    project_id: int,
+    series_id: int,
     rows: list[tuple[str, Optional[uuid.UUID]]],
 ) -> list[FlowBatch]:
     """Create several batches at once — the way work is actually handed out.
@@ -221,16 +315,16 @@ def create_batches(
     All or nothing: one commit, so a failure halfway does not leave half a
     division in place.
     """
-    get_project(session, project_id)
+    get_series(session, series_id)
     clean = [(n.strip(), a) for n, a in rows if n and n.strip()]
     if not clean:
         raise PanelError("bad_input", "give at least one batch a name")
 
-    start = len(list_batches(session, project_id))
+    start = len(list_batches(session, series_id))
     made: list[FlowBatch] = []
     for i, (name, assignee) in enumerate(clean):
         row = FlowBatch(
-            project_id=project_id,
+            series_id=series_id,
             name=name,
             assignee_user_id=assignee,
             order_index=start + i,
@@ -243,11 +337,11 @@ def create_batches(
     return made
 
 
-def list_batches(session: Session, project_id: int) -> list[FlowBatch]:
+def list_batches(session: Session, series_id: int) -> list[FlowBatch]:
     return list(
         session.exec(
             select(FlowBatch)
-            .where(FlowBatch.project_id == project_id)
+            .where(FlowBatch.series_id == series_id)
             .order_by(FlowBatch.order_index, FlowBatch.id)
         ).all()
     )
@@ -298,8 +392,8 @@ def delete_batch(session: Session, batch_id: int) -> None:
     session.commit()
 
 
-def project_of_batch(session: Session, batch_id: int) -> FlowProject:
-    return get_project(session, get_batch(session, batch_id).project_id)
+def series_of_batch(session: Session, batch_id: int) -> FlowSeries:
+    return get_series(session, get_batch(session, batch_id).series_id)
 
 
 # ── Import ──────────────────────────────────────────────────────────────────
@@ -362,8 +456,8 @@ def import_panels(
     expressed the order, so sorting by it honours their intent rather than
     overriding it; the arrival order was never carrying that information.
 
-    Re-importing into a project that already has panels is refused rather than
-    merged: a second folder almost always means "I meant a new project", and
+    Re-importing into a series that already has panels is refused rather than
+    merged: a second folder almost always means "I meant a new series", and
     silently interleaving two numbering schemes is not recoverable by hand.
     """
     get_batch(session, batch_id)
@@ -417,7 +511,7 @@ def import_panels(
 def renumber_panels(session: Session, batch_id: int) -> int:
     """Re-derive ``order_index`` from the panel codes, natural-sorted.
 
-    Repairs a project imported before the sort was applied, so an existing board
+    Repairs a series imported before the sort was applied, so an existing board
     does not have to be deleted and re-uploaded to come out in reading order.
     """
     panels = sorted(
@@ -449,7 +543,7 @@ def search_panels(
     session: Session,
     *,
     statuses: Optional[list[str]] = None,
-    project_id: Optional[int] = None,
+    series_id: Optional[int] = None,
     batch_id: Optional[int] = None,
     assignee_user_id: Optional[uuid.UUID] = None,
     q: Optional[str] = None,
@@ -468,8 +562,8 @@ def search_panels(
     stmt = select(FlowPanel).join(FlowBatch, FlowBatch.id == FlowPanel.batch_id)
     if statuses:
         stmt = stmt.where(FlowPanel.status.in_(statuses))
-    if project_id is not None:
-        stmt = stmt.where(FlowBatch.project_id == project_id)
+    if series_id is not None:
+        stmt = stmt.where(FlowBatch.series_id == series_id)
     if batch_id is not None:
         stmt = stmt.where(FlowPanel.batch_id == batch_id)
     if assignee_user_id is not None:
@@ -477,7 +571,7 @@ def search_panels(
     if q and q.strip():
         stmt = stmt.where(FlowPanel.code.ilike(f"%{q.strip()}%"))
     stmt = stmt.order_by(
-        FlowBatch.project_id, FlowBatch.order_index, FlowPanel.order_index, FlowPanel.id
+        FlowBatch.series_id, FlowBatch.order_index, FlowPanel.order_index, FlowPanel.id
     ).limit(limit)
     return list(session.exec(stmt).all())
 
@@ -487,13 +581,13 @@ def panels_by_status(
     statuses: list[str],
     *,
     assignee_user_id: Optional[uuid.UUID] = None,
-    project_id: Optional[int] = None,
+    series_id: Optional[int] = None,
     limit: int = 500,
 ) -> list[FlowPanel]:
     """Panels in any of ``statuses``, across every batch, newest activity first.
 
     A queue, not a tree. Review at this studio's scale means 300 panels handed in
-    by several artists, and walking project → batch → panel to find the ones
+    by several artists, and walking series → batch → panel to find the ones
     waiting is the shape of the Miro board this replaces, not an improvement on
     it. Ordered by ``updated_at`` because the thing a reviewer wants is what
     changed, and an artist wants the verdict that just landed.
@@ -508,16 +602,16 @@ def panels_by_status(
     )
     if assignee_user_id is not None:
         stmt = stmt.where(FlowBatch.assignee_user_id == assignee_user_id)
-    if project_id is not None:
-        stmt = stmt.where(FlowBatch.project_id == project_id)
+    if series_id is not None:
+        stmt = stmt.where(FlowBatch.series_id == series_id)
     stmt = stmt.order_by(FlowPanel.updated_at.desc(), FlowPanel.id.desc()).limit(limit)
     return list(session.exec(stmt).all())
 
 
-def list_project_panels(session: Session, project_id: int) -> list[FlowPanel]:
+def list_series_panels(session: Session, series_id: int) -> list[FlowPanel]:
     """Every panel in a comic, batch by batch, each batch in its own order."""
     out: list[FlowPanel] = []
-    for b in list_batches(session, project_id):
+    for b in list_batches(session, series_id):
         out.extend(list_panels(session, b.id))
     return out
 
@@ -552,7 +646,7 @@ def delivered(session: Session, panel_id: int) -> Optional[FlowPanelImage]:
     is also the honest answer for a panel still being worked on.
 
     Every surface that shows "the result" — the batch grid, the batch card, the
-    project cover, export — must go through this rather than
+    series cover, export — must go through this rather than
     ``latest_generated``, or a PM reviews one image and sees another.
     """
     panel = get_panel(session, panel_id)
@@ -766,27 +860,27 @@ def unresolved_count(session: Session, panel_id: int) -> int:
 # ── Members ─────────────────────────────────────────────────────────────────
 
 
-def list_members(session: Session, project_id: int) -> list[FlowProjectMember]:
+def list_members(session: Session, series_id: int) -> list[FlowSeriesMember]:
     return list(
         session.exec(
-            select(FlowProjectMember).where(FlowProjectMember.project_id == project_id)
+            select(FlowSeriesMember).where(FlowSeriesMember.series_id == series_id)
         ).all()
     )
 
 
 def set_member(
-    session: Session, project_id: int, user_id: uuid.UUID, role: str
-) -> FlowProjectMember:
+    session: Session, series_id: int, user_id: uuid.UUID, role: str
+) -> FlowSeriesMember:
     from flowboard.services import flow_permissions as fp
 
     row = session.exec(
-        select(FlowProjectMember).where(
-            FlowProjectMember.project_id == project_id,
-            FlowProjectMember.user_id == user_id,
+        select(FlowSeriesMember).where(
+            FlowSeriesMember.series_id == series_id,
+            FlowSeriesMember.user_id == user_id,
         )
     ).first()
     if row is None:
-        row = FlowProjectMember(project_id=project_id, user_id=user_id)
+        row = FlowSeriesMember(series_id=series_id, user_id=user_id)
     # flow_permissions, not permissions: this is a giantflow member row, and the
     # two modules deliberately govern different tables.
     row.role = fp.normalize_member_role(role)
@@ -796,11 +890,11 @@ def set_member(
     return row
 
 
-def remove_member(session: Session, project_id: int, user_id: uuid.UUID) -> None:
+def remove_member(session: Session, series_id: int, user_id: uuid.UUID) -> None:
     row = session.exec(
-        select(FlowProjectMember).where(
-            FlowProjectMember.project_id == project_id,
-            FlowProjectMember.user_id == user_id,
+        select(FlowSeriesMember).where(
+            FlowSeriesMember.series_id == series_id,
+            FlowSeriesMember.user_id == user_id,
         )
     ).first()
     if row is not None:

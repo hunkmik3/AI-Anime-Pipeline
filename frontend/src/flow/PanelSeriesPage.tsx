@@ -1,50 +1,53 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 
 import {
-  createFlowProject,
-  deleteFlowProject,
-  listFlowProjects,
-  reorderFlowProjects,
+  createPanelSeries,
+  deletePanelSeries,
+  listPanelSeries,
+  renamePanelSeries,
+  reorderPanelSeries,
+  setPanelSeriesCover,
   thumbUrl,
-  updateFlowProject,
   uploadFlowImage,
-  type FlowProject,
+  type PanelSeries,
 } from "../api/client";
 import { PageHeader } from "../components/shell/PageHeader";
+import { GiantflowNav } from "./GiantflowNav";
 import { useGiantflowRole } from "../store/giantflowRole";
 import { toast } from "../store/toast";
-import { GiantflowNav } from "./GiantflowNav";
 import { useDragOrder } from "./useDragOrder";
 
 /**
- * The top of the tree: the studio's slates.
+ * The Project list — one card per comic being adapted.
  *
- * Four tiers, not three — Project → Series → Batch → Panel. What used to sit on
- * this screen was the comics themselves; those are Series, and they moved one
- * level down. A Project holds a name and a cover and nothing else, because it is
- * a container, not a unit of work.
+ * A series holds nothing but a name and its batches. The material lives one
+ * level down: each batch is one artist's share and carries its own imported
+ * folder, because the studio hands work out already divided rather than dumping
+ * a chapter in one pile and splitting it afterwards.
  */
-export function PanelProjectsPage() {
+export function PanelSeriesPage() {
+  const { projectId } = useParams();
+  const pid = Number(projectId);
   const { can } = useGiantflowRole();
-  const [projects, setProjects] = useState<FlowProject[] | null>(null);
+  const [series, setSeries] = useState<PanelSeries[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      setProjects(await listFlowProjects());
+      setSeries(await listPanelSeries(pid));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, []);
+  }, [pid]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const { list, dragProps } = useDragOrder(projects ?? [], async (ids) => {
-    await reorderFlowProjects(ids);
+  const { list, dragProps } = useDragOrder(series ?? [], async (ids) => {
+    await reorderPanelSeries(ids);
     await load();
   });
 
@@ -53,11 +56,11 @@ export function PanelProjectsPage() {
     if (!clean) return;
     setBusy(true);
     try {
-      await createFlowProject(clean);
+      await createPanelSeries(pid, clean);
       await load();
-      toast("Project created. Add the comics inside it as series.");
+      toast("Project created. Add a batch per artist inside it.");
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e));
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -66,36 +69,45 @@ export function PanelProjectsPage() {
   return (
     <div className="shellpage pn__wide">
       <GiantflowNav />
-      <PageHeader title="Projects" />
+      <PageHeader title="Project" />
 
       {error ? <p className="inbox__err">{error}</p> : null}
-      {projects === null ? <p className="rfoot">Loading…</p> : null}
+      {series === null ? <p className="rfoot">Loading…</p> : null}
 
-      {projects !== null && projects.length === 0 ? (
+      {series !== null && series.length === 0 ? (
         <div className="inbox__empty">
-          <b>No projects yet.</b>
-          A project is the slate. Create one, then add each comic inside it as a
-          series.
+          <b>No series yet.</b>
+          Create one per comic. Inside it you make a batch per artist and import
+          that artist's panels.
         </div>
       ) : null}
 
       <ul className="pn__tiles">
         {list.map((p) => (
-          <ProjectCard
+          <SeriesCard
             key={p.id}
-            project={p}
+            series={p}
             onChanged={load}
             drag={can("project.manage") ? dragProps(p.id) : {}}
             manage={can("project.manage")}
           />
         ))}
-        {can("project.manage") ? <AddProjectTile busy={busy} onCreate={create} /> : null}
+        {/* Last, not first: the tiles are drag-reorderable and a fixed cell at the
+            front would sit in the middle of every drag. */}
+        {can("project.manage") ? <AddSeriesTile busy={busy} onCreate={create} /> : null}
       </ul>
     </div>
   );
 }
 
-function AddProjectTile({
+/**
+ * The last cell of the grid: an outline tile that becomes the create form.
+ *
+ * The form used to sit in the page header, far from the row of tiles it adds to.
+ * Here the control is the same shape and place as the thing it makes, so the new
+ * series appears where you were already looking.
+ */
+function AddSeriesTile({
   busy,
   onCreate,
 }: {
@@ -152,6 +164,8 @@ function AddProjectTile({
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") void submit();
+            // Escape closes without creating — the same thing the ✕ does, for
+            // someone whose hands are already on the keyboard.
             if (e.key === "Escape") {
               setName("");
               setOpen(false);
@@ -171,6 +185,8 @@ function AddProjectTile({
   );
 }
 
+/** Pick one image file. A plain input rather than a component: it is two lines,
+ *  and the tile is the only place that needs it. */
 function pickImage(): Promise<File | null> {
   return new Promise((resolve) => {
     const input = document.createElement("input");
@@ -181,41 +197,44 @@ function pickImage(): Promise<File | null> {
   });
 }
 
-function ProjectCard({
-  project,
+function SeriesCard({
+  series,
   onChanged,
   drag,
   manage,
 }: {
-  project: FlowProject;
+  series: PanelSeries;
   onChanged: () => Promise<void>;
   drag: Record<string, unknown>;
+  /** Creating, renaming, re-covering and deleting a comic is an admin's call. */
   manage: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(project.name);
+  const [draft, setDraft] = useState(series.name);
   const nameRef = useRef<HTMLInputElement | null>(null);
-  const pct = project.panel_count
-    ? Math.round((project.approved_count / project.panel_count) * 100)
+  const pct = series.panel_count
+    ? Math.round((series.approved_count / series.panel_count) * 100)
     : 0;
 
   useEffect(() => {
     if (editing) {
-      setDraft(project.name);
+      setDraft(series.name);
+      // select(), not focus(): renaming usually means replacing, and a caret at
+      // the end would make you clear it by hand first.
       requestAnimationFrame(() => nameRef.current?.select());
     }
-  }, [editing, project.name]);
+  }, [editing, series.name]);
 
   async function rename() {
     const clean = draft.trim();
-    if (!clean || clean === project.name) {
+    if (!clean || clean === series.name) {
       setEditing(false);
       return;
     }
     setBusy(true);
     try {
-      await updateFlowProject(project.id, { name: clean });
+      await renamePanelSeries(series.id, clean);
       setEditing(false);
       await onChanged();
     } catch (e) {
@@ -230,8 +249,10 @@ function ProjectCard({
     if (!file) return;
     setBusy(true);
     try {
+      // Two steps on purpose: the upload caches bytes and hands back a media id,
+      // which is then pointed at — the same id any other surface could reuse.
       const { media_id } = await uploadFlowImage(file);
-      await updateFlowProject(project.id, { cover_media_id: media_id, set_cover: true });
+      await setPanelSeriesCover(series.id, media_id);
       await onChanged();
     } catch (e) {
       toast(e instanceof Error ? e.message : "Upload failed");
@@ -242,11 +263,11 @@ function ProjectCard({
 
   return (
     <li className="pn__tile" {...drag}>
-      <Link to={`/giantflow/p/${project.id}`} className="pn__tile-body">
+      <Link to={`/giantflow/s/${series.id}`} className="pn__tile-body">
         <div className="pn__tile-thumb">
-          {project.thumb_media_id ? (
+          {series.thumb_media_id ? (
             <img
-              src={thumbUrl(project.thumb_media_id, 400)}
+              src={thumbUrl(series.thumb_media_id, 400)}
               alt=""
               loading="lazy"
               onError={(e) => {
@@ -263,6 +284,8 @@ function ProjectCard({
         </div>
         <div className="pn__tile-meta">
           {editing ? (
+            // Outside the Link's job: an input inside a navigating anchor would
+            // follow the link on every click.
             <input
               ref={nameRef}
               className="pn__tile-rename"
@@ -274,22 +297,22 @@ function ProjectCard({
               onKeyDown={(e) => {
                 if (e.key === "Enter") void rename();
                 if (e.key === "Escape") {
-                  setDraft(project.name);
+                  setDraft(series.name);
                   setEditing(false);
                 }
               }}
             />
           ) : (
-            <div className="pn__tile-name" title={project.name}>
-              {project.name}
+            <div className="pn__tile-name" title={series.name}>
+              {series.name}
             </div>
           )}
           <div className="pn__tile-sub">
-            {project.series_count === 0
-              ? "No series yet"
-              : `${project.series_count} series · ${project.approved_count}/${project.panel_count} approved`}
+            {series.batch_count === 0
+              ? "No batches yet"
+              : `${series.batch_count} batch${series.batch_count === 1 ? "" : "es"} · ${series.approved_count}/${series.panel_count} approved`}
           </div>
-          {project.panel_count > 0 ? (
+          {series.panel_count > 0 ? (
             <div className="pn__tile-bar">
               <span style={{ width: `${pct}%` }} />
             </div>
@@ -298,67 +321,69 @@ function ProjectCard({
       </Link>
 
       {manage ? (
-        <div className="pn__tile-acts">
+      <div className="pn__tile-acts">
+        <button
+          type="button"
+          className="pn__tile-btn"
+          title="Rename this series"
+          onClick={(e) => {
+            e.preventDefault();
+            setEditing(true);
+          }}
+        >
+          Rename
+        </button>
+        <button
+          type="button"
+          className="pn__tile-btn"
+          title="Upload a cover image"
+          disabled={busy}
+          onClick={(e) => {
+            e.preventDefault();
+            void setCover();
+          }}
+        >
+          {busy ? "Uploading…" : series.has_cover ? "Change" : "Thumbnail"}
+        </button>
+        {/* Only offered once there IS a hand-set cover — clearing back to the
+            first-panel fallback is meaningless otherwise. */}
+        {series.has_cover ? (
           <button
             type="button"
             className="pn__tile-btn"
-            title="Rename this project"
-            onClick={(e) => {
-              e.preventDefault();
-              setEditing(true);
-            }}
-          >
-            Rename
-          </button>
-          <button
-            type="button"
-            className="pn__tile-btn"
-            title="Upload a cover image"
-            disabled={busy}
-            onClick={(e) => {
-              e.preventDefault();
-              void setCover();
-            }}
-          >
-            {busy ? "Uploading…" : project.has_cover ? "Change" : "Thumbnail"}
-          </button>
-          {project.has_cover ? (
-            <button
-              type="button"
-              className="pn__tile-btn"
-              title="Clear the cover (back to the first series' cover)"
-              onClick={async (e) => {
-                e.preventDefault();
-                await updateFlowProject(project.id, { cover_media_id: null, set_cover: true });
-                await onChanged();
-              }}
-            >
-              Reset
-            </button>
-          ) : null}
-          <button
-            type="button"
-            className="pn__tile-btn pn__tile-btn--danger"
-            title="Delete this project"
+            title="Clear the cover (back to the first panel)"
             onClick={async (e) => {
               e.preventDefault();
-              if (
-                !window.confirm(
-                  `Delete “${project.name}”, its ${project.series_count} series and ${project.panel_count} panel(s)?`,
-                )
-              )
-                return;
-              try {
-                await deleteFlowProject(project.id);
-                await onChanged();
-              } catch (err) {
-                toast(err instanceof Error ? err.message : "Delete failed");
-              }
+              await setPanelSeriesCover(series.id, null);
+              await onChanged();
             }}
           >
-            ✕
+            Reset
           </button>
-        </div>
+        ) : null}
+        <button
+          type="button"
+          className="pn__tile-btn pn__tile-btn--danger"
+          title="Delete this series"
+          onClick={async (e) => {
+            e.preventDefault();
+            if (
+              !window.confirm(
+                `Delete \u201c${series.name}\u201d, its ${series.batch_count} batch(es) and ${series.panel_count} panel(s)?`,
+              )
+            )
+              return;
+            try {
+              await deletePanelSeries(series.id);
+              await onChanged();
+            } catch (err) {
+              toast(err instanceof Error ? err.message : "Delete failed");
+            }
+          }}
+        >
+          ✕
+        </button>
+      </div>
       ) : null}
     </li>
   );

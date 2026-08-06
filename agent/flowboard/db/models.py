@@ -318,7 +318,10 @@ class FlowBoard(SQLModel, table=True):
 
 
 class FlowProject(SQLModel, table=True):
-    """One comic being adapted.
+    """The studio's slate — the container every comic hangs off.
+
+    The top of four tiers: Project → Series → Batch → Panel. It holds a name and
+    a cover and nothing else; all the work happens below it.
 
     Separate from ``Project`` on purpose: giantflow is a standalone surface, so a
     role here grants nothing in the production hierarchy and vice versa.
@@ -327,6 +330,25 @@ class FlowProject(SQLModel, table=True):
     __tablename__ = "flow_project"  # type: ignore[assignment]
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    cover_media_id: Optional[str] = None
+    order_index: int = Field(default=0, index=True)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class FlowSeries(SQLModel, table=True):
+    """One comic being adapted — what the UI used to call a Project.
+
+    Renamed rather than left alone: this row has always been a comic, and a table
+    called `project` under a screen labelled "Series" is the drift that costs an
+    afternoon later.
+    """
+
+    __tablename__ = "flow_series"  # type: ignore[assignment]
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    #: The slate it belongs to.
+    project_id: int = Field(foreign_key="flow_project.id", index=True)
     name: str
     #: Hand-picked cover. When unset the card falls back to the first panel of the
     #: first batch, so a project looks like itself without anyone uploading
@@ -341,21 +363,25 @@ class FlowProject(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow, index=True)
 
 
-class FlowProjectMember(SQLModel, table=True):
-    """Who works on a giantflow project, and as what.
+class FlowSeriesMember(SQLModel, table=True):
+    """Who works on a giantflow SERIES, and as what.
+
+    On the series, not the project above it: one role for the studio's whole
+    slate is the opposite of what per-comic roles are for — a PM on X-MEN is not
+    automatically a PM on MAGMEL.
 
     Roles reuse ``services/permissions.py``'s ranking (viewer < artist < lead <
     producer) — a PM is a producer — but membership is stored HERE rather than on
     ``project_member`` so the two systems stay sealed off from each other.
     """
 
-    __tablename__ = "flow_project_member"  # type: ignore[assignment]
+    __tablename__ = "flow_series_member"  # type: ignore[assignment]
     __table_args__ = (
-        UniqueConstraint("project_id", "user_id", name="uq_flow_project_member"),
+        UniqueConstraint("series_id", "user_id", name="uq_flow_project_member"),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    project_id: int = Field(foreign_key="flow_project.id", index=True)
+    series_id: int = Field(foreign_key="flow_series.id", index=True)
     user_id: uuid.UUID = Field(foreign_key="app_user.id", index=True)
     role: str = "artist"
     created_at: datetime = Field(default_factory=_utcnow)
@@ -377,7 +403,7 @@ class FlowBatch(SQLModel, table=True):
     __tablename__ = "flow_batch"  # type: ignore[assignment]
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    project_id: int = Field(foreign_key="flow_project.id", index=True)
+    series_id: int = Field(foreign_key="flow_series.id", index=True)
     name: str
     assignee_user_id: Optional[uuid.UUID] = Field(
         default=None, foreign_key="app_user.id", index=True

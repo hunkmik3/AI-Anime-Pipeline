@@ -7,9 +7,9 @@ import {
   importPanelFolder,
   listBatches,
   listPanelAssignees,
-  exportProject,
+  exportSeries,
   listFlowMembers,
-  listPanelProjects,
+  listPanelSeries,
   removeFlowMember,
   reorderBatches,
   setFlowMember,
@@ -17,7 +17,7 @@ import {
   updateBatch,
   type FlowMember,
   type PanelBatch,
-  type PanelProject,
+  type PanelSeries,
 } from "../api/client";
 import { PersonPicker } from "../components/PersonPicker";
 import { useGiantflowRole } from "../store/giantflowRole";
@@ -34,11 +34,11 @@ import { useDragOrder } from "./useDragOrder";
  * split.
  */
 export function PanelBatchesPage() {
-  const { projectId } = useParams();
-  const pid = Number(projectId);
+  const { seriesId } = useParams();
+  const pid = Number(seriesId);
   const { can } = useGiantflowRole();
   const [batches, setBatches] = useState<PanelBatch[] | null>(null);
-  const [project, setProject] = useState<PanelProject | null>(null);
+  const [series, setSeries] = useState<PanelSeries | null>(null);
   const [people, setPeople] = useState<{ user_id: string; name: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -47,9 +47,9 @@ export function PanelBatchesPage() {
 
   const load = useCallback(async () => {
     try {
-      const [rows, projects] = await Promise.all([listBatches(pid), listPanelProjects()]);
+      const [rows, all] = await Promise.all([listBatches(pid), listPanelSeries()]);
       setBatches(rows);
-      setProject(projects.find((p) => p.id === pid) ?? null);
+      setSeries(all.find((p) => p.id === pid) ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -80,9 +80,15 @@ export function PanelBatchesPage() {
   return (
     <div className="shellpage pn__wide">
       <PanelHero
-        crumb={<Link to="/giantflow">← Project</Link>}
-        title={project?.name || "Project"}
-        thumbMediaId={project?.thumb_media_id}
+        crumb={
+          series ? (
+            <Link to={`/giantflow/p/${series.project_id}`}>← Series</Link>
+          ) : (
+            <Link to="/giantflow">← Projects</Link>
+          )
+        }
+        title={series?.name || "Series"}
+        thumbMediaId={series?.thumb_media_id}
         counts={counts}
         total={totals.panels}
         facts={[
@@ -105,7 +111,7 @@ export function PanelBatchesPage() {
               }
               onClick={async () => {
                   try {
-                    const r = await exportProject(pid);
+                    const r = await exportSeries(pid);
                     toast(
                       `${r.written} approved panel(s) downloaded.` +
                         (r.skipped ? ` ${r.skipped} could not be read.` : ""),
@@ -138,7 +144,7 @@ export function PanelBatchesPage() {
         }
       />
 
-      {showMembers ? <MembersPanel projectId={pid} people={people} /> : null}
+      {showMembers ? <MembersPanel seriesId={pid} people={people} /> : null}
 
       {adding ? (
         <BatchDraftPanel
@@ -546,10 +552,10 @@ function BatchCard({
  * yours", and making the PM repeat it would be one fact stored twice.
  */
 function MembersPanel({
-  projectId,
+  seriesId,
   people,
 }: {
-  projectId: number;
+  seriesId: number;
   people: { user_id: string; name: string }[];
 }) {
   const [rows, setRows] = useState<FlowMember[] | null>(null);
@@ -557,11 +563,11 @@ function MembersPanel({
 
   const load = useCallback(async () => {
     try {
-      setRows(await listFlowMembers(projectId));
+      setRows(await listFlowMembers(seriesId));
     } catch (e) {
       toast(e instanceof Error ? e.message : "Failed");
     }
-  }, [projectId]);
+  }, [seriesId]);
 
   useEffect(() => {
     void load();
@@ -570,7 +576,7 @@ function MembersPanel({
   async function put(userId: string, role: string) {
     setBusy(true);
     try {
-      await setFlowMember(projectId, userId, role);
+      await setFlowMember(seriesId, userId, role);
       await load();
     } catch (e) {
       toast(e instanceof Error ? e.message : "Failed");
@@ -614,7 +620,7 @@ function MembersPanel({
               onClick={async () => {
                 setBusy(true);
                 try {
-                  await removeFlowMember(projectId, m.user_id);
+                  await removeFlowMember(seriesId, m.user_id);
                   await load();
                 } finally {
                   setBusy(false);

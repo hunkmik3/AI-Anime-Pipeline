@@ -61,15 +61,15 @@ class ProjectBody(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
 
-def _project_dict(session, row) -> dict:
+def _series_dict(session, row) -> dict:
     batches = ps.list_batches(session, row.id)
-    panels = ps.list_project_panels(session, row.id)
+    panels = ps.list_series_panels(session, row.id)
     return {
         "id": row.id,
         "name": row.name,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         # Hand-picked cover, else the comic's opening panel.
-        "thumb_media_id": ps.project_cover_media_id(session, row),
+        "thumb_media_id": ps.series_cover_media_id(session, row),
         "has_cover": bool(row.cover_media_id),
         # The three numbers a PM opens this list for.
         "batch_count": len(batches),
@@ -94,7 +94,7 @@ def _batch_dict(session, row) -> dict:
             break
     return {
         "id": row.id,
-        "project_id": row.project_id,
+        "series_id": row.series_id,
         "name": row.name,
         "assignee_user_id": str(row.assignee_user_id) if row.assignee_user_id else None,
         "assignee_name": _user_name(row.assignee_user_id),
@@ -108,11 +108,46 @@ def _batch_dict(session, row) -> dict:
     }
 
 
+class ReorderBody(BaseModel):
+    #: Ids in their new order. Omitted ids keep their relative order, after these.
+    ids: list[int]
+
+# ── Projects — the slate ────────────────────────────────────────────────────
+#
+# The top of four tiers: Project → Series → Batch → Panel. A project holds a name
+# and a cover; every capability check still happens against the SERIES, because
+# authority is per comic — a PM on X-MEN is not a PM on MAGMEL.
+
+
+def _project_dict(session, row) -> dict:
+    series = ps.list_series(session, row.id)
+    panels = [p for s in series for p in ps.list_series_panels(session, s.id)]
+    return {
+        "id": row.id,
+        "name": row.name,
+        "thumb_media_id": ps.project_cover_media_id(session, row.id),
+        "has_cover": bool(row.cover_media_id),
+        "series_count": len(series),
+        "panel_count": len(panels),
+        "approved_count": len([p for p in panels if p.status == "approved"]),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
 @router.get("/projects")
 def list_projects(user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
         return [_project_dict(s, r) for r in ps.list_projects(s)]
+
+
+class ProjectBody(BaseModel):
+    name: str = Field(min_length=1)
+
+
+class SeriesBody(BaseModel):
+    project_id: int
+    name: str = Field(min_length=1)
 
 
 @router.post("/projects")
@@ -121,59 +156,119 @@ def create_project(body: ProjectBody, user=Depends(get_optional_user)):
         resource_guard.require_signed_in(s, user)
         _guard(s, user, None, "project.manage")
         try:
-            row = ps.create_project(
-                s, body.name, created_by=(user.id if user else None)
-            )
+            return _project_dict(s, ps.create_project(s, body.name))
         except ps.PanelError as exc:
             raise _fail(exc)
-        return _project_dict(s, row)
+
+
+class ProjectPatch(BaseModel):
+    name: Optional[str] = None
+    cover_media_id: Optional[str] = None
+    set_cover: bool = False
 
 
 @router.patch("/projects/{project_id}")
-def rename_project(project_id: int, body: ProjectBody, user=Depends(get_optional_user)):
+def update_project(project_id: int, body: ProjectPatch, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, project_id, "project.manage")
+        _guard(s, user, None, "project.manage")
         try:
-            return _project_dict(s, ps.rename_project(s, project_id, body.name))
+            row = ps.update_project(
+                s, project_id, name=body.name,
+                cover_media_id=body.cover_media_id, set_cover=body.set_cover,
+            )
+            return _project_dict(s, row)
         except ps.PanelError as exc:
             raise _fail(exc)
 
 
 @router.delete("/projects/{project_id}")
 def delete_project(project_id: int, user=Depends(get_optional_user)):
+    """Takes its series with it, and through them every batch and panel."""
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, project_id, "project.manage")
+        _guard(s, user, None, "project.manage")
         try:
             ps.delete_project(s, project_id)
         except ps.PanelError as exc:
             raise _fail(exc)
-        return {"deleted": project_id}
-
-
-class ReorderBody(BaseModel):
-    #: Ids in their new order. Omitted ids keep their relative order, after these.
-    ids: list[int]
+        return {"ok": True}
 
 
 @router.post("/projects/reorder")
 def reorder_projects(body: ReorderBody, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, None, "project.manage")
+        ps.reorder_projects(s, body.ids)
+        return {"ok": True}
+
+
+@router.get("/series")
+def list_series(project_id: Optional[int] = None, user=Depends(get_optional_user)):
+    """The comics on one slate, or every comic when no project is named."""
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        return [_series_dict(s, r) for r in ps.list_series(s, project_id)]
+
+
+@router.post("/series")
+def create_series(body: SeriesBody, user=Depends(get_optional_user)):
+    """A comic belongs to a slate, so the project it goes on is required."""
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, None, "project.manage")
+        try:
+            row = ps.create_series(
+                s, body.project_id, body.name, created_by=(user.id if user else None)
+            )
+        except ps.PanelError as exc:
+            raise _fail(exc)
+        return _series_dict(s, row)
+
+
+@router.patch("/series/{series_id}")
+def rename_project(series_id: int, body: ProjectBody, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, series_id, "project.manage")
+        try:
+            return _series_dict(s, ps.rename_series(s, series_id, body.name))
+        except ps.PanelError as exc:
+            raise _fail(exc)
+
+
+@router.delete("/series/{series_id}")
+def delete_series(series_id: int, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, series_id, "project.manage")
+        try:
+            ps.delete_series(s, series_id)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+        return {"deleted": series_id}
+
+
+
+
+@router.post("/series/reorder")
+def reorder_series(body: ReorderBody, user=Depends(get_optional_user)):
     """Persist a hand-arranged project grid."""
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
         _guard(s, user, None, "project.manage")
-        n = ps.reorder_projects(s, body.ids)
+        n = ps.reorder_series(s, body.ids)
         return {"reordered": n}
 
 
-@router.post("/projects/{project_id}/batches/reorder")
-def reorder_batches(project_id: int, body: ReorderBody, user=Depends(get_optional_user)):
+@router.post("/series/{series_id}/batches/reorder")
+def reorder_batches(series_id: int, body: ReorderBody, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, project_id, "batch.manage")
+        _guard(s, user, series_id, "batch.manage")
         try:
-            n = ps.reorder_batches(s, project_id, body.ids)
+            n = ps.reorder_batches(s, series_id, body.ids)
         except ps.PanelError as exc:
             raise _fail(exc)
         return {"reordered": n}
@@ -184,14 +279,14 @@ class CoverBody(BaseModel):
     media_id: Optional[str] = None
 
 
-@router.post("/projects/{project_id}/cover")
-def set_cover(project_id: int, body: CoverBody, user=Depends(get_optional_user)):
+@router.post("/series/{series_id}/cover")
+def set_series_cover(series_id: int, body: CoverBody, user=Depends(get_optional_user)):
     """Point the project card at an image. Cosmetic, so any account may do it."""
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, project_id, "batch.manage")
+        _guard(s, user, series_id, "batch.manage")
         try:
-            return _project_dict(s, ps.set_project_cover(s, project_id, body.media_id))
+            return _series_dict(s, ps.set_series_cover(s, series_id, body.media_id))
         except ps.PanelError as exc:
             raise _fail(exc)
 
@@ -225,7 +320,7 @@ async def import_folder(
     """
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _project_of_batch(s, batch_id), "batch.import")
+        _guard(s, user, _series_of_batch(s, batch_id), "batch.import")
 
     if len(files) != len(paths):
         raise HTTPException(400, "files and paths must line up one-to-one")
@@ -272,19 +367,19 @@ async def import_folder(
 # ── Panels ──────────────────────────────────────────────────────────────────
 
 
-def _project_of_batch(session, batch_id: int) -> int:
-    return ps.get_batch(session, batch_id).project_id
+def _series_of_batch(session, batch_id: int) -> int:
+    return ps.get_batch(session, batch_id).series_id
 
 
-def _project_of_panel(session, panel_id: int) -> int:
-    return _project_of_batch(session, ps.get_panel(session, panel_id).batch_id)
+def _series_of_panel(session, panel_id: int) -> int:
+    return _series_of_batch(session, ps.get_panel(session, panel_id).batch_id)
 
 
-def _guard(session, user, project_id, capability: str) -> str:
+def _guard(session, user, series_id, capability: str) -> str:
     """Server-side capability check. The UI's role switch is a drawing hint; this
     is the rule. A button the frontend declines to render is still a reachable
     endpoint, so every one of them is checked here too."""
-    return fp.require(session, user, project_id, capability)
+    return fp.require(session, user, series_id, capability)
 
 
 def _panel_dict(session, panel, *, with_images: bool = False) -> dict:
@@ -296,7 +391,7 @@ def _panel_dict(session, panel, *, with_images: bool = False) -> dict:
         "id": panel.id,
         "batch_id": panel.batch_id,
         "batch_name": batch.name,
-        "project_id": batch.project_id,
+        "series_id": batch.series_id,
         "code": panel.code,
         "order_index": panel.order_index,
         "status": panel.status,
@@ -351,7 +446,7 @@ def _panel_dict(session, panel, *, with_images: bool = False) -> dict:
 def list_panels(batch_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _project_of_batch(s, batch_id), "panel.read")
+        _guard(s, user, _series_of_batch(s, batch_id), "panel.read")
         try:
             ps.get_batch(s, batch_id)
         except ps.PanelError as exc:
@@ -375,26 +470,26 @@ class BatchUpdate(BaseModel):
     set_assignee: bool = False
 
 
-@router.get("/projects/{project_id}/batches")
-def list_batches(project_id: int, user=Depends(get_optional_user)):
+@router.get("/series/{series_id}/batches")
+def list_batches(series_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, project_id, "panel.read")
+        _guard(s, user, series_id, "panel.read")
         try:
-            ps.get_project(s, project_id)
+            ps.get_series(s, series_id)
         except ps.PanelError as exc:
             raise _fail(exc)
-        return [_batch_dict(s, b) for b in ps.list_batches(s, project_id)]
+        return [_batch_dict(s, b) for b in ps.list_batches(s, series_id)]
 
 
-@router.post("/projects/{project_id}/batches")
-def create_batch(project_id: int, body: BatchCreate, user=Depends(get_optional_user)):
+@router.post("/series/{series_id}/batches")
+def create_batch(series_id: int, body: BatchCreate, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, project_id, "batch.manage")
+        _guard(s, user, series_id, "batch.manage")
         try:
             row = ps.create_batch(
-                s, project_id, body.name, assignee_user_id=body.assignee_user_id
+                s, series_id, body.name, assignee_user_id=body.assignee_user_id
             )
             return _batch_dict(s, row)
         except ps.PanelError as exc:
@@ -407,15 +502,15 @@ class BatchesCreate(BaseModel):
     batches: list[BatchCreate]
 
 
-@router.post("/projects/{project_id}/batches/bulk")
-def create_batches(project_id: int, body: BatchesCreate, user=Depends(get_optional_user)):
+@router.post("/series/{series_id}/batches/bulk")
+def create_batches(series_id: int, body: BatchesCreate, user=Depends(get_optional_user)):
     """Create several batches in one commit — dividing a comic is one decision."""
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, project_id, "batch.manage")
+        _guard(s, user, series_id, "batch.manage")
         try:
             rows = ps.create_batches(
-                s, project_id, [(b.name, b.assignee_user_id) for b in body.batches]
+                s, series_id, [(b.name, b.assignee_user_id) for b in body.batches]
             )
         except ps.PanelError as exc:
             raise _fail(exc)
@@ -426,7 +521,7 @@ def create_batches(project_id: int, body: BatchesCreate, user=Depends(get_option
 def get_batch(batch_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _project_of_batch(s, batch_id), "panel.read")
+        _guard(s, user, _series_of_batch(s, batch_id), "panel.read")
         try:
             return _batch_dict(s, ps.get_batch(s, batch_id))
         except ps.PanelError as exc:
@@ -437,7 +532,7 @@ def get_batch(batch_id: int, user=Depends(get_optional_user)):
 def update_batch(batch_id: int, body: BatchUpdate, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _project_of_batch(s, batch_id), "batch.manage")
+        _guard(s, user, _series_of_batch(s, batch_id), "batch.manage")
         try:
             row = ps.update_batch(
                 s, batch_id, name=body.name,
@@ -453,7 +548,7 @@ def update_batch(batch_id: int, body: BatchUpdate, user=Depends(get_optional_use
 def delete_batch(batch_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _project_of_batch(s, batch_id), "batch.manage")
+        _guard(s, user, _series_of_batch(s, batch_id), "batch.manage")
         try:
             ps.delete_batch(s, batch_id)
         except ps.PanelError as exc:
@@ -465,7 +560,7 @@ def delete_batch(batch_id: int, user=Depends(get_optional_user)):
 def get_panel(panel_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _project_of_panel(s, panel_id), "panel.read")
+        _guard(s, user, _series_of_panel(s, panel_id), "panel.read")
         try:
             return _panel_dict(s, ps.get_panel(s, panel_id), with_images=True)
         except ps.PanelError as exc:
@@ -519,7 +614,7 @@ async def download_panel(panel_id: int, user=Depends(get_optional_user)):
     """The one image this panel delivers, named after the panel."""
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _project_of_panel(s, panel_id), "panel.read")
+        _guard(s, user, _series_of_panel(s, panel_id), "panel.read")
         try:
             panel = ps.get_panel(s, panel_id)
         except ps.PanelError as exc:
@@ -576,7 +671,7 @@ async def export_batch(batch_id: int, user=Depends(get_optional_user)):
     """Every approved panel in one artist's batch, as a zip."""
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _project_of_batch(s, batch_id), "panel.read")
+        _guard(s, user, _series_of_batch(s, batch_id), "panel.read")
         try:
             batch = ps.get_batch(s, batch_id)
         except ps.PanelError as exc:
@@ -599,18 +694,18 @@ async def export_batch(batch_id: int, user=Depends(get_optional_user)):
     )
 
 
-@router.get("/projects/{project_id}/export")
-async def export_project(project_id: int, user=Depends(get_optional_user)):
+@router.get("/series/{series_id}/export")
+async def export_project(series_id: int, user=Depends(get_optional_user)):
     """Every approved panel in the comic, foldered by batch."""
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, project_id, "panel.read")
+        _guard(s, user, series_id, "panel.read")
         try:
-            project = ps.get_project(s, project_id)
+            project = ps.get_series(s, series_id)
         except ps.PanelError as exc:
             raise _fail(exc)
         panels = [
-            p for p in ps.list_project_panels(s, project_id) if p.status == "approved"
+            p for p in ps.list_series_panels(s, series_id) if p.status == "approved"
         ]
         if not panels:
             raise HTTPException(404, "no approved panels in this project yet")
@@ -657,7 +752,7 @@ def whoami(user=Depends(get_optional_user)):
             # is only for deciding whether to show the Review tab at all.
             "projects": {
                 str(proj.id): fp.role_for(s, user, proj.id)
-                for proj in ps.list_projects(s)
+                for proj in ps.list_series(s)
             },
         }
 
@@ -667,38 +762,38 @@ class MemberBody(BaseModel):
     role: str = fp.ARTIST
 
 
-@router.get("/projects/{project_id}/members")
-def list_members(project_id: int, user=Depends(get_optional_user)):
+@router.get("/series/{series_id}/members")
+def list_members(series_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, project_id, "panel.read")
+        _guard(s, user, series_id, "panel.read")
         return [
             {
                 "user_id": str(m.user_id),
                 "name": _user_name(m.user_id),
                 "role": m.role,
             }
-            for m in ps.list_members(s, project_id)
+            for m in ps.list_members(s, series_id)
         ]
 
 
-@router.put("/projects/{project_id}/members")
-def put_member(project_id: int, body: MemberBody, user=Depends(get_optional_user)):
+@router.put("/series/{series_id}/members")
+def put_member(series_id: int, body: MemberBody, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, project_id, "member.manage")
+        _guard(s, user, series_id, "member.manage")
         if body.role not in fp.FLOW_ROLES:
             raise HTTPException(400, f"role must be one of {list(fp.FLOW_ROLES)}")
-        m = ps.set_member(s, project_id, body.user_id, body.role)
+        m = ps.set_member(s, series_id, body.user_id, body.role)
         return {"user_id": str(m.user_id), "name": _user_name(m.user_id), "role": m.role}
 
 
-@router.delete("/projects/{project_id}/members/{user_id}")
-def delete_member(project_id: int, user_id: uuid.UUID, user=Depends(get_optional_user)):
+@router.delete("/series/{series_id}/members/{user_id}")
+def delete_member(series_id: int, user_id: uuid.UUID, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, project_id, "member.manage")
-        ps.remove_member(s, project_id, user_id)
+        _guard(s, user, series_id, "member.manage")
+        ps.remove_member(s, series_id, user_id)
         return {"ok": True}
 
 
@@ -726,14 +821,14 @@ def _queue_dict(session, panel) -> dict:
         if not n.resolved
     ]
     batch = ps.get_batch(session, panel.batch_id)
-    d["project_name"] = ps.get_project(session, batch.project_id).name
+    d["series_name"] = ps.get_series(session, batch.series_id).name
     return d
 
 
 @router.get("/panels")
 def all_panels(
     status: Optional[str] = None,
-    project_id: Optional[int] = None,
+    series_id: Optional[int] = None,
     assignee: Optional[uuid.UUID] = None,
     q: Optional[str] = None,
     user=Depends(get_optional_user),
@@ -752,7 +847,7 @@ def all_panels(
         rows = ps.search_panels(
             s,
             statuses=statuses or None,
-            project_id=project_id,
+            series_id=series_id,
             assignee_user_id=assignee,
             q=q,
         )
@@ -762,22 +857,22 @@ def all_panels(
             _queue_dict(s, row)
             for row in rows
             if fp.allows(
-                fp.role_for(s, user, _project_of_batch(s, row.batch_id)), "panel.read"
+                fp.role_for(s, user, _series_of_batch(s, row.batch_id)), "panel.read"
             )
         ]
 
 
 @router.get("/review-queue")
-def review_queue(project_id: Optional[int] = None, user=Depends(get_optional_user)):
+def review_queue(series_id: Optional[int] = None, user=Depends(get_optional_user)):
     """Everything handed in and waiting on a verdict, across every artist."""
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        rows = ps.panels_by_status(s, ["submitted"], project_id=project_id)
+        rows = ps.panels_by_status(s, ["submitted"], series_id=series_id)
         # Filtered, not refused: a lead who reviews one comic and merely watches
         # another should see the first without the page erroring on the second.
         out = []
         for row in rows:
-            pid = _project_of_batch(s, row.batch_id)
+            pid = _series_of_batch(s, row.batch_id)
             if fp.allows(fp.role_for(s, user, pid), "panel.review"):
                 out.append(_queue_dict(s, row))
         return out
@@ -908,7 +1003,7 @@ def panel_assets(panel_id: int, user=Depends(get_optional_user)):
 
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _project_of_panel(s, panel_id), "panel.read")
+        _guard(s, user, _series_of_panel(s, panel_id), "panel.read")
         try:
             ps.get_panel(s, panel_id)
         except ps.PanelError as exc:
@@ -934,7 +1029,7 @@ def add_panel_asset(panel_id: int, body: PanelAssetBody, user=Depends(get_option
 
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _project_of_panel(s, panel_id), "panel.generate")
+        _guard(s, user, _series_of_panel(s, panel_id), "panel.generate")
         try:
             ps.get_panel(s, panel_id)
         except ps.PanelError as exc:
@@ -992,7 +1087,7 @@ def generate(panel_id: int, body: GenerateBody, user=Depends(get_optional_user))
     """
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _project_of_panel(s, panel_id), "panel.generate")
+        _guard(s, user, _series_of_panel(s, panel_id), "panel.generate")
         try:
             panel = ps.get_panel(s, panel_id)
         except ps.PanelError as exc:
@@ -1048,7 +1143,7 @@ def add_versions(panel_id: int, body: VersionsBody, user=Depends(get_optional_us
     """File finished images against the panel as its next version(s)."""
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _project_of_panel(s, panel_id), "panel.generate")
+        _guard(s, user, _series_of_panel(s, panel_id), "panel.generate")
         try:
             ps.add_generated(
                 s,
@@ -1085,7 +1180,7 @@ class SubmitBody(BaseModel):
 def submit(panel_id: int, body: SubmitBody | None = None, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _project_of_panel(s, panel_id), "panel.submit")
+        _guard(s, user, _series_of_panel(s, panel_id), "panel.submit")
         try:
             panel = ps.submit_panel(s, panel_id, media_id=(body.media_id if body else None))
             return _panel_dict(s, panel, with_images=True)
@@ -1097,7 +1192,7 @@ def submit(panel_id: int, body: SubmitBody | None = None, user=Depends(get_optio
 def review(panel_id: int, body: ReviewBody, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _project_of_panel(s, panel_id), "panel.review")
+        _guard(s, user, _series_of_panel(s, panel_id), "panel.review")
         try:
             panel = ps.review_panel(
                 s, panel_id, approve=body.approve, notes=body.notes,
@@ -1112,7 +1207,7 @@ def review(panel_id: int, body: ReviewBody, user=Depends(get_optional_user)):
 def reopen(panel_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _project_of_panel(s, panel_id), "panel.review")
+        _guard(s, user, _series_of_panel(s, panel_id), "panel.review")
         try:
             return _panel_dict(s, ps.reopen_panel(s, panel_id), with_images=True)
         except ps.PanelError as exc:
@@ -1127,7 +1222,7 @@ class NoteBody(BaseModel):
 def add_note(panel_id: int, body: NoteBody, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, _project_of_panel(s, panel_id), "panel.generate")
+        _guard(s, user, _series_of_panel(s, panel_id), "panel.generate")
         try:
             ps.add_note(s, panel_id, body.body, author_user_id=(user.id if user else None))
             return _panel_dict(s, ps.get_panel(s, panel_id), with_images=True)
@@ -1149,7 +1244,7 @@ def resolve_note(note_id: int, body: NoteResolveBody, user=Depends(get_optional_
         note = s.get(FlowPanelNote, note_id)
         if note is None:
             raise HTTPException(404, "note not found")
-        _guard(s, user, _project_of_panel(s, note.panel_id), "panel.generate")
+        _guard(s, user, _series_of_panel(s, note.panel_id), "panel.generate")
         try:
             note = ps.set_note_resolved(
                 s, note_id, body.resolved, user_id=(user.id if user else None)

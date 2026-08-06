@@ -3,7 +3,7 @@
 Sealed off from ``services/permissions.py`` on purpose. That module governs the
 production hierarchy (Project → Series → Episode → Sequence) and its
 ``project_member`` table; this one governs comics, batches and panels and reads
-``flow_project_member``. The vocabulary is deliberately the same so nobody has to
+``flow_series_member``. The vocabulary is deliberately the same so nobody has to
 learn two ladders, but a role in one grants nothing in the other.
 
 **This is the rule. The frontend's `store/giantflowRole.ts` is a drawing hint.**
@@ -33,7 +33,7 @@ from typing import Optional
 from fastapi import HTTPException
 from sqlmodel import Session, select
 
-from flowboard.db.models import FlowBatch, FlowProjectMember, User
+from flowboard.db.models import FlowBatch, FlowSeriesMember, User
 
 ADMIN = "admin"
 PRODUCER = "producer"
@@ -75,7 +75,7 @@ def normalize_member_role(role: Optional[str]) -> str:
     """The same, for a value stored on a member row — where ``admin`` is not a
     legal answer.
 
-    ``admin`` is a system role. Letting a ``flow_project_member`` row carry it
+    ``admin`` is a system role. Letting a ``flow_series_member`` row carry it
     would mean one row on one comic granted the right to delete everybody
     else's, which is the opposite of what a per-project role is for. The write
     path coerces and the route validates; this is the third lock, on the read
@@ -85,7 +85,7 @@ def normalize_member_role(role: Optional[str]) -> str:
     return r if r in FLOW_ROLES else ARTIST
 
 
-def role_for(session: Session, user: Optional[User], project_id: Optional[int]) -> str:
+def role_for(session: Session, user: Optional[User], series_id: Optional[int]) -> str:
     """This user's authority on this comic. See the module docstring for order."""
     # No auth configured (dev, and the whole existing test suite) — behave as the
     # single-user app always did rather than inventing a lockout.
@@ -93,19 +93,19 @@ def role_for(session: Session, user: Optional[User], project_id: Optional[int]) 
         return ADMIN
     if getattr(user, "role", None) == ADMIN:
         return ADMIN
-    if project_id is None:
+    if series_id is None:
         return VIEWER
     row = session.exec(
-        select(FlowProjectMember).where(
-            FlowProjectMember.project_id == project_id,
-            FlowProjectMember.user_id == user.id,
+        select(FlowSeriesMember).where(
+            FlowSeriesMember.series_id == series_id,
+            FlowSeriesMember.user_id == user.id,
         )
     ).first()
     if row is not None:
         return normalize_member_role(row.role)
     assigned = session.exec(
         select(FlowBatch).where(
-            FlowBatch.project_id == project_id,
+            FlowBatch.series_id == series_id,
             FlowBatch.assignee_user_id == user.id,
         )
     ).first()
@@ -120,10 +120,10 @@ def allows(role: Optional[str], capability: str) -> bool:
 
 
 def require(
-    session: Session, user: Optional[User], project_id: Optional[int], capability: str
+    session: Session, user: Optional[User], series_id: Optional[int], capability: str
 ) -> str:
     """Raise 403 unless this user has ``capability`` on this comic."""
-    role = role_for(session, user, project_id)
+    role = role_for(session, user, series_id)
     if not allows(role, capability):
         raise HTTPException(
             403,
@@ -146,7 +146,7 @@ def best_role(session: Session, user: Optional[User]) -> str:
     if user is None or getattr(user, "role", None) == ADMIN:
         return ADMIN
     rows = session.exec(
-        select(FlowProjectMember).where(FlowProjectMember.user_id == user.id)
+        select(FlowSeriesMember).where(FlowSeriesMember.user_id == user.id)
     ).all()
     best = VIEWER
     for r in rows:

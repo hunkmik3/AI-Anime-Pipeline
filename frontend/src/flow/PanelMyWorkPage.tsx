@@ -116,7 +116,7 @@ function Section({
                 {p.code}
               </Link>
               <div className="pn__mycard-sub">
-                {p.project_name} · {p.batch_name}
+                {p.series_name} · {p.batch_name}
               </div>
               {/* The whole reason this page exists. Ticking one off is the other
                   half: `unresolved_notes` drives the red badge on the batch card

@@ -175,7 +175,7 @@ function ReviewRow({ panel, onDone }: { panel: QueuePanel; onDone: () => Promise
           {panel.code}
         </Link>
         <div className="pn__qsub">
-          {panel.project_name} · {panel.batch_name}
+          {panel.series_name} · {panel.batch_name}
         </div>
         <div className="pn__qwho">{panel.assignee_name ?? "Unassigned"}</div>
         {(panel.notes ?? []).length > 0 ? (
