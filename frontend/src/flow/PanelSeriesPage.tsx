@@ -19,7 +19,7 @@ import { toast } from "../store/toast";
 import { useDragOrder } from "./useDragOrder";
 
 /**
- * The Project list — one card per comic being adapted.
+ * The Series list — one card per comic on this project's slate.
  *
  * A series holds nothing but a name and its batches. The material lives one
  * level down: each batch is one artist's share and carries its own imported
@@ -58,7 +58,7 @@ export function PanelSeriesPage() {
     try {
       await createPanelSeries(pid, clean);
       await load();
-      toast("Project created. Add a batch per artist inside it.");
+      toast("Series created. Add a batch per artist inside it.");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -69,7 +69,10 @@ export function PanelSeriesPage() {
   return (
     <div className="shellpage pn__wide">
       <GiantflowNav />
-      <PageHeader title="Project" />
+      <PageHeader
+        crumb={<Link to="/giantflow">← Projects</Link>}
+        title="Series"
+      />
 
       {error ? <p className="inbox__err">{error}</p> : null}
       {series === null ? <p className="rfoot">Loading…</p> : null}
@@ -134,7 +137,7 @@ function AddSeriesTile({
       <li className="pn__tile pn__add">
         <button type="button" className="pn__add-btn" onClick={() => setOpen(true)}>
           <span className="pn__add-plus" aria-hidden="true">+</span>
-          <span>Add Project</span>
+          <span>Add Series</span>
         </button>
       </li>
     );
@@ -158,7 +161,7 @@ function AddSeriesTile({
         <input
           ref={inputRef}
           className="pn__add-input"
-          placeholder="Project name…"
+          placeholder="Series name…"
           value={name}
           disabled={busy}
           onChange={(e) => setName(e.target.value)}
