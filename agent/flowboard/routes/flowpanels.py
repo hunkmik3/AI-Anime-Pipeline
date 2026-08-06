@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
+from datetime import date
 from typing import Optional
 
 from fastapi import (
@@ -107,7 +108,11 @@ def _series_dict(session, row) -> dict:
         #: `/giantflow/p/undefined` and the series page asked for project NaN.
         "project_id": row.project_id,
         "name": row.name,
+        # Who set it up, when, and when it ships — the first three questions
+        # asked about any comic on a slate run by several PMs.
+        "created_by_name": _user_name(row.created_by),
         "created_at": row.created_at.isoformat() if row.created_at else None,
+        "due_date": row.due_date.isoformat() if row.due_date else None,
         # Hand-picked cover, else the comic's opening panel.
         "thumb_media_id": ps.series_cover_media_id(session, row),
         "has_cover": bool(row.cover_media_id),
@@ -203,6 +208,13 @@ class SeriesBody(BaseModel):
     name: str = Field(min_length=1)
 
 
+class SeriesPatch(BaseModel):
+    name: Optional[str] = None
+    due_date: Optional[date] = None
+    #: Distinguishes "clear the deadline" from "leave it alone".
+    set_due: bool = False
+
+
 @router.post("/projects")
 def create_project(body: ProjectBody, user=Depends(get_optional_user)):
     with get_session() as s:
@@ -292,12 +304,25 @@ def create_series(body: SeriesBody, user=Depends(get_optional_user)):
 
 
 @router.patch("/series/{series_id}")
-def rename_project(series_id: int, body: ProjectBody, user=Depends(get_optional_user)):
+def update_series(series_id: int, body: SeriesPatch, user=Depends(get_optional_user)):
+    """Renaming a comic and scheduling one are different jobs.
+
+    Naming is the admin's — the code is how the studio and the client refer to
+    the work. The deadline is the PM's; they are the one running it. Gating both
+    at admin meant a PM could not set a date on their own comic.
+    """
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard(s, user, series_id, "project.manage")
+        _guard(
+            s, user, series_id,
+            "project.manage" if body.name is not None else "batch.manage",
+        )
         try:
-            return _series_dict(s, ps.rename_series(s, series_id, body.name))
+            row = ps.update_series(
+                s, series_id, name=body.name,
+                due_date=body.due_date, set_due=body.set_due,
+            )
+            return _series_dict(s, row)
         except ps.PanelError as exc:
             raise _fail(exc)
 
@@ -1044,6 +1069,8 @@ def _chapter_dict(session, row) -> dict:
         "id": row.id,
         "series_id": row.series_id,
         "name": row.name,
+        "created_by_name": _user_name(row.created_by),
+        "due_date": row.due_date.isoformat() if row.due_date else None,
         "thumb_media_id": ps.chapter_cover_media_id(session, row),
         "has_cover": bool(row.cover_media_id),
         "batch_count": len(ps.list_batches(session, row.id)),
@@ -1075,6 +1102,7 @@ def list_chapters(series_id: int, user=Depends(get_optional_user)):
 
 class ChapterBody(BaseModel):
     name: str = Field(min_length=1)
+    due_date: Optional[date] = None
 
 
 @router.post("/series/{series_id}/chapters")
@@ -1083,7 +1111,13 @@ def create_chapter(series_id: int, body: ChapterBody, user=Depends(get_optional_
         resource_guard.require_signed_in(s, user)
         _guard(s, user, series_id, "batch.manage")
         try:
-            return _chapter_dict(s, ps.create_chapter(s, series_id, body.name))
+            return _chapter_dict(
+                s,
+                ps.create_chapter(
+                    s, series_id, body.name,
+                    created_by=(user.id if user else None), due_date=body.due_date,
+                ),
+            )
         except ps.PanelError as exc:
             raise _fail(exc)
 
@@ -1103,6 +1137,8 @@ class ChapterPatch(BaseModel):
     name: Optional[str] = None
     cover_media_id: Optional[str] = None
     set_cover: bool = False
+    due_date: Optional[date] = None
+    set_due: bool = False
 
 
 @router.patch("/chapters/{chapter_id}")
@@ -1114,6 +1150,7 @@ def update_chapter(chapter_id: int, body: ChapterPatch, user=Depends(get_optiona
             row = ps.update_chapter(
                 s, chapter_id, name=body.name,
                 cover_media_id=body.cover_media_id, set_cover=body.set_cover,
+                due_date=body.due_date, set_due=body.set_due,
             )
             return _chapter_dict(s, row)
         except ps.PanelError as exc:

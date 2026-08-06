@@ -6,6 +6,7 @@ import {
   deletePanelSeries,
   listPanelSeries,
   renamePanelSeries,
+  updatePanelSeries,
   reorderPanelSeries,
   setPanelSeriesCover,
   thumbUrl,
@@ -16,6 +17,7 @@ import { PageHeader } from "../components/shell/PageHeader";
 import { GiantflowNav } from "./GiantflowNav";
 import { useGiantflowRole } from "../store/giantflowRole";
 import { toast } from "../store/toast";
+import { PanelMeta } from "./PanelMeta";
 import { useDragOrder } from "./useDragOrder";
 
 /**
@@ -328,6 +330,21 @@ function SeriesCard({
               <span style={{ width: `${pct}%` }} />
             </div>
           ) : null}
+          <PanelMeta
+            createdBy={series.created_by_name}
+            createdAt={series.created_at}
+            dueDate={series.due_date}
+            onSetDue={
+              manage
+                ? (v) =>
+                    void updatePanelSeries(series.id, { due_date: v, set_due: true })
+                      .then(onChanged)
+                      .catch((e) =>
+                        toast(e instanceof Error ? e.message : "Failed"),
+                      )
+                : undefined
+            }
+          />
         </div>
       </Link>
 

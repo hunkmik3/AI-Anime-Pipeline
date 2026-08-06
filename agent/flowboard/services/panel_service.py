@@ -255,6 +255,30 @@ def set_series_cover(
     return row
 
 
+def update_series(
+    session: Session,
+    series_id: int,
+    *,
+    name: Optional[str] = None,
+    due_date=None,
+    set_due: bool = False,
+) -> FlowSeries:
+    """Rename and/or set a deadline. ``set_due`` distinguishes "clear it" from
+    "leave it alone" — the same reason `update_batch` carries `set_assignee`."""
+    row = get_series(session, series_id)
+    if name is not None:
+        clean = name.strip()
+        if not clean:
+            raise PanelError("bad_input", "a series name is required")
+        row.name = clean
+    if set_due:
+        row.due_date = due_date
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
 def rename_series(session: Session, series_id: int, name: str) -> FlowSeries:
     clean = (name or "").strip()
     if not clean:
@@ -304,13 +328,23 @@ def get_chapter(session: Session, chapter_id: int) -> FlowChapter:
     return row
 
 
-def create_chapter(session: Session, series_id: int, name: str) -> FlowChapter:
+def create_chapter(
+    session: Session,
+    series_id: int,
+    name: str,
+    *,
+    created_by: Optional[uuid.UUID] = None,
+    due_date=None,
+) -> FlowChapter:
     clean = (name or "").strip()
     if not clean:
         raise PanelError("bad_input", "a chapter name is required")
     get_series(session, series_id)
     nxt = len(list_chapters(session, series_id))
-    row = FlowChapter(series_id=series_id, name=clean, order_index=nxt)
+    row = FlowChapter(
+        series_id=series_id, name=clean, order_index=nxt,
+        created_by=created_by, due_date=due_date,
+    )
     session.add(row)
     session.commit()
     session.refresh(row)
@@ -324,8 +358,12 @@ def update_chapter(
     name: Optional[str] = None,
     cover_media_id: Optional[str] = None,
     set_cover: bool = False,
+    due_date=None,
+    set_due: bool = False,
 ) -> FlowChapter:
     row = get_chapter(session, chapter_id)
+    if set_due:
+        row.due_date = due_date
     if name is not None:
         clean = name.strip()
         if not clean:

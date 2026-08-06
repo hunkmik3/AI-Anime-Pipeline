@@ -2578,3 +2578,35 @@
 .shellpage.pn__full .pn__qrow {
   grid-template-columns: minmax(0, 520px) minmax(0, 1fr) minmax(260px, 320px);
 }
+
+/* Who made it, when, and when it is due — on the card, because those are the
+   questions asked before opening anything. */
+.pn__meta {
+  margin: 9px 0 0; padding: 9px 0 0;
+  display: grid; grid-template-columns: auto 1fr; gap: 3px 10px;
+  border-top: 1px solid var(--border, #2a2e38);
+  font-size: 11.5px;
+}
+.pn__meta > div { display: contents; }
+.pn__meta dt { color: var(--muted); white-space: nowrap; }
+.pn__meta dd {
+  margin: 0; display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  color: var(--muted);
+}
+.pn__meta dd b { color: #cbd5e1; font-weight: 600; }
+.pn__meta time { opacity: .8; }
+.pn__due-input {
+  padding: 1px 5px; font: inherit; font-size: 11.5px;
+  color: #cbd5e1; background: var(--panel, #14171d);
+  border: 1px solid var(--border, #2a2e38); border-radius: 6px;
+  color-scheme: dark;
+}
+.pn__due-input:hover { border-color: var(--accent, #00a76f); }
+/* The subtraction, done for you — it is the part people get wrong when
+   scanning a list of deadlines. */
+.pn__due-badge {
+  padding: 1px 7px; border-radius: 999px;
+  font-size: 10.5px; font-weight: 600;
+  background: rgba(0, 167, 111, .16); color: #6ee7b7;
+}
+.pn__due-badge.is-late { background: rgba(239, 68, 68, .18); color: #fca5a5; }

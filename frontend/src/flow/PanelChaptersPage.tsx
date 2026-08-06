@@ -17,6 +17,7 @@ import { useGiantflowRole } from "../store/giantflowRole";
 import { toast } from "../store/toast";
 import { GiantflowNav } from "./GiantflowNav";
 import { PanelHero, sumCounts } from "./PanelHero";
+import { PanelMeta } from "./PanelMeta";
 import { useDragOrder } from "./useDragOrder";
 
 /**
@@ -314,6 +315,21 @@ function ChapterCard({
               <span style={{ width: `${pct}%` }} />
             </div>
           ) : null}
+          <PanelMeta
+            createdBy={chapter.created_by_name}
+            createdAt={chapter.created_at}
+            dueDate={chapter.due_date}
+            onSetDue={
+              manage
+                ? (v) =>
+                    void updateChapter(chapter.id, { due_date: v, set_due: true })
+                      .then(onChanged)
+                      .catch((e) =>
+                        toast(e instanceof Error ? e.message : "Failed"),
+                      )
+                : undefined
+            }
+          />
         </div>
       </Link>
 

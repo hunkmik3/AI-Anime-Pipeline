@@ -2333,6 +2333,8 @@ export interface FlowChapter {
   id: number;
   series_id: number;
   name: string;
+  created_by_name: string | null;
+  due_date: string | null;
   thumb_media_id: string | null;
   has_cover: boolean;
   batch_count: number;
@@ -2353,16 +2355,26 @@ export function getChapter(chapterId: number): Promise<FlowChapter> {
   return api<FlowChapter>(`/api/flowstudio/chapters/${chapterId}`);
 }
 
-export function createChapter(seriesId: number, name: string): Promise<FlowChapter> {
+export function createChapter(
+  seriesId: number,
+  name: string,
+  dueDate?: string | null,
+): Promise<FlowChapter> {
   return api<FlowChapter>(`/api/flowstudio/series/${seriesId}/chapters`, {
     method: "POST",
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, due_date: dueDate ?? null }),
   });
 }
 
 export function updateChapter(
   chapterId: number,
-  patch: { name?: string; cover_media_id?: string | null; set_cover?: boolean },
+  patch: {
+    name?: string;
+    cover_media_id?: string | null;
+    set_cover?: boolean;
+    due_date?: string | null;
+    set_due?: boolean;
+  },
 ): Promise<FlowChapter> {
   return api<FlowChapter>(`/api/flowstudio/chapters/${chapterId}`, {
     method: "PATCH",
@@ -2439,7 +2451,10 @@ export interface PanelSeries {
   thumb_media_id: string | null;
   /** True only when someone uploaded one — drives Change vs Thumbnail. */
   has_cover: boolean;
+  /** Who set it up, when, and when it ships. */
+  created_by_name: string | null;
   created_at: string | null;
+  due_date: string | null;
   /** A comic ships an instalment at a time; each chapter is divided into a
    *  batch per artist. */
   chapter_count: number;
@@ -2524,6 +2539,16 @@ export function createPanelSeries(projectId: number, name: string): Promise<Pane
   return api<PanelSeries>("/api/flowstudio/series", {
     method: "POST",
     body: JSON.stringify({ project_id: projectId, name }),
+  });
+}
+
+export function updatePanelSeries(
+  id: number,
+  patch: { name?: string; due_date?: string | null; set_due?: boolean },
+): Promise<PanelSeries> {
+  return api<PanelSeries>(`/api/flowstudio/series/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
   });
 }
 

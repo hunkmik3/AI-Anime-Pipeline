@@ -249,3 +249,66 @@ def test_reordering_series_cannot_reach_another_slate(client):
             "reordering one slate's series moved another slate's"
         )
 
+
+# ── who made it, and when it is due ───────────────────────────────────────
+
+
+def test_a_chapter_records_who_created_it(client):
+    t = _tree(client, chapters=0, batches=0, panels=0)
+    h = t["h"]
+    made = client.post(
+        f"/api/flowstudio/series/{t['series_id']}/chapters",
+        json={"name": "Ch 1"},
+        headers=h,
+    ).json()
+    assert made["created_by_name"] == "tr_admin"
+    assert made["due_date"] is None
+
+
+def test_setting_and_clearing_a_deadline(client):
+    """`set_due` is what separates "clear it" from "leave it alone" — without it
+    every unrelated PATCH would wipe the date."""
+    t = _tree(client, chapters=1, batches=0, panels=0)
+    h = t["h"]
+    cid = t["chapters"][0]
+
+    got = client.patch(
+        f"/api/flowstudio/chapters/{cid}",
+        json={"due_date": "2026-12-01", "set_due": True},
+        headers=h,
+    ).json()
+    assert got["due_date"] == "2026-12-01"
+
+    # A rename must not disturb it.
+    got = client.patch(
+        f"/api/flowstudio/chapters/{cid}", json={"name": "Renamed"}, headers=h
+    ).json()
+    assert got["due_date"] == "2026-12-01"
+    assert got["name"] == "Renamed"
+
+    got = client.patch(
+        f"/api/flowstudio/chapters/{cid}",
+        json={"due_date": None, "set_due": True},
+        headers=h,
+    ).json()
+    assert got["due_date"] is None
+
+
+def test_scheduling_is_the_pms_job_and_naming_is_the_admins(client):
+    """Gating both at admin meant a PM could not put a date on their own comic."""
+    user_service.create_user("tr_pm", "pw123456", role="user")
+    t = _tree(client, chapters=0, batches=0, panels=0)
+    with get_session() as s:
+        pm = user_service.get_by_username("tr_pm")
+        ps.set_member(s, t["series_id"], pm.id, "producer")
+    hpm = _login(client, "tr_pm")
+
+    assert client.patch(
+        f"/api/flowstudio/series/{t['series_id']}",
+        json={"due_date": "2026-12-01", "set_due": True},
+        headers=hpm,
+    ).status_code == 200
+    assert client.patch(
+        f"/api/flowstudio/series/{t['series_id']}", json={"name": "Nope"}, headers=hpm
+    ).status_code == 403
+

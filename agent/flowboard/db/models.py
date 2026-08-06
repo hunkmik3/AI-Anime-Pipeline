@@ -14,7 +14,7 @@ CHAR(32) on SQLite — no per-dialect handling needed.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy import JSON, UniqueConstraint, text
@@ -360,6 +360,9 @@ class FlowSeries(SQLModel, table=True):
     created_by: Optional[uuid.UUID] = Field(
         default=None, foreign_key="app_user.id", index=True
     )
+    #: A deadline is a DAY. Storing a timestamp would make "due today" depend on
+    #: which timezone the server happens to run in.
+    due_date: Optional[date] = None
     created_at: datetime = Field(default_factory=_utcnow, index=True)
 
 
@@ -403,6 +406,10 @@ class FlowChapter(SQLModel, table=True):
     name: str
     cover_media_id: Optional[str] = None
     order_index: int = Field(default=0, index=True)
+    due_date: Optional[date] = None
+    created_by: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="app_user.id", index=True
+    )
     created_at: datetime = Field(default_factory=_utcnow)
 
 
