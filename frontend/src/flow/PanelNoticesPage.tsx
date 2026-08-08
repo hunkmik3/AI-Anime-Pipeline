@@ -124,22 +124,29 @@ export function PanelNoticesPage() {
       {data === null ? <p className="rfoot">Loading…</p> : null}
 
       {present.length > 1 ? (
-        <div className="pn__filters">
+        <div className="pn__filters pn__nfilters">
           <div className="seg">
+            {/* Neutral, not accent: selected "All" in green would read as the
+                same thing as selected "Approved", which is also green. */}
             <button
-              className={`seg__btn${status === "all" ? " is-on" : ""}`}
+              className={`seg__btn is-flat${status === "all" ? " is-on" : ""}`}
               onClick={() => setStatus("all")}
             >
-              All {allTodo.length + allFeed.length}
+              All <b>{allTodo.length + allFeed.length}</b>
             </button>
             {present.map(([key, count]) => (
+              // The tone rides along even when the button is off, so the ACTIVE
+              // filter takes the colour of the thing it is filtering — picking
+              // "Sent back" turns the control red, the same red the rows carry.
+              // A single accent for every selection made the strip say only
+              // "something is selected", never which.
               <button
                 key={key}
-                className={`seg__btn${status === key ? " is-on" : ""}`}
+                className={`seg__btn is-${STATUS_TONE[key]}${status === key ? " is-on" : ""}`}
                 onClick={() => setStatus(key)}
               >
-                <i className={`pn__nseg-dot is-${STATUS_TONE[key]}`} aria-hidden="true" />
-                {STATUS_LABEL[key]} {count}
+                <i className="pn__nseg-dot" aria-hidden="true" />
+                {STATUS_LABEL[key]} <b>{count}</b>
               </button>
             ))}
           </div>

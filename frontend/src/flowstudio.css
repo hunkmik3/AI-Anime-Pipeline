@@ -2683,17 +2683,64 @@ td.pn__tcomic { min-width: 180px; color: var(--text); }
   background: var(--panel-high, #1d2129);
 }
 
-/* The status filter. A coloured dot on each button so the strip teaches the
-   same vocabulary as the rows' left edges, rather than being a second, unrelated
-   set of labels for the same six things. */
-.pn__nseg-dot {
-  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
-  margin-right: 6px; vertical-align: 1px; background: #3a4150;
+/* The status filter.
+   Scoped to this page rather than restyled on `.seg` itself: the same control
+   sits in the review queue and the role preview, where it is a secondary thing
+   that should stay quiet. Here it is the primary way through 41 rows, so it is
+   sized for that — the shared 12px muted-grey version read as a caption under
+   the header rather than as controls. */
+.pn__nfilters { gap: 14px; margin: 6px 0 18px; }
+.pn__nfilters .seg {
+  border-radius: 10px;
+  border-color: #363d4a;
+  background: var(--panel, #14171d);
 }
-.pn__nseg-dot.is-bad { background: #ef4444; }
-.pn__nseg-dot.is-warn { background: #f59e0b; }
-.pn__nseg-dot.is-good { background: var(--accent, #00a76f); }
-.pn__nseg-dot.is-flat { background: #3a4150; }
+.pn__nfilters .seg__btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 8px 15px;
+  font-size: 13px; font-weight: 500;
+  /* Brighter than --muted. These are buttons; muted grey is for the text that
+     explains them. */
+  color: #93a1b3;
+}
+.pn__nfilters .seg__btn + .seg__btn { border-left-color: #363d4a; }
+.pn__nfilters .seg__btn:hover { color: var(--text, #e5e7eb); background: #1b1f27; }
+/* The count, as a chip — the number is what you compare between buttons, and as
+   a trailing digit it was reading as part of the label. */
+.pn__nfilters .seg__btn b {
+  padding: 1px 7px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 700;
+  background: #232833; color: #b6c2d1;
+}
+.pn__nfilters .seg__btn.is-on { font-weight: 700; }
+.pn__nfilters .seg__btn.is-on b { background: rgba(0, 0, 0, .28); color: inherit; }
+
+/* Selected takes the colour of the status it selects. One shared accent for
+   every selection told you only that SOMETHING was picked, never which. */
+.pn__nfilters .seg__btn.is-bad.is-on {
+  background: rgba(239, 68, 68, .17); color: #fca5a5;
+}
+.pn__nfilters .seg__btn.is-warn.is-on {
+  background: rgba(217, 154, 38, .19); color: #fbbf24;
+}
+.pn__nfilters .seg__btn.is-good.is-on {
+  background: rgba(0, 167, 111, .17); color: #6ee7b7;
+}
+.pn__nfilters .seg__btn.is-flat.is-on {
+  background: #262c37; color: #dbe3ec;
+}
+
+/* A dot on each button so the strip teaches the same vocabulary as the rows'
+   left edges, rather than being a second, unrelated set of labels for the same
+   six things. */
+.pn__nseg-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  flex: 0 0 auto; background: #4a5365;
+}
+.seg__btn.is-bad .pn__nseg-dot { background: #ef4444; }
+.seg__btn.is-warn .pn__nseg-dot { background: #f59e0b; }
+.seg__btn.is-good .pn__nseg-dot { background: var(--accent, #00a76f); }
+.seg__btn.is-flat .pn__nseg-dot { background: #6b7688; }
 
 .pn__nlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
 
