@@ -33,8 +33,22 @@ def get_current_user(
 
 
 def require_admin(user: User = Depends(get_current_user)) -> User:
+    """The owner only. Money, and who else is an owner, stop here."""
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="admin only")
+    return user
+
+
+def require_staff(user: User = Depends(get_current_user)) -> User:
+    """Admin or studio manager — the console as a whole.
+
+    Separate from ``require_admin`` so the two can diverge on the handful of
+    endpoints where they must: budgets and promoting someone to admin are the
+    owner's alone, and a manager who could do either would be an admin under a
+    different name.
+    """
+    if user.role not in STAFF_ROLES:
+        raise HTTPException(status_code=403, detail="admin or manager only")
     return user
 
 
@@ -59,15 +73,35 @@ def get_optional_user(
 # works *inside* a shot they own (nodes, prompts, generations, downloads).
 
 
+#: System roles that run the studio rather than work in it.
+#:
+#: ``admin`` is the owner: everything, including money and who is an admin.
+#: ``manager`` is a studio manager: opens projects, provisions accounts, links a
+#: comic to the production series it delivers into — the day-to-day of running
+#: two branches — but never touches budgets or promotes anyone to admin.
+#:
+#: The split exists because ``project.manage`` was admin-only, which made one
+#: person the sole route to a new project. That is a bottleneck the moment two
+#: branches run at once, and the answer is a second staff role rather than
+#: handing out the role that also controls the money.
+STAFF_ROLES: tuple[str, ...] = ("admin", "manager")
+
+
+def is_staff(user: Optional[User]) -> bool:
+    """Runs the studio. ``None`` is the no-auth dev/test path, which is unscoped
+    for the same reason it always was: it must behave like the single-user app."""
+    return user is None or user.role in STAFF_ROLES
+
+
 def owner_scope(user: Optional[User]) -> Optional[uuid.UUID]:
     """The owner id a caller's reads/mutations are confined to.
 
-    ``None`` means *unscoped* — it applies to admins (who see and manage every
+    ``None`` means *unscoped* — it applies to staff (who see and manage every
     user's projects) and to the no-auth dev/test path (REQUIRE_AUTH off), which
     must keep behaving like the original single-user app. A normal user is
     confined to their own id.
     """
-    if user is None or user.role == "admin":
+    if is_staff(user):
         return None
     return user.id
 
@@ -76,16 +110,16 @@ def require_structure_admin(
     user: Optional[User] = Depends(get_optional_user),
 ) -> Optional[User]:
     """Gate structural writes (create/rename/reorder/delete of project·scene·
-    shot) to admins.
+    shot) to staff.
 
     When there is no authenticated user (REQUIRE_AUTH off — dev and the whole
     existing test suite) the operation stays permitted, exactly as before; the
-    rule is strictly "an authenticated *non-admin* is denied", never "no user
-    is denied".
+    rule is strictly "an authenticated non-staff caller is denied", never "no
+    user is denied".
     """
-    if user is not None and user.role != "admin":
+    if not is_staff(user):
         raise HTTPException(
             status_code=403,
-            detail="only an admin can create or modify project structure",
+            detail="only an admin or studio manager can create or modify project structure",
         )
     return user

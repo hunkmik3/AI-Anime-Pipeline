@@ -104,8 +104,12 @@ def project_role(
     """The caller's effective role on this project, or ``None`` if they have no
     access at all (which callers surface as 404, never 403 — a user shouldn't
     learn that a project they can't see exists)."""
-    if user is None or user.role == ADMIN:
-        # No-auth dev/test path and real admins are both unscoped.
+    if user is None or user.role in ("admin", "manager"):
+        # No-auth dev/test path, admins and studio managers are all unscoped
+        # INSIDE a project. The manager/admin line is drawn in the console — at
+        # budgets and at who may be made an admin — not here: someone who can
+        # open a project but not then lay it out could not use the permission
+        # they were given.
         return ADMIN
     project = session.get(Project, project_id)
     if project is None:
@@ -196,7 +200,7 @@ def visible_scope(
     ``{"series_ids": set, "scene_ids": set}`` — the episodes they own or produce,
     and the series those sit in so the tree can still be navigated.
     """
-    from flowboard.db.models import Scene, Series
+    from flowboard.db.models import Scene, SceneCollaborator, Series
 
     role = project_role(session, user, project_id)
     if role is None or not is_scoped(role) or user is None:
@@ -208,6 +212,21 @@ def visible_scope(
             select(Scene.id).where(
                 Scene.project_id == project_id,
                 Scene.assignee_user_id == user.id,
+            )
+        ).all()
+    )
+    # …and episodes they were added to as a helper. An episode has one owner —
+    # the person who hands the cut in — but a chapter split between three panel
+    # artists arrives as one episode, and "one person animates all of it" stops
+    # being realistic once it is large. A helper sees and works inside exactly
+    # the episodes they were added to, and nothing else.
+    scene_ids |= set(
+        session.exec(
+            select(SceneCollaborator.scene_id)
+            .join(Scene, Scene.id == SceneCollaborator.scene_id)
+            .where(
+                Scene.project_id == project_id,
+                SceneCollaborator.user_id == user.id,
             )
         ).all()
     )

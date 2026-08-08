@@ -43,6 +43,11 @@ _AUTHZ_MARKERS = (
     "_visible_scene_ids",
     "permissions.require",
     "require_admin",
+    # The console as a whole is open to STAFF — admin or studio manager. The
+    # endpoints where those two must differ (budgets, granting admin) keep
+    # `require_admin` on top of this and are checked in
+    # test_studio_manager_role.py; this marker only says "not the public".
+    "require_staff",
     "require_structure_admin",
     "owner_scope",
     "user_can_access_project",
@@ -136,7 +141,7 @@ _EXEMPTION_TABLES = ()  # populated below, after every table is defined
 
 def _router_level_deps(r) -> str:
     """Names of dependencies attached to the route itself (or inherited from its
-    router). ``/api/admin`` gates every route with one ``Depends(require_admin)``
+    router). ``/api/admin`` gates every route with one ``Depends(require_staff)``
     on the APIRouter, which is stronger than a per-handler check — this test must
     see it, or it would demand redundant guards.
     """
@@ -207,11 +212,40 @@ def test_the_route_table_is_not_empty():
 def test_admin_router_is_gated_as_a_whole():
     """The admin console is protected by one dependency on its router. If that
     ever comes off, dozens of routes silently open at once — so pin it here
-    rather than relying on each handler."""
+    rather than relying on each handler.
+
+    ``require_staff`` (admin OR studio manager) counts: the console is where a
+    manager does their job. What must not happen is a route under /api/admin
+    carrying neither.
+    """
     admin = [r for r in _api_routes() if r[1].startswith("/api/admin")]
     assert admin, "no admin routes found — did the router move?"
     for method, path, _fn, deps in admin:
-        assert "require_admin" in deps, f"{method} {path} lost its admin gate"
+        assert "require_admin" in deps or "require_staff" in deps, (
+            f"{method} {path} lost its admin gate"
+        )
+
+
+def test_the_owner_only_endpoints_still_demand_an_admin():
+    """The half of the split that would be silent if it broke.
+
+    Opening the console to managers is one dependency swap, and the endpoints
+    that must stay owner-only are guarded INSIDE their handlers rather than by
+    the router — so nothing about the route table would look wrong if those
+    checks were deleted. Name them here.
+    """
+    import inspect
+
+    from flowboard.routes import admin as admin_routes
+
+    for name, guard in (
+        ("update_pool", "require_admin"),
+        ("create_user", "_owner_only_role"),
+        ("update_user", "_owner_only_role"),
+        ("update_user", "_owner_only_money"),
+    ):
+        src = inspect.getsource(getattr(admin_routes, name))
+        assert guard in src, f"{name} no longer restricts {guard}"
 
 
 @pytest.mark.parametrize(
@@ -222,8 +256,16 @@ def test_admin_router_is_gated_as_a_whole():
 def test_route_authorizes_or_is_explicitly_public(method, path, fn, deps):
     if _is_public(method, path):
         return
-    # A router-level require_admin covers every route under it.
-    if any(marker in deps for marker in ("require_admin", "require_structure_admin")):
+    # A router-level gate covers every route under it. `require_staff` is the
+    # /api/admin router's: admin OR studio manager. It is a weaker statement
+    # than `require_admin` and deliberately so — the console is where a manager
+    # does their job — but it is still "not the public", which is all this test
+    # asks. Where the two roles must diverge (budgets, granting admin) the
+    # handler adds its own check, and test_studio_manager_role.py proves it.
+    if any(
+        marker in deps
+        for marker in ("require_admin", "require_staff", "require_structure_admin")
+    ):
         return
     assert _authorizes(fn), (
         f"{method} {path} ({fn.__module__}.{fn.__name__}) performs no authorization.\n"

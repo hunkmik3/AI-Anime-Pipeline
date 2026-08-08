@@ -20,9 +20,17 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sqlmodel import select
 
 from flowboard.db import get_session
-from flowboard.db.models import Project, Scene, Series, Submission, User
+from flowboard.db.models import (
+    Project,
+    Scene,
+    SceneCollaborator,
+    Series,
+    Submission,
+    User,
+)
 from flowboard.routes.deps import get_optional_user
 from flowboard.services import (
     audit_service,
@@ -288,6 +296,128 @@ def set_episode_assignee(
             ip=audit_service.client_ip(request),
         )
         return _episode_dict(scene, s)
+
+
+# ── helpers on an episode ───────────────────────────────────────────────────
+#
+# One owner stays one owner. `assignee_user_id` is still the only person who may
+# hand the cut in, because a deliverable two people can submit is one nobody is
+# accountable for. These are the people added when that one person is
+# overloaded — which a chapter split between three panel artists makes routine,
+# since the whole chapter arrives as a single episode.
+
+
+class HelperBody(BaseModel):
+    user_id: uuid.UUID
+
+
+def _helpers(session, scene_id: uuid.UUID) -> list[dict]:
+    rows = session.exec(
+        select(SceneCollaborator).where(SceneCollaborator.scene_id == scene_id)
+    ).all()
+    return [
+        {
+            "user_id": str(r.user_id),
+            "name": _name(r.user_id),
+            "added_by_name": _name(r.added_by),
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/api/scenes/{scene_id}/helpers")
+def list_episode_helpers(scene_id: uuid.UUID, user=Depends(get_optional_user)):
+    with get_session() as s:
+        scene = s.get(Scene, scene_id)
+        if scene is None:
+            raise HTTPException(404, "episode not found")
+        # Read gate goes through the SCENE, not the project: a helper must be
+        # able to see the list they are on, and they cannot read the project
+        # wholesale.
+        permissions.require_scene(s, user, scene.project_id, scene_id, "canvas.read")
+        return _helpers(s, scene_id)
+
+
+@router.post("/api/scenes/{scene_id}/helpers")
+def add_episode_helper(
+    scene_id: uuid.UUID,
+    body: HelperBody,
+    request: Request,
+    user=Depends(get_optional_user),
+):
+    """Add someone to help on this episode. Lead+, same as reassigning it."""
+    with get_session() as s:
+        scene = s.get(Scene, scene_id)
+        if scene is None:
+            raise HTTPException(404, "episode not found")
+        permissions.require(s, user, scene.project_id, "episode.update")
+        if s.get(User, body.user_id) is None:
+            raise HTTPException(404, "user not found")
+        if scene.assignee_user_id == body.user_id:
+            # Not an error worth failing on — they already have everything a
+            # helper row would grant, and more.
+            return _helpers(s, scene_id)
+        exists = s.exec(
+            select(SceneCollaborator).where(
+                SceneCollaborator.scene_id == scene_id,
+                SceneCollaborator.user_id == body.user_id,
+            )
+        ).first()
+        if exists is None:
+            s.add(
+                SceneCollaborator(
+                    scene_id=scene_id,
+                    user_id=body.user_id,
+                    added_by=(user.id if user else None),
+                )
+            )
+            s.commit()
+            audit_service.record_change(
+                "episode.helper_added",
+                object_type="scene",
+                object_id=scene.id,
+                object_label=scene.code or scene.name,
+                changes={"helper": (None, _name(body.user_id))},
+                actor=user,
+                target=body.user_id,
+                ip=audit_service.client_ip(request),
+            )
+        return _helpers(s, scene_id)
+
+
+@router.delete("/api/scenes/{scene_id}/helpers/{user_id}")
+def remove_episode_helper(
+    scene_id: uuid.UUID,
+    user_id: uuid.UUID,
+    request: Request,
+    user=Depends(get_optional_user),
+):
+    with get_session() as s:
+        scene = s.get(Scene, scene_id)
+        if scene is None:
+            raise HTTPException(404, "episode not found")
+        permissions.require(s, user, scene.project_id, "episode.update")
+        row = s.exec(
+            select(SceneCollaborator).where(
+                SceneCollaborator.scene_id == scene_id,
+                SceneCollaborator.user_id == user_id,
+            )
+        ).first()
+        if row is not None:
+            s.delete(row)
+            s.commit()
+            audit_service.record_change(
+                "episode.helper_removed",
+                object_type="scene",
+                object_id=scene.id,
+                object_label=scene.code or scene.name,
+                changes={"helper": (_name(user_id), None)},
+                actor=user,
+                target=user_id,
+                ip=audit_service.client_ip(request),
+            )
+        return _helpers(s, scene_id)
 
 
 class ProducerBody(BaseModel):

@@ -10,7 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from flowboard.routes.deps import require_admin
+from flowboard.routes.deps import require_admin, require_staff
 from flowboard.services import (
     audit_service,
     budget_service,
@@ -21,13 +21,36 @@ from flowboard.services import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
+# The console as a whole is open to STAFF — admin or studio manager. The two
+# endpoints where they must differ say so individually: budgets and promoting
+# someone to admin stay `require_admin`, because a manager who could do either
+# would be an admin under another name.
+router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_staff)])
+
+
+def _owner_only_role(caller, role: Optional[str]) -> None:
+    """Only an owner mints an owner.
+
+    A studio manager provisions the people who do the work — that is the point
+    of the role. Letting them also hand out ``admin`` would make the whole split
+    decorative: anyone who can create an admin has every right an admin has, one
+    step removed.
+    """
+    if role == "admin" and getattr(caller, "role", None) != "admin":
+        raise HTTPException(403, "only an admin can grant the admin role")
+
+
+def _owner_only_money(caller) -> None:
+    """Budgets are the owner's. A manager runs the work; the spend is not theirs
+    to raise, and this endpoint sets it alongside a dozen harmless fields."""
+    if getattr(caller, "role", None) != "admin":
+        raise HTTPException(403, "only an admin can change budgets")
 
 
 class CreateUserBody(BaseModel):
     username: str
     password: str
-    role: str = "user"  # "admin" | "user"
+    role: str = "user"  # "admin" | "manager" | "user"
     display_name: Optional[str] = None
     email: Optional[str] = None
 
@@ -37,7 +60,7 @@ class UpdateUserBody(BaseModel):
     password: Optional[str] = None       # reset password (forces change on next login)
     display_name: Optional[str] = None
     email: Optional[str] = None
-    role: Optional[str] = None           # "admin" | "user" (last-admin guarded)
+    role: Optional[str] = None           # "admin" | "manager" | "user" (last-admin guarded)
     must_change_password: Optional[bool] = None
     budget_usd: Optional[float] = None       # set absolute $ budget
     add_budget_usd: Optional[float] = None   # top-up (+/-) $ budget
@@ -58,7 +81,8 @@ def list_users() -> list[dict]:
 
 
 @router.post("/users")
-def create_user(body: CreateUserBody, request: Request, caller=Depends(require_admin)) -> dict:
+def create_user(body: CreateUserBody, request: Request, caller=Depends(require_staff)) -> dict:
+    _owner_only_role(caller, body.role)
     try:
         u = user_service.create_user(
             body.username,
@@ -232,7 +256,7 @@ def user_activity(user_id: str, limit: int = 100) -> dict:
 
 
 @router.delete("/users/{user_id}")
-def delete_user(user_id: str, request: Request, caller=Depends(require_admin)) -> dict:
+def delete_user(user_id: str, request: Request, caller=Depends(require_staff)) -> dict:
     """Delete an account. Guards: can't delete yourself or the last admin.
     Owned projects are orphaned (not destroyed)."""
     if str(caller.id) == str(user_id):
@@ -255,7 +279,7 @@ def delete_user(user_id: str, request: Request, caller=Depends(require_admin)) -
 
 
 @router.patch("/users/{user_id}")
-def update_user(user_id: str, body: UpdateUserBody, request: Request, caller=Depends(require_admin)) -> dict:
+def update_user(user_id: str, body: UpdateUserBody, request: Request, caller=Depends(require_staff)) -> dict:
     ip = audit_service.client_ip(request)
 
     def _log(action: str, detail: str | None = None):
@@ -271,6 +295,7 @@ def update_user(user_id: str, body: UpdateUserBody, request: Request, caller=Dep
             user_service.set_email(user_id, body.email)
             _log("user.email")
         if body.role is not None:
+            _owner_only_role(caller, body.role)
             user_service.set_role(user_id, body.role)
             _log("user.role", f"role={body.role}")
         if body.password:
@@ -281,6 +306,8 @@ def update_user(user_id: str, body: UpdateUserBody, request: Request, caller=Dep
             _log("user.suspend" if body.status == "suspended" else "user.activate")
         if body.must_change_password is not None:
             user_service.set_must_change_password(user_id, body.must_change_password)
+        if body.budget_usd is not None or body.add_budget_usd is not None:
+            _owner_only_money(caller)
         if body.budget_usd is not None:
             user_service.set_budget(user_id, body.budget_usd)
             _log("user.budget", f"set=${body.budget_usd}")

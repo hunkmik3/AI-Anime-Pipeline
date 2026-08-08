@@ -94,7 +94,7 @@ def create_user(
     if not username:
         raise UserError("username required")
     _check_password_policy(password)
-    if role not in ("admin", "user"):
+    if role not in ("admin", "manager", "user"):
         raise UserError(f"bad role: {role!r}")
     with get_session() as s:
         if s.exec(select(User).where(User.username == username)).first():
@@ -164,7 +164,7 @@ def set_password(user_id, password: str) -> None:
 
 def set_role(user_id, role: str) -> User:
     """Change a user's role. Guards against demoting the last remaining admin."""
-    if role not in ("admin", "user"):
+    if role not in ("admin", "manager", "user"):
         raise UserError(f"bad role: {role!r}")
     uid = _coerce_uuid(user_id)
     with get_session() as s:

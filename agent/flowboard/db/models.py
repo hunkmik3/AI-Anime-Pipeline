@@ -169,6 +169,35 @@ class Scene(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow)
 
 
+class SceneCollaborator(SQLModel, table=True):
+    """Someone helping on an episode they do not own.
+
+    An episode has one owner — ``Scene.assignee_user_id`` — and that stays true:
+    one person is accountable for the cut and is the only one who may hand it in.
+    But a chapter split between three panel artists arrives as one episode, and
+    "one person animates all of it" stops being realistic the moment that
+    episode is large. So: one owner, plus whoever is added when they are
+    overloaded.
+
+    A row here grants exactly what the owner has *inside* the episode — see it,
+    add and edit its sequences, work its canvas — and nothing outside it. It does
+    not grant submitting: a deliverable with two people able to hand it in is a
+    deliverable nobody is accountable for.
+    """
+
+    __tablename__ = "scene_collaborator"
+    __table_args__ = (
+        UniqueConstraint("scene_id", "user_id", name="uq_scene_collaborator"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    scene_id: uuid.UUID = Field(foreign_key="scene.id", index=True)
+    user_id: uuid.UUID = Field(foreign_key="app_user.id", index=True)
+    #: Who added them, for the same reason every other assignment records it.
+    added_by: Optional[uuid.UUID] = Field(default=None, foreign_key="app_user.id")
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 class Shot(SQLModel, table=True):
     """A Sequence — the unit a single artist owns and generates on the canvas."""
 
