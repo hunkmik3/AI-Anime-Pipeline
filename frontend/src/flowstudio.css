@@ -2610,3 +2610,5 @@
   background: rgba(0, 167, 111, .16); color: #6ee7b7;
 }
 .pn__due-badge.is-late { background: rgba(239, 68, 68, .18); color: #fca5a5; }
+/* Two days or less: not late yet, but not something to scroll past either. */
+.pn__due-badge.is-soon { background: rgba(217, 154, 38, .18); color: #fbbf24; }

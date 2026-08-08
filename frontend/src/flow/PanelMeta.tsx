@@ -1,5 +1,3 @@
-import { relativeTime } from "../components/activity/activity-meta";
-
 /**
  * Who set a series or chapter up, when, and when it is due.
  *
@@ -46,7 +44,7 @@ export function PanelMeta({
               onChange={(e) => onSetDue(e.target.value || null)}
             />
           ) : dueDate ? (
-            <b>{new Date(dueDate).toLocaleDateString()}</b>
+            <b>{localDay(dueDate)?.toLocaleDateString() ?? dueDate}</b>
           ) : (
             <span className="pn__muted">not set</span>
           )}
@@ -57,14 +55,52 @@ export function PanelMeta({
   );
 }
 
-/** How long is left, and whether it has run out. A date alone makes you do the
- *  subtraction, which is the part people get wrong when scanning a list. */
+/**
+ * How long is left, and whether it has run out.
+ *
+ * Counted in whole DAYS, from today to the due day. Not with `relativeTime`:
+ * that measures how long ago something happened, so every future date came back
+ * "just now" — the badge had exactly two states, "just now" and "overdue", and
+ * said nothing about the twelve days in between.
+ */
 function DueBadge({ dueDate }: { dueDate: string }) {
-  const end = new Date(`${dueDate}T23:59:59`);
-  const late = end.getTime() < Date.now();
+  const days = daysUntil(dueDate);
+  if (days === null) return null;
+  const label =
+    days < 0
+      ? `${-days}d overdue`
+      : days === 0
+        ? "due today"
+        : days === 1
+          ? "tomorrow"
+          : days < 14
+            ? `${days}d left`
+            : `${Math.round(days / 7)}w left`;
   return (
-    <span className={`pn__due-badge${late ? " is-late" : ""}`}>
-      {late ? "overdue" : relativeTime(end.toISOString()).replace(" ago", " left")}
+    <span className={`pn__due-badge${days < 0 ? " is-late" : days <= 2 ? " is-soon" : ""}`}>
+      {label}
     </span>
   );
+}
+
+/**
+ * "2026-08-18" as a LOCAL calendar day.
+ *
+ * `new Date("2026-08-18")` is parsed as UTC midnight, so west of Greenwich it
+ * prints — and counts as — the day before. A deadline is a day; it must read the
+ * same wherever the studio sits.
+ */
+function localDay(dueDate: string): Date | null {
+  const [y, m, d] = dueDate.split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
+}
+
+/** Whole days from today to the due day, both taken as local calendar dates. */
+function daysUntil(dueDate: string): number | null {
+  const due = localDay(dueDate);
+  if (!due) return null;
+  const today = new Date();
+  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  return Math.round((due.getTime() - start.getTime()) / 86_400_000);
 }
