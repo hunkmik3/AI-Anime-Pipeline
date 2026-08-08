@@ -5,16 +5,24 @@ deliberately NOT wired into Project → Series → Episode, per-project RBAC, or
 credit budgets yet — that integration is planned separately (see
 ``docs/INTEGRATION_PLAN.md``).
 
-**Everything here is open to any signed-in user**, via
-``resource_guard.require_signed_in`` — the studio is a shared space by decision.
-There is no owner to authorize against: one board list the whole team works in,
-one API key the whole team spends.
+**A board belongs to whoever made it.** The studio arrived as one shared list
+with no owner column, so there was nothing to authorise against and any
+signed-in account could rename or delete anyone's board. That held while it was
+one team sharing one key; it stopped holding the moment two branches with
+different people needed it.
 
-The cost of that, stated plainly so it is not a surprise: **any signed-in user can
-rename or delete any board, and deleting a board deletes its images.** There is no
-per-user or per-project separation inside the studio, and generation is not
-budget-capped. Scoping it to a project is what fixes both (see
-``docs/INTEGRATION_PLAN.md``).
+You see your own boards. An admin sees everything, including the ownerless rows
+that predate the column — NULL means "we do not know whose this is", which is a
+reason to show fewer people, not more.
+
+Someone else's board answers **404, not 403**. 403 admits the row exists, which
+is enough to enumerate what colleagues are working on; a board you may not see
+should be indistinguishable from one that was never created.
+
+Still shared, and stated plainly so it is not a surprise: **one API key, one
+usage meter.** ``/usage`` counts what this install generated, not what you
+generated — ``Request`` records no user, so past rows cannot be attributed at
+all. Generation is not budget-capped here.
 
 Three groups of endpoints, replacing three things from the source repo:
 
@@ -61,6 +69,27 @@ class BoardUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
 
+def _is_admin(user) -> bool:
+    """No auth configured (dev, and the legacy test suite) behaves as before —
+    one open studio — rather than locking everyone out of their own boards."""
+    return user is None or getattr(user, "role", None) == "admin"
+
+
+def _own_board(session, user, board_id: int) -> FlowBoard:
+    """This caller's board, or 404.
+
+    404 rather than 403 on purpose: the two are the same to someone who owns the
+    board, and different only to someone who does not — and what 403 tells that
+    person is that the board exists.
+    """
+    row = session.get(FlowBoard, board_id)
+    if row is None:
+        raise HTTPException(404, "board not found")
+    if not _is_admin(user) and row.owner_user_id != user.id:
+        raise HTTPException(404, "board not found")
+    return row
+
+
 def _board_dict(row: FlowBoard) -> dict:
     # ``kind`` is echoed for wire-compatibility with the studio's frontend, which
     # came from a repo where one Board table served two surfaces. Here there is
@@ -77,15 +106,20 @@ def _board_dict(row: FlowBoard) -> dict:
 def list_boards(user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        rows = s.exec(select(FlowBoard).order_by(FlowBoard.created_at)).all()
-        return [_board_dict(r) for r in rows]
+        q = select(FlowBoard).order_by(FlowBoard.created_at)
+        if not _is_admin(user):
+            q = q.where(FlowBoard.owner_user_id == user.id)
+        return [_board_dict(r) for r in s.exec(q).all()]
 
 
 @router.post("/boards")
 def create_board(body: BoardCreate, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        row = FlowBoard(name=body.name.strip())
+        row = FlowBoard(
+            name=body.name.strip(),
+            owner_user_id=getattr(user, "id", None),
+        )
         s.add(row)
         s.commit()
         s.refresh(row)
@@ -96,9 +130,7 @@ def create_board(body: BoardCreate, user=Depends(get_optional_user)):
 def update_board(board_id: int, body: BoardUpdate, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        row = s.get(FlowBoard, board_id)
-        if row is None:
-            raise HTTPException(404, "board not found")
+        row = _own_board(s, user, board_id)
         row.name = body.name.strip()
         s.add(row)
         s.commit()
@@ -122,9 +154,7 @@ def delete_board(board_id: int, user=Depends(get_optional_user)):
     """
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        row = s.get(FlowBoard, board_id)
-        if row is None:
-            raise HTTPException(404, "board not found")
+        row = _own_board(s, user, board_id)
         n = len(s.exec(select(Reference).where(Reference.source_board_id == board_id)).all())
         if n:
             s.exec(

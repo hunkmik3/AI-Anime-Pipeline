@@ -305,6 +305,18 @@ class FlowBoard(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
+    #: Whose board this is. The studio shipped as one shared list with no owner
+    #: column, which meant there was nothing to authorise against — any signed-in
+    #: account could open, rename and delete anyone's board, and the docstring
+    #: above said so plainly rather than pretending otherwise.
+    #:
+    #: Nullable, and NULL means nobody's: a board from before this column existed
+    #: has no owner to name, and inventing one would be a guess written into the
+    #: database. Those are visible to admins only, which is the safe reading of
+    #: "we do not know whose this is".
+    owner_user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="app_user.id", index=True
+    )
     created_at: datetime = Field(default_factory=_utcnow, index=True)
 
 
