@@ -104,12 +104,63 @@ def test_approving_a_linked_comic_creates_the_sequence(client):
     got = _approve(client, w, w["panels"][w["chapters"][0]][0])
 
     assert got["delivered"]["created"] is True
+    pid = w["panels"][w["chapters"][0]][0]
     with get_session() as s:
         shot = s.get(Shot, got["delivered"]["sequence_id"])
         assert shot is not None
         assert shot.code == "C0P0"
         # The sequence says what it is a picture OF, not just that it exists.
-        assert shot.production["source_panel"]["media_id"] == f"gen-{w['panels'][w['chapters'][0]][0]}"
+        assert shot.production["source_panel"]["media_id"] == f"gen-{pid}"
+
+
+def test_the_panel_arrives_on_the_canvas_not_just_in_a_column(client):
+    """The failure the first cut shipped: the media id was recorded on the shot
+    and NOTHING read it, so the animator opened an empty box and had to go find
+    the panel they had just been handed. A record nobody reads is not a handover.
+    """
+    from flowboard.db.models import Node
+
+    w = _world(client)
+    _link(client, w)
+    pid = w["panels"][w["chapters"][0]][0]
+    got = _approve(client, w, pid)["delivered"]
+
+    with get_session() as s:
+        nodes = s.exec(
+            select(Node).where(Node.shot_id == got["sequence_id"])
+        ).all()
+    assert len(nodes) == 1, "the sequence opened empty"
+    node = nodes[0]
+    # The SAME node the library's click-to-spawn makes — anything else would be
+    # a second kind of image node for every consumer to learn.
+    assert node.type == "visual_asset"
+    assert node.data["mediaId"] == f"gen-{pid}"
+    assert node.data["status"] == "done"
+    assert node.data["title"] == "C0P0"
+    assert node.data["sourcePanelId"] == pid
+    assert node.short_id, "a node with no short id cannot be wired to anything"
+
+
+def test_delivering_twice_does_not_leave_two_copies_on_the_canvas(client):
+    """The idempotency check has to cover the node too — a second approval that
+    re-ran only this part would stack panels on top of each other."""
+    from flowboard.db.models import Node
+
+    w = _world(client)
+    _link(client, w)
+    pid = w["panels"][w["chapters"][0]][0]
+    got = _approve(client, w, pid)["delivered"]
+
+    client.post(f"/api/flowstudio/panels/{pid}/reopen", headers=w["h"])
+    with get_session() as s:
+        ps.submit_panel(s, pid)
+    client.post(
+        f"/api/flowstudio/panels/{pid}/review", json={"approve": True}, headers=w["h"]
+    )
+
+    with get_session() as s:
+        nodes = s.exec(select(Node).where(Node.shot_id == got["sequence_id"])).all()
+    assert len(nodes) == 1
 
 
 # ── the quiet failure: delivering twice ─────────────────────────────────────

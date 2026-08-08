@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlmodel import Session, select
@@ -42,12 +43,18 @@ from sqlmodel import Session, select
 from flowboard.db.models import (
     FlowChapter,
     FlowPanel,
+    Node,
     Scene,
     Series,
     Shot,
 )
 from flowboard.services import panel_service as ps
 from flowboard.services import scene_service, shot_service
+from flowboard.short_id import generate_unique_short_id
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class DeliveryError(Exception):
@@ -168,24 +175,27 @@ def _episode_for(session: Session, chapter: FlowChapter, studio_series: Series) 
 
 
 def _record_source(session: Session, panel: FlowPanel, shot: Shot) -> None:
-    """Say what this sequence is *of*, on the sequence itself.
+    """Put the approved artwork ON the sequence's canvas, as a reference node.
 
-    A sequence carrying only a code tells the animator the work exists, not what
-    it is a picture of. The obvious move — copy the panel into the production
-    project's asset library as a Reference — does not work and must not be
-    retried: ``Reference.media_id`` is unique across the WHOLE table, not per
-    project, and giantflow already holds a row for this image. A second insert
-    is the `UniqueViolation` this codebase has hit before, and "fixing" it by
-    re-pointing the existing row would move giantflow's own panel reference into
-    the production project and out of the panel workspace.
+    The first cut wrote the media id into ``shot.production`` and stopped there.
+    That was true and useless: the sequence opened as an empty box, and the
+    animator had to go and find the panel they had just been handed. A record
+    nothing reads is not a handover.
 
-    So the link is recorded here instead: one media id on the sequence, which is
-    all the studio needs to show the artwork and all giantflow needs to stay
-    intact.
+    So the panel arrives as a ``visual_asset`` node — the same node the library's
+    click-to-spawn creates, with the same ``data`` shape — because that is what
+    the canvas already knows how to draw, wire into a prompt and feed to i2v.
+    Anything else would be a second kind of image node to teach every consumer
+    about.
+
+    ``shot.production`` still records the pairing. The node is what a person
+    sees; that is what code asks when it needs to know which panel this came
+    from, and it survives the artist deleting or replacing the node.
     """
     delivered = ps.delivered(session, panel.id)
     if delivered is None:
         return
+
     shot.production = {
         **(shot.production or {}),
         "source_panel": {
@@ -195,6 +205,32 @@ def _record_source(session: Session, panel: FlowPanel, shot: Shot) -> None:
         },
     }
     session.add(shot)
+
+    session.add(
+        Node(
+            shot_id=shot.id,
+            short_id=generate_unique_short_id(session, shot.id),
+            type="visual_asset",
+            # Top-left of an empty canvas. Not centred: the canvas has no size
+            # until it is opened, and every sequence starting at the same place
+            # is easier to work with than every sequence starting somewhere
+            # slightly different.
+            x=80,
+            y=80,
+            w=320,
+            h=320,
+            data={
+                "title": panel.code or "panel",
+                "mediaId": delivered.media_id,
+                "status": "done",
+                "renderedAt": _utcnow().isoformat(),
+                # Where it came from, on the node itself — the artist reads this
+                # long before anyone queries `shot.production`.
+                "sourcePanelId": panel.id,
+            },
+            status="done",
+        )
+    )
     session.commit()
 
 
