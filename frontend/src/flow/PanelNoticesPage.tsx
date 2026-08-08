@@ -45,6 +45,12 @@ export function PanelNoticesPage() {
   const [data, setData] = useState<NoticeSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string>("all");
+  //: Chronological, or gathered by status. Two different questions — "what
+  //: happened while I was away" reads forwards in time; "how much is sitting in
+  //: send-back" needs the same statuses next to each other, and no amount of
+  //: scrolling a date-ordered list answers it.
+  const [order, setOrder] = useState<"day" | "status">("day");
 
   const load = useCallback(async () => {
     try {
@@ -77,12 +83,19 @@ export function PanelNoticesPage() {
     }
   }
 
-  const todo = data?.todo ?? [];
-  const feed = data?.feed ?? [];
+  const allTodo = data?.todo ?? [];
+  const allFeed = data?.feed ?? [];
   const seen = data?.seen_at ? new Date(data.seen_at).getTime() : 0;
   const isNew = (n: Notice) =>
     !n.mine && (!seen || (n.at ? new Date(n.at).getTime() > seen : false));
-  const urgent = todo.filter((n) => TONE[n.kind] === "bad").length;
+
+  // Which statuses are actually present, so the strip never offers a filter
+  // that leads to an empty page.
+  const present = statusesIn([...allTodo, ...allFeed]);
+  const keep = (n: Notice) => status === "all" || STATUS_OF[n.kind] === status;
+  const todo = allTodo.filter(keep);
+  const feed = allFeed.filter(keep);
+  const urgent = allTodo.filter((n) => TONE[n.kind] === "bad").length;
 
   return (
     <div className="shellpage pn__full">
@@ -110,10 +123,58 @@ export function PanelNoticesPage() {
       {error ? <p className="inbox__err">{error}</p> : null}
       {data === null ? <p className="rfoot">Loading…</p> : null}
 
-      {data !== null && todo.length === 0 && feed.length === 0 ? (
+      {present.length > 1 ? (
+        <div className="pn__filters">
+          <div className="seg">
+            <button
+              className={`seg__btn${status === "all" ? " is-on" : ""}`}
+              onClick={() => setStatus("all")}
+            >
+              All {allTodo.length + allFeed.length}
+            </button>
+            {present.map(([key, count]) => (
+              <button
+                key={key}
+                className={`seg__btn${status === key ? " is-on" : ""}`}
+                onClick={() => setStatus(key)}
+              >
+                <i className={`pn__nseg-dot is-${STATUS_TONE[key]}`} aria-hidden="true" />
+                {STATUS_LABEL[key]} {count}
+              </button>
+            ))}
+          </div>
+          <div className="seg">
+            <button
+              className={`seg__btn${order === "day" ? " is-on" : ""}`}
+              title="History reads forwards in time"
+              onClick={() => setOrder("day")}
+            >
+              By day
+            </button>
+            <button
+              className={`seg__btn${order === "status" ? " is-on" : ""}`}
+              title="Gather the same statuses together"
+              onClick={() => setOrder("status")}
+            >
+              By status
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {data !== null && allTodo.length === 0 && allFeed.length === 0 ? (
         <div className="inbox__empty">
           <b>All clear.</b>
           Nothing is waiting on you and nothing has changed in the last month.
+        </div>
+      ) : null}
+
+      {data !== null && status !== "all" && todo.length === 0 && feed.length === 0 ? (
+        <div className="inbox__empty">
+          <b>Nothing under {STATUS_LABEL[status] ?? status}.</b>
+          <button className="btn2" onClick={() => setStatus("all")}>
+            Show everything
+          </button>
         </div>
       ) : null}
 
@@ -121,7 +182,12 @@ export function PanelNoticesPage() {
         <section className="pn__nsec">
           <h2 className="pn__nsec-h is-todo">
             <span className="pn__nsec-label">To do</span>
-            <span className="pn__nsec-n">{todo.length}</span>
+            {/* While a filter is on, the section count and the count in the page
+                header describe different sets. Say so rather than leave two
+                numbers disagreeing. */}
+            <span className="pn__nsec-n">
+              {status === "all" ? todo.length : `${todo.length} of ${allTodo.length}`}
+            </span>
             <span className="pn__nsec-rule" />
             <span className="pn__nsec-note">
               leaves this list when the work is done, not when you read it
@@ -139,15 +205,22 @@ export function PanelNoticesPage() {
         <section className="pn__nsec">
           <h2 className="pn__nsec-h is-feed">
             <span className="pn__nsec-label">What happened</span>
-            <span className="pn__nsec-n">{feed.length}</span>
+            <span className="pn__nsec-n">
+              {status === "all" ? feed.length : `${feed.length} of ${allFeed.length}`}
+            </span>
             <span className="pn__nsec-rule" />
           </h2>
-          {/* Grouped by day. Thirty-five rows with a relative time on each is a
-              wall you have to read to navigate; a date heading lets you skip to
-              the morning you were away. */}
-          {groupByDay(feed).map(([day, rows]) => (
-            <div key={day} className="pn__nday">
-              <h3 className="pn__nday-h">{day}</h3>
+          {/* Grouped by day by default: thirty-five rows with a relative time on
+              each is a wall you have to read to navigate, and a date heading lets
+              you skip to the morning you were away. Switched to status, the same
+              rows gather under their status instead — which is the only way to
+              see how much is sitting in one state without counting. */}
+          {(order === "day" ? groupByDay(feed) : groupByStatus(feed)).map(([label, rows]) => (
+            <div key={label} className="pn__nday">
+              <h3 className="pn__nday-h">
+                {label}
+                {order === "status" ? <span>{rows.length}</span> : null}
+              </h3>
               <ul className="pn__nlist">
                 {rows.map((n) => (
                   <NoticeRow key={n.id} notice={n} fresh={isNew(n)} />
@@ -176,6 +249,79 @@ function groupByDay(rows: Notice[]): [string, Notice[]][] {
     else out.set(key, [n]);
   }
   return [...out.entries()];
+}
+
+/**
+ * Statuses, in the order a working day cares about them.
+ *
+ * Coarser than `kind` on purpose. `sent_back` on a to-do and
+ * `changes_requested` in the feed are the same fact seen from the two ends of
+ * the handover, and a filter that separated them would make you click twice to
+ * see one thing. The map is what collapses them.
+ */
+const STATUS_ORDER = [
+  "sent_back",
+  "waiting",
+  "deadline",
+  "todo",
+  "approved",
+  "reopened",
+] as const;
+
+const STATUS_OF: Record<string, string> = {
+  sent_back: "sent_back",
+  changes_requested: "sent_back",
+  to_review: "waiting",
+  submitted: "waiting",
+  overdue: "deadline",
+  due_soon: "deadline",
+  not_started: "todo",
+  in_progress: "todo",
+  unassigned: "todo",
+  approved: "approved",
+  reopened: "reopened",
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  sent_back: "Sent back",
+  waiting: "Waiting",
+  deadline: "Deadlines",
+  todo: "Not started",
+  approved: "Approved",
+  reopened: "Reopened",
+};
+
+const STATUS_TONE: Record<string, string> = {
+  sent_back: "bad",
+  waiting: "warn",
+  deadline: "bad",
+  todo: "flat",
+  approved: "good",
+  reopened: "flat",
+};
+
+/** Which statuses these rows actually contain, with counts, in working order. */
+function statusesIn(rows: Notice[]): [string, number][] {
+  const seen = new Map<string, number>();
+  for (const n of rows) {
+    const s = STATUS_OF[n.kind];
+    if (s) seen.set(s, (seen.get(s) ?? 0) + 1);
+  }
+  return STATUS_ORDER.filter((s) => seen.has(s)).map((s) => [s, seen.get(s)!]);
+}
+
+/** The same rows gathered under their status, still newest first inside each. */
+function groupByStatus(rows: Notice[]): [string, Notice[]][] {
+  const out = new Map<string, Notice[]>();
+  for (const n of rows) {
+    const key = STATUS_OF[n.kind] ?? "other";
+    const bucket = out.get(key);
+    if (bucket) bucket.push(n);
+    else out.set(key, [n]);
+  }
+  return [...STATUS_ORDER, "other"]
+    .filter((s) => out.has(s))
+    .map((s) => [STATUS_LABEL[s] ?? "Other", out.get(s)!]);
 }
 
 function dayLabel(d: Date): string {
