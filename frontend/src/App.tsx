@@ -37,6 +37,7 @@ import { PanelAllPage } from "./flow/PanelAllPage";
 import { PanelChaptersPage } from "./flow/PanelChaptersPage";
 import { PanelSeriesPage } from "./flow/PanelSeriesPage";
 import { PanelMyWorkPage } from "./flow/PanelMyWorkPage";
+import { PanelNoticesPage } from "./flow/PanelNoticesPage";
 import { PanelReviewPage } from "./flow/PanelReviewPage";
 import { PanelWorkspacePage } from "./flow/PanelWorkspacePage";
 
@@ -119,6 +120,7 @@ export function App() {
           <Route path="/giantflow/panels" element={<PanelAllPage />} />
           <Route path="/giantflow/review" element={<PanelReviewPage />} />
           <Route path="/giantflow/my-work" element={<PanelMyWorkPage />} />
+          <Route path="/giantflow/notices" element={<PanelNoticesPage />} />
           <Route path="/giantflow/batch/:batchId" element={<PanelGridPage />} />
           <Route path="/giantflow/p/:projectId" element={<PanelSeriesPage />} />
           <Route path="/giantflow/s/:seriesId" element={<PanelChaptersPage />} />

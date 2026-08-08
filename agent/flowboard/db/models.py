@@ -555,6 +555,28 @@ class FlowPanelNote(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow, index=True)
 
 
+class FlowNoticeRead(SQLModel, table=True):
+    """How far one account has read its notifications. One row per user.
+
+    The whole of the notifications feature that has to be stored. Everything on
+    that tab — what is waiting, what came back, what was approved — is derived
+    from panels and events at read time, because a stored copy would need a write
+    at every event site and would go stale the first time someone added a sixth
+    one. What genuinely cannot be derived is whether *you* have already looked,
+    so that, and only that, is a table.
+
+    A single watermark rather than a row per unread item: the count answers "is
+    anything new since I last looked", which is one fact, and per-item read state
+    would be a second bookkeeping problem for a feed that already disappears on
+    its own when the work is done.
+    """
+
+    __tablename__ = "flow_notice_read"  # type: ignore[assignment]
+
+    user_id: uuid.UUID = Field(foreign_key="app_user.id", primary_key=True)
+    seen_at: datetime = Field(default_factory=_utcnow)
+
+
 class ChatMessage(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     project_id: uuid.UUID = Field(foreign_key="project.id", index=True)

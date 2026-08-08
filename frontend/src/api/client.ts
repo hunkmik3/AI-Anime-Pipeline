@@ -2931,6 +2931,63 @@ export function myWork(): Promise<{
   return api(`/api/flowstudio/my-work`);
 }
 
+/**
+ * One line on the notifications tab — either a job or something that happened.
+ *
+ * The same shape for both because they render as the same card; what separates
+ * them is which list they arrive in. A job has no `at` (a state has no
+ * timestamp), a feed line always does.
+ */
+export interface Notice {
+  id: string;
+  kind:
+    | "sent_back"
+    | "not_started"
+    | "in_progress"
+    | "to_review"
+    | "unassigned"
+    | "due_soon"
+    | "overdue"
+    | "submitted"
+    | "approved"
+    | "changes_requested"
+    | "reopened";
+  title: string;
+  body: string | null;
+  at: string | null;
+  actor_name: string | null;
+  href: string | null;
+  panel_id: number | null;
+  code: string | null;
+  where: string | null;
+  count: number;
+  /** Your own doing — shown in the history, never counted as unread. */
+  mine: boolean;
+}
+
+export interface NoticeSummary {
+  todo: Notice[];
+  feed: Notice[];
+  unread: number;
+  seen_at: string | null;
+  role: string;
+}
+
+/** What this account has to do, and what changed while they were away. */
+export function listNotices(): Promise<NoticeSummary> {
+  return api<NoticeSummary>(`/api/flowstudio/notices`);
+}
+
+/** Just the badge — polled on a timer, so it skips the feed's text. */
+export function noticeCount(): Promise<{ unread: number; todo: number }> {
+  return api(`/api/flowstudio/notices/count`);
+}
+
+/** Mark the feed read up to now. The to-do list has no read state by design. */
+export function markNoticesRead(): Promise<{ unread: number }> {
+  return api(`/api/flowstudio/notices/read`, { method: "POST" });
+}
+
 export function submitPanel(panelId: number, mediaId?: string | null): Promise<Panel> {
   return api<Panel>(`/api/flowstudio/panels/${panelId}/submit`, {
     method: "POST",

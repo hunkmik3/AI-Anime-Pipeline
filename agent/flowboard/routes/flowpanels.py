@@ -36,6 +36,7 @@ from flowboard.db import get_session
 from flowboard.routes.deps import get_optional_user
 from flowboard.services import media as media_service
 from flowboard.db.models import PANEL_STATUSES
+from flowboard.services import flow_notices as fn
 from flowboard.services import flow_permissions as fp
 from flowboard.services import panel_service as ps
 from flowboard.services import resource_guard
@@ -1055,6 +1056,47 @@ def my_work(user=Depends(get_optional_user)):
             rows = ps.panels_by_status(s, [status], assignee_user_id=user.id)
             out[status] = [_queue_dict(s, p) for p in rows]
         return out
+
+
+# ── Notifications ───────────────────────────────────────────────────────────
+
+
+@router.get("/notices")
+def notices(user=Depends(get_optional_user)):
+    """What this account has to do, and what changed while they were away.
+
+    One request for both halves. They are asked together every single time — the
+    tab shows them stacked and the nav badge needs the count — and splitting them
+    would mean two round trips that must agree with each other.
+    """
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        return fn.summary(s, user)
+
+
+@router.get("/notices/count")
+def notices_count(user=Depends(get_optional_user)):
+    """Just the badge. Polled on a timer, so it skips building the feed's text."""
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        return {
+            "unread": fn.unread_count(s, user),
+            "todo": len(fn.todo(s, user)),
+        }
+
+
+@router.post("/notices/read")
+def notices_read(user=Depends(get_optional_user)):
+    """Mark the feed read up to now.
+
+    Only the feed. The to-do list has no read state on purpose: a job is done
+    when the work is done, and letting someone dismiss "8 panels waiting on your
+    verdict" would hide the work rather than clear it.
+    """
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        fn.mark_seen(s, user)
+        return {"unread": 0}
 
 
 # ── Chapters ────────────────────────────────────────────────────────────────
