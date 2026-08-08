@@ -2624,10 +2624,15 @@ td.pn__tcomic { min-width: 180px; color: var(--text); }
 /* Two days or less: not late yet, but not something to scroll past either. */
 .pn__due-badge.is-soon { background: rgba(217, 154, 38, .18); color: #fbbf24; }
 
+
 /* ── Notifications ────────────────────────────────────────────────────────
-   Two lists on one page: what you must do, then what happened. They look
-   deliberately alike — same row, same icon slot — because the difference that
-   matters is which heading they sit under, not how they are drawn. */
+   The first cut was six identical grey bands 1800px wide holding twelve words
+   each, hard left. Three things were wrong and only the third was colour: the
+   rows had no picture in a product whose whole subject is pictures, nothing
+   used the width so every row was 90% empty, and every row repeated the same
+   70-character batch path. The layout below is a three-part row — what it is
+   about, what happened, when and what to do — so the width carries structure
+   instead of blank space. */
 
 /* The badge on the nav tab. Green when there is genuinely something new;
    neutral when it is only reporting a standing workload, so a permanent "12
@@ -2643,76 +2648,157 @@ td.pn__tcomic { min-width: 180px; color: var(--text); }
   background: var(--accent, #00a76f); color: #04140e; border-color: transparent;
 }
 
-.pn__nsec { margin: 0 0 26px; }
+.pn__nsec { margin: 0 0 30px; }
+/* Heading, count, then a rule that runs to the edge — it gives the section a
+   horizon line, which is what was missing when two lists sat on one page with
+   nothing between them. */
 .pn__nsec-h {
-  margin: 0 0 3px; font-size: 13px; font-weight: 700;
-  letter-spacing: .04em; text-transform: uppercase;
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 10px;
+  margin: 0 0 12px; font-size: 12px; font-weight: 700;
+  letter-spacing: .07em; text-transform: uppercase;
 }
-.pn__nsec-h span {
-  font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px;
+.pn__nsec-label { flex: 0 0 auto; }
+.pn__nsec-n {
+  flex: 0 0 auto; padding: 1px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0;
   background: var(--panel-high, #1d2129); color: var(--muted);
-  letter-spacing: 0; text-transform: none;
+}
+.pn__nsec-rule { flex: 1 1 auto; height: 1px; background: var(--border, #2a2e38); }
+.pn__nsec-note {
+  flex: 0 0 auto; font-size: 11px; font-weight: 400;
+  letter-spacing: 0; text-transform: none; color: var(--muted);
 }
 .pn__nsec-h.is-todo { color: #f59e0b; }
+.pn__nsec-h.is-todo .pn__nsec-n { background: rgba(217, 154, 38, .18); color: #fbbf24; }
 .pn__nsec-h.is-feed { color: var(--muted); }
-.pn__nsec-hint { margin: 0 0 11px; font-size: 12.5px; color: var(--muted); }
 
-.pn__nlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-
-.pn__nrow {
-  border: 1px solid var(--border, #2a2e38); border-radius: 10px;
-  background: var(--panel, #14171d);
-  /* The tone lives on a left edge rather than a tinted background: a page of
-     coloured blocks is unreadable, a page of coloured edges scans in one pass. */
-  border-left-width: 3px;
+.pn__nday { margin: 0 0 16px; }
+.pn__nday-h {
+  margin: 0 0 7px; font-size: 11.5px; font-weight: 600;
+  color: var(--muted); letter-spacing: .03em;
 }
+
+.pn__nlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+
+/* picture | what happened | when + what to do. The third column is what stops
+   the row draining off to the left on a wide screen. */
+.pn__nrow {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr) minmax(120px, 168px);
+  gap: 14px; align-items: stretch;
+  padding: 10px 14px 10px 11px;
+  border: 1px solid var(--border, #2a2e38);
+  border-left-width: 3px;
+  border-radius: 11px;
+  background: var(--panel, #14171d);
+  transition: background .12s, border-color .12s;
+}
+/* The tone lives on a left edge rather than a tinted background: a page of
+   coloured blocks is unreadable, a page of coloured edges scans in one pass. */
 .pn__nrow.is-bad { border-left-color: #ef4444; }
 .pn__nrow.is-warn { border-left-color: #f59e0b; }
 .pn__nrow.is-good { border-left-color: var(--accent, #00a76f); }
-.pn__nrow.is-flat { border-left-color: var(--border, #2a2e38); }
-.pn__nrow:hover { background: var(--panel-high, #1d2129); }
-/* Unread, and only just noticeable — the dot on the title is the real signal. */
-.pn__nrow.is-fresh { background: rgba(0, 167, 111, .05); }
+.pn__nrow.is-flat { border-left-color: #3a4150; }
+.pn__nrow:hover { background: var(--panel-high, #1d2129); border-color: #3a4150; }
+/* Unread, and only just noticeable — the dot beside the code is the real signal. */
+.pn__nrow.is-fresh { background: rgba(0, 167, 111, .045); }
 
-.pn__nlink {
-  display: flex; gap: 12px; align-items: flex-start;
-  padding: 11px 14px; text-decoration: none; color: inherit;
+/* The panel itself. Fixed box, image contained rather than cropped: a panel is
+   not square and the shape is often the thing you recognise it by. */
+.pn__nshot {
+  padding: 0; margin: 0; border-radius: 8px; overflow: hidden; cursor: zoom-in;
+  background: #0e1116; border: 1px solid var(--border, #2a2e38);
+  width: 76px; height: 76px; display: grid; place-items: center;
 }
-.pn__nicon {
-  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 8px;
-  display: grid; place-items: center; font-size: 13px;
+.pn__nshot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pn__nshot:hover { border-color: var(--accent, #00a76f); }
+
+/* No picture because it is a tally, not a panel. The number takes the slot —
+   it is what the row is reporting anyway. */
+.pn__ncount {
+  width: 76px; height: 76px; border-radius: 8px;
+  display: grid; place-items: center;
+  background: var(--panel-high, #1d2129); color: var(--muted);
+  font-size: 20px;
+}
+.pn__ncount b { font-size: 24px; font-weight: 700; letter-spacing: -.02em; }
+.pn__ncount.is-bad { background: rgba(239, 68, 68, .13); color: #fca5a5; }
+.pn__ncount.is-warn { background: rgba(217, 154, 38, .13); color: #fbbf24; }
+.pn__ncount.is-good { background: rgba(0, 167, 111, .13); color: #6ee7b7; }
+
+.pn__nbody {
+  min-width: 0; display: grid; gap: 3px; align-content: center;
+  text-decoration: none; color: inherit;
+}
+
+/* What sort of thing this is, said before the sentence — so the row is
+   classifiable without reading it. */
+.pn__ntop { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.pn__nkind {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 1px 8px 1px 6px; border-radius: 999px;
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .045em;
   background: var(--panel-high, #1d2129); color: var(--muted);
 }
-.pn__nicon.is-bad { background: rgba(239, 68, 68, .16); color: #fca5a5; }
-.pn__nicon.is-warn { background: rgba(217, 154, 38, .16); color: #fbbf24; }
-.pn__nicon.is-good { background: rgba(0, 167, 111, .16); color: #6ee7b7; }
+.pn__nkind i { font-style: normal; font-size: 11px; line-height: 1; }
+.pn__nkind.is-bad { background: rgba(239, 68, 68, .16); color: #fca5a5; }
+.pn__nkind.is-warn { background: rgba(217, 154, 38, .16); color: #fbbf24; }
+.pn__nkind.is-good { background: rgba(0, 167, 111, .16); color: #6ee7b7; }
 
-.pn__nbody { min-width: 0; display: grid; gap: 2px; }
-.pn__ntitle {
-  font-size: 13.5px; font-weight: 600; color: var(--text, #e5e7eb);
-  display: flex; align-items: center; gap: 7px;
+/* Monospace on purpose: a panel code is an identifier people read character by
+   character and say out loud, and PANEL059 vs PANEL065 is one glyph apart. */
+.pn__ncode {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px; letter-spacing: -.01em;
+  color: #cbd5e1;
 }
 .pn__ndot {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--accent, #00a76f); flex: 0 0 auto;
 }
-/* The PM's reason. Two lines, then clipped — the full text is on the panel, and
-   a paragraph here would push every other notification off the screen. */
-.pn__ntext {
-  font-size: 12.5px; color: #cbd5e1; line-height: 1.45;
+
+.pn__ntitle { font-size: 13.5px; font-weight: 600; color: var(--text, #e5e7eb); }
+
+/* The reason, set as speech rather than as a subtitle — on a send-back it is
+   the only part that says what to actually change, and as plain grey text it
+   read like metadata and got skipped. */
+.pn__nsaid {
+  margin: 2px 0 1px; padding: 3px 0 3px 10px;
+  border-left: 2px solid #3a4150;
+  font-size: 12.5px; line-height: 1.45; color: #cbd5e1;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.pn__nmeta {
-  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
-  font-size: 11.5px; color: var(--muted);
-}
-.pn__nmeta b { color: #cbd5e1; font-weight: 600; }
-.pn__nmeta > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pn__nmeta > * + *::before { content: "·"; margin-right: 7px; opacity: .55; }
+.pn__nrow.is-bad .pn__nsaid { border-left-color: rgba(239, 68, 68, .55); }
 
-@media (max-width: 640px) {
-  .pn__nlink { padding: 10px 11px; gap: 9px; }
-  .pn__nmeta > span { max-width: 100%; }
+.pn__nwhere {
+  font-size: 11.5px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* When, who, and the way in — right-aligned so the times form a column you can
+   run your eye down instead of hunting for them at the end of each sentence. */
+.pn__nside {
+  display: flex; flex-direction: column; align-items: flex-end;
+  justify-content: center; gap: 3px; text-align: right;
+}
+.pn__nwhen { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.pn__nwho { font-size: 11.5px; color: #cbd5e1; font-weight: 600; }
+.pn__ngo {
+  margin-top: 3px; padding: 3px 10px; border-radius: 7px;
+  font-size: 11.5px; font-weight: 600; text-decoration: none; white-space: nowrap;
+  color: var(--muted); border: 1px solid var(--border, #2a2e38);
+}
+.pn__nrow:hover .pn__ngo { color: var(--text); border-color: #3a4150; }
+.pn__ngo:hover { color: var(--accent, #00a76f); border-color: var(--accent, #00a76f); }
+
+/* Narrow: the side column drops under the text rather than crushing both. */
+@media (max-width: 720px) {
+  .pn__nrow { grid-template-columns: 56px minmax(0, 1fr); }
+  .pn__nshot, .pn__ncount { width: 56px; height: 56px; }
+  .pn__nside {
+    grid-column: 2; flex-direction: row; align-items: center;
+    justify-content: flex-start; gap: 9px; margin-top: 5px;
+  }
+  .pn__nsec-note { display: none; }
 }

@@ -296,3 +296,57 @@ def test_the_service_survives_an_anonymous_session(client):
     """`user is None` is the whole existing test suite and dev with auth off."""
     with get_session() as s:
         assert fn.summary(s, None)["unread"] == 0
+
+
+# ── what a row shows ────────────────────────────────────────────────────────
+
+
+def test_a_row_carries_the_picture_it_is_about(client):
+    """A studio that adapts pictures, telling you about a picture, with no
+    picture. Six rows of "PANELxxx came back" are six identical grey bands
+    otherwise — the code is the only part that differs and it is the part you
+    cannot read at a glance."""
+    t = _studio(client)
+    _send_back(t["panels_a"][0], by=t["pm_id"], artist=t["a_id"])
+    _approve(t["panels_a"][1], by=t["pm_id"], artist=t["a_id"])
+
+    got = client.get("/api/flowstudio/notices", headers=_login(client, "nx_a")).json()
+    panel_rows = [r for r in got["todo"] + got["feed"] if r["panel_id"]]
+    assert panel_rows
+    missing = [r["id"] for r in panel_rows if not r["thumb_media_id"]]
+    assert not missing, f"panel rows with no picture: {missing}"
+
+
+def test_a_tally_row_has_no_picture_and_says_how_many(client):
+    """"70 panels not started" is not about one panel, so there is nothing to
+    show — the count takes the slot instead."""
+    t = _studio(client)
+    got = client.get("/api/flowstudio/notices", headers=_login(client, "nx_a")).json()
+    tally = next(r for r in got["todo"] if r["kind"] == "not_started")
+    assert tally["thumb_media_id"] is None
+    assert tally["panel_id"] is None
+    assert tally["count"] == 3
+
+
+def test_the_breadcrumb_drops_the_stem_the_server_itself_generated(client):
+    """A batch is named ``Project_Series_Chapter_batchNN``, so printing it whole
+    after the comic and chapter repeats both — the same 70 characters on every
+    row, differing only in the last two digits."""
+    t = _studio(client)
+    with get_session() as s:
+        # A batch with the CONVENTIONAL name, which is what real ones have.
+        batch = ps.create_batch(s, t["chapter_id"], None)
+        ps.update_batch(s, batch.id, assignee_user_id=t["a_id"], set_assignee=True)
+        made = ps.import_panels(s, batch.id, entries=[("Z1.png", "raw-z")])
+        full_name = batch.name
+    _send_back(made[0].id, by=t["pm_id"], artist=t["a_id"])
+
+    got = client.get("/api/flowstudio/notices", headers=_login(client, "nx_a")).json()
+    row = next(r for r in got["todo"] if r["panel_id"] == made[0].id)
+
+    # The chapter already holds two batches, so this one is batch03 — read the
+    # tail off the name rather than assuming the number.
+    tail = full_name.rsplit("_", 1)[-1]
+    assert full_name == f"Slate_Comic_Ch-1_{tail}", full_name
+    assert row["where"] == f"Comic · Ch 1 · {tail}", row["where"]
+    assert full_name not in row["where"], "the whole generated stem came through"

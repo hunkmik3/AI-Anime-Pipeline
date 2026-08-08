@@ -2960,6 +2960,8 @@ export interface Notice {
   panel_id: number | null;
   code: string | null;
   where: string | null;
+  /** The picture this is about — the delivered version, else the raw material. */
+  thumb_media_id: string | null;
   count: number;
   /** Your own doing — shown in the history, never counted as unread. */
   mine: boolean;

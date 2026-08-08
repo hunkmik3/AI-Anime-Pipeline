@@ -38,11 +38,14 @@ from flowboard.db.models import (
     FlowNoticeRead,
     FlowPanel,
     FlowPanelEvent,
+    FlowPanelImage,
     FlowPanelNote,
+    FlowProject,
     FlowSeries,
     User,
 )
 from flowboard.services import flow_permissions as fp
+from flowboard.services.panel_service import _token
 
 #: How far back the feed reads. Older than this and it is history, which the
 #: panel's own page tells better than a global list can.
@@ -89,6 +92,10 @@ class Notice:
     panel_id: Optional[int] = None
     code: Optional[str] = None
     where: Optional[str] = None
+    #: The picture this is about. A comic studio's notification saying
+    #: "PANEL059 came back" with no PANEL059 on it makes every row identical, and
+    #: the one thing that tells them apart is the thing being discussed.
+    thumb_media_id: Optional[str] = None
     count: int = 1
     #: True when this row is the reader's own doing. Kept in the feed — a history
     #: with your own actions cut out reads as if they never happened — but never
@@ -107,6 +114,7 @@ class Notice:
             "panel_id": self.panel_id,
             "code": self.code,
             "where": self.where,
+            "thumb_media_id": self.thumb_media_id,
             "count": self.count,
             "mine": self.mine,
         }
@@ -127,6 +135,7 @@ class _Tree:
     batches: dict[int, FlowBatch] = field(default_factory=dict)
     chapters: dict[int, FlowChapter] = field(default_factory=dict)
     series: dict[int, FlowSeries] = field(default_factory=dict)
+    projects: dict[int, FlowProject] = field(default_factory=dict)
 
     def series_id_of_batch(self, batch_id: int) -> Optional[int]:
         b = self.batches.get(batch_id)
@@ -136,12 +145,29 @@ class _Tree:
         return c.series_id if c else None
 
     def where(self, batch_id: int) -> str:
+        """``Comic · Chapter · batch02``.
+
+        The batch's own name is ``Project_Series_Chapter_batchNN`` by convention,
+        so printing it whole repeats the two segments in front of it — the
+        breadcrumb came out as "26001_MAGMEL · testchapter1 ·
+        Global-Comix_26001-MAGMEL_testchapter1_batch02" on every row, the same
+        70 characters over and over, and the only part that differed was the last
+        two digits. Strip the stem the server itself generated.
+        """
         b = self.batches.get(batch_id)
         if b is None:
             return ""
         c = self.chapters.get(b.chapter_id)
         s = self.series.get(c.series_id) if c else None
-        return " · ".join(x for x in [s.name if s else None, c.name if c else None, b.name] if x)
+        p = self.projects.get(s.project_id) if s else None
+        tail = b.name
+        if p and s and c:
+            stem = f"{_token(p.name)}_{_token(s.name)}_{_token(c.name)}_"
+            if tail.startswith(stem):
+                tail = tail[len(stem):]
+        return " · ".join(
+            x for x in [s.name if s else None, c.name if c else None, tail] if x
+        )
 
 
 def _load_tree(session: Session) -> _Tree:
@@ -152,7 +178,53 @@ def _load_tree(session: Session) -> _Tree:
         t.chapters[c.id] = c
     for s in session.exec(select(FlowSeries)).all():
         t.series[s.id] = s
+    for p in session.exec(select(FlowProject)).all():
+        t.projects[p.id] = p
     return t
+
+
+def _thumbs(session: Session, panel_ids: list[int]) -> dict[int, str]:
+    """The picture to show for each panel, in ONE query for the whole page.
+
+    The delivered version when there is one, else the raw material — matching
+    what `panel_service.delivered` answers, but without its per-panel lookup,
+    which on a 120-row feed would be 120 round trips for decoration.
+    """
+    if not panel_ids:
+        return {}
+    panels = {
+        p.id: p
+        for p in session.exec(
+            select(FlowPanel).where(FlowPanel.id.in_(panel_ids))  # type: ignore[attr-defined]
+        ).all()
+    }
+    rows = session.exec(
+        select(FlowPanelImage)
+        .where(FlowPanelImage.panel_id.in_(panel_ids))  # type: ignore[attr-defined]
+        .order_by(FlowPanelImage.version, FlowPanelImage.id)
+    ).all()
+    gen: dict[int, list[FlowPanelImage]] = {}
+    raw: dict[int, str] = {}
+    for r in rows:
+        if r.role == "generated":
+            gen.setdefault(r.panel_id, []).append(r)
+        elif r.panel_id not in raw:
+            raw[r.panel_id] = r.media_id
+
+    out: dict[int, str] = {}
+    for pid in panel_ids:
+        versions = gen.get(pid, [])
+        pick = None
+        final = getattr(panels.get(pid), "final_media_id", None)
+        if final:
+            pick = next((v.media_id for v in versions if v.media_id == final), None)
+        if pick is None and versions:
+            pick = versions[-1].media_id
+        if pick is None:
+            pick = raw.get(pid)
+        if pick:
+            out[pid] = pick
+    return out
 
 
 def _readable_series(session: Session, user: Optional[User], tree: _Tree) -> set[int]:
@@ -291,6 +363,7 @@ def todo(session: Session, user: Optional[User]) -> list[Notice]:
         untouched = [p for p in panels if p.batch_id in held and p.status == "todo"]
 
         notes_by_panel = _open_notes(session, [p.id for p in back])
+        shots = _thumbs(session, [p.id for p in back])
         for p in sorted(back, key=lambda x: x.code or ""):
             reasons = notes_by_panel.get(p.id, [])
             out.append(
@@ -303,6 +376,7 @@ def todo(session: Session, user: Optional[User]) -> list[Notice]:
                     href=_STATUS_HREF.format(id=p.id),
                     panel_id=p.id,
                     code=p.code,
+                    thumb_media_id=shots.get(p.id),
                 )
             )
         if started:
@@ -451,6 +525,7 @@ def feed(
         ).all()
     }
     names = _names(session, {e.actor_user_id for e in events if e.actor_user_id})
+    shots = _thumbs(session, list(panels))
 
     out: list[Notice] = []
     for e in events:
@@ -474,6 +549,7 @@ def feed(
                 href=_STATUS_HREF.format(id=p.id),
                 panel_id=p.id,
                 code=p.code,
+                thumb_media_id=shots.get(p.id),
                 mine=bool(user is not None and e.actor_user_id == user.id),
             )
         )
