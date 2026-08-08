@@ -87,7 +87,10 @@ export function PanelAllPage() {
   const artists = [...new Set(all.map((p) => p.assignee_name ?? "Unassigned"))].sort();
 
   return (
-    <div className="shellpage pn__wide">
+    // `pn__full`, not `pn__wide`: this is a table with a raw and a generated
+    // image side by side, and every pixel the 1480px cap took away came off the
+    // two picture columns — the only ones you actually look at.
+    <div className="shellpage pn__full">
       <GiantflowNav />
       <PageHeader
         title="All panels"

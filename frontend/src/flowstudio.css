@@ -2371,7 +2371,13 @@
    is bounded by a box instead of forced into one. Rows end up different heights,
    which is exactly what the Miro board looked like. */
 .pn__table--miro td { padding: 8px 10px; }
-.pn__tshot { width: 320px; }
+/* A PERCENTAGE, not a pixel width. The page runs full-bleed now, and with the
+   picture columns pinned at 320px every pixel of the extra width went to the six
+   text columns — a wider table showing exactly the same small pictures, which is
+   the opposite of the point. At 22% each the pair claims a bit under half the
+   table and grows with the window. The thumbnails are already fetched at 640px,
+   so there is real resolution behind this rather than an upscale. */
+.pn__tshot { width: 22%; min-width: 210px; }
 .pn__tshot button {
   display: block; padding: 0; margin: 0;
   background: #11151b; border: 1px solid var(--border, #2a2e38);
@@ -2381,18 +2387,24 @@
 .pn__tshot button:hover { border-color: var(--accent, #00a76f); }
 .pn__tshot img {
   display: block;
-  max-width: 300px;
-  max-height: 230px;
+  max-width: 100%;
+  /* Comic panels are tall. Without a ceiling one portrait page makes a row
+     four screens high and the table stops being scannable. */
+  max-height: 340px;
   width: auto;
   height: auto;
 }
 /* Below this the two image columns would squeeze the text ones out; drop the
    cap rather than let the pictures shrink back to unreadable. */
 @media (max-width: 1500px) {
-  .pn__tshot { width: 240px; }
+  .pn__tshot { width: 240px; min-width: 0; }
   .pn__tshot img { max-width: 224px; max-height: 175px; }
 }
-.pn__tcomic { min-width: 180px; }
+/* Same ink as the panel code beside it. Muted grey made the comic and batch read
+   as a caption on the row, when it is the first thing you look for to know which
+   comic the row belongs to. `.pn__tbatch` keeps its own opacity, so the two
+   lines still separate without the whole column receding. */
+td.pn__tcomic { min-width: 180px; color: var(--text); }
 .pn__tbatch { font-size: 11px; opacity: .75; }
 
 /* Notes: adding one without a rejection, and clearing one that is dealt with.
