@@ -158,3 +158,27 @@ def test_a_member_is_unchanged_by_any_of_this(client, staff):
         "/api/projects", json={"name": "Nope"}, headers=staff["worker"]
     ).status_code == 403
     assert client.get("/api/admin/users", headers=staff["worker"]).status_code == 403
+
+
+# ── the seal that must not drift ────────────────────────────────────────────
+
+
+def test_giantflow_and_giantstudio_agree_on_who_is_staff():
+    """`flow_permissions` is deliberately sealed from `permissions` — its own
+    module, its own table, so a change to one cannot quietly widen the other.
+    The cost of that seal is a duplicated list of system roles, and a duplicate
+    that drifts is worse than no seal: a studio manager unscoped on one side and
+    a plain viewer on the other is one person with two jobs depending on which
+    tab they opened."""
+    from flowboard.routes.deps import STAFF_ROLES
+    from flowboard.services.flow_permissions import STAFF_SYSTEM_ROLES
+
+    assert set(STAFF_ROLES) == set(STAFF_SYSTEM_ROLES)
+
+
+def test_a_manager_runs_giantflow_too(client, staff):
+    """Every comic, not the viewer's read-only crumbs."""
+    me = client.get("/api/flowstudio/me", headers=staff["mgr"]).json()
+    assert me["true_role"] == "admin"
+    assert me["capabilities"]["panel.review"] is True
+    assert me["capabilities"]["batch.manage"] is True

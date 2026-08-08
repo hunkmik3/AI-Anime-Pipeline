@@ -119,12 +119,28 @@ def role_for(session: Session, user: Optional[User], series_id: Optional[int]) -
     return cap_to_preview(_role_for(session, user, series_id))
 
 
+#: System roles that run the studio. Mirrors ``routes/deps.STAFF_ROLES``, and
+#: must keep mirroring it: a studio manager who is unscoped in giantstudio and a
+#: plain viewer in giantflow is one person with two different jobs depending on
+#: which tab they opened.
+#:
+#: Imported by name rather than from ``deps`` on purpose — this module is sealed
+#: from the rest of the permission code so that a change over there cannot
+#: quietly widen giantflow. The duplication is the seal; the test that pins them
+#: equal is what stops it drifting.
+STAFF_SYSTEM_ROLES: frozenset = frozenset({"admin", "manager"})
+
+
+def _is_staff(user: Optional[User]) -> bool:
+    return getattr(user, "role", None) in STAFF_SYSTEM_ROLES
+
+
 def _role_for(session: Session, user: Optional[User], series_id: Optional[int]) -> str:
     # No auth configured (dev, and the whole existing test suite) — behave as the
     # single-user app always did rather than inventing a lockout.
     if user is None:
         return ADMIN
-    if getattr(user, "role", None) == ADMIN:
+    if _is_staff(user):
         return ADMIN
     if series_id is None:
         return VIEWER
@@ -214,7 +230,7 @@ def best_role(session: Session, user: Optional[User]) -> str:
     Used only by global surfaces — the nav strip deciding whether to offer the
     Review tab at all. Per-project answers still come from ``role_for``.
     """
-    if user is None or getattr(user, "role", None) == ADMIN:
+    if user is None or _is_staff(user):
         return cap_to_preview(ADMIN)
     rows = session.exec(
         select(FlowSeriesMember).where(FlowSeriesMember.user_id == user.id)
