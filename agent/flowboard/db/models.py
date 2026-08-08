@@ -130,11 +130,14 @@ class Scene(SQLModel, table=True):
 
     id: uuid.UUID = Field(default_factory=_uuid_pk, primary_key=True)
     project_id: uuid.UUID = Field(foreign_key="project.id", index=True)
-    # Nullable so rows predating the Series tier survive; the migration
-    # backfills every existing scene into its project's "Default" series.
-    series_id: Optional[uuid.UUID] = Field(
-        default=None, foreign_key="series.id", index=True
-    )
+    #: Every episode lives in a series. NOT NULL, not by convention: it was
+    #: nullable to let rows predating the Series tier survive their migration,
+    #: and although `create_scene` has always fallen back to the project's
+    #: "Default" series so nothing in the app produced an orphan, the column
+    #: still permitted one. A four-tier hierarchy that the database does not
+    #: enforce is a four-tier hierarchy exactly until someone writes a third
+    #: creation path.
+    series_id: uuid.UUID = Field(foreign_key="series.id", index=True)
     name: str
     # Human code within the series — "EP007", "CH012". Free-form, not unique.
     code: str = ""

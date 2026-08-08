@@ -51,13 +51,27 @@ _RANK: dict[str, int] = {VIEWER: 0, ARTIST: 1, LEAD: 2, PRODUCER: 3, ADMIN: 4}
 #: (``require`` raises on an unknown capability rather than silently allowing).
 CAPABILITIES: dict[str, str] = {
     # Series tier
-    "series.create": LEAD,
+    #
+    # Building the structure is the PM's job, not the lead's. The four tiers are
+    # who-does-what as much as they are a shape: the admin opens a Project, the
+    # PM lays out its Series and Episodes, an artist is handed an Episode and
+    # generates Sequences inside it. A lead runs work through a structure that
+    # already exists — letting them add to it meant the shape could grow from
+    # underneath the person accountable for the schedule.
+    "series.create": PRODUCER,
+    # Renaming stays at lead. Editing a series' own details is running the work,
+    # not deciding what work there is, and a lead who cannot fix a typo in a code
+    # has to interrupt a PM to do it.
     "series.update": LEAD,
     "series.delete": PRODUCER,
     # Episode / Chapter (scene)
-    "episode.create": LEAD,
+    "episode.create": PRODUCER,
     "episode.update": LEAD,
-    "episode.delete": LEAD,
+    # Deleting was LEAD while creating was too, so it was at least consistent.
+    # Raising create alone would have left a lead able to delete an episode and
+    # then unable to put it back — the destructive half of a pair, without the
+    # half that undoes it.
+    "episode.delete": PRODUCER,
     # Sequence (shot)
     "sequence.create": ARTIST,
     "sequence.update": ARTIST,

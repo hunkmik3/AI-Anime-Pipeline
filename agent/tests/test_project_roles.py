@@ -68,26 +68,69 @@ def test_reported_role_matches_assignment(client, staffed):
         assert got["can"]["project.manage"] is False
 
 
-def test_lead_builds_structure_but_cannot_delete_a_series(client, staffed):
+def test_a_lead_runs_the_structure_but_does_not_decide_what_it_is(client, staffed):
+    """Adding a tier is the PM's call; editing one that exists is the lead's.
+
+    The four tiers are who-does-what as much as they are a shape — an admin
+    opens a Project, a PM lays out its Series and Episodes, an artist is handed
+    an Episode and generates Sequences in it. A lead who could add series and
+    episodes could grow the shape from underneath the person accountable for
+    the schedule; a lead who cannot fix a typo in a code has to interrupt a PM
+    to do it. So: create and delete are the PM's, rename is the lead's.
+    """
     pid, h = staffed["pid"], staffed["h"]
-    ser = client.post(
+
+    assert client.post(
         f"/api/projects/{pid}/series", json={"name": "Season 1"}, headers=h["lead"]
+    ).status_code == 403
+    assert client.post(
+        f"/api/projects/{pid}/scenes", json={"name": "EP1"}, headers=h["lead"]
+    ).status_code == 403
+
+    ser = client.post(
+        f"/api/projects/{pid}/series", json={"name": "Season 1"}, headers=h["prod"]
     )
     assert ser.status_code == 200
     sid = ser.json()["id"]
 
+    # The lead still runs it day to day.
     assert client.patch(
         f"/api/series/{sid}", json={"name": "Season One"}, headers=h["lead"]
     ).status_code == 200
-    # deleting a series is producer-only
+
     assert client.delete(f"/api/series/{sid}", headers=h["lead"]).status_code == 403
     assert client.delete(f"/api/series/{sid}", headers=h["prod"]).status_code == 200
+
+
+def test_nobody_can_delete_an_episode_they_could_not_recreate(client, staffed):
+    """The asymmetry that would have been left behind by raising create alone:
+    the destructive half of a pair without the half that undoes it."""
+    pid, h = staffed["pid"], staffed["h"]
+    ep = client.post(
+        f"/api/projects/{pid}/scenes", json={"name": "EP1"}, headers=h["prod"]
+    ).json()["id"]
+
+    assert client.delete(f"/api/scenes/{ep}", headers=h["lead"]).status_code == 403
+    assert client.delete(f"/api/scenes/{ep}", headers=h["prod"]).status_code == 200
+
+
+def test_every_episode_lands_in_a_series_even_when_none_is_named(client, staffed):
+    """`series_id` is NOT NULL now, and the create route does not require it —
+    an episode asked for without one is adopted by the project's series rather
+    than refused. Both halves matter: the hierarchy is guaranteed, and the
+    caller does not have to know the tier below to use the tier above."""
+    pid, h = staffed["pid"], staffed["h"]
+    ep = client.post(
+        f"/api/projects/{pid}/scenes", json={"name": "EP1"}, headers=h["prod"]
+    )
+    assert ep.status_code == 200
+    assert ep.json()["series_id"], "an episode came back with no series"
 
 
 def test_artist_works_in_sequences_but_cannot_restructure(client, staffed):
     pid, h = staffed["pid"], staffed["h"]
     ep = client.post(
-        f"/api/projects/{pid}/scenes", json={"name": "EP1"}, headers=h["lead"]
+        f"/api/projects/{pid}/scenes", json={"name": "EP1"}, headers=h["prod"]
     ).json()["id"]
     # Being on the project is no longer enough to work in an episode — the
     # artist has to be assigned to it (see test_visibility_scope.py). That
@@ -122,7 +165,7 @@ def test_artist_works_in_sequences_but_cannot_restructure(client, staffed):
 def test_viewer_is_read_only(client, staffed):
     pid, h = staffed["pid"], staffed["h"]
     ep = client.post(
-        f"/api/projects/{pid}/scenes", json={"name": "EP1"}, headers=h["lead"]
+        f"/api/projects/{pid}/scenes", json={"name": "EP1"}, headers=h["prod"]
     ).json()["id"]
 
     assert client.get(f"/api/projects/{pid}/scenes", headers=h["viewer"]).status_code == 200

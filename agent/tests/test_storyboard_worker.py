@@ -18,7 +18,7 @@ import asyncio
 import pytest
 
 from flowboard.db import get_session
-from flowboard.db.models import Node, Project, Request, Scene, Shot
+from flowboard.db.models import Node, Project, Request, Scene, Series, Shot
 from flowboard.worker import processor as proc
 from flowboard.worker.processor import (
     WorkerController,
@@ -35,7 +35,9 @@ def _seed_storyboard_node() -> int:
     with get_session() as s:
         project = Project(name="sb-worker")
         s.add(project); s.flush()
-        scene = Scene(project_id=project.id, name="Scene 1")
+        series = Series(project_id=project.id, name="S")
+        s.add(series); s.flush()
+        scene = Scene(project_id=project.id, series_id=series.id, name="Scene 1")
         s.add(scene); s.flush()
         shot = Shot(scene_id=scene.id)
         s.add(shot); s.commit(); s.refresh(shot)
@@ -327,7 +329,9 @@ def _seed_storyboard_with_shots(shots: list[dict]) -> int:
     with get_session() as s:
         project = Project(name="sb-retry")
         s.add(project); s.flush()
-        scene = Scene(project_id=project.id, name="Scene 1")
+        series = Series(project_id=project.id, name="S")
+        s.add(series); s.flush()
+        scene = Scene(project_id=project.id, series_id=series.id, name="Scene 1")
         s.add(scene); s.flush()
         shot = Shot(scene_id=scene.id)
         s.add(shot); s.commit(); s.refresh(shot)

@@ -21,7 +21,7 @@ import httpx
 import pytest
 
 from flowboard.db import get_session
-from flowboard.db.models import Node, Project, Scene, Shot
+from flowboard.db.models import Node, Project, Scene, Series, Shot
 from flowboard.services import prompt_synth
 from flowboard.services.llm import secrets
 from flowboard.services.video import avis, registry as _r
@@ -187,7 +187,10 @@ def _make_video_target(prompt_mode: str | None) -> int:
         project = Project(name="p8", project_bible={"art_style": "cel-shaded anime"})
         s.add(project)
         s.flush()
-        scene = Scene(project_id=project.id, name="S1", order_index=0)
+        series = Series(project_id=project.id, name="S")
+        s.add(series)
+        s.flush()
+        scene = Scene(project_id=project.id, series_id=series.id, name="S1", order_index=0)
         s.add(scene)
         s.flush()
         shot = Shot(scene_id=scene.id, order_index=0)

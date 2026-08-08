@@ -26,7 +26,7 @@ import uuid
 import pytest
 
 from flowboard.db import get_session
-from flowboard.db.models import Asset, Edge, Node, Project, Scene, Shot
+from flowboard.db.models import Asset, Edge, Node, Project, Scene, Series, Shot
 from flowboard.services import prompt_synth
 
 
@@ -49,8 +49,12 @@ def _make_shot(
     project = Project(name=name, project_bible=project_bible or {})
     session.add(project)
     session.flush()
+    series = Series(project_id=project.id, name="S")
+    session.add(series)
+    session.flush()
     scene = Scene(
         project_id=project.id,
+        series_id=series.id,
         name="Scene 1",
         order_index=0,
         master_establishing_asset_id=master_establishing_asset_id,
@@ -496,7 +500,9 @@ async def test_master_shot_resolves_media_id_via_asset_id(client, monkeypatch):
             local_path="/tmp/x.png",
         )
         s.add(asset); s.commit(); s.refresh(asset)
-        scene = Scene(project_id=proj.id, name="Scene", order_index=0)
+        series = Series(project_id=proj.id, name="S")
+        s.add(series); s.flush()
+        scene = Scene(project_id=proj.id, series_id=series.id, name="Scene", order_index=0)
         s.add(scene); s.flush()
         shot = Shot(scene_id=scene.id, order_index=0)
         s.add(shot); s.commit(); s.refresh(shot)
