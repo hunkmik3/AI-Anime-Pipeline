@@ -229,6 +229,8 @@ def delete_series(
             ses.delete_series(s, series_id)
         except ses.SeriesNotFound:
             raise HTTPException(404, "series not found")
+        except ses.SeriesNotEmpty as exc:
+            raise HTTPException(409, str(exc))
         audit_service.record_change(
             "series.deleted",
             object_type="series",

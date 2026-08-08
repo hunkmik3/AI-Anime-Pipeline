@@ -364,6 +364,17 @@ class FlowSeries(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     #: The slate it belongs to.
     project_id: int = Field(foreign_key="flow_project.id", index=True)
+    #: The production Series this comic delivers into, once someone links them.
+    #:
+    #: The whole handover hangs off this one column. giantflow adapts panels;
+    #: giantstudio animates them; "one finished panel is one sequence" is the
+    #: studio's own rule, and it makes every other pairing follow — a chapter is
+    #: an episode, a panel is a sequence — so nothing else has to be paired by
+    #: hand. NULL means this comic does not hand over, which is the right answer
+    #: for one being adapted for print.
+    studio_series_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="series.id", index=True
+    )
     name: str
     #: Hand-picked cover. When unset the card falls back to the first panel of the
     #: first batch, so a project looks like itself without anyone uploading
@@ -418,6 +429,13 @@ class FlowChapter(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     series_id: int = Field(foreign_key="flow_series.id", index=True)
+    #: The Episode this chapter became, created the first time one of its
+    #: panels is approved. Derived on demand rather than paired up front: a
+    #: chapter nobody has finished a panel in does not need an episode yet, and
+    #: making one anyway fills the production board with empty rows.
+    studio_scene_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="scene.id", index=True
+    )
     name: str
     cover_media_id: Optional[str] = None
     order_index: int = Field(default=0, index=True)
@@ -492,6 +510,13 @@ class FlowPanel(SQLModel, table=True):
     #: way to say so before, and every surface fell back to the most recent one.
     #: NULL means nobody has picked yet; readers fall back to the latest version.
     final_media_id: Optional[str] = Field(default=None)
+    #: The Sequence this panel became. Recorded so approving twice — which a
+    #: reopen-and-re-approve does — hands over once. Without it each extra
+    #: verdict would add another sequence to the episode, and nothing would look
+    #: wrong enough to notice until someone counted.
+    studio_shot_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="shot.id", index=True
+    )
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 

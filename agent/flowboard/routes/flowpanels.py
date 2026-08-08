@@ -36,6 +36,7 @@ from flowboard.db import get_session
 from flowboard.routes.deps import get_optional_user
 from flowboard.services import media as media_service
 from flowboard.db.models import PANEL_STATUSES
+from flowboard.services import flow_delivery as fd
 from flowboard.services import flow_notices as fn
 from flowboard.services import flow_permissions as fp
 from flowboard.services import panel_service as ps
@@ -1058,6 +1059,70 @@ def my_work(user=Depends(get_optional_user)):
         return out
 
 
+# ── Handover to production ──────────────────────────────────────────────────
+
+
+class LinkBody(BaseModel):
+    #: None unlinks. Already-delivered sequences are left alone either way — the
+    #: link routes future work, it does not own what has already crossed over.
+    studio_series_id: Optional[uuid.UUID] = None
+
+
+@router.get("/series/{series_id}/delivery")
+def delivery_state(series_id: int, user=Depends(get_optional_user)):
+    """Whether this comic hands over, and how much of it already has."""
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, series_id, "panel.read")
+        return fd.delivery_state(s, series_id)
+
+
+@router.put("/series/{series_id}/delivery")
+def set_delivery(series_id: int, body: LinkBody, user=Depends(get_optional_user)):
+    """Point this comic at the production series it delivers into.
+
+    The only decision a person makes in the whole handover. `batch.manage` —
+    a PM's call: it is a production routing decision, not a rename of the comic,
+    so it does not need the admin who owns the naming.
+    """
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, series_id, "batch.manage")
+        try:
+            fd.link_series(s, series_id, body.studio_series_id)
+        except fd.DeliveryError as exc:
+            raise HTTPException(404 if exc.code == "not_found" else 400, str(exc))
+        return fd.delivery_state(s, series_id)
+
+
+@router.post("/series/{series_id}/delivery/sync")
+def sync_delivery(series_id: int, user=Depends(get_optional_user)):
+    """Hand over every approved panel that has not crossed yet.
+
+    Delivery normally happens on the approval itself. This exists for the panels
+    approved BEFORE a comic was linked — without it, linking a comic that is
+    already half-finished would only ever carry its future approvals, and the
+    work already done would have to be re-approved to move.
+    """
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, series_id, "batch.manage")
+        panels = [p for p in ps.list_series_panels(s, series_id) if p.status == "approved"]
+        made = 0
+        try:
+            for p in panels:
+                handed = fd.deliver_panel(s, p.id)
+                if handed and handed.created:
+                    made += 1
+        except fd.DeliveryError as exc:
+            raise HTTPException(404 if exc.code == "not_found" else 400, str(exc))
+        # `created`, not `delivered`. `delivery_state` already answers "how many
+        # have crossed over in total", and spreading it over a key of the same
+        # name silently replaced the number this run actually made — so a second
+        # sync that carried nothing reported the same figure as the first.
+        return {"created": made, **fd.delivery_state(s, series_id)}
+
+
 # ── Notifications ───────────────────────────────────────────────────────────
 
 
@@ -1551,9 +1616,33 @@ def review(panel_id: int, body: ReviewBody, user=Depends(get_optional_user)):
                 s, panel_id, approve=body.approve, notes=body.notes,
                 author_user_id=(user.id if user else None),
             )
-            return _panel_dict(s, panel, with_images=True)
         except ps.PanelError as exc:
             raise _fail(exc)
+
+        # An approval is where the work leaves giantflow. Hooked here rather
+        # than inside `review_panel` on purpose: reviewing a panel is a fact
+        # about panels, and the panel service should not have to know that
+        # another product exists. The route is the boundary where the two meet.
+        #
+        # A comic that is not linked delivers nothing and this is a no-op, which
+        # is the normal case — most comics never hand over.
+        out = _panel_dict(s, panel, with_images=True)
+        if body.approve:
+            try:
+                handed = fd.deliver_panel(s, panel_id)
+            except fd.DeliveryError as exc:
+                # The verdict already happened and is not being undone for a
+                # routing problem. Report the failure alongside it so the PM can
+                # fix the link, rather than losing the approval to a 500.
+                out["delivery_error"] = str(exc)
+            else:
+                if handed is not None:
+                    out["delivered"] = {
+                        "sequence_id": str(handed.shot_id),
+                        "episode_id": str(handed.scene_id),
+                        "created": handed.created,
+                    }
+        return out
 
 
 @router.post("/panels/{panel_id}/reopen")

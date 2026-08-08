@@ -266,15 +266,29 @@ def update_series(
     return row
 
 
+class SeriesNotEmpty(Exception):
+    """A series still holding episodes cannot be deleted."""
+
+
 def delete_series(session: Session, series_id: uuid.UUID) -> None:
-    """Delete the series. Its episodes are NOT deleted — they're detached
-    (``series_id`` → NULL) so a mis-click can never take a season's worth of
-    generated work with it. The route refuses outright when it still has
-    episodes; this is the last-resort path."""
+    """Delete an EMPTY series, refusing while it still holds episodes.
+
+    It used to detach them instead — ``scene.series_id = None`` — so that a
+    mis-click could never take a season of generated work with it. That is no
+    longer possible and no longer needs to be: every episode belongs to a series
+    now (the column is NOT NULL), which is the same protection expressed as an
+    invariant rather than as a rescue. Left as it was, this function would raise
+    an integrity error from the database instead of a sentence anyone can read.
+
+    The route already refused when a series held episodes; the guard lives here
+    too, because "the caller checks first" is not an invariant.
+    """
     row = get_series(session, series_id)
-    for scene in session.exec(select(Scene).where(Scene.series_id == series_id)).all():
-        scene.series_id = None
-        session.add(scene)
+    held = session.exec(select(Scene).where(Scene.series_id == series_id)).all()
+    if held:
+        raise SeriesNotEmpty(
+            f"series still has {len(held)} episode(s) — move or delete them first"
+        )
     session.delete(row)
     session.commit()
 
