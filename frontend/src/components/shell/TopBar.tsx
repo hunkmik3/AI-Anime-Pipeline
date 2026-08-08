@@ -1,4 +1,4 @@
-import { Link, NavLink } from "react-router-dom";
+import { Link, NavLink, useLocation } from "react-router-dom";
 
 import { useAuthStore } from "../../store/auth";
 import { useInboxStore } from "../../store/inbox";
@@ -27,6 +27,11 @@ export function TopBar() {
   const logout = useAuthStore((s) => s.logout);
   const currentProjectId = useProjectStore((s) => s.currentProjectId);
   const { myWork, toReview } = useInboxStore();
+  const { pathname } = useLocation();
+  // Everything that is not the other product is this one. Stated as an
+  // exclusion rather than a list of studio prefixes, so a route added tomorrow
+  // is claimed by default instead of leaving the bar looking unselected.
+  const isStudio = !pathname.startsWith("/giantflow") && !pathname.startsWith("/admin");
 
   if (!user) return null;
 
@@ -41,23 +46,30 @@ export function TopBar() {
     <header className="topbar">
       <Brand />
 
-      {/* Ordered by how often it's opened: the work first, the back office last.
-          There is no separate producer console any more — a producer manages a
-          project from the project's own pages, so Projects covers them too.
+      {/* TWO PRODUCTS, and nothing else.
+          It used to read "Projects · Work · Review · Giantflow · Admin" — five
+          peers, of which the first three are pages *inside* the thing the fourth
+          is a sibling of. So the bar was answering "which page" and "which
+          product" at once, in one row, with no way to tell which was which.
+          Now it answers only "which product"; each product's own pages are a
+          strip on the page (StudioNav / GiantflowNav).
 
-          Every item stays visible even when its count is zero. Hiding the empty
-          ones would make the bar rearrange itself underneath someone the moment
-          they're handed a piece of work; the badge is what signals "there's
-          something here", not the item appearing. */}
-      <nav className="topbar__nav" aria-label="Primary">
-        <TopLink to="/projects" label="Projects" />
-        <TopLink to="/work" label="Work" count={myWork} />
-        <TopLink to="/review" label="Review" count={toReview} />
+          The counts move with them: an unread badge belongs next to the page it
+          is counting, not two levels up where it cannot say what is waiting. The
+          product tab still carries the total, so nothing goes unseen from here. */}
+      <nav className="topbar__nav" aria-label="Products">
+        <TopLink to="/projects" label="Giant Studio" count={myWork + toReview} owns={isStudio} />
         <TopLink to="/giantflow" label="Giantflow" />
-        {isAdmin ? <TopLink to="/admin" label="Admin" /> : null}
       </nav>
 
       <div className="topbar__right">
+        {/* Admin is not a third product — it is the back office. It sits with
+            the account controls, which is what it is about. */}
+        {isAdmin ? (
+          <Link to="/admin" className="topbar__chip" title="Admin console">
+            Admin
+          </Link>
+        ) : null}
         {currentProjectId ? (
           <Link
             to={`/projects/${currentProjectId}/library`}
@@ -89,16 +101,24 @@ function TopLink({
   to,
   label,
   count,
+  owns,
 }: {
   to: string;
   label: string;
   count?: number;
+  /**
+   * Whether this product owns the current route. `NavLink`'s own matching is
+   * path-prefix, which cannot express "Giant Studio is current on /work and
+   * /review and /shots/… too" — those share no prefix with /projects. Without
+   * it the bar showed nothing selected on half the app.
+   */
+  owns?: boolean;
 }) {
   return (
     <NavLink
       to={to}
       className={({ isActive }) =>
-        `topbar__link${isActive ? " is-active" : ""}`
+        `topbar__link${isActive || owns ? " is-active" : ""}`
       }
     >
       {label}

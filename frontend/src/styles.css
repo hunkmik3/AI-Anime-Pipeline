@@ -11317,3 +11317,22 @@ button:disabled {
   color: var(--accent-bright);
   margin-top: 1px;
 }
+
+
+/* ── The two-product top bar ──────────────────────────────────────────────
+   Two items, not five, so the tab has room to look like a place rather than a
+   link. The bar answers "which product"; the strip on the page answers "which
+   page of it". */
+.topbar__nav .topbar__link {
+  padding: 7px 16px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.topbar__nav .topbar__link.is-active {
+  color: var(--text);
+  background: var(--panel-high, #1d2129);
+}
+
+/* The page-level strip, on a `.page` grid whose own gap would otherwise leave
+   it floating a full 22px away from the header it belongs to. */
+.page > .pn__navbar { margin-bottom: -8px; }

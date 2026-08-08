@@ -20,6 +20,7 @@ import { BackTo } from "../components/shell/BackTo";
 import { PersonPicker } from "../components/PersonPicker";
 import { QuotaField } from "../components/QuotaField";
 import { TierPicker } from "../components/TierChip";
+import { StudioNav } from "../components/shell/StudioNav";
 
 /**
  * One series, and everything about it.
@@ -175,6 +176,7 @@ export function SeriesPage() {
 
   return (
     <div className="shellpage">
+      <StudioNav />
       <div className="pagehead">
         <div className="pagehead__crumb">
           <BackTo />

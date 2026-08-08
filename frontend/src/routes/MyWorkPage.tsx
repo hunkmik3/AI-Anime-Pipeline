@@ -9,6 +9,7 @@ import { DeliveryCard } from "../components/DeliveryCard";
 import { PageHeader } from "../components/shell/PageHeader";
 import { useInboxStore } from "../store/inbox";
 import { toast } from "../store/toast";
+import { StudioNav } from "../components/shell/StudioNav";
 
 /**
  * What this person still has to hand in.
@@ -54,6 +55,7 @@ export function MyWorkPage() {
 
   return (
     <div className="shellpage">
+      <StudioNav />
       <PageHeader
         title="Work"
         subtitle="Episodes assigned to you. Generate the sequences on the canvas, edit the cut in your editor, upload it to Drive, then hand in the link here."

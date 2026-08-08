@@ -5,6 +5,7 @@ import { thumbUrl, setProjectCover, uploadImage } from "../api/client";
 import { BreakableName } from "../components/BreakableName";
 import { useProjectStore } from "../store/project";
 import { useAuthStore } from "../store/auth";
+import { StudioNav } from "../components/shell/StudioNav";
 
 /** Open a native file picker and resolve with the chosen image (or null). */
 function pickImageFile(): Promise<File | null> {
@@ -85,6 +86,7 @@ export function ProjectListPage() {
 
   return (
     <div className="page page--project-list">
+      <StudioNav />
       <header className="page-header">
         <h1 className="page-title">Projects</h1>
         {isAdmin && (

@@ -10,6 +10,7 @@ import { DeliveryCard } from "../components/DeliveryCard";
 import { PageHeader } from "../components/shell/PageHeader";
 import { useInboxStore } from "../store/inbox";
 import { toast } from "../store/toast";
+import { StudioNav } from "../components/shell/StudioNav";
 
 /**
  * Cuts waiting on this reviewer's verdict.
@@ -61,6 +62,7 @@ export function ReviewQueuePage() {
 
   return (
     <div className="shellpage">
+      <StudioNav />
       <PageHeader
         title="Review"
         subtitle="Cuts waiting on your verdict. Watch it here, then approve it or send it back with a note saying what needs fixing."

@@ -27,6 +27,7 @@ import { BackTo } from "../components/shell/BackTo";
 import { PersonPicker } from "../components/PersonPicker";
 import { QuotaField } from "../components/QuotaField";
 import { useAuthStore } from "../store/auth";
+import { StudioNav } from "../components/shell/StudioNav";
 
 /**
  * One episode, and everything about it.
@@ -137,6 +138,7 @@ export function EpisodePage() {
 
   return (
     <div className="shellpage">
+      <StudioNav />
       <div className="pagehead">
         <div className="pagehead__crumb">
           <BackTo />

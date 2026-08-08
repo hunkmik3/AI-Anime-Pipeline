@@ -19,6 +19,7 @@ import { useProjectStore } from "../store/project";
 import { useSceneStore } from "../store/scene";
 import { useSeriesStore } from "../store/series";
 import { useReferencesStore } from "../store/references";
+import { StudioNav } from "../components/shell/StudioNav";
 
 const EMPTY_SCENES: SceneDTO[] = [];
 const EMPTY_SERIES: SeriesDTO[] = [];
@@ -233,6 +234,7 @@ export function SceneView() {
 
   return (
     <div className="page page--scene-view">
+      <StudioNav />
       <header className="page-header">
         <div>
           <nav className="breadcrumb" aria-label="Breadcrumb">
