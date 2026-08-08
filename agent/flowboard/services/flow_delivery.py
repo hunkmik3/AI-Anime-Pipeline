@@ -41,6 +41,7 @@ from typing import Optional
 from sqlmodel import Session, select
 
 from flowboard.db.models import (
+    FlowBatch,
     FlowChapter,
     FlowPanel,
     Node,
@@ -143,6 +144,13 @@ def deliver_panel(session: Session, panel_id: int) -> Optional[Delivered]:
     shot = shot_service.create_shot(
         session,
         scene.id,
+        # The panel's own position, NOT the next free slot. Panels are approved
+        # in whatever order the PM gets to them, so arrival order would make
+        # panel 8 into Sequence 1 whenever it was reviewed first — and the
+        # numbering would then shuffle as the rest caught up. Pinning it here
+        # means panel 8 is Sequence 8 from the moment it lands, and the gaps
+        # where 6 and 7 will go are visible instead of imaginary.
+        order_index=_chapter_position(session, panel, chapter),
         code=panel.code or "",
         script_text="",
     )
@@ -152,6 +160,39 @@ def deliver_panel(session: Session, panel_id: int) -> Optional[Delivered]:
     session.add(panel)
     session.commit()
     return Delivered(shot_id=shot.id, scene_id=scene.id, created=True)
+
+
+def _chapter_position(session: Session, panel: FlowPanel, chapter: FlowChapter) -> int:
+    """Where this panel sits in its CHAPTER, counting from 0.
+
+    Not `panel.order_index`, which counts within a BATCH. A batch is one
+    artist's share of a chapter, so a chapter split three ways holds three
+    panels all numbered 0 — and delivering them would put three sequences on
+    top of each other in slot 1. The chapter is the tier the episode
+    corresponds to, so the chapter is what the position has to be measured in.
+
+    Batches in their own order, panels in theirs, counted through: exactly the
+    reading order the person who cut the pages laid down.
+    """
+    batches = session.exec(
+        select(FlowBatch)
+        .where(FlowBatch.chapter_id == chapter.id)
+        .order_by(FlowBatch.order_index, FlowBatch.id)
+    ).all()
+    n = 0
+    for b in batches:
+        panels = session.exec(
+            select(FlowPanel)
+            .where(FlowPanel.batch_id == b.id)
+            .order_by(FlowPanel.order_index, FlowPanel.id)
+        ).all()
+        for p in panels:
+            if p.id == panel.id:
+                return n
+            n += 1
+    # Unreachable while the panel is in this chapter; falling back to appending
+    # is better than raising over a position.
+    return n
 
 
 def _episode_for(session: Session, chapter: FlowChapter, studio_series: Series) -> Scene:

@@ -48,6 +48,11 @@ def _world(client, *, chapters=2, panels=2):
         for c in range(chapters):
             ch = ps.create_chapter(s, comic.id, f"Chapter {c + 1}")
             out["chapters"].append(ch.id)
+            if panels == 0:
+                # `import_panels` refuses an empty folder, and rightly — but a
+                # caller asking for a bare chapter is not importing anything.
+                out["panels"][ch.id] = []
+                continue
             batch = ps.create_batch(s, ch.id, f"b{c}")
             made = ps.import_panels(
                 s, batch.id,
@@ -395,3 +400,69 @@ def test_deleting_an_EMPTY_production_series_just_unlinks_the_comic(client):
     got = _approve(client, w, w["panels"][w["chapters"][0]][0])
     assert got["status"] == "approved"
     assert "delivered" not in got
+
+
+# ── position ────────────────────────────────────────────────────────────────
+
+
+def test_a_panel_keeps_its_position_however_late_it_is_approved(client):
+    """The failure this is here to stop: panels are approved in whatever order
+    the PM gets to them, so arrival order would make the LAST panel Sequence 1
+    whenever it happened to be reviewed first — and every number would then
+    shuffle as the rest caught up."""
+    w = _world(client, chapters=1, panels=4)
+    _link(client, w)
+    ch = w["chapters"][0]
+
+    # Approve backwards: the 4th panel first.
+    last = _approve(client, w, w["panels"][ch][3])["delivered"]
+    first = _approve(client, w, w["panels"][ch][0])["delivered"]
+
+    with get_session() as s:
+        assert s.get(Shot, last["sequence_id"]).order_index == 3, (
+            "the last panel took the first slot"
+        )
+        assert s.get(Shot, first["sequence_id"]).order_index == 0
+
+
+def test_the_slots_of_unapproved_panels_stay_empty(client):
+    """"Leave the position empty" — the gap where 2 and 3 will go is real, not
+    closed up by the two that did arrive."""
+    w = _world(client, chapters=1, panels=4)
+    _link(client, w)
+    ch = w["chapters"][0]
+    _approve(client, w, w["panels"][ch][0])
+    got = _approve(client, w, w["panels"][ch][3])["delivered"]
+
+    with get_session() as s:
+        shots = s.exec(
+            select(Shot).where(Shot.scene_id == got["episode_id"])
+        ).all()
+    assert sorted(x.order_index for x in shots) == [0, 3]
+
+
+def test_position_is_measured_in_the_CHAPTER_not_the_batch(client):
+    """A batch is one artist's share of a chapter, so a chapter split three ways
+    holds three panels all numbered 0. Using `panel.order_index` directly would
+    stack them all in slot 1."""
+    t = _world(client, chapters=1, panels=0)
+    _link(client, t)
+    ch = t["chapters"][0]
+    with get_session() as s:
+        made = []
+        for k in range(2):
+            b = ps.create_batch(s, ch, f"artist-{k}")
+            made += ps.import_panels(
+                s, b.id, entries=[(f"B{k}P{i}.png", f"raw-{k}-{i}") for i in range(3)]
+            )
+        ids = [p.id for p in made]
+        # Both batches number their panels 0,1,2 — the collision this guards.
+        assert [p.order_index for p in made] == [0, 1, 2, 0, 1, 2]
+
+    seen = []
+    for pid in ids:
+        seen.append(_approve(client, t, pid)["delivered"]["sequence_id"])
+
+    with get_session() as s:
+        got = sorted(s.get(Shot, sid).order_index for sid in seen)
+    assert got == [0, 1, 2, 3, 4, 5], f"batch positions collided: {got}"
