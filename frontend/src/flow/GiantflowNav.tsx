@@ -12,9 +12,10 @@ import { ViewAsBar } from "./ViewAsBar";
  * "what is waiting on me, across everyone" and an artist asks "what came back to
  * me, and why", and neither question is answered by browsing the project tree.
  *
- * Notifications sits first because it is the only tab that answers "what should
- * I be doing" without knowing where to look — the other four all assume you
- * already know which pile your work is in.
+ * Notifications sits last, at the end of the strip. It carries a count, so it
+ * finds the eye on its own without taking the first slot from Projects — which
+ * is where people actually start, and the only tab that is the same door every
+ * day regardless of what happened overnight.
  *
  * Review is hidden from anyone who cannot rule on a panel. Hiding it is not the
  * protection — the server is — but a tab leading to a page of buttons you may
@@ -31,17 +32,6 @@ export function GiantflowNav() {
   return (
     <div className="pn__navbar">
       <nav className="pn__nav">
-        <NavLink
-          to="/giantflow/notices"
-          className={({ isActive }) => `pn__nav-tab${isActive ? " is-on" : ""}`}
-        >
-          Notifications
-          {badge > 0 ? (
-            <span className={`pn__nav-badge${unread ? " is-new" : ""}`}>
-              {badge > 99 ? "99+" : badge}
-            </span>
-          ) : null}
-        </NavLink>
         <NavLink end to="/giantflow" className={({ isActive }) => `pn__nav-tab${isActive ? " is-on" : ""}`}>
           Projects
         </NavLink>
@@ -55,6 +45,17 @@ export function GiantflowNav() {
         ) : null}
         <NavLink to="/giantflow/my-work" className={({ isActive }) => `pn__nav-tab${isActive ? " is-on" : ""}`}>
           My work
+        </NavLink>
+        <NavLink
+          to="/giantflow/notices"
+          className={({ isActive }) => `pn__nav-tab${isActive ? " is-on" : ""}`}
+        >
+          Notifications
+          {badge > 0 ? (
+            <span className={`pn__nav-badge${unread ? " is-new" : ""}`}>
+              {badge > 99 ? "99+" : badge}
+            </span>
+          ) : null}
         </NavLink>
       </nav>
       <ViewAsBar />
