@@ -2583,17 +2583,16 @@
    questions asked before opening anything. */
 .pn__meta {
   margin: 9px 0 0; padding: 9px 0 0;
-  display: grid; grid-template-columns: auto 1fr; gap: 3px 10px;
   border-top: 1px solid var(--border, #2a2e38);
   font-size: 11.5px;
 }
-.pn__meta > div { display: contents; }
-.pn__meta dt { color: var(--muted); white-space: nowrap; }
-.pn__meta dd {
-  margin: 0; display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
-  color: var(--muted);
+/* A sentence, so it wraps and re-flows like one — flex keeps the date input and
+   the badge on the baseline of the words around them. */
+.pn__meta-line {
+  margin: 0; display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+  color: var(--muted); line-height: 1.7;
 }
-.pn__meta dd b { color: #cbd5e1; font-weight: 600; }
+.pn__meta-line b { color: #cbd5e1; font-weight: 600; }
 .pn__meta time { opacity: .8; }
 .pn__due-input {
   padding: 1px 5px; font: inherit; font-size: 11.5px;

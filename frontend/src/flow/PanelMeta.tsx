@@ -5,6 +5,11 @@
  * and until now the answers lived nowhere on screen — `created_at` existed and
  * was never shown, `created_by` existed only on series, and a deadline existed
  * on neither.
+ *
+ * Written as two sentences rather than a label/value table. The table needed a
+ * "Created" column heading to explain a name sitting beside a date; the sentence
+ * carries its own grammar, reads at a glance, and gives back the width the
+ * headings were eating on a narrow card.
  */
 export function PanelMeta({
   createdBy,
@@ -18,40 +23,42 @@ export function PanelMeta({
   /** Omitted when the viewer may not manage this row. */
   onSetDue?: (value: string | null) => void;
 }) {
+  const made = createdAt ? new Date(createdAt) : null;
   return (
-    <dl className="pn__meta">
-      <div>
-        <dt>Created</dt>
-        <dd>
-          {createdBy ? <b>{createdBy}</b> : <span className="pn__muted">—</span>}
-          {createdAt ? (
-            <time dateTime={createdAt} title={new Date(createdAt).toLocaleString()}>
-              {new Date(createdAt).toLocaleDateString()}
-            </time>
+    <div className="pn__meta">
+      {createdBy || made ? (
+        <p className="pn__meta-line">
+          Created{createdBy ? <> by <b>{createdBy}</b></> : null}
+          {made ? (
+            <>
+              {" "}on{" "}
+              <time dateTime={createdAt ?? undefined} title={made.toLocaleString()}>
+                {made.toLocaleDateString()}
+              </time>
+            </>
           ) : null}
-        </dd>
-      </div>
-      <div>
-        <dt>Due</dt>
-        <dd>
-          {onSetDue ? (
-            <input
-              type="date"
-              className="pn__due-input"
-              value={dueDate ?? ""}
-              // Click would otherwise follow the card's link.
-              onClick={(e) => e.preventDefault()}
-              onChange={(e) => onSetDue(e.target.value || null)}
-            />
-          ) : dueDate ? (
-            <b>{localDay(dueDate)?.toLocaleDateString() ?? dueDate}</b>
-          ) : (
-            <span className="pn__muted">not set</span>
-          )}
-          {dueDate ? <DueBadge dueDate={dueDate} /> : null}
-        </dd>
-      </div>
-    </dl>
+        </p>
+      ) : null}
+
+      <p className="pn__meta-line">
+        Due{" "}
+        {onSetDue ? (
+          <input
+            type="date"
+            className="pn__due-input"
+            value={dueDate ?? ""}
+            // Click would otherwise follow the card's link.
+            onClick={(e) => e.preventDefault()}
+            onChange={(e) => onSetDue(e.target.value || null)}
+          />
+        ) : dueDate ? (
+          <b>{localDay(dueDate)?.toLocaleDateString() ?? dueDate}</b>
+        ) : (
+          <span className="pn__muted">not set</span>
+        )}
+        {dueDate ? <DueBadge dueDate={dueDate} /> : null}
+      </p>
+    </div>
   );
 }
 
