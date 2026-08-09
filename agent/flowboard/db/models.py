@@ -252,7 +252,22 @@ class Edge(SQLModel, table=True):
 
 class Request(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
+    #: What this run was for, on the Giant Studio side. A node reaches its
+    #: project through shot → scene, which is how every cost rollup attributes
+    #: spend.
     node_id: Optional[int] = Field(default=None, foreign_key="node.id", index=True)
+    #: …and on the Giantflow side. Panels are not on the node tree, so a panel
+    #: generation had no way to be attributed at all: the panel id was written
+    #: into ``params["__panel_id"]``, which is true and unjoinable, so every one
+    #: of those runs showed up in the ledger as spend belonging to nobody.
+    #:
+    #: Exactly one of the two is set. Not a generic (subject_type, subject_id)
+    #: pair: the two hierarchies are genuinely different tables, and an untyped
+    #: pair cannot be joined, cannot be constrained, and would let a row name a
+    #: panel that does not exist.
+    flow_panel_id: Optional[int] = Field(
+        default=None, foreign_key="flow_panel.id", index=True
+    )
     type: str
     params: dict = Field(default_factory=dict, sa_column=_jsonb_dict())
     status: str = "queued"

@@ -16,6 +16,7 @@ from flowboard.db.models import Project
 from flowboard.routes.deps import require_admin, require_staff
 from flowboard.services import (
     audit_service,
+    flow_stats,
     budget_service,
     panel_service,
     project_service as ps,
@@ -336,6 +337,39 @@ class ApproveBody(BaseModel):
 
 class RejectBody(BaseModel):
     notify: bool = False                  # email the applicant that it was declined
+
+
+# ── the comic side, which the console could not see at all ──────────────────
+#
+# `stats_service` reads eight tables and not one of them belongs to Giantflow,
+# so the console could answer "how is MoguTV going" and had nothing to say about
+# 99 panels across 7 comics.
+
+
+@router.get("/stats/comics")
+def comic_overview() -> dict:
+    """Slate-wide: how much comic work exists and how far through it is."""
+    return flow_stats.overview()
+
+
+@router.get("/stats/comics/by-comic")
+def comic_rows() -> list[dict]:
+    return flow_stats.by_comic()
+
+
+@router.get("/stats/comics/by-artist")
+def comic_artists() -> list[dict]:
+    return flow_stats.by_artist()
+
+
+@router.get("/stats/unattributed")
+def unattributed_spend() -> dict:
+    """Money the console cannot place, reported rather than dropped.
+
+    A ledger that silently omits what it cannot explain is worse than one
+    showing a gap: the total still looks right, so nobody goes looking.
+    """
+    return flow_stats.unattributed()
 
 
 # ── who holds what, across both products ────────────────────────────────────

@@ -69,6 +69,12 @@ def create_request(body: RequestCreate, user=Depends(get_optional_user)):
         # 404s on a missing node, so reaching this point means it exists.
         req = Request(
             node_id=body.node_id,
+            # Promoted out of `params`, where the panel id has always been
+            # written but could never be joined on — so every panel generation
+            # landed in the ledger as spend belonging to nobody. Still written
+            # to params as well: the worker and the studio UI both read it from
+            # there, and moving those is a separate change.
+            flow_panel_id=params.get("__panel_id"),
             type=body.type,
             params=params,
             status="queued",
