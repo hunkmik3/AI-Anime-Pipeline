@@ -171,3 +171,147 @@ def test_get_scene_canvas_drops_orphan_groups(client):
     canvas = client.get(f"/api/scenes/{b['scene_id']}/canvas").json()
     shot_ids = {s["id"] for s in canvas["shots"]}
     assert all(g["shot_id"] in shot_ids for g in canvas["shot_groups"])
+
+
+# ── the layout is a view of the shots, not a copy that drifts ───────────────
+
+
+def _canvas(client, scene_id):
+    r = client.get(f"/api/scenes/{scene_id}/canvas")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _scene_with_shots(client, n: int):
+    """A scene holding `n` sequences. `make_shot` gives the first."""
+    b = make_shot(client)
+    ids = [b["id"]]  # `make_shot` names the shot `id`
+    for _ in range(n - 1):
+        ids.append(_second_shot(client, b["scene_id"]))
+    return b["scene_id"], ids
+
+
+def test_reading_the_canvas_repairs_a_group_whose_order_went_stale(client):
+    """The bug the delivery skeleton exposed.
+
+    `order` was written once, when the group was created, and never refreshed.
+    That held while a sequence's position never changed — it does now: a chapter
+    fills in its earlier panels and everything after shifts. The canvas then
+    stacked them 2, 5, 3, 8, 7, with two groups claiming the same slot, because
+    the client sorts by an `order` that no longer described the shot.
+    """
+    from flowboard.db import get_session
+    from flowboard.db.models import Scene
+    from sqlalchemy.orm.attributes import flag_modified
+
+    scene_id, shot_ids = _scene_with_shots(client, 3)
+    got = _canvas(client, scene_id)
+    assert [g["order"] for g in got["shot_groups"]] == [0, 1, 2]
+
+    # Corrupt one group's order behind the app's back, as a real one went stale.
+    with get_session() as s:
+        scene = s.get(Scene, scene_id)
+        state = dict(scene.canvas_state)
+        state["shot_groups"][2]["order"] = 0
+        state["shot_groups"][2]["label"] = "Sequence 1"
+        scene.canvas_state = state
+        flag_modified(scene, "canvas_state")
+        s.add(scene)
+        s.commit()
+
+    got = _canvas(client, scene_id)
+    assert [g["order"] for g in got["shot_groups"]] == [0, 1, 2], "stale order survived a read"
+    assert [g["label"] for g in got["shot_groups"]] == [
+        "Sequence 1", "Sequence 2", "Sequence 3",
+    ]
+
+
+def test_a_group_whose_shot_is_gone_is_dropped_not_just_hidden(client):
+    """A frame for a sequence that no longer exists is a wrong row, not a
+    display problem — and nothing else would ever clean it up."""
+    from flowboard.db import get_session
+    from flowboard.db.models import Scene
+    from sqlalchemy.orm.attributes import flag_modified
+
+    scene_id, shot_ids = _scene_with_shots(client, 2)
+    _canvas(client, scene_id)  # groups only exist once the canvas has been read
+    with get_session() as s:
+        scene = s.get(Scene, scene_id)
+        state = dict(scene.canvas_state)
+        state["shot_groups"].append({
+            "shot_id": "00000000-0000-0000-0000-000000000000",
+            "order": 99, "label": "Ghost", "collapsed": False,
+            "position": {"x": 0, "y": 0},
+        })
+        scene.canvas_state = state
+        flag_modified(scene, "canvas_state")
+        s.add(scene)
+        s.commit()
+
+    assert len(_canvas(client, scene_id)["shot_groups"]) == 2
+    with get_session() as s:
+        stored = s.get(Scene, scene_id).canvas_state["shot_groups"]
+    assert len(stored) == 2, "the orphan was filtered on read but left in the row"
+
+
+def test_a_layout_that_contradicts_the_order_is_rebuilt(client):
+    """The one the user was actually looking at: Sequence 1 sitting below
+    Sequence 2, and 5 above 3. Every individual y looked like a choice, so
+    nothing ever repaired it."""
+    from flowboard.db import get_session
+    from flowboard.db.models import Scene
+    from sqlalchemy.orm.attributes import flag_modified
+
+    scene_id, shot_ids = _scene_with_shots(client, 3)
+    _canvas(client, scene_id)
+    with get_session() as s:
+        scene = s.get(Scene, scene_id)
+        state = dict(scene.canvas_state)
+        for g, y in zip(state["shot_groups"], [1600, 100, 5140]):
+            g["position"]["y"] = y
+        scene.canvas_state = state
+        flag_modified(scene, "canvas_state")
+        s.add(scene)
+        s.commit()
+
+    groups = _canvas(client, scene_id)["shot_groups"]
+    ys = [g["position"]["y"] for g in groups]
+    assert ys == sorted(ys), f"a sequence still sits above an earlier one: {ys}"
+    assert [g["order"] for g in groups] == [0, 1, 2]
+
+
+def test_a_deliberate_arrangement_that_agrees_with_the_order_is_kept(client):
+    """The other half. Re-seeding whenever anything looked unusual would throw
+    away spacing somebody chose on purpose."""
+    from flowboard.db import get_session
+    from flowboard.db.models import Scene
+    from sqlalchemy.orm.attributes import flag_modified
+
+    scene_id, shot_ids = _scene_with_shots(client, 3)
+    _canvas(client, scene_id)
+    spread = [40, 2000, 9000]
+    with get_session() as s:
+        scene = s.get(Scene, scene_id)
+        state = dict(scene.canvas_state)
+        for g, y in zip(state["shot_groups"], spread):
+            g["position"]["y"] = y
+        scene.canvas_state = state
+        flag_modified(scene, "canvas_state")
+        s.add(scene)
+        s.commit()
+
+    groups = _canvas(client, scene_id)["shot_groups"]
+    assert [g["position"]["y"] for g in groups] == spread
+
+
+def test_a_new_sequence_does_not_land_on_top_of_an_existing_one(client):
+    """Seeding a new group at the end of the ARRAY put it wherever the array
+    happened to end, which is on top of a group already there once positions
+    stopped following array order."""
+    scene_id, shot_ids = _scene_with_shots(client, 2)
+    _canvas(client, scene_id)
+
+    client.post(f"/api/scenes/{scene_id}/shots", json={"order_index": 0})
+    groups = _canvas(client, scene_id)["shot_groups"]
+    ys = [g["position"]["y"] for g in groups]
+    assert len(ys) == len(set(ys)), f"two groups share a y: {ys}"

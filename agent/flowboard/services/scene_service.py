@@ -478,53 +478,115 @@ def get_scene_canvas(session: Session, scene_id: uuid.UUID) -> dict[str, Any]:
             }
             for e in edges
         ],
-        # Defensive: drop orphan group entries whose shot no longer exists
-        # (e.g. legacy data, or a shot deleted out-of-band).
-        "shot_groups": [
-            g
-            for g in (scene.canvas_state or {}).get("shot_groups", [])
-            if isinstance(g, dict) and g.get("shot_id") in shot_id_strs
-        ],
+        # Reconciled on read, so a stale layout can never be served. The client
+        # only asks to migrate when it sees NO groups at all, which meant an
+        # episode that gained sequences after its first load kept the layout it
+        # was born with — wrong order, and groups overlapping where two claimed
+        # one slot. Reading is the one path every viewer takes.
+        "shot_groups": _reconciled_groups(session, scene, shots),
     }
 
 
-def auto_migrate_canvas(session: Session, scene_id: uuid.UUID) -> dict[str, Any]:
-    """Idempotently build canvas_state.shot_groups for a scene: one group per
-    shot, default vertical-stack origin, collapsed=false, label "Shot N".
+def _reconciled_groups(session: Session, scene: Scene, shots: list[Shot]) -> list[dict]:
+    """One group per shot, in the shots' order, persisted only if it changed.
 
-    Existing entries are preserved; only shots missing a group get one
-    appended — so a re-run never clobbers user-moved groups (Q5 idempotent).
+    Orphans — groups whose shot is gone — are dropped rather than filtered on
+    each read: nothing else would ever clean them up, and a frame for a sequence
+    that no longer exists is not a display problem, it is a wrong row.
+    """
+    wanted = _group_layout(scene, shots)
+    current = (scene.canvas_state or {}).get("shot_groups") or []
+    if current != wanted:
+        state = dict(scene.canvas_state or {})
+        state["shot_groups"] = wanted
+        scene.canvas_state = state
+        flag_modified(scene, "canvas_state")
+        session.add(scene)
+        session.commit()
+    return wanted
+
+
+def _group_layout(scene: Scene, shots: list[Shot]) -> list[dict]:
+    """The layout the scene's shots imply, keeping whatever the user chose that
+    the shots do not decide (a group's x, whether it is collapsed)."""
+    existing = {
+        g.get("shot_id"): g
+        for g in ((scene.canvas_state or {}).get("shot_groups") or [])
+        if isinstance(g, dict)
+    }
+    # Where the kept groups already sit, so a new one is never dropped on top of
+    # one. Seeding by slot cannot work here: the kept y's follow whatever the
+    # slots WERE, and inserting a sequence renumbers them.
+    taken = [
+        g["position"]["y"]
+        for g in existing.values()
+        if isinstance(g.get("position"), dict) and isinstance(g["position"].get("y"), (int, float))
+    ]
+    floor = max(taken) if taken else _GROUP_STACK_Y0 - _GROUP_STACK_DY
+
+    def _next_y() -> float:
+        """Below everything, so it cannot land on a group already there. Which
+        is not where it belongs — the client re-flows the stack by `order` on
+        load and puts it in place. A seed only has to be somewhere legible."""
+        nonlocal floor
+        floor += _GROUP_STACK_DY
+        return floor
+
+    out: list[dict] = []
+    for slot, sh in enumerate(shots):
+        sid = str(sh.id)
+        g = dict(existing.get(sid) or {})
+        pos = g.get("position") if isinstance(g.get("position"), dict) else {}
+        out.append({
+            "shot_id": sid,
+            # `order` and `label` are a VIEW of the shot, refreshed every time.
+            # A stale copy of a number that already exists somewhere is not
+            # worth keeping — and it is what put the canvas in the wrong order.
+            "order": sh.order_index,
+            "label": f"Sequence {sh.order_index + 1}",
+            "collapsed": bool(g.get("collapsed", False)),
+            # A position the user chose is kept, always. Only a group that did
+            # not exist yet gets seeded, and it is seeded at its own slot rather
+            # than at the end of the array — appended-at-the-end was what put a
+            # new sequence on top of one already there.
+            #
+            # The seed is only a first frame: the client re-flows the whole
+            # stack by `order` from the real rendered heights on load, which is
+            # what actually removes the overlap. That re-flow was reading a
+            # stale `order` before, which is why it never did.
+            "position": {
+                "x": pos.get("x", _GROUP_STACK_X),
+                "y": pos.get("y", _next_y()),
+            },
+        })
+
+    # A stored layout that runs against the sequence order is not somebody's
+    # preference — it is the bug. These y's were written when a group's position
+    # followed the order it was ADDED in, so a scene that gained sequences later
+    # ended up with Sequence 1 below Sequence 2 and Sequence 5 above Sequence 3.
+    # Nothing repaired it, because each individual y looked like a choice.
+    #
+    # So: keep the y's while they ascend with `order` (that is a real
+    # arrangement, spacing and all, and the one the moved-group case relies on),
+    # and re-seed the whole stack the moment they do not.
+    ys = [g["position"]["y"] for g in out]
+    if any(b <= a for a, b in zip(ys, ys[1:])):
+        for slot, g in enumerate(out):
+            g["position"]["y"] = _GROUP_STACK_Y0 + slot * _GROUP_STACK_DY
+    return out
+
+
+def auto_migrate_canvas(session: Session, scene_id: uuid.UUID) -> dict[str, Any]:
+    """Reconcile canvas_state.shot_groups with the scene's shots.
+
+    Kept as an endpoint because the client still calls it on a scene it finds
+    with no groups, but it does nothing reading the canvas does not already do —
+    delegating rather than repeating the layout means the two cannot disagree
+    about what the layout is, which is exactly how the stale-`order` bug got in.
     """
     scene = get_scene(session, scene_id)
-    state = dict(scene.canvas_state or {})
-    groups: list[dict] = list(state.get("shot_groups") or [])
-    have = {g.get("shot_id") for g in groups if isinstance(g, dict)}
-
-    shots = _shots_ordered(session, scene_id)
-    next_slot = len(groups)
-    for sh in shots:
-        sid = str(sh.id)
-        if sid in have:
-            continue
-        groups.append({
-            "shot_id": sid,
-            "position": {"x": _GROUP_STACK_X, "y": _GROUP_STACK_Y0 + next_slot * _GROUP_STACK_DY},
-            "collapsed": False,
-            "label": f"Sequence {sh.order_index + 1}",
-            "order": sh.order_index,
-        })
-        next_slot += 1
-
-    state["shot_groups"] = groups
-    scene.canvas_state = state
-    # Plain JSONB (no MutableDict) doesn't track nested mutations; force the
-    # UPDATE so a re-run that only touches nested dicts still persists.
-    flag_modified(scene, "canvas_state")
-    session.add(scene)
-    session.commit()
-    session.refresh(scene)
+    groups = _reconciled_groups(session, scene, _shots_ordered(session, scene_id))
     return {"scene_id": str(scene.id), "shot_groups": groups, "migrated": True}
-
 
 def update_shot_group(
     session: Session,
