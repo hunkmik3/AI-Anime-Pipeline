@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from flowboard.db import get_session
 from flowboard.services import flow_quota
+from flowboard.services import sequence_quota
 from flowboard.db.models import Node, Request
 from flowboard.routes.deps import get_optional_user
 from flowboard.services import budget_service, resource_guard, scope_budget
@@ -30,6 +31,25 @@ def create_request(body: RequestCreate, user=Depends(get_optional_user)):
     if body.node_id is not None:
         with get_session() as s:
             resource_guard.authorize_node(s, user, body.node_id, "canvas.write")
+
+            # BEFORE the money checks, deliberately. A locked sequence and an
+            # empty budget both refuse, but they are different problems with
+            # different fixes, and "you are out of credit" sends the artist to
+            # the wrong person. The lock is also the cheaper question: one
+            # query, and nothing reserved.
+            try:
+                sequence_quota.check(s, body.node_id)
+            except sequence_quota.SequenceLocked as exc:
+                raise HTTPException(
+                    423,
+                    detail={
+                        "error": str(exc),
+                        "sequence": exc.code,
+                        "used": exc.used,
+                        "limit": exc.limit,
+                        "unlock": "a PM can lift this in Admin › Sequences to review",
+                    },
+                )
     # Budget gate (Phase 9.2): video gen is metered per user. Estimate + check
     # available budget BEFORE creating the request (hard-cap on insufficient).
     est = 0.0

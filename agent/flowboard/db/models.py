@@ -219,6 +219,16 @@ class Shot(SQLModel, table=True):
     # generation gate checks first, since a sequence is what an artist generates
     # into. Kept as a bag so per-sequence tracking can grow without migrations.
     production: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
+    #: How many generations this sequence may run in total. NULL means the house
+    #: default; a number is an unlock a PM granted after looking at why the first
+    #: attempts did not work.
+    #:
+    #: A ceiling per SEQUENCE, not per person. A budget stops someone spending
+    #: and does nothing about one shot quietly eating a season's worth of tries;
+    #: five is roughly "the obvious things have been tried", and past that the
+    #: answer is usually a different prompt or a different reference rather than
+    #: another roll of the same one.
+    gen_limit: Optional[int] = Field(default=None)
     created_at: datetime = Field(default_factory=_utcnow)
 
 

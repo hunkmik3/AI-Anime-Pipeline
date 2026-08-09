@@ -11482,3 +11482,45 @@ button:disabled {
 .comics__bar i.is-submitted { background: #6ea8fe; }
 .comics__bar i.is-changes_requested { background: #f0808f; }
 .comics__bar i.is-approved { background: #34d19b; }
+
+/* ── Admin › Sequences to review ──────────────────────────────────────────
+   Sequences that used their attempts. The attempt count is the point of the
+   page, so it is the loudest thing on the row — "7 / 5" says at a glance that
+   this one has been fought with. */
+.blockseq { display: flex; flex-direction: column; gap: 14px; }
+.blockseq__note { margin: 0; font-size: 13px; color: #9aa3b0; line-height: 1.6; max-width: 78ch; }
+.blockseq__note b { color: #e6e9ef; }
+.blockseq__scroll { overflow-x: auto; border: 1px solid #2a2a33; border-radius: 10px; }
+.blockseq__table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.blockseq__table th, .blockseq__table td {
+  text-align: left; padding: 10px 13px; border-bottom: 1px solid #22222b;
+}
+.blockseq__table thead th {
+  font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
+  color: #8b93a1; background: #1a1a21; white-space: nowrap;
+}
+.blockseq__table tbody tr:last-child td { border-bottom: 0; }
+.blockseq__table tbody tr:hover { background: #1c1c24; }
+.blockseq__table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.blockseq__code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #e6e9ef; }
+.blockseq__muted { color: #8b93a1; }
+.blockseq__of { color: #8b93a1; }
+.blockseq__table .num b { font-size: 15px; }
+.blockseq__table .num b.is-over { color: #f0808f; }
+.blockseq__tag {
+  margin-left: 8px; padding: 1px 7px; border-radius: 999px;
+  font-size: 10.5px; font-style: normal; font-weight: 700;
+  background: rgba(52,209,155,.16); color: #34d19b;
+}
+.blockseq__acts { display: flex; align-items: center; gap: 8px; justify-content: flex-end; white-space: nowrap; }
+.blockseq__open { font-size: 12.5px; color: #8b93a1; text-decoration: none; }
+.blockseq__open:hover { color: #34d19b; }
+.blockseq__btn {
+  padding: 5px 12px; border-radius: 7px; cursor: pointer;
+  font: inherit; font-size: 12.5px; font-weight: 600;
+  background: rgba(52,209,155,.16); color: #34d19b; border: 1px solid transparent;
+}
+.blockseq__btn:hover:not(:disabled) { background: rgba(52,209,155,.26); }
+.blockseq__btn:disabled { opacity: .45; cursor: default; }
+.blockseq__btn--quiet { background: #1d1d25; color: #9aa3b0; border-color: #2f2f3a; }
+.blockseq__btn--quiet:hover:not(:disabled) { color: #e6e9ef; }

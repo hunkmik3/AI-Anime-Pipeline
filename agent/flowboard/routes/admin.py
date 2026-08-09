@@ -21,6 +21,7 @@ from flowboard.services import (
     panel_service,
     project_service as ps,
     registration_service,
+    sequence_quota,
     stats_service,
     user_service,
 )
@@ -344,6 +345,60 @@ class RejectBody(BaseModel):
 # `stats_service` reads eight tables and not one of them belongs to Giantflow,
 # so the console could answer "how is MoguTV going" and had nothing to say about
 # 99 panels across 7 comics.
+
+
+# ── sequences that have run out of attempts ─────────────────────────────────
+#
+# A queue, not a notification. Nothing is sent when the fifth attempt lands: the
+# sequence appears on this list and leaves it when the limit is lifted or the
+# work moves on. Anything recorded would need taking off the list too, and the
+# day that is forgotten a PM is looking at work that is already going again.
+
+
+class UnlockBody(BaseModel):
+    #: How many more attempts to grant. Counted from where the sequence
+    #: actually is, so the number on the button is the number they get.
+    extra: int = 5
+
+
+@router.get("/sequences/blocked")
+def blocked_sequences(project_id: Optional[uuid.UUID] = None) -> list[dict]:
+    with get_session() as s:
+        return sequence_quota.blocked(s, project_id)
+
+
+@router.post("/sequences/{shot_id}/unlock")
+def unlock_sequence(
+    shot_id: uuid.UUID, body: UnlockBody, request: Request,
+    caller=Depends(require_staff),
+) -> dict:
+    with get_session() as s:
+        try:
+            out = sequence_quota.unlock(s, shot_id, body.extra)
+        except Exception:
+            raise HTTPException(404, "sequence not found")
+        audit_service.record(
+            "sequence.unlocked", actor=caller, ip=audit_service.client_ip(request),
+            detail=f"{shot_id} +{body.extra} (now {out['limit']})",
+        )
+        return out
+
+
+@router.post("/sequences/{shot_id}/relock")
+def relock_sequence(
+    shot_id: uuid.UUID, request: Request, caller=Depends(require_staff),
+) -> dict:
+    """Back to the house default — undo for a mis-click."""
+    with get_session() as s:
+        try:
+            out = sequence_quota.relock(s, shot_id)
+        except Exception:
+            raise HTTPException(404, "sequence not found")
+        audit_service.record(
+            "sequence.relocked", actor=caller, ip=audit_service.client_ip(request),
+            detail=str(shot_id),
+        )
+        return out
 
 
 @router.get("/stats/comics")
