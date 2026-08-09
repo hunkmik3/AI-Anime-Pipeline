@@ -413,7 +413,35 @@ def put_scene_establishing(
 # Default vertical-stack layout for auto-migration (group origin per shot).
 _GROUP_STACK_X = 120.0
 _GROUP_STACK_Y0 = 100.0
-_GROUP_STACK_DY = 500.0
+#: Frame geometry, mirrored from routes/SceneCanvas.tsx. The CLIENT owns the
+#: layout — it measures what actually rendered and re-flows the stack — and
+#: these are not an attempt to take that over. They exist so the y's this
+#: module hands out are not overlapping on their face, which the old flat
+#: pitch of 500 always was: less than a single frame is tall.
+#:
+#: That went unnoticed for as long as the client re-flowed on every load, so
+#: the bad seed was visible for one frame. It stopped being invisible when
+#: scenes began gaining sequences after that re-flow had already run.
+_GROUP_DEFAULT_H = 1080.0
+_GROUP_COLLAPSED_H = 110.0
+_GROUP_GAP = 100.0
+_GROUP_STACK_DY = _GROUP_DEFAULT_H + _GROUP_GAP
+
+
+def _implied_height(g: dict) -> float:
+    """How tall this frame renders, by the same rules the canvas uses.
+
+    Collapsed frames are short and resized ones are whatever the user made
+    them, so a stack of those is legitimately tight — which is why "the pitch
+    must be at least a default frame" is the wrong test and this is the right
+    one.
+    """
+    if g.get("collapsed"):
+        return _GROUP_COLLAPSED_H
+    size = g.get("size")
+    if isinstance(size, dict) and isinstance(size.get("h"), (int, float)):
+        return float(size["h"])
+    return _GROUP_DEFAULT_H
 
 
 def _shots_ordered(session: Session, scene_id: uuid.UUID) -> list[Shot]:
@@ -560,19 +588,28 @@ def _group_layout(scene: Scene, shots: list[Shot]) -> list[dict]:
             },
         })
 
-    # A stored layout that runs against the sequence order is not somebody's
-    # preference — it is the bug. These y's were written when a group's position
-    # followed the order it was ADDED in, so a scene that gained sequences later
-    # ended up with Sequence 1 below Sequence 2 and Sequence 5 above Sequence 3.
-    # Nothing repaired it, because each individual y looked like a choice.
+    # A stored layout where a frame sits on the one before it is not somebody's
+    # preference — it is this bug. These y's were written when a group's
+    # position followed the order it was ADDED in, so a scene that gained
+    # sequences later ended up with Sequence 1 below Sequence 2, and later
+    # still with an even pitch of 500 between frames that are 1080 tall.
+    # Nothing repaired either, because each individual y looked like a choice.
     #
-    # So: keep the y's while they ascend with `order` (that is a real
-    # arrangement, spacing and all, and the one the moved-group case relies on),
-    # and re-seed the whole stack the moment they do not.
+    # Keep them while each frame clears the one above it — that is a real
+    # arrangement, spacing and all, and the one the moved-group case relies on.
+    # Re-flow the whole stack the moment one does not, using each frame's own
+    # height so a stack of collapsed or hand-resized frames stays as tight as
+    # its owner made it.
+    heights = [_implied_height(g) for g in out]
     ys = [g["position"]["y"] for g in out]
-    if any(b <= a for a, b in zip(ys, ys[1:])):
-        for slot, g in enumerate(out):
-            g["position"]["y"] = _GROUP_STACK_Y0 + slot * _GROUP_STACK_DY
+    clears = all(
+        ys[i + 1] >= ys[i] + heights[i] for i in range(len(out) - 1)
+    )
+    if not clears:
+        y = _GROUP_STACK_Y0
+        for g, h in zip(out, heights):
+            g["position"]["y"] = y
+            y += h + _GROUP_GAP
     return out
 
 

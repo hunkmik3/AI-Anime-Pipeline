@@ -293,15 +293,23 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
 
   // Group positions are PERSISTED, so any change to how tall a frame renders
   // (a new default, a child added) leaves the stored y's describing the old
-  // layout and the frames overlap. Re-flow once per scene after load to settle
-  // them. reflowStack only writes groups whose position actually moved, so
-  // this costs nothing once a scene's layout already agrees.
+  // layout and the frames overlap. Re-flow after load to settle them.
+  // reflowStack only writes groups whose position actually moved, so this costs
+  // nothing once a scene's layout already agrees.
+  //
+  // Keyed on the scene AND the number of groups, not the scene alone. Once per
+  // scene was right while a scene's sequences were fixed at load; they are not
+  // any more — an episode gains one every time a panel is approved upstream —
+  // and a scene already re-flowed in this mount would never settle the ones
+  // that arrived afterwards. They stayed exactly where the server seeded them,
+  // which is on top of each other.
   const reflowedFor = useRef<string | null>(null);
   useEffect(() => {
     if (loading || migrating) return;
     if (shotGroups.length === 0) return;
-    if (reflowedFor.current === sceneId) return;
-    reflowedFor.current = sceneId;
+    const key = `${sceneId}:${shotGroups.length}`;
+    if (reflowedFor.current === key) return;
+    reflowedFor.current = key;
     reflowStack();
   }, [loading, migrating, shotGroups.length, sceneId, reflowStack]);
 

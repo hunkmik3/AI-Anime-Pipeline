@@ -315,3 +315,69 @@ def test_a_new_sequence_does_not_land_on_top_of_an_existing_one(client):
     groups = _canvas(client, scene_id)["shot_groups"]
     ys = [g["position"]["y"] for g in groups]
     assert len(ys) == len(set(ys)), f"two groups share a y: {ys}"
+
+
+def test_an_even_pitch_narrower_than_a_frame_is_repaired(client):
+    """The one that survived the first fix. "Ascending" was the whole test, and
+    a stack pitched 500 apart with frames 1080 tall ascends perfectly — so the
+    machine-generated overlap read as a deliberate arrangement and was kept."""
+    from flowboard.db import get_session
+    from flowboard.db.models import Scene
+    from sqlalchemy.orm.attributes import flag_modified
+
+    scene_id, _ = _scene_with_shots(client, 4)
+    _canvas(client, scene_id)
+    with get_session() as s:
+        scene = s.get(Scene, scene_id)
+        state = dict(scene.canvas_state)
+        for i, g in enumerate(state["shot_groups"]):
+            g["position"]["y"] = 100.0 + i * 500.0  # ascending, and overlapping
+        scene.canvas_state = state
+        flag_modified(scene, "canvas_state")
+        s.add(scene)
+        s.commit()
+
+    ys = [g["position"]["y"] for g in _canvas(client, scene_id)["shot_groups"]]
+    gaps = [b - a for a, b in zip(ys, ys[1:])]
+    assert all(g >= 1080 for g in gaps), f"still overlapping: {gaps}"
+
+
+def test_a_tight_stack_of_collapsed_frames_is_left_alone(client):
+    """Why the test is "each frame clears the one above it" and not "the pitch
+    is at least a default frame": collapsed frames are 110 tall, so a stack of
+    them is legitimately tighter than any fixed floor would allow."""
+    from flowboard.db import get_session
+    from flowboard.db.models import Scene
+    from sqlalchemy.orm.attributes import flag_modified
+
+    scene_id, _ = _scene_with_shots(client, 3)
+    _canvas(client, scene_id)
+    tight = [100.0, 320.0, 540.0]  # 220 apart: clears a 110-tall collapsed frame
+    with get_session() as s:
+        scene = s.get(Scene, scene_id)
+        state = dict(scene.canvas_state)
+        for g, y in zip(state["shot_groups"], tight):
+            g["collapsed"] = True
+            g["position"]["y"] = y
+        scene.canvas_state = state
+        flag_modified(scene, "canvas_state")
+        s.add(scene)
+        s.commit()
+
+    groups = _canvas(client, scene_id)["shot_groups"]
+    assert [g["position"]["y"] for g in groups] == tight
+
+
+def test_the_seeded_stack_does_not_overlap_itself(client):
+    """The seed pitch was 500 while a frame is 1080 tall, so a freshly seeded
+    stack overlapped by definition. It went unnoticed because the client
+    re-flowed from the real heights on load and the seed was visible for a
+    moment — until scenes started gaining sequences after that re-flow had
+    already run."""
+    scene_id, _ = _scene_with_shots(client, 4)
+    groups = _canvas(client, scene_id)["shot_groups"]
+    ys = [g["position"]["y"] for g in groups]
+    gaps = [b - a for a, b in zip(ys, ys[1:])]
+    # A frame's own default height, so consecutive frames cannot sit on one
+    # another before the client has measured anything.
+    assert all(gap >= 1080 for gap in gaps), f"seeded frames overlap: {gaps}"
