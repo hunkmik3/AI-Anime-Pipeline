@@ -20,6 +20,7 @@ import { SpendLedgerTab } from "../components/admin/SpendLedgerTab";
 import { SpendByPerson, SpendOverTime } from "../components/admin/SpendOverTime";
 import { TrackerTab } from "../components/admin/TrackerTab";
 import { ProductionCRM } from "../components/admin/ProductionCRM";
+import { UserRolesDrawer } from "../components/admin/UserRolesDrawer";
 
 interface AdminUser {
   id: string;
@@ -205,6 +206,10 @@ export function AdminPage() {
   const me = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const [users, setUsers] = useState<AdminUser[]>([]);
+  // Which person's project roles are open. An id, not the user object: the
+  // drawer re-fetches anyway, and holding the object would show a stale name
+  // after a rename.
+  const [rolesUserId, setRolesUserId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -786,6 +791,10 @@ export function AdminPage() {
                             items={[
                               { label: "View activity", onSelect: () => void openActivity(u) },
                               {
+                                label: "Project roles",
+                                onSelect: () => setRolesUserId(u.id),
+                              },
+                              {
                                 label: "Set budget",
                                 onSelect: () => setModal({ kind: "budget", user: u }),
                               },
@@ -937,6 +946,10 @@ export function AdminPage() {
           }}
           onClose={() => setModal(null)}
         />
+      )}
+
+      {rolesUserId && (
+        <UserRolesDrawer userId={rolesUserId} onClose={() => setRolesUserId(null)} />
       )}
 
       {activityUser && (

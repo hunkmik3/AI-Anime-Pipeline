@@ -1,0 +1,818 @@
+<title>Hệ thống — Giant Studio &amp; Giantflow</title>
+<style>
+  /* ── Tokens: light is the base, both dark states redefine only these ────
+     Neutrals are biased toward ink-blue, the colour family the app's own
+     panels already live in, so the page reads as part of the same product.
+     Two accents because there are two products, and which one you are looking
+     at is the single most useful thing a colour can tell you here. */
+  :root {
+    --paper:      #faf9f7;
+    --surface:    #ffffff;
+    --surface-2:  #f2f1ee;
+    --line:       #ddd9d2;
+    --line-soft:  #e9e6e0;
+    --ink:        #191d26;
+    --ink-soft:   #565d6b;
+    --ink-faint:  #8a919e;
+
+    --studio:     #0d7a55;   /* Giant Studio */
+    --studio-bg:  rgba(13,122,85,.10);
+    --flow:       #a8641c;   /* Giantflow */
+    --flow-bg:    rgba(168,100,28,.10);
+
+    --bad:        #b3283c;
+    --bad-bg:     rgba(179,40,60,.10);
+    --warn:       #8a6210;
+    --warn-bg:    rgba(138,98,16,.12);
+    --good:       #0d7a55;
+    --good-bg:    rgba(13,122,85,.10);
+
+    --serif: Georgia, "Iowan Old Style", "Times New Roman", serif;
+    --sans:  ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+    --mono:  ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #12151c;
+      --surface:    #181c25;
+      --surface-2:  #1f242e;
+      --line:       #2c323d;
+      --line-soft:  #232833;
+      --ink:        #e7eaf0;
+      --ink-soft:   #a3abb9;
+      --ink-faint:  #6d7684;
+
+      --studio:     #34d19b;
+      --studio-bg:  rgba(52,209,155,.13);
+      --flow:       #e0a350;
+      --flow-bg:    rgba(224,163,80,.13);
+
+      --bad:        #f0808f;
+      --bad-bg:     rgba(240,128,143,.13);
+      --warn:       #e5b45e;
+      --warn-bg:    rgba(229,180,94,.13);
+      --good:       #34d19b;
+      --good-bg:    rgba(52,209,155,.13);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:      #12151c;
+    --surface:    #181c25;
+    --surface-2:  #1f242e;
+    --line:       #2c323d;
+    --line-soft:  #232833;
+    --ink:        #e7eaf0;
+    --ink-soft:   #a3abb9;
+    --ink-faint:  #6d7684;
+
+    --studio:     #34d19b;
+    --studio-bg:  rgba(52,209,155,.13);
+    --flow:       #e0a350;
+    --flow-bg:    rgba(224,163,80,.13);
+
+    --bad:        #f0808f;
+    --bad-bg:     rgba(240,128,143,.13);
+    --warn:       #e5b45e;
+    --warn-bg:    rgba(229,180,94,.13);
+    --good:       #34d19b;
+    --good-bg:    rgba(52,209,155,.13);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 56px 28px 120px;
+    display: flex;
+    flex-direction: column;
+    gap: 56px;
+  }
+
+  /* ── masthead ─────────────────────────────────────────────────────── */
+  .head { display: flex; flex-direction: column; gap: 18px; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  h1 {
+    margin: 0;
+    font-size: clamp(34px, 5.5vw, 52px);
+    line-height: 1.08;
+    letter-spacing: -.02em;
+    text-wrap: balance;
+    font-weight: 700;
+  }
+  .lede {
+    margin: 0;
+    max-width: 62ch;
+    font-size: 19px;
+    color: var(--ink-soft);
+  }
+  .stamp {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    font-family: var(--mono); font-size: 12px;
+  }
+  .stamp span {
+    padding: 3px 10px; border-radius: 999px;
+    background: var(--surface-2); color: var(--ink-soft);
+    border: 1px solid var(--line-soft);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── sections ─────────────────────────────────────────────────────── */
+  section { display: flex; flex-direction: column; gap: 20px; }
+  h2 {
+    margin: 0;
+    font-size: 27px; line-height: 1.2; letter-spacing: -.015em;
+    text-wrap: balance;
+    padding-bottom: 12px;
+    border-bottom: 2px solid var(--ink);
+  }
+  h3 {
+    margin: 14px 0 0;
+    font-size: 19px; letter-spacing: -.01em; text-wrap: balance;
+  }
+  p { margin: 0; max-width: 68ch; }
+  .muted { color: var(--ink-soft); }
+  strong { font-weight: 700; }
+  code {
+    font-family: var(--mono);
+    font-size: .86em;
+    background: var(--surface-2);
+    padding: 1px 5px; border-radius: 4px;
+    border: 1px solid var(--line-soft);
+  }
+
+  /* Product tint. Used everywhere the two sides are distinguished, so the
+     colour is always saying the same thing. */
+  .is-studio { color: var(--studio); }
+  .is-flow   { color: var(--flow); }
+
+  /* ── the two products, side by side ───────────────────────────────── */
+  .pair { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 18px; }
+  .card {
+    border: 1px solid var(--line);
+    border-top-width: 3px;
+    border-radius: 10px;
+    background: var(--surface);
+    padding: 22px 22px 24px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .card.studio { border-top-color: var(--studio); }
+  .card.flow   { border-top-color: var(--flow); }
+  .card h3 { margin: 0; font-size: 22px; }
+  .card .role {
+    font-family: var(--mono); font-size: 11.5px;
+    letter-spacing: .1em; text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .card p { font-size: 15.5px; }
+  .card ul { margin: 4px 0 0; padding-left: 1.1em; font-size: 15.5px; color: var(--ink-soft); }
+  .card li { margin: 3px 0; }
+
+  /* ── tier diagram ─────────────────────────────────────────────────── */
+  .tiers {
+    display: grid;
+    grid-template-columns: minmax(0,1fr) auto minmax(0,1fr);
+    gap: 0 14px;
+    align-items: center;
+    font-family: var(--mono);
+    font-size: 13.5px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--surface);
+    padding: 22px 20px;
+    overflow-x: auto;
+  }
+  .tiers .hd {
+    font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--ink-faint); padding-bottom: 12px;
+  }
+  .tiers .hd.l { text-align: right; }
+  .tiers .t {
+    padding: 9px 12px; border-radius: 7px; white-space: nowrap;
+  }
+  .tiers .t.l { text-align: right; background: var(--flow-bg); color: var(--flow); }
+  .tiers .t.r { background: var(--studio-bg); color: var(--studio); }
+  .tiers .t.none {
+    background: transparent; color: var(--ink-faint);
+    border: 1px dashed var(--line);
+  }
+  .tiers .eq { color: var(--ink-faint); font-size: 15px; text-align: center; }
+  .tiers .gap { height: 6px; grid-column: 1 / -1; }
+
+  /* ── numbered pipeline: order genuinely matters here ──────────────── */
+  ol.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; counter-reset: s; }
+  ol.steps li {
+    counter-increment: s;
+    display: grid; grid-template-columns: 40px minmax(0,1fr); gap: 16px;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  ol.steps li:last-child { border-bottom: 0; }
+  ol.steps li::before {
+    content: counter(s, decimal-leading-zero);
+    font-family: var(--mono); font-size: 12px; font-weight: 700;
+    color: var(--ink-faint); padding-top: 4px;
+    font-variant-numeric: tabular-nums;
+  }
+  ol.steps b { display: block; font-size: 17px; margin-bottom: 3px; }
+  ol.steps p { font-size: 15.5px; color: var(--ink-soft); }
+
+  /* ── tables ───────────────────────────────────────────────────────── */
+  .scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-family: var(--sans); font-size: 14.5px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  thead th {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--ink-faint);
+    background: var(--surface-2); border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  td.k { font-family: var(--mono); font-size: 13px; white-space: nowrap; }
+
+  .yes { color: var(--good); font-weight: 700; }
+  .no  { color: var(--ink-faint); }
+
+  .pill {
+    display: inline-block; padding: 1px 9px; border-radius: 999px;
+    font-family: var(--mono); font-size: 11.5px; font-weight: 700;
+    letter-spacing: .02em; white-space: nowrap;
+  }
+  .pill.bad  { background: var(--bad-bg);  color: var(--bad); }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); }
+  .pill.good { background: var(--good-bg); color: var(--good); }
+  .pill.flat { background: var(--surface-2); color: var(--ink-soft); }
+
+  /* ── callout ──────────────────────────────────────────────────────── */
+  .note {
+    border-left: 3px solid var(--ink-faint);
+    padding: 4px 0 4px 18px;
+    color: var(--ink-soft);
+    font-size: 15.5px;
+    max-width: 66ch;
+  }
+  .note.warn { border-left-color: var(--warn); }
+  .note b { color: var(--ink); }
+
+  /* ── stat strip ───────────────────────────────────────────────────── */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(126px,1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .stat { background: var(--surface); padding: 15px 16px; display: flex; flex-direction: column; gap: 3px; }
+  .stat dt { font-family: var(--mono); font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase; color: var(--ink-faint); }
+  .stat dd { margin: 0; font-family: var(--sans); font-size: 25px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+
+  footer {
+    border-top: 1px solid var(--line);
+    padding-top: 22px;
+    font-size: 14.5px;
+    color: var(--ink-faint);
+    max-width: 68ch;
+  }
+
+  @media (max-width: 720px) {
+    body { font-size: 16px; }
+    .wrap { padding: 36px 18px 80px; gap: 44px; }
+    .pair { grid-template-columns: minmax(0,1fr); }
+    .tiers { font-size: 12px; padding: 16px 12px; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="head">
+    <div class="eyebrow">Bản tóm tắt hệ thống · 09/08/2026</div>
+    <h1>Giant Studio &amp; Giantflow</h1>
+    <p class="lede">
+      Một ứng dụng, hai sản phẩm. Giantflow chuyển thể truyện tranh theo từng
+      panel; Giant Studio dựng video từ những panel đã duyệt. Panel duyệt xong
+      tự động trở thành một sequence bên kia — đó là điểm nối duy nhất giữa hai
+      bên, và là thứ vừa được xây xong.
+    </p>
+    <div class="stamp">
+      <span>213 API</span>
+      <span>77 file test · 714 hàm</span>
+      <span>34 migration</span>
+      <span>271 commit</span>
+    </div>
+  </header>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section>
+    <h2>Hai sản phẩm trên một thanh header</h2>
+    <p>
+      Trước đây header liệt kê <code>Projects · Work · Review · Giantflow ·
+      Admin</code> — năm mục ngang hàng, trong khi ba mục đầu là <em>trang bên
+      trong</em> cái mà mục thứ tư là anh em của nó. Giờ header chỉ đổi
+      <strong>sản phẩm</strong>; mỗi sản phẩm tự có thanh tab riêng của mình.
+    </p>
+
+    <div class="pair">
+      <div class="card studio">
+        <div class="role is-studio">Nhánh 1</div>
+        <h3 class="is-studio">Giant Studio</h3>
+        <p>Sản xuất video. MoguTV chạy ở đây, và GlobalComix nhận panel từ nhánh kia về để dựng.</p>
+        <ul>
+          <li><b>Projects</b> — cây dự án</li>
+          <li><b>My work</b> — tập được giao cho tôi</li>
+          <li><b>Review</b> — bản cắt chờ tôi duyệt</li>
+        </ul>
+      </div>
+      <div class="card flow">
+        <div class="role is-flow">Nhánh 2</div>
+        <h3 class="is-flow">Giantflow</h3>
+        <p>Chuyển thể truyện tranh theo panel. Thay cho bảng Miro cũ, có phần gen ảnh gắn thẳng vào.</p>
+        <ul>
+          <li><b>Projects</b> · <b>All panels</b> · <b>Review</b> · <b>My work</b></li>
+          <li><b>Notifications</b> — việc cần làm + có gì mới</li>
+          <li><code>/giantflow/studio</code> — studio ảnh tự do, bản cũ</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="note">
+      <b>Admin</b> chuyển sang cụm bên phải cạnh tài khoản. Nó là back office,
+      không phải sản phẩm thứ ba — chính việc đặt nó trên hàng sản phẩm làm
+      Giantflow trông như một mục con.
+    </p>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section>
+    <h2>Cây phân cấp</h2>
+    <p>
+      Giantflow có <strong>5 tầng</strong>, Giant Studio có <strong>4</strong>.
+      Ba tầng khớp nhau 1:1. Tầng lệch là <strong>Batch</strong> — và nó lệch
+      có lý do.
+    </p>
+
+    <div class="tiers">
+      <div class="hd l">Giantflow</div>
+      <div class="hd"></div>
+      <div class="hd">Giant Studio</div>
+
+      <div class="t l">Project <span class="muted">(slate)</span></div>
+      <div class="eq">═</div>
+      <div class="t r">Project</div>
+      <div class="gap"></div>
+
+      <div class="t l">Series <span class="muted">(một truyện)</span></div>
+      <div class="eq">═</div>
+      <div class="t r">Series</div>
+      <div class="gap"></div>
+
+      <div class="t l">Chapter</div>
+      <div class="eq">═</div>
+      <div class="t r">Episode</div>
+      <div class="gap"></div>
+
+      <div class="t l none">Batch <span>(chia việc)</span></div>
+      <div class="eq">·</div>
+      <div class="t none">không có đối ứng</div>
+      <div class="gap"></div>
+
+      <div class="t l">Panel</div>
+      <div class="eq">═</div>
+      <div class="t r">Sequence</div>
+    </div>
+
+    <p class="note">
+      <b>Batch không phải một tầng nội dung</b> — nó là công cụ chia việc:
+      "phần của artist này trong chapter". Một chapter chia cho 3 người vẽ panel
+      là 3 batch, nhưng sang Giant Studio vẫn chỉ là <b>một</b> episode. Đó
+      chính là lý do episode cần thêm cơ chế "người phụ".
+    </p>
+
+    <h3>Ai được tạo tầng nào</h3>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Tầng</th><th>Tạo</th><th>Sửa tên</th><th>Xoá</th><th>Ghi chú</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="k">Project</td><td><span class="pill flat">admin</span></td><td><span class="pill flat">admin</span></td><td><span class="pill flat">admin</span></td><td class="muted">+ studio manager</td></tr>
+          <tr><td class="k">Series</td><td><span class="pill flat">PM</span></td><td><span class="pill flat">lead</span></td><td><span class="pill flat">PM</span></td><td class="muted">sửa tên nhẹ hơn nên để lead</td></tr>
+          <tr><td class="k">Episode</td><td><span class="pill flat">PM</span></td><td><span class="pill flat">lead</span></td><td><span class="pill flat">PM</span></td><td class="muted">xoá cùng bậc với tạo</td></tr>
+          <tr><td class="k">Sequence</td><td><span class="pill flat">artist</span></td><td><span class="pill flat">artist</span></td><td><span class="pill flat">lead</span></td><td class="muted">nơi nhân viên gen</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      Xoá episode được nâng lên PM cùng lúc với tạo. Nếu chỉ nâng "tạo", lead sẽ
+      <b>xoá được tập mà không tạo lại được</b> — giữ nửa phá, mất nửa hoàn tác.
+    </p>
+    <p class="note">
+      <b>Episode buộc phải thuộc một series</b> — cột <code>series_id</code> là
+      NOT NULL. Trước đây luật này chỉ là thói quen: code luôn tự điền series
+      mặc định, nhưng lược đồ không cấm, nên một cây bốn tầng chỉ đứng vững tới
+      khi ai đó viết đường tạo thứ ba.
+    </p>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section>
+    <h2>Điểm nối: panel → sequence</h2>
+    <p>
+      Trước đây hai bên là hai kho dữ liệu không liên quan; ai đó đọc danh sách
+      panel đã duyệt trên màn hình này rồi gõ tay sequence sang màn hình kia.
+      Quy tắc <strong>"một panel xong = một sequence"</strong> của xưởng làm mọi
+      cặp còn lại tự suy ra, nên <strong>chỉ còn đúng một quyết định do người
+      làm</strong>: truyện này giao về series nào.
+    </p>
+
+    <ol class="steps">
+      <li>
+        <div>
+          <b>PM nối truyện với một series sản xuất</b>
+          <p>Đặt một lần trên truyện. Truyện không nối thì không giao gì cả —
+             đúng cho truyện chỉ làm bản in.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <b>Artist nộp từng panel, PM duyệt từng panel</b>
+          <p>Không có động tác "nộp cả chapter". Giao khi <b>được duyệt</b>,
+             không phải khi được nộp — nộp mới chỉ là xin phán quyết, panel vẫn
+             có thể bị trả về.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <b>Episode tự sinh, kèm đủ chỗ cho cả chapter</b>
+          <p>Panel đầu tiên được duyệt sẽ tạo Episode mang tên chapter, và dựng
+             sẵn <b>một sequence cho mỗi panel</b> — kể cả panel chưa xong. Ô
+             trống mang tên panel nó đang chờ.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <b>Panel điền vào đúng ô của nó</b>
+          <p>Panel 8 duyệt trước vẫn vào <b>slot 8</b>. Vị trí đếm theo
+             <b>chapter</b> chứ không theo batch — ba batch đều đánh số panel từ
+             0, dùng thẳng số đó thì ba sequence chồng lên nhau ở ô 1.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <b>Ảnh panel nằm sẵn trên canvas</b>
+          <p>Vào sequence dưới dạng <b>node image ref</b> — đúng loại node mà
+             thư viện tạo ra, để canvas biết vẽ, biết nối vào prompt, biết đẩy
+             sang i2v.</p>
+        </div>
+      </li>
+    </ol>
+
+    <h3>Ví dụ thật đang chạy</h3>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Vị trí</th><th>Panel (Giantflow)</th><th>Trạng thái</th><th>Sequence (Giant Studio)</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="num">1</td><td class="k">ZZDEMO_PANEL001</td><td><span class="pill warn">submitted</span></td><td class="muted">Sequence 1 — trống</td></tr>
+          <tr><td class="num">2</td><td class="k">ZZDEMO_PANEL002</td><td><span class="pill good">approved</span></td><td><span class="yes">Sequence 2 — có ảnh</span></td></tr>
+          <tr><td class="num">3</td><td class="k">ZZDEMO_PANEL003</td><td><span class="pill bad">changes requested</span></td><td class="muted">Sequence 3 — trống</td></tr>
+          <tr><td class="num">4</td><td class="k">ZZDEMO_PANEL004</td><td><span class="pill warn">submitted</span></td><td class="muted">Sequence 4 — trống</td></tr>
+          <tr><td class="num">5</td><td class="k">ZZDEMO_PANEL005</td><td><span class="pill good">approved</span></td><td><span class="yes">Sequence 5 — có ảnh</span></td></tr>
+          <tr><td class="num">6</td><td class="k">ZZDEMO_PANEL006</td><td><span class="pill bad">changes requested</span></td><td class="muted">Sequence 6 — trống</td></tr>
+          <tr><td class="num">7</td><td class="k">ZZDEMO_PANEL007</td><td><span class="pill warn">submitted</span></td><td class="muted">Sequence 7 — trống</td></tr>
+          <tr><td class="num">8</td><td class="k">ZZDEMO_PANEL008</td><td><span class="pill good">approved</span></td><td><span class="yes">Sequence 8 — có ảnh</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="muted" style="font-size:15px">
+      Panel 8 được duyệt <em>đầu tiên</em>, panel 2 duyệt cuối — vị trí vẫn đúng.
+    </p>
+
+    <p class="note">
+      <b>Giao hai lần là lỗi phải chống ngay từ thiết kế.</b> Panel có thể mở
+      lại rồi duyệt lại; request có thể bị gửi lại. Mỗi panel ghi nhớ sequence
+      nó đã thành, nên lần duyệt thứ hai tìm thấy và không làm gì. Có
+      <code>/delivery/sync</code> để kéo những panel đã duyệt <em>trước khi</em>
+      nối.
+    </p>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section>
+    <h2>Vai trò &amp; quyền</h2>
+    <p>
+      Ba tầng quyền độc lập nhau: vai <strong>hệ thống</strong> (toàn công ty),
+      vai <strong>trong từng project</strong> bên Giant Studio, và vai
+      <strong>trong từng truyện</strong> bên Giantflow.
+    </p>
+
+    <h3>1 · Vai hệ thống</h3>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Vai</th><th>Làm được</th><th>Không được</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="k">admin<br><span class="muted">Owner</span></td>
+            <td>Tất cả — ngân sách, phong admin, khoá tài khoản</td>
+            <td class="no">—</td>
+          </tr>
+          <tr>
+            <td class="k">manager<br><span class="muted">Quản lý xưởng</span></td>
+            <td>Mở project, xếp cấu trúc, cấp tài khoản, gắn mối nối. Không bị giới hạn trong cả hai sản phẩm.</td>
+            <td><b>Đụng ngân sách</b> · <b>phong ai đó thành admin</b></td>
+          </tr>
+          <tr>
+            <td class="k">user<br><span class="muted">Nhân viên</span></td>
+            <td>Chỉ có quyền trong project được cấp</td>
+            <td>Không vào được console admin</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      Giới hạn thứ hai của manager mới là thứ làm cho việc tách vai <b>có
+      thật</b>: ai tạo được admin thì có mọi quyền của admin, chỉ cách một
+      bước.
+    </p>
+
+    <h3>2 · Vai trong project — Giant Studio</h3>
+    <p class="muted" style="font-size:15px">
+      Thứ tự: <code>viewer &lt; artist &lt; lead &lt; producer (PM) &lt; admin</code>
+    </p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Quyền</th><th>Cần từ bậc</th><th>Nghĩa là gì</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="k">series.create / delete</td><td><span class="pill flat">producer</span></td><td>Quyết định có những gì trong project</td></tr>
+          <tr><td class="k">series.update</td><td><span class="pill flat">lead</span></td><td>Sửa chi tiết cái đã có</td></tr>
+          <tr><td class="k">episode.create / delete</td><td><span class="pill flat">producer</span></td><td>Thêm/bớt tập</td></tr>
+          <tr><td class="k">episode.update</td><td><span class="pill flat">lead</span></td><td>Đổi tên, sửa thông tin tập</td></tr>
+          <tr><td class="k">sequence.create / update</td><td><span class="pill flat">artist</span></td><td>Làm việc bên trong tập</td></tr>
+          <tr><td class="k">sequence.delete</td><td><span class="pill flat">lead</span></td><td>Xoá thì nặng hơn tạo</td></tr>
+          <tr><td class="k">canvas.write</td><td><span class="pill flat">artist</span></td><td>Node, prompt, gen</td></tr>
+          <tr><td class="k">member.manage</td><td><span class="pill flat">producer</span></td><td>Thêm người, đặt vai</td></tr>
+          <tr><td class="k">project.manage</td><td><span class="pill flat">admin</span></td><td>Tạo/đổi tên/xoá project</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>3 · Vai trong truyện — Giantflow</h3>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Quyền</th><th>Cần từ bậc</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="k">panel.read</td><td><span class="pill flat">viewer</span></td></tr>
+          <tr><td class="k">panel.generate / submit</td><td><span class="pill flat">artist</span></td></tr>
+          <tr><td class="k">panel.review</td><td><span class="pill flat">producer</span></td></tr>
+          <tr><td class="k">batch.manage / import</td><td><span class="pill flat">producer</span></td></tr>
+          <tr><td class="k">member.manage</td><td><span class="pill flat">producer</span></td></tr>
+          <tr><td class="k">project.manage</td><td><span class="pill flat">admin</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      Hai bảng quyền nằm ở <b>hai module tách rời</b>, cố ý: thay đổi bên này
+      không thể âm thầm nới bên kia. Cái giá là danh sách vai hệ thống bị lặp,
+      nên có một test ghim hai bản bằng nhau — bản lặp mà lệch còn tệ hơn không
+      tách.
+    </p>
+
+    <h3>Ai thấy được gì</h3>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Vai</th><th>Giant Studio</th><th>Giantflow</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="k">admin / manager</td><td>Toàn bộ</td><td>Toàn bộ</td></tr>
+          <tr><td class="k">producer (PM)</td><td>Toàn bộ project của mình</td><td>Toàn bộ truyện của mình</td></tr>
+          <tr><td class="k">lead</td><td>Toàn bộ project</td><td>Toàn bộ truyện</td></tr>
+          <tr><td class="k">artist</td><td><b>Chỉ tập được giao</b></td><td><b>Chỉ batch được giao</b></td></tr>
+          <tr><td class="k">viewer</td><td>Chỉ phần được giao</td><td>Toàn bộ, chỉ đọc</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note warn">
+      <b>Chỗ chưa thống nhất, cần bạn quyết.</b> Bên Giant Studio, mở tập của
+      đồng nghiệp trả <b>404</b> — không phải 403, vì 403 là thú nhận "có tồn
+      tại", đủ để dò ra ai đang làm gì. Nhưng bên Giantflow, tài khoản không
+      thuộc truyện nào rơi về <code>viewer</code>, mà <b>viewer xem được toàn
+      bộ</b>. Nghĩa là người dựng video của GlobalComix đọc được panel của mọi
+      truyện. Luật đó hợp lý hồi cả xưởng làm chung một truyện; với hai nhánh
+      thì không.
+    </p>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section>
+    <h2>Người phụ trên một tập</h2>
+    <p>
+      Một tập có <strong>một chủ</strong> — người duy nhất được nộp bản cắt, vì
+      một sản phẩm mà hai người nộp được là sản phẩm không ai chịu trách nhiệm.
+      Khi chủ quá tải thì <strong>thêm người phụ</strong>.
+    </p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th></th><th>Chủ tập</th><th>Người phụ</th></tr></thead>
+        <tbody>
+          <tr><td>Mở tập, xem canvas</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>Thêm / sửa sequence</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>Thấy tập khác trong project</td><td class="no">✗</td><td class="no">✗</td></tr>
+          <tr><td>Nộp bản cắt</td><td class="yes">✓</td><td class="no">✗</td></tr>
+          <tr><td>Thêm người phụ khác</td><td class="no">✗</td><td class="no">✗</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      Cả hai vế đều <b>hỏng trong im lặng</b>: cấp thiếu thì trông như trang bị
+      lỗi, cấp thừa thì trông như không có gì. Nên mọi test đều dùng
+      <b>hai tập</b> — người phụ thấy hết và người phụ chỉ thấy phần mình là
+      không phân biệt được khi chỉ có một tập.
+    </p>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section>
+    <h2>Notifications</h2>
+    <p>
+      Tab riêng bên Giantflow, chia làm hai phần — và chỗ chia đôi mới là ý
+      chính.
+    </p>
+    <div class="pair">
+      <div class="card">
+        <div class="role">Phần 1</div>
+        <h3>To do</h3>
+        <p>Suy ra từ trạng thái công việc thật. <b>Không đánh dấu đã đọc được.</b>
+           Một việc rời danh sách khi việc xong, không phải khi bạn liếc qua —
+           cho tick "11 panel chờ duyệt" là giấu việc chứ không phải xử lý việc.</p>
+      </div>
+      <div class="card">
+        <div class="role">Phần 2</div>
+        <h3>What happened</h3>
+        <p>Nhật ký sự kiện trong phạm vi của mình, mới nhất trước, có mốc đã đọc.
+           Việc bạn tự làm vẫn hiện trong lịch sử nhưng <b>không tính là chưa
+           đọc</b> — chuyện bạn vừa làm không phải tin mới với bạn.</p>
+      </div>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Vai</th><th>Thấy việc gì trong "To do"</th></tr></thead>
+        <tbody>
+          <tr><td class="k">artist</td><td>Từng panel bị trả về kèm lý do · số panel đang làm dở · số panel chưa bắt đầu · deadline chapter mình có việc</td></tr>
+          <tr><td class="k">PM</td><td>Số panel chờ duyệt và của artist nào · batch chưa có người · deadline mọi chapter mình quản</td></tr>
+          <tr><td class="k">admin</td><td>Như PM, trên toàn bộ slate</td></tr>
+          <tr><td class="k">viewer</td><td class="muted">Không có việc nào — họ không gen/nộp/duyệt được</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      <b>Không có bảng notification.</b> Feed đọc thẳng từ nhật ký sự kiện và
+      trạng thái panel. Bảng lưu sẵn thì phải ghi thêm ở mọi chỗ phát sinh sự
+      kiện — hôm nào ai thêm chỗ thứ sáu là feed lặng lẽ bỏ sót — và nó sẽ rỗng
+      với hàng trăm panel đã có. Thứ duy nhất không suy ra được là
+      <b>bạn đã xem tới đâu</b>, nên chỉ mỗi cái đó là một bảng: một dòng cho
+      mỗi tài khoản.
+    </p>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section>
+    <h2>Studio ảnh bản cũ</h2>
+    <p>
+      <code>/giantflow/studio</code> — nơi thành viên MoguTV gen ảnh tự do. Nó
+      từng là <strong>một danh sách board dùng chung không có cột chủ sở hữu</strong>,
+      nên không có gì để mà phân quyền: ai đăng nhập cũng mở, đổi tên và xoá được
+      board của người khác.
+    </p>
+    <p>
+      Giờ board thuộc về người tạo ra nó. Bạn thấy board của mình; admin thấy
+      tất cả. Board của người khác trả <strong>404 chứ không 403</strong>, và
+      test kiểm đúng điều đó: board có thật và board không tồn tại phải trả
+      <em>cùng một mã</em>.
+    </p>
+    <p class="note warn">
+      <b>Còn dùng chung:</b> một API key, một đồng hồ usage. <code>/usage</code>
+      đếm mức toàn hệ thống chứ không phải của riêng bạn — bảng
+      <code>Request</code> không ghi ai tạo, nên các lượt gen cũ không thể quy về
+      người nào kể cả về nguyên tắc. Muốn đồng hồ riêng từng người thì phải thêm
+      cột đó trước.
+    </p>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section>
+    <h2>Số liệu hiện tại</h2>
+    <p class="muted" style="font-size:15px">Database <code>flowboard_demo</code>, gồm cả dữ liệu demo.</p>
+
+    <h3 class="is-flow">Giantflow</h3>
+    <dl class="stats">
+      <div class="stat"><dt>Project</dt><dd>2</dd></div>
+      <div class="stat"><dt>Truyện</dt><dd>7</dd></div>
+      <div class="stat"><dt>Chapter</dt><dd>2</dd></div>
+      <div class="stat"><dt>Batch</dt><dd>3</dd></div>
+      <div class="stat"><dt>Panel</dt><dd>99</dd></div>
+    </dl>
+
+    <h3 class="is-studio">Giant Studio</h3>
+    <dl class="stats">
+      <div class="stat"><dt>Project</dt><dd>3</dd></div>
+      <div class="stat"><dt>Series</dt><dd>3</dd></div>
+      <div class="stat"><dt>Episode</dt><dd>78</dd></div>
+      <div class="stat"><dt>Sequence</dt><dd>155</dd></div>
+      <div class="stat"><dt>Node canvas</dt><dd>304</dd></div>
+    </dl>
+
+    <h3>Panel theo trạng thái</h3>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Trạng thái</th><th class="num">Số panel</th><th>Nghĩa</th></tr></thead>
+        <tbody>
+          <tr><td><span class="pill flat">todo</span></td><td class="num">70</td><td class="muted">Chưa ai gen gì</td></tr>
+          <tr><td><span class="pill warn">submitted</span></td><td class="num">14</td><td class="muted">Đang chờ PM phán quyết</td></tr>
+          <tr><td><span class="pill good">approved</span></td><td class="num">9</td><td class="muted">Đã duyệt — sang được Giant Studio</td></tr>
+          <tr><td><span class="pill bad">changes requested</span></td><td class="num">6</td><td class="muted">Bị trả về, artist đang sửa</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Tài khoản demo</h3>
+    <p class="muted" style="font-size:15px">Mật khẩu chung <code>demo1234</code>. Xoá theo tiền tố <code>zz_demo</code> / <code>ZZ DEMO</code>.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Tài khoản</th><th>Vai</th><th>Dùng để xem gì</th></tr></thead>
+        <tbody>
+          <tr><td class="k">zz_demo_owner</td><td><span class="pill flat">admin</span></td><td>Toàn quyền, kể cả ngân sách</td></tr>
+          <tr><td class="k">zz_demo_manager</td><td><span class="pill flat">manager</span></td><td>Mở project được, đụng tiền thì 403</td></tr>
+          <tr><td class="k">zz_demo_pm</td><td><span class="pill flat">producer</span></td><td>Duyệt panel, xếp cấu trúc</td></tr>
+          <tr><td class="k">zz_demo_panel</td><td><span class="pill flat">artist</span></td><td>Chỉ thấy 8 panel trong batch mình</td></tr>
+          <tr><td class="k">zz_demo_video</td><td><span class="pill flat">artist</span></td><td>Chủ episode "Chapter 1"</td></tr>
+          <tr><td class="k">zz_demo_helper</td><td><span class="pill flat">artist</span></td><td>Người phụ trên đúng episode đó</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="muted" style="font-size:15px">
+      Hai tài khoản cũ vẫn còn: <code>pm</code> và <code>artist</code>, mật khẩu
+      <code>giantflow2026</code>.
+    </p>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section>
+    <h2>Còn dang dở</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Việc</th><th>Tình trạng</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><b>Phạm vi nhìn của viewer bên Giantflow</b><br><span class="muted">Người dựng video đọc được panel của mọi truyện</span></td>
+            <td><span class="pill bad">chờ bạn quyết</span></td>
+          </tr>
+          <tr>
+            <td><b>Đồng hồ usage theo từng người</b><br><span class="muted">Cần thêm cột "ai tạo" vào bảng Request trước</span></td>
+            <td><span class="pill warn">chưa làm</span></td>
+          </tr>
+          <tr>
+            <td><b>Giao diện Giant Studio theo kiểu Giantflow</b><br><span class="muted">Header + thanh tab đã xong; lưới thẻ từng tầng thì chưa</span></td>
+            <td><span class="pill warn">làm một nửa</span></td>
+          </tr>
+          <tr>
+            <td><b>Đẩy code lên remote</b><br><span class="muted">Nhánh <code>review/phase10-crm</code>, chưa push lần nào</span></td>
+            <td><span class="pill warn">chờ bạn quyết</span></td>
+          </tr>
+          <tr>
+            <td><b>Test cho frontend</b><br><span class="muted">Chưa có vitest/playwright; backend 714 hàm test</span></td>
+            <td><span class="pill warn">chưa có</span></td>
+          </tr>
+          <tr>
+            <td><b>Dọn dữ liệu demo</b><br><span class="muted">6 tài khoản + 1 truyện + 1 project mang tiền tố zz_demo</span></td>
+            <td><span class="pill flat">khi nào bạn muốn</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    Số liệu đọc trực tiếp từ code và database lúc lập bản này, không lấy từ trí
+    nhớ. Server chạy tại <code>localhost:5174</code> (giao diện) và
+    <code>localhost:8101</code> (API), database Postgres ở cổng 15432.
+  </footer>
+
+</div>

@@ -1123,6 +1123,23 @@ def set_member(
     return row
 
 
+def series_for_user(session: Session, user_id: uuid.UUID) -> list[tuple[FlowSeries, str]]:
+    """Every comic this person has a standing in, as (comic, role).
+
+    The giantflow half of the same question the admin console asks: what does
+    this person have, across everything. Nothing could answer it before —
+    membership was only queryable per comic.
+    """
+    out: list[tuple[FlowSeries, str]] = []
+    for m in session.exec(
+        select(FlowSeriesMember).where(FlowSeriesMember.user_id == user_id)
+    ).all():
+        comic = session.get(FlowSeries, m.series_id)
+        if comic is not None:
+            out.append((comic, m.role))
+    return sorted(out, key=lambda x: (x[0].name or "").lower())
+
+
 def remove_member(session: Session, series_id: int, user_id: uuid.UUID) -> None:
     row = session.exec(
         select(FlowSeriesMember).where(

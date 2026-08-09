@@ -11336,3 +11336,77 @@ button:disabled {
 /* The page-level strip, on a `.page` grid whose own gap would otherwise leave
    it floating a full 22px away from the header it belongs to. */
 .page > .pn__navbar { margin-bottom: -8px; }
+
+/* ── Project roles drawer ─────────────────────────────────────────────────
+   One person's standing across both products. The two sections are colour-
+   keyed and kept visually apart on purpose: they are different tables with
+   different guards, and a grant that landed on the wrong one would look right
+   on the screen it was made from. */
+.roles { display: flex; flex-direction: column; gap: 22px; margin-top: 6px; }
+.roles__note { margin: 0; font-size: 13px; color: #9aa3b0; }
+.roles__note b { color: #e6e9ef; }
+
+.roles__sec {
+  border: 1px solid #2a2a33;
+  border-left-width: 3px;
+  border-radius: 10px;
+  padding: 16px 18px 18px;
+  background: #17171e;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.roles__sec.is-studio { border-left-color: #00a76f; }
+.roles__sec.is-flow   { border-left-color: #d99a26; }
+.roles__h { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: -.01em; }
+.roles__sec.is-studio .roles__h { color: #34d19b; }
+.roles__sec.is-flow   .roles__h { color: #e0a350; }
+.roles__blurb { margin: 0 0 8px; font-size: 12.5px; color: #8b93a1; }
+.roles__empty { margin: 2px 0 10px; font-size: 13px; color: #6d7684; font-style: italic; }
+
+.roles__list { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.roles__row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px; border-radius: 8px; background: #1d1d25;
+}
+.roles__name {
+  flex: 1 1 auto; min-width: 0;
+  font-size: 13.5px; color: #e6e9ef;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.roles__locked {
+  flex: 0 0 auto; padding: 3px 10px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 700; letter-spacing: .02em;
+  background: rgba(0,167,111,.16); color: #6ee7b7;
+}
+
+.roles__select {
+  flex: 0 0 auto;
+  padding: 5px 8px; border-radius: 7px;
+  font: inherit; font-size: 13px;
+  color: #e6e9ef; background: #14141a;
+  border: 1px solid #2f2f3a;
+}
+.roles__select--wide { flex: 1 1 auto; min-width: 0; }
+.roles__select:hover:not(:disabled) { border-color: #444455; }
+
+.roles__x {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 7px;
+  background: transparent; color: #8b93a1;
+  border: 1px solid #2f2f3a; cursor: pointer; line-height: 1;
+}
+.roles__x:hover:not(:disabled) { color: #fca5a5; border-color: #7a3340; }
+
+.roles__add { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.roles__addbtn, .roles__go, .roles__cancel {
+  padding: 6px 13px; border-radius: 8px;
+  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  background: #1d1d25; color: #cbd5e1; border: 1px solid #2f2f3a;
+}
+.roles__addbtn:hover:not(:disabled) { color: #fff; border-color: #444455; }
+.roles__go { background: rgba(0,167,111,.16); color: #6ee7b7; border-color: transparent; }
+.roles__go:disabled, .roles__addbtn:disabled { opacity: .45; cursor: default; }
+.roles__cancel { background: transparent; }
+
+@media (max-width: 560px) {
+  .roles__row { flex-wrap: wrap; }
+  .roles__name { flex: 1 0 100%; }
+}

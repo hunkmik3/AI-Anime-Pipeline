@@ -5,15 +5,20 @@ You (the owner/admin) provision accounts here — there is no open signup.
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from flowboard.db import get_session
+from flowboard.db.models import Project
 from flowboard.routes.deps import require_admin, require_staff
 from flowboard.services import (
     audit_service,
     budget_service,
+    panel_service,
+    project_service as ps,
     registration_service,
     stats_service,
     user_service,
@@ -331,6 +336,142 @@ class ApproveBody(BaseModel):
 
 class RejectBody(BaseModel):
     notify: bool = False                  # email the applicant that it was declined
+
+
+# ── who holds what, across both products ────────────────────────────────────
+#
+# The roles the studio talks about — "PM giantflow", "artist giantstudio" — were
+# always expressible: a producer row on a comic, an artist row on a project. What
+# was missing was anywhere to SEE them. Membership could only be queried per
+# project and per comic, so "what does this person have" meant opening every one
+# and counting, and granting meant walking to each project's own page.
+#
+# Staff, not admin-only: provisioning the people who do the work is the studio
+# manager's job. Handing out the ADMIN system role is not, and is guarded
+# separately (see `_owner_only_role`).
+
+
+class GrantBody(BaseModel):
+    #: producer | lead | artist | viewer — the project vocabulary, same on both
+    #: sides. Which product a grant belongs to is the ROUTE, not a field: the two
+    #: live in different tables with different guards, and a body that could name
+    #: either would be one typo away from writing to the wrong one.
+    role: str
+
+
+def _roles_payload(session, user) -> dict:
+    return {
+        "user_id": str(user.id),
+        "username": user.username,
+        "display_name": user.display_name,
+        "system_role": user.role,
+        "studio": [
+            {
+                "project_id": str(p.id),
+                "name": p.name,
+                "role": role,
+                # An owner is a producer implicitly and has no member row, so
+                # their grant cannot be revoked here — say so rather than
+                # offering a button that does nothing.
+                "is_owner": is_owner,
+            }
+            for p, role, is_owner in ps.projects_for_user(session, user.id)
+        ],
+        "flow": [
+            {"series_id": comic.id, "name": comic.name, "role": role}
+            for comic, role in panel_service.series_for_user(session, user.id)
+        ],
+    }
+
+
+@router.get("/users/{user_id}/roles")
+def get_user_roles(user_id: str) -> dict:
+    u = user_service.get_by_id(user_id)
+    if u is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    with get_session() as s:
+        return _roles_payload(s, u)
+
+
+@router.put("/users/{user_id}/roles/studio/{project_id}")
+def grant_studio_role(
+    user_id: str, project_id: uuid.UUID, body: GrantBody, request: Request,
+    caller=Depends(require_staff),
+) -> dict:
+    u = user_service.get_by_id(user_id)
+    if u is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    with get_session() as s:
+        if s.get(Project, project_id) is None:
+            raise HTTPException(status_code=404, detail="project not found")
+        ps.set_project_member(s, project_id, u.id, body.role)
+        audit_service.record(
+            "project.role_granted", actor=caller, target=u,
+            ip=audit_service.client_ip(request),
+            detail=f"{project_id} = {body.role}",
+        )
+        return _roles_payload(s, u)
+
+
+@router.delete("/users/{user_id}/roles/studio/{project_id}")
+def revoke_studio_role(
+    user_id: str, project_id: uuid.UUID, request: Request,
+    caller=Depends(require_staff),
+) -> dict:
+    u = user_service.get_by_id(user_id)
+    if u is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    with get_session() as s:
+        proj = s.get(Project, project_id)
+        if proj is not None and proj.owner_user_id == u.id:
+            raise HTTPException(
+                status_code=409,
+                detail="they own this project — hand it to someone else first",
+            )
+        ps.remove_project_member(s, project_id, u.id)
+        audit_service.record(
+            "project.role_revoked", actor=caller, target=u,
+            ip=audit_service.client_ip(request), detail=str(project_id),
+        )
+        return _roles_payload(s, u)
+
+
+@router.put("/users/{user_id}/roles/flow/{series_id}")
+def grant_flow_role(
+    user_id: str, series_id: int, body: GrantBody, request: Request,
+    caller=Depends(require_staff),
+) -> dict:
+    u = user_service.get_by_id(user_id)
+    if u is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    with get_session() as s:
+        try:
+            panel_service.get_series(s, series_id)
+        except panel_service.PanelError:
+            raise HTTPException(status_code=404, detail="comic not found")
+        panel_service.set_member(s, series_id, u.id, body.role)
+        audit_service.record(
+            "comic.role_granted", actor=caller, target=u,
+            ip=audit_service.client_ip(request),
+            detail=f"{series_id} = {body.role}",
+        )
+        return _roles_payload(s, u)
+
+
+@router.delete("/users/{user_id}/roles/flow/{series_id}")
+def revoke_flow_role(
+    user_id: str, series_id: int, request: Request, caller=Depends(require_staff),
+) -> dict:
+    u = user_service.get_by_id(user_id)
+    if u is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    with get_session() as s:
+        panel_service.remove_member(s, series_id, u.id)
+        audit_service.record(
+            "comic.role_revoked", actor=caller, target=u,
+            ip=audit_service.client_ip(request), detail=str(series_id),
+        )
+        return _roles_payload(s, u)
 
 
 @router.get("/registrations")

@@ -106,6 +106,86 @@ def get_project_members(session: Session, project_id: uuid.UUID) -> list[Project
     )
 
 
+def set_project_member(
+    session: Session,
+    project_id: uuid.UUID,
+    user_id: uuid.UUID,
+    role: str,
+) -> ProjectMember:
+    """Grant or change ONE person's role, leaving the rest of the roster alone.
+
+    Separate from ``set_project_members``, which replaces the whole set. That is
+    the right shape for the project page — you edit a roster there and see it
+    entire — and the wrong shape for granting from the admin console, where you
+    have one person in front of you and no idea who else is on the project. A
+    caller with a partial view must not be able to write a total one.
+    """
+    from flowboard.services import permissions
+
+    row = session.exec(
+        select(ProjectMember).where(
+            ProjectMember.project_id == project_id,
+            ProjectMember.user_id == user_id,
+        )
+    ).first()
+    if row is None:
+        row = ProjectMember(
+            project_id=project_id,
+            user_id=user_id,
+            role=permissions.normalize_role(role),
+        )
+    else:
+        row.role = permissions.normalize_role(role)
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def remove_project_member(
+    session: Session, project_id: uuid.UUID, user_id: uuid.UUID
+) -> None:
+    """Take one person off a project. Silent when they were not on it — the
+    caller asked for them to be off, and they are."""
+    row = session.exec(
+        select(ProjectMember).where(
+            ProjectMember.project_id == project_id,
+            ProjectMember.user_id == user_id,
+        )
+    ).first()
+    if row is not None:
+        session.delete(row)
+        session.commit()
+
+
+def projects_for_user(session: Session, user_id: uuid.UUID) -> list[tuple[Project, str, bool]]:
+    """Every project this person has a standing in, as (project, role, is_owner).
+
+    Asked by USER, which nothing could do before: membership was only ever
+    queried per project, so "what does this person have" meant opening every
+    project and counting. That is the question the admin console asks.
+
+    The owner is included even though they have no member row — they are a
+    producer implicitly, and a list that omitted them would say an owner has no
+    role on their own project.
+    """
+    out: list[tuple[Project, str, bool]] = []
+    seen: set[uuid.UUID] = set()
+    for p in session.exec(select(Project).where(Project.owner_user_id == user_id)).all():
+        out.append((p, "producer", True))
+        seen.add(p.id)
+    rows = session.exec(
+        select(ProjectMember).where(ProjectMember.user_id == user_id)
+    ).all()
+    for m in rows:
+        if m.project_id in seen:
+            continue
+        proj = session.get(Project, m.project_id)
+        if proj is not None:
+            out.append((proj, m.role, False))
+    return sorted(out, key=lambda x: (x[0].name or "").lower())
+
+
 def set_project_members(
     session: Session,
     project_id: uuid.UUID,
