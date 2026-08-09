@@ -16,7 +16,7 @@ import { giantflowMe } from "../api/client";
  * in docs/GIANTFLOW_REFACTOR.md; a role here still grants nothing in the
  * production hierarchy.
  */
-export type GiantflowRole = "admin" | "producer" | "lead" | "artist" | "viewer";
+export type GiantflowRole = "admin" | "producer" | "artist" | "viewer";
 
 export const GIANTFLOW_ROLES: { id: GiantflowRole; label: string }[] = [
   { id: "admin", label: "Admin" },
@@ -31,7 +31,6 @@ export const GIANTFLOW_ROLES: { id: GiantflowRole; label: string }[] = [
 const RANK: Record<GiantflowRole, number> = {
   viewer: 0,
   artist: 1,
-  lead: 2,
   producer: 3,
   admin: 4,
 };

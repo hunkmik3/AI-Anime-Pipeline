@@ -166,11 +166,11 @@ def test_roster_change_names_who_joined_and_who_changed_role(client):
         ]
     }
     client.put(f"/api/projects/{pid}/members", json=roster_of("artist"), headers=ah)
-    client.put(f"/api/projects/{pid}/members", json=roster_of("lead"), headers=ah)
+    client.put(f"/api/projects/{pid}/members", json=roster_of("producer"), headers=ah)
 
     entries = client.get(f"/api/history/project/{pid}", headers=ah).json()["entries"]
     roster = [e for e in entries if e["action"] == "project.members"]
-    assert roster and "artist" in roster[0]["detail"] and "lead" in roster[0]["detail"]
+    assert roster and "artist" in roster[0]["detail"] and "producer" in roster[0]["detail"]
 
 
 def test_editing_the_roster_never_transfers_ownership(client):

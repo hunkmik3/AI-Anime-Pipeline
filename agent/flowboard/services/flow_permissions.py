@@ -38,15 +38,17 @@ from flowboard.db.models import FlowBatch, FlowChapter, FlowSeriesMember, User
 
 ADMIN = "admin"
 PRODUCER = "producer"
+#: Retired — see the note in services/permissions.py. Recognised on read so a
+#: stored row is understood as producer; never assignable.
 LEAD = "lead"
 ARTIST = "artist"
 VIEWER = "viewer"
 
 #: Assignable giantflow roles, most to least authority. ``admin`` is a system
 #: role and is never stored on a member row.
-FLOW_ROLES: tuple[str, ...] = (PRODUCER, LEAD, ARTIST, VIEWER)
+FLOW_ROLES: tuple[str, ...] = (PRODUCER, ARTIST, VIEWER)
 
-_RANK: dict[str, int] = {VIEWER: 0, ARTIST: 1, LEAD: 2, PRODUCER: 3, ADMIN: 4}
+_RANK: dict[str, int] = {VIEWER: 0, ARTIST: 1, PRODUCER: 3, ADMIN: 4}
 
 #: capability → the least role that has it. Mirrors the table in
 #: `frontend/src/store/giantflowRole.ts`; the two must not drift.
@@ -69,6 +71,8 @@ def normalize_role(role: Optional[str]) -> str:
     """Coerce a role string into one this module ranks. Accepts ``admin``,
     because a SYSTEM role legitimately passes through here."""
     r = (role or "").strip().lower()
+    if r == LEAD:
+        return PRODUCER
     return r if r in _RANK else ARTIST
 
 
@@ -83,6 +87,10 @@ def normalize_member_role(role: Optional[str]) -> str:
     side, so a row inserted by any other means still cannot escalate.
     """
     r = (role or "").strip().lower()
+    # Up to producer, never down to the artist fallback — see normalize_role in
+    # services/permissions.py for why that direction matters.
+    if r == LEAD:
+        return PRODUCER
     return r if r in FLOW_ROLES else ARTIST
 
 
@@ -168,7 +176,7 @@ def _role_for(session: Session, user: Optional[User], series_id: Optional[int]) 
 #: focus, not secrecy: 320 panels of which 45 are yours is a worse view of your
 #: own work than 45 panels is. A viewer is a spectator on the project as a whole,
 #: so they see everything read-only.
-FULL_VIEW: frozenset = frozenset({ADMIN, PRODUCER, LEAD, VIEWER})
+FULL_VIEW: frozenset = frozenset({ADMIN, PRODUCER, VIEWER})
 
 
 def sees_everything(role: Optional[str]) -> bool:

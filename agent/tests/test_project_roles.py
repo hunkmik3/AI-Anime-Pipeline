@@ -24,7 +24,7 @@ def staffed(client):
     ah = _h(client, "boss")
 
     users = {}
-    for name in ("prod", "lead", "artist", "viewer"):
+    for name in ("prod", "artist", "viewer"):
         users[name] = user_service.create_user(name, "pw123456")
 
     pid = client.post(
@@ -36,7 +36,6 @@ def staffed(client):
     roster = {
         "members": [
             {"user_id": str(users["prod"].id), "role": "producer"},
-            {"user_id": str(users["lead"].id), "role": "lead"},
             {"user_id": str(users["artist"].id), "role": "artist"},
             {"user_id": str(users["viewer"].id), "role": "viewer"},
         ]
@@ -45,7 +44,6 @@ def staffed(client):
     assert r.status_code == 200
     assert {m["role"] for m in r.json()["members"]} == {
         "producer",
-        "lead",
         "artist",
         "viewer",
     }
@@ -59,7 +57,7 @@ def staffed(client):
 
 
 def test_reported_role_matches_assignment(client, staffed):
-    for name in ("prod", "lead", "artist", "viewer"):
+    for name in ("prod", "artist", "viewer"):
         got = client.get(f"/api/projects/{staffed['pid']}", headers=staffed["h"][name]).json()
         expected = {"prod": "producer"}.get(name, name)
         assert got["my_role"] == expected
@@ -68,49 +66,83 @@ def test_reported_role_matches_assignment(client, staffed):
         assert got["can"]["project.manage"] is False
 
 
-def test_a_lead_runs_the_structure_but_does_not_decide_what_it_is(client, staffed):
-    """Adding a tier is the PM's call; editing one that exists is the lead's.
+def test_only_the_pm_shapes_the_project(client, staffed):
+    """Create, rename and delete a tier are all the PM's now.
 
-    The four tiers are who-does-what as much as they are a shape — an admin
-    opens a Project, a PM lays out its Series and Episodes, an artist is handed
-    an Episode and generates Sequences in it. A lead who could add series and
-    episodes could grow the shape from underneath the person accountable for
-    the schedule; a lead who cannot fix a typo in a code has to interrupt a PM
-    to do it. So: create and delete are the PM's, rename is the lead's.
+    There used to be a `lead` between PM and artist holding rename but not
+    create, delete-a-sequence but not delete-an-episode. The studio treats a
+    lead and a PM as the same person, so that was one job under two names split
+    by a line nobody could state. With the rank gone the split has nobody to
+    belong to, so the whole tier moves together.
     """
     pid, h = staffed["pid"], staffed["h"]
 
-    assert client.post(
-        f"/api/projects/{pid}/series", json={"name": "Season 1"}, headers=h["lead"]
-    ).status_code == 403
-    assert client.post(
-        f"/api/projects/{pid}/scenes", json={"name": "EP1"}, headers=h["lead"]
-    ).status_code == 403
+    for headers, ok in ((h["artist"], False), (h["prod"], True)):
+        r = client.post(
+            f"/api/projects/{pid}/series", json={"name": "Season 1"}, headers=headers
+        )
+        assert (r.status_code == 200) is ok, r.text
+        if ok:
+            sid = r.json()["id"]
 
-    ser = client.post(
-        f"/api/projects/{pid}/series", json={"name": "Season 1"}, headers=h["prod"]
-    )
-    assert ser.status_code == 200
-    sid = ser.json()["id"]
-
-    # The lead still runs it day to day.
     assert client.patch(
-        f"/api/series/{sid}", json={"name": "Season One"}, headers=h["lead"]
+        f"/api/series/{sid}", json={"name": "Season One"}, headers=h["artist"]
+    ).status_code == 403
+    assert client.patch(
+        f"/api/series/{sid}", json={"name": "Season One"}, headers=h["prod"]
     ).status_code == 200
-
-    assert client.delete(f"/api/series/{sid}", headers=h["lead"]).status_code == 403
     assert client.delete(f"/api/series/{sid}", headers=h["prod"]).status_code == 200
 
 
+def test_lead_is_read_as_pm_not_demoted_to_artist(client, staffed):
+    """A row stored before the merge must come back as a PM.
+
+    The unknown-value fallback is `artist`, so dropping the role from the list
+    and letting it fall through would have silently demoted every lead — the
+    wrong direction, and the kind of change nobody notices until somebody
+    cannot do their job.
+    """
+    from flowboard.db import get_session
+    from flowboard.db.models import ProjectMember
+    from sqlmodel import select
+
+    pid, h, users = staffed["pid"], staffed["h"], staffed["users"]
+    with get_session() as s:
+        row = s.exec(
+            select(ProjectMember).where(
+                ProjectMember.project_id == pid,
+                ProjectMember.user_id == users["artist"].id,
+            )
+        ).first()
+        row.role = "lead"          # as an old database holds it
+        s.add(row)
+        s.commit()
+
+    assert permissions.normalize_role("lead") == permissions.PRODUCER
+    # …and the real gate agrees: they can now do what only a PM can.
+    assert client.post(
+        f"/api/projects/{pid}/series", json={"name": "S"}, headers=h["artist"]
+    ).status_code == 200
+
+
 def test_nobody_can_delete_an_episode_they_could_not_recreate(client, staffed):
-    """The asymmetry that would have been left behind by raising create alone:
-    the destructive half of a pair without the half that undoes it."""
+    """Create and delete stay on the same rank, whichever rank that is.
+
+    The pairing is the point, not the level: whoever can remove an episode must
+    be able to put it back. Leaving one half a rank below the other hands
+    somebody the destructive move without the one that undoes it.
+    """
     pid, h = staffed["pid"], staffed["h"]
     ep = client.post(
         f"/api/projects/{pid}/scenes", json={"name": "EP1"}, headers=h["prod"]
     ).json()["id"]
 
-    assert client.delete(f"/api/scenes/{ep}", headers=h["lead"]).status_code == 403
+    # An artist can neither make one nor remove one.
+    assert client.post(
+        f"/api/projects/{pid}/scenes", json={"name": "EP2"}, headers=h["artist"]
+    ).status_code == 403
+    assert client.delete(f"/api/scenes/{ep}", headers=h["artist"]).status_code == 403
+
     assert client.delete(f"/api/scenes/{ep}", headers=h["prod"]).status_code == 200
 
 
@@ -138,7 +170,7 @@ def test_artist_works_in_sequences_but_cannot_restructure(client, staffed):
     client.patch(
         f"/api/scenes/{ep}/assignee",
         json={"user_id": str(staffed["users"]["artist"].id)},
-        headers=h["lead"],
+        headers=h["prod"],
     )
 
     # artist may add + edit a sequence and save its node graph
@@ -231,7 +263,6 @@ def test_capability_matrix_is_monotonic():
     order = [
         permissions.VIEWER,
         permissions.ARTIST,
-        permissions.LEAD,
         permissions.PRODUCER,
         permissions.ADMIN,
     ]

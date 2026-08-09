@@ -150,7 +150,7 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
   const selectScene = useSceneStore((s) => s.selectScene);
   const createShot = useShotStore((s) => s.createShot);
   // Phase 10: sequence create/delete follow the caller's project role, not a
-  // blanket admin gate. Artist+ may add a sequence; lead+ may delete one. The
+  // blanket admin gate. Artist+ may add a sequence; the PM deletes one. The
   // `can` map comes from the project the backend already scoped for us.
   const canCreateSequence = currentProject?.can?.["sequence.create"] ?? false;
   const canDeleteSequence = currentProject?.can?.["sequence.delete"] ?? false;

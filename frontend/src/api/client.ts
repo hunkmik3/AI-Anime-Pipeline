@@ -1093,7 +1093,7 @@ export const EMPTY_PROJECT_BIBLE: ProjectBible = {
 };
 
 /** Phase 10: per-project role. The owner is a producer implicitly. */
-export type ProjectRole = "admin" | "producer" | "lead" | "artist" | "viewer";
+export type ProjectRole = "admin" | "producer" | "artist" | "viewer";
 
 /** Phase 10: capability keys the backend reports in `ProjectDTO.can`.
  *  The UI reads these to hide (not just 403) what the caller can't do. */

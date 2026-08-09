@@ -672,7 +672,6 @@ function MembersPanel({
 /** Mirrors `FLOW_ROLES` in services/flow_permissions.py. */
 const FLOW_ROLE_OPTIONS = [
   { id: "producer", label: "PM" },
-  { id: "lead", label: "Lead" },
   { id: "artist", label: "Artist" },
   { id: "viewer", label: "Viewer" },
 ];

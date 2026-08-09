@@ -16,17 +16,16 @@ import { useCallback, useEffect, useState } from "react";
  * made from.
  */
 
-type Role = "producer" | "lead" | "artist" | "viewer";
+type Role = "producer" | "artist" | "viewer";
 
 /** Shown in the studio's own words. "Producer" is what the code calls it and
  *  "PM" is what everybody says out loud; the dropdown should say the second. */
 const ROLE_LABEL: Record<Role, string> = {
   producer: "PM",
-  lead: "Lead",
   artist: "Artist",
   viewer: "Viewer",
 };
-const ROLES: Role[] = ["producer", "lead", "artist", "viewer"];
+const ROLES: Role[] = ["producer", "artist", "viewer"];
 
 type StudioGrant = { project_id: string; name: string; role: Role; is_owner: boolean };
 type FlowGrant = { series_id: number; name: string; role: Role };

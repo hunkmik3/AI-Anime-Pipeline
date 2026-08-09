@@ -13,7 +13,6 @@ import { useProjectStore } from "../store/project";
  *  always a producer and can't be demoted here. */
 const ASSIGNABLE_ROLES: { value: ProjectRole; label: string; hint: string }[] = [
   { value: "producer", label: "Producer", hint: "Runs the project + staffs it" },
-  { value: "lead", label: "Lead", hint: "Builds series & episodes" },
   { value: "artist", label: "Artist", hint: "Works in sequences + canvas" },
   { value: "viewer", label: "Viewer", hint: "Read-only" },
 ];

@@ -9,14 +9,18 @@ Two tiers of authority:
     ``user``   — no admin console; sees only the projects they're assigned to.
 
 **Project role** (``project_member.role``, per project)
-    ``producer`` — runs the project: Series/Episode/Sequence CRUD + invites
-                   members and sets their roles. The project's
+    ``producer`` — the PM. Runs the project: Series/Episode/Sequence CRUD,
+                   invites members and sets their roles. The project's
                    ``owner_user_id`` is a producer implicitly (no member row).
-    ``lead``     — builds and edits the structure, but can't delete a Series
-                   or change who's on the project.
     ``artist``   — works inside the project: adds/edits Sequences and does all
                    canvas/generation work. Can't restructure above that.
     ``viewer``   — read-only.
+
+There used to be a ``lead`` between producer and artist. The studio treats a
+lead and a PM as the same person, so it was one job under two names, split by a
+line nobody could state — a lead could rename a series but not create one, and
+delete a sequence but not the episode holding it. Stored rows are still read as
+producer; see ``normalize_role``.
 
 The split matters because it's what moved structure-building out of the admin
 console: an admin creates the Project and hands it to a producer, who then
@@ -37,45 +41,44 @@ from flowboard.db.models import Project, ProjectMember, User
 
 ADMIN = "admin"
 PRODUCER = "producer"
+#: Retired. The studio treats a lead and a PM as the same person, so the two
+#: roles were one job with two names and a fiddly split of rights between them —
+#: a lead could rename a series but not create one, delete a sequence but not an
+#: episode. The constant stays only so stored rows can be recognised and read as
+#: producer; it is not assignable and carries no rank.
 LEAD = "lead"
 ARTIST = "artist"
 VIEWER = "viewer"
 
 #: Assignable project roles, most to least authority. ``admin`` is a system
 #: role and is never stored on a member row.
-PROJECT_ROLES: tuple[str, ...] = (PRODUCER, LEAD, ARTIST, VIEWER)
+PROJECT_ROLES: tuple[str, ...] = (PRODUCER, ARTIST, VIEWER)
 
-_RANK: dict[str, int] = {VIEWER: 0, ARTIST: 1, LEAD: 2, PRODUCER: 3, ADMIN: 4}
+_RANK: dict[str, int] = {VIEWER: 0, ARTIST: 1, PRODUCER: 3, ADMIN: 4}
 
 #: capability → minimum role. Anything not listed is admin-only by omission
 #: (``require`` raises on an unknown capability rather than silently allowing).
 CAPABILITIES: dict[str, str] = {
-    # Series tier
+    # Structure — Series and Episode.
     #
-    # Building the structure is the PM's job, not the lead's. The four tiers are
+    # All of it is the PM's, create and edit alike. The four tiers are
     # who-does-what as much as they are a shape: the admin opens a Project, the
     # PM lays out its Series and Episodes, an artist is handed an Episode and
-    # generates Sequences inside it. A lead runs work through a structure that
-    # already exists — letting them add to it meant the shape could grow from
-    # underneath the person accountable for the schedule.
+    # generates Sequences inside it. Splitting "may rename" from "may create"
+    # only made sense while there was a rank between PM and artist to give the
+    # first to; with that gone, the split is a line with nobody standing on it.
     "series.create": PRODUCER,
-    # Renaming stays at lead. Editing a series' own details is running the work,
-    # not deciding what work there is, and a lead who cannot fix a typo in a code
-    # has to interrupt a PM to do it.
-    "series.update": LEAD,
+    "series.update": PRODUCER,
     "series.delete": PRODUCER,
-    # Episode / Chapter (scene)
     "episode.create": PRODUCER,
-    "episode.update": LEAD,
-    # Deleting was LEAD while creating was too, so it was at least consistent.
-    # Raising create alone would have left a lead able to delete an episode and
-    # then unable to put it back — the destructive half of a pair, without the
-    # half that undoes it.
+    "episode.update": PRODUCER,
     "episode.delete": PRODUCER,
-    # Sequence (shot)
+    # Sequence (shot) — the artist's own workspace. Deleting one stays with the
+    # PM: an artist re-doing their work replaces a sequence's contents, and
+    # removing the sequence itself changes the shape of the episode.
     "sequence.create": ARTIST,
     "sequence.update": ARTIST,
-    "sequence.delete": LEAD,
+    "sequence.delete": PRODUCER,
     # Canvas: nodes, edges, prompts, generation
     "canvas.write": ARTIST,
     "canvas.read": VIEWER,
@@ -93,8 +96,16 @@ class ProjectAccessDenied(Exception):
 
 
 def normalize_role(role: Optional[str]) -> str:
-    """Coerce stored/incoming role strings to a known project role."""
+    """Coerce stored/incoming role strings to a known project role.
+
+    ``lead`` is mapped UP to producer, not left to the unknown-value fallback.
+    That fallback is ``artist``, so simply deleting the role from the list would
+    have quietly demoted every lead in the database — the wrong direction, and
+    the kind of change nobody notices until someone cannot do their job.
+    """
     r = (role or "").strip().lower()
+    if r == LEAD:
+        return PRODUCER
     return r if r in PROJECT_ROLES else ARTIST
 
 

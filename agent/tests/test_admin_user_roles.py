@@ -133,18 +133,18 @@ def test_granting_one_person_leaves_everyone_else_on_the_project(client, world):
     )
     client.put(
         f"/api/admin/users/{w['a'].id}/roles/studio/{w['pid']}",
-        json={"role": "lead"}, headers=w["owner"],
+        json={"role": "producer"}, headers=w["owner"],
     )
 
     roster = client.get(f"/api/projects/{w['pid']}/members", headers=w["owner"]).json()
     got = {m["user_id"]: m["role"] for m in roster["members"]}
     assert got[str(w["b"].id)] == "artist", "granting A removed B"
-    assert got[str(w["a"].id)] == "lead"
+    assert got[str(w["a"].id)] == "producer"
 
 
 def test_changing_a_role_replaces_it_rather_than_adding_a_second(client, world):
     w = world
-    for role in ("artist", "lead", "producer"):
+    for role in ("viewer", "artist", "producer"):
         client.put(
             f"/api/admin/users/{w['a'].id}/roles/studio/{w['pid']}",
             json={"role": role}, headers=w["owner"],
