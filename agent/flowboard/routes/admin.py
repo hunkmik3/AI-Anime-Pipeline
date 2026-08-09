@@ -362,6 +362,13 @@ def comic_artists() -> list[dict]:
     return flow_stats.by_artist()
 
 
+@router.get("/stats/comics/quota")
+def comic_quota() -> dict:
+    """Today's image cap. An Atrium image costs quota, not money, so the spend
+    figure alone cannot say whether the studio is about to hit a wall."""
+    return flow_stats.quota_today()
+
+
 @router.get("/stats/unattributed")
 def unattributed_spend() -> dict:
     """Money the console cannot place, reported rather than dropped.

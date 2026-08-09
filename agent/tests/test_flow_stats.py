@@ -16,6 +16,7 @@ import pytest
 
 from flowboard.db import get_session
 from flowboard.db.models import Request, UsageRecord
+from flowboard.services import flow_quota as fq
 from flowboard.services import flow_stats as fs
 from flowboard.services import panel_service as ps
 from flowboard.services import user_service
@@ -158,39 +159,52 @@ def test_runs_per_approved_is_zero_rather_than_infinity(client, slate):
 # ── money ───────────────────────────────────────────────────────────────────
 
 
+def _ran(panel_id, images, *, provider="avis", status="done"):
+    """A finished generation, the way the worker leaves one."""
+    with get_session() as s:
+        s.add(Request(
+            flow_panel_id=panel_id, type="flow_gen_image", status=status,
+            params={"provider": provider, "variant_count": images},
+            result=({"media_ids": [f"m{panel_id}-{i}" for i in range(images)]}
+                    if status == "done" else {}),
+        ))
+        s.commit()
+
+
 def test_spend_follows_the_panel_a_run_was_for(client, slate):
     """The whole point of `Request.flow_panel_id`. Before it, a panel
     generation could not be attributed at all — the panel id lived in a JSON
-    key nothing could join on."""
-    pid = slate["panels_x"][0]
-    with get_session() as s:
-        req = Request(flow_panel_id=pid, type="flow_gen_image", status="done")
-        s.add(req)
-        s.commit()
-        s.refresh(req)
-        s.add(UsageRecord(user_id=slate["a"].id, request_id=req.id,
-                          status="settled", actual_usd=0.25))
-        s.commit()
+    key nothing could join on.
+
+    Priced from the tariff, not from a UsageRecord: panel generation is outside
+    the budget system and produces none, so the fixed per-image price is the
+    only figure that exists.
+    """
+    _ran(slate["panels_x"][0], 1)
 
     rows = {r["name"]: r for r in fs.by_comic()}
-    assert rows["COMIC-X"]["spent_usd"] == 0.25
+    one = round(fq.SEEDREAM_USD_PER_IMAGE_1K, 4)
+    assert rows["COMIC-X"]["spent_usd"] == one
     assert rows["COMIC-X"]["runs"] == 1
     assert rows["COMIC-Y"]["spent_usd"] == 0.0, "spend leaked into the other comic"
-    assert fs.overview()["spent_usd"] == 0.25
+    assert fs.overview()["spent_usd"] == one
 
 
-def test_a_hold_that_never_billed_is_not_spend(client, slate):
-    """`estimated_usd` on a reserved record is a hold placed before a run.
-    Counting it charges for generations that never happened."""
-    with get_session() as s:
-        req = Request(flow_panel_id=slate["panels_x"][0], type="flow_gen_image")
-        s.add(req)
-        s.commit()
-        s.refresh(req)
-        s.add(UsageRecord(user_id=slate["a"].id, request_id=req.id,
-                          status="reserved", estimated_usd=9.99))
-        s.commit()
+def test_a_run_that_never_finished_is_not_spend(client, slate):
+    """A queued run has reserved quota but produced nothing. Charging for it
+    bills for generations that have not happened."""
+    _ran(slate["panels_x"][0], 4, status="queued")
     assert fs.overview()["spent_usd"] == 0.0
+    assert fs.overview()["runs"] == 0
+
+
+def test_an_atrium_run_costs_quota_and_not_money(client, slate):
+    """It still counts as work done — the runs column moves — but the money
+    column does not, because Atrium images are capped rather than billed."""
+    _ran(slate["panels_x"][0], 3, provider="atrium")
+    got = fs.overview()
+    assert got["runs"] == 3
+    assert got["spent_usd"] == 0.0
 
 
 def test_money_with_nothing_to_attach_it_to_is_reported(client, slate):
@@ -216,21 +230,17 @@ def test_cost_per_approved_divides_by_what_shipped(client, slate):
     """The re-dos are part of the price of the panel that shipped, so the
     divisor is approved panels, not runs."""
     pid = slate["panels_x"][0]
-    with get_session() as s:
-        for usd in (0.10, 0.10, 0.30):
-            req = Request(flow_panel_id=pid, type="flow_gen_image", status="done")
-            s.add(req)
-            s.commit()
-            s.refresh(req)
-            s.add(UsageRecord(user_id=slate["a"].id, request_id=req.id,
-                              status="settled", actual_usd=usd))
-            s.commit()
+    _ran(pid, 1)          # two re-dos…
+    _ran(pid, 1)
+    _ran(pid, 1)          # …and the one that shipped
     _approve(pid, slate["a"].id)
 
     got = fs.overview()
+    three = round(3 * fq.SEEDREAM_USD_PER_IMAGE_1K, 4)
     assert got["runs"] == 3
-    assert got["spent_usd"] == 0.5
-    assert got["cost_per_approved"] == 0.5
+    assert got["spent_usd"] == three
+    # All three images are the price of the single panel that shipped.
+    assert got["cost_per_approved"] == three
 
 
 # ── the endpoints ───────────────────────────────────────────────────────────

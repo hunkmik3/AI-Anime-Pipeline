@@ -28,6 +28,7 @@ from typing import Optional
 from sqlmodel import Session, select
 
 from flowboard.db import get_session
+from flowboard.services import flow_quota
 from flowboard.db.models import (
     FlowBatch,
     FlowChapter,
@@ -46,29 +47,39 @@ def _empty_counts() -> dict[str, int]:
 
 
 def _cost_by_panel(session: Session) -> dict[int, tuple[float, int]]:
-    """panel id → (dollars settled, runs).
+    """panel id → (dollars, images produced).
 
-    ``actual_usd`` on settled records only — the same figure the video ledger
-    uses. ``estimated_usd`` is the hold placed before a run; billing it would
-    charge for generations that never happened.
+    Priced from the TARIFF, not from a billed amount, because there is no billed
+    amount to read. The video side settles against what Avis actually charged
+    and stores it on a UsageRecord; panel generation creates no UsageRecord at
+    all — it is outside the budget system — so the only figure that exists is
+    the fixed per-image price the studio pays.
+
+    That makes this an accurate charge rather than a reconciled one, which is
+    worth knowing when it disagrees with an invoice. Atrium images price at zero
+    on purpose: they cost quota, not money, and the quota is reported separately.
+
+    Counts finished images, not requests: a run asking for four variants costs
+    four, and a run that failed cost nothing.
     """
-    reqs = {
-        r.id: r
+    reqs = [
+        r
         for r in session.exec(
             select(Request).where(Request.flow_panel_id.is_not(None))  # type: ignore[union-attr]
         ).all()
-    }
+        if r.status == "done"
+    ]
     if not reqs:
         return {}
     out: dict[int, list[float]] = defaultdict(list)
-    for u in session.exec(
-        select(UsageRecord).where(UsageRecord.status == "settled")
-    ).all():
-        req = reqs.get(u.request_id)
-        if req is None or req.flow_panel_id is None:
+    counts: dict[int, int] = defaultdict(int)
+    for r in reqs:
+        n = flow_quota.images_in(r.result)
+        if not n:
             continue
-        out[req.flow_panel_id].append(float(u.actual_usd or 0.0))
-    return {pid: (round(sum(v), 4), len(v)) for pid, v in out.items()}
+        out[r.flow_panel_id].append(flow_quota.price_usd(r.params, n))  # type: ignore[index]
+        counts[r.flow_panel_id] += n  # type: ignore[index]
+    return {pid: (round(sum(v), 4), counts[pid]) for pid, v in out.items()}
 
 
 def _tree(session: Session):
@@ -244,3 +255,18 @@ def unattributed() -> dict:
             usd += float(u.actual_usd or 0.0)
             runs += 1
     return {"spent_usd": round(usd, 4), "runs": runs}
+
+
+def quota_today() -> dict:
+    """Today's image cap, for the console — the other half of what a comic run
+    costs. An Atrium image spends quota rather than money, so a spend figure
+    alone says nothing about whether the studio is about to hit a wall."""
+    with get_session() as s:
+        used = flow_quota.used_today(s)
+    return {
+        "quota": flow_quota.DAILY_QUOTA,
+        "used": used[flow_quota.GEMINI],
+        "remaining": max(0, flow_quota.DAILY_QUOTA - used[flow_quota.GEMINI]),
+        "seedream_images": used[flow_quota.SEEDREAM],
+        "seconds_until_reset": flow_quota.seconds_until_reset(),
+    }

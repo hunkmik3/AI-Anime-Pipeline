@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from flowboard.db import get_session
+from flowboard.services import flow_quota
 from flowboard.db.models import Node, Request
 from flowboard.routes.deps import get_optional_user
 from flowboard.services import budget_service, resource_guard, scope_budget
@@ -65,6 +66,22 @@ def create_request(body: RequestCreate, user=Depends(get_optional_user)):
                     },
                 )
     with get_session() as s:
+        if body.type == "flow_gen_image":
+            # The old studio's own generate path. Same cap, same place it is
+            # defined — two entry points that disagreed about the ceiling would
+            # be worse than no ceiling.
+            try:
+                flow_quota.check(s, params)
+            except flow_quota.QuotaExceeded as exc:
+                raise HTTPException(
+                    429,
+                    detail={
+                        "error": str(exc),
+                        "used": exc.used,
+                        "quota": exc.quota,
+                        "seconds_until_reset": exc.seconds_until_reset,
+                    },
+                )
         # Existence was re-checked here before; authorize_node above already
         # 404s on a missing node, so reaching this point means it exists.
         req = Request(

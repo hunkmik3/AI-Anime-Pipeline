@@ -51,6 +51,7 @@ from flowboard.db import get_session
 from flowboard.db.models import FlowBoard, Reference, Request
 from flowboard.routes.deps import get_optional_user
 from flowboard.services import media as media_service
+from flowboard.services import flow_quota
 from flowboard.services import resource_guard
 
 logger = logging.getLogger(__name__)
@@ -227,46 +228,28 @@ async def upload_image(
 # job with no reference image, which is how we know **reference images are free**
 # and price tracks output resolution only. The earlier per-input charge modelled
 # here was wrong.
-DAILY_QUOTA = int(os.getenv("FLOWBOARD_DAILY_QUOTA", "1000"))
-SEEDREAM_USD_PER_IMAGE_1K = float(os.getenv("FLOWBOARD_SEEDREAM_USD_PER_IMAGE_1K", "0.059125"))
-SEEDREAM_USD_PER_IMAGE_2K = float(os.getenv("FLOWBOARD_SEEDREAM_USD_PER_IMAGE_2K", "0.11825"))
+# The cap and the tariff live in `services/flow_quota` now, so the meter below
+# and the two generation paths that ENFORCE it cannot disagree about the number.
+# They did before: this file held the only copy, and nothing outside it could
+# see the figure, which is how a cap stayed a display for as long as it did.
+DAILY_QUOTA = flow_quota.DAILY_QUOTA
+SEEDREAM_USD_PER_IMAGE_1K = flow_quota.SEEDREAM_USD_PER_IMAGE_1K
+SEEDREAM_USD_PER_IMAGE_2K = flow_quota.SEEDREAM_USD_PER_IMAGE_2K
 
 
-def _images_in(result: object) -> int:
-    if not isinstance(result, dict):
-        return 0
-    mids = result.get("media_ids")
-    if not isinstance(mids, list):
-        return 0
-    return sum(1 for m in mids if isinstance(m, str) and m)
+def _images_in(x: object):
+    return flow_quota.images_in(x)
 
 
-def _resolution_of(params: object) -> str:
-    """"2K" when the request asked for 2K (or 4K, which this model clamps to 2K),
-    else "1K" — the model default, which the frontend signals by omitting
-    ``image_size`` entirely."""
-    if not isinstance(params, dict):
-        return "1K"
-    size = str(params.get("image_size") or "").strip().upper()
-    return "2K" if size in ("2K", "4K") else "1K"
+
+def _resolution_of(x: object):
+    return flow_quota.resolution_of(x)
 
 
-def _engine_of(params: object) -> Optional[str]:
-    """Bucket a request by provider.
 
-    ``avis`` → seedream. The decommissioned direct-BytePlus ``ark`` provider →
-    None, meaning excluded from every bucket rather than relabelled: those rows
-    are dead history, and counting them as Gemini/Atrium usage would be just as
-    wrong as counting them as Seedream spend.
-    """
-    p = ""
-    if isinstance(params, dict):
-        p = str(params.get("provider") or "").lower()
-    if p == "avis":
-        return "seedream"
-    if p == "ark":
-        return None
-    return "gemini"
+def _engine_of(x: object):
+    return flow_quota.engine_of(x)
+
 
 
 def _aware(dt: datetime) -> datetime:

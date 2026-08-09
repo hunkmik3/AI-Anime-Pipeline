@@ -38,6 +38,7 @@ from flowboard.services import media as media_service
 from flowboard.db.models import PANEL_STATUSES
 from flowboard.services import flow_delivery as fd
 from flowboard.services import flow_notices as fn
+from flowboard.services import flow_quota
 from flowboard.services import flow_permissions as fp
 from flowboard.services import panel_service as ps
 from flowboard.services import resource_guard
@@ -1538,7 +1539,32 @@ def generate(panel_id: int, body: GenerateBody, user=Depends(get_optional_user))
     from flowboard.worker.processor import get_worker
 
     with get_session() as s:
-        req = RequestRow(type="flow_gen_image", params=params, status="queued")
+        # Before the row exists, so a refusal costs nothing and leaves nothing
+        # behind. The cap used to be a number on the usage meter and nothing
+        # else — running out showed "0 remaining" and the next generation went
+        # through exactly as before.
+        try:
+            flow_quota.check(s, params)
+        except flow_quota.QuotaExceeded as exc:
+            raise HTTPException(
+                429,
+                detail={
+                    "error": str(exc),
+                    "used": exc.used,
+                    "quota": exc.quota,
+                    "seconds_until_reset": exc.seconds_until_reset,
+                },
+            )
+        req = RequestRow(
+            type="flow_gen_image",
+            # This route builds its own Request rather than going through
+            # /api/requests, so it needs its own copy of the attribution. Without
+            # it the run is spend belonging to nobody, which is what every panel
+            # generation was until now.
+            flow_panel_id=panel_id,
+            params=params,
+            status="queued",
+        )
         s.add(req)
         s.commit()
         s.refresh(req)
