@@ -131,6 +131,14 @@ def deliver_panel(session: Session, panel_id: int) -> Optional[Delivered]:
             f"“{comic.name}” is linked to a production series that no longer exists",
         )
 
+    # Resolve the episode FIRST, before the already-delivered shortcut below.
+    # It is what repairs the skeleton, and putting the shortcut ahead of it
+    # meant a comic whose panels had all been delivered could never gain the
+    # empty slots — re-running sync returned "already done" without ever
+    # looking at the episode. The repair has to sit on the path that runs every
+    # time, not the one that runs once.
+    scene = _episode_for(session, chapter, studio_series)
+
     # Already handed over — a reopen-and-re-approve, or a retried request.
     if panel.studio_shot_id is not None:
         existing = session.get(Shot, panel.studio_shot_id)
@@ -140,26 +148,86 @@ def deliver_panel(session: Session, panel_id: int) -> Optional[Delivered]:
         # a new one: the panel is still approved, so it still owes a sequence.
         panel.studio_shot_id = None
 
-    scene = _episode_for(session, chapter, studio_series)
-    shot = shot_service.create_shot(
-        session,
-        scene.id,
-        # The panel's own position, NOT the next free slot. Panels are approved
-        # in whatever order the PM gets to them, so arrival order would make
-        # panel 8 into Sequence 1 whenever it was reviewed first — and the
-        # numbering would then shuffle as the rest caught up. Pinning it here
-        # means panel 8 is Sequence 8 from the moment it lands, and the gaps
-        # where 6 and 7 will go are visible instead of imaginary.
-        order_index=_chapter_position(session, panel, chapter),
-        code=panel.code or "",
-        script_text="",
-    )
+    shot = _slot_for(session, scene, panel, chapter)
     _record_source(session, panel, shot)
 
     panel.studio_shot_id = shot.id
     session.add(panel)
     session.commit()
     return Delivered(shot_id=shot.id, scene_id=scene.id, created=True)
+
+
+def _skeleton(session: Session, scene: Scene, chapter: FlowChapter) -> None:
+    """One sequence per panel in the chapter, whether or not it has crossed yet.
+
+    The alternative — create a sequence only when its panel is approved — left
+    the episode a handful of numbered frames with nothing between them: Sequence
+    2, then Sequence 5, then Sequence 8. The numbers were right and the shape was
+    unreadable. An episode IS the chapter, and the chapter's length is known the
+    moment the panels are imported, so the empty slots are not unknowns. They are
+    work that has not arrived.
+
+    An empty sequence carries its panel's CODE, so a person reading the canvas
+    can see which panel that slot is waiting on rather than a blank numbered box.
+
+    Idempotent by code: re-running after a chapter grows a batch adds only what
+    is missing.
+    """
+    panels = _chapter_panels(session, chapter)
+    shots = session.exec(select(Shot).where(Shot.scene_id == scene.id)).all()
+    if len(shots) >= len(panels):
+        # Settled. This runs on every delivery, so the common case has to be
+        # one query rather than a rebuild.
+        return
+
+    have = {sh.code for sh in shots if sh.code}
+    for pos, p in enumerate(panels):
+        if not p.code or p.code in have:
+            continue
+        shot_service.create_shot(
+            session, scene.id, order_index=pos, code=p.code, script_text=""
+        )
+
+
+def _slot_for(session: Session, scene: Scene, panel: FlowPanel, chapter: FlowChapter) -> Shot:
+    """The sequence this panel belongs in — the one already standing there.
+
+    Matched on CODE, not position. Position is what the slot means; code is what
+    it *is*, and a chapter that gains a batch renumbers positions while codes
+    stay put. Falls back to creating one, so a panel whose skeleton row was
+    deleted still delivers.
+    """
+    if panel.code:
+        existing = session.exec(
+            select(Shot).where(Shot.scene_id == scene.id, Shot.code == panel.code)
+        ).first()
+        if existing is not None:
+            return existing
+    return shot_service.create_shot(
+        session,
+        scene.id,
+        order_index=_chapter_position(session, panel, chapter),
+        code=panel.code or "",
+        script_text="",
+    )
+
+
+def _chapter_panels(session: Session, chapter: FlowChapter) -> list[FlowPanel]:
+    """Every panel of the chapter in reading order — batches in their order,
+    panels in theirs. A batch is one artist's share, not a tier, so its
+    boundaries do not interrupt the numbering."""
+    out: list[FlowPanel] = []
+    for b in session.exec(
+        select(FlowBatch)
+        .where(FlowBatch.chapter_id == chapter.id)
+        .order_by(FlowBatch.order_index, FlowBatch.id)
+    ).all():
+        out += session.exec(
+            select(FlowPanel)
+            .where(FlowPanel.batch_id == b.id)
+            .order_by(FlowPanel.order_index, FlowPanel.id)
+        ).all()
+    return out
 
 
 def _chapter_position(session: Session, panel: FlowPanel, chapter: FlowChapter) -> int:
@@ -174,44 +242,41 @@ def _chapter_position(session: Session, panel: FlowPanel, chapter: FlowChapter) 
     Batches in their own order, panels in theirs, counted through: exactly the
     reading order the person who cut the pages laid down.
     """
-    batches = session.exec(
-        select(FlowBatch)
-        .where(FlowBatch.chapter_id == chapter.id)
-        .order_by(FlowBatch.order_index, FlowBatch.id)
-    ).all()
-    n = 0
-    for b in batches:
-        panels = session.exec(
-            select(FlowPanel)
-            .where(FlowPanel.batch_id == b.id)
-            .order_by(FlowPanel.order_index, FlowPanel.id)
-        ).all()
-        for p in panels:
-            if p.id == panel.id:
-                return n
-            n += 1
+    for n, p in enumerate(_chapter_panels(session, chapter)):
+        if p.id == panel.id:
+            return n
     # Unreachable while the panel is in this chapter; falling back to appending
     # is better than raising over a position.
-    return n
+    return len(_chapter_panels(session, chapter))
 
 
 def _episode_for(session: Session, chapter: FlowChapter, studio_series: Series) -> Scene:
-    """The episode this chapter became, making it on first use."""
+    """The episode this chapter became, making it on first use.
+
+    The skeleton is rebuilt on EVERY call, not only when the episode is created.
+    It is idempotent by code, so the cost is one query — and running it only at
+    creation left two holes: an episode made before this existed would never get
+    its empty slots, and a chapter that gains a batch afterwards would never get
+    the new ones. Self-healing beats a one-shot backfill nobody remembers to run.
+    """
+    scene = None
     if chapter.studio_scene_id is not None:
         scene = session.get(Scene, chapter.studio_scene_id)
-        if scene is not None:
-            return scene
-        # Deleted downstream; fall through and make another rather than fail.
+        # None here means it was deleted downstream; fall through and make
+        # another rather than fail.
 
-    scene = scene_service.create_scene(
-        session,
-        studio_series.project_id,
-        name=chapter.name,
-        series_id=studio_series.id,
-    )
-    chapter.studio_scene_id = scene.id
-    session.add(chapter)
-    session.commit()
+    if scene is None:
+        scene = scene_service.create_scene(
+            session,
+            studio_series.project_id,
+            name=chapter.name,
+            series_id=studio_series.id,
+        )
+        chapter.studio_scene_id = scene.id
+        session.add(chapter)
+        session.commit()
+
+    _skeleton(session, scene, chapter)
     return scene
 
 

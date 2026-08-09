@@ -14,6 +14,8 @@ None of those raise. Each one needs a test that counts.
 """
 from __future__ import annotations
 
+import uuid
+
 from flowboard.db import get_session
 from flowboard.db.models import Scene, Shot
 from flowboard.services import flow_delivery as fd
@@ -190,7 +192,15 @@ def test_reopening_and_approving_again_does_not_make_a_second_sequence(client):
 
     assert second["sequence_id"] == first["sequence_id"]
     assert second["created"] is False
-    assert len(_shots(second["episode_id"])) == 1
+    # Two panels in this chapter, so two slots — and exactly ONE of them is
+    # this panel's. Counting shots alone would not catch a duplicate now that
+    # the empty slots are real rows too.
+    with get_session() as s:
+        mine = [
+            sh for sh in _shots(second["episode_id"])
+            if (sh.production or {}).get("source_panel", {}).get("panel_id") == pid
+        ]
+    assert len(mine) == 1
 
 
 def test_a_second_panel_joins_the_same_episode(client):
@@ -425,9 +435,17 @@ def test_a_panel_keeps_its_position_however_late_it_is_approved(client):
         assert s.get(Shot, first["sequence_id"]).order_index == 0
 
 
-def test_the_slots_of_unapproved_panels_stay_empty(client):
-    """"Leave the position empty" — the gap where 2 and 3 will go is real, not
-    closed up by the two that did arrive."""
+def test_every_panel_has_a_slot_and_the_unapproved_ones_are_empty(client):
+    """The whole chapter's shape is standing there from the first delivery.
+
+    Before this, only approved panels had a sequence, so the episode read
+    "Sequence 2, Sequence 5, Sequence 8" with nothing between them — the numbers
+    were right and the shape was unreadable. An episode IS the chapter, and the
+    chapter's length is known the moment the panels are imported, so those gaps
+    are not unknowns. They are work that has not arrived.
+    """
+    from flowboard.db.models import Node
+
     w = _world(client, chapters=1, panels=4)
     _link(client, w)
     ch = w["chapters"][0]
@@ -435,10 +453,40 @@ def test_the_slots_of_unapproved_panels_stay_empty(client):
     got = _approve(client, w, w["panels"][ch][3])["delivered"]
 
     with get_session() as s:
-        shots = s.exec(
-            select(Shot).where(Shot.scene_id == got["episode_id"])
-        ).all()
-    assert sorted(x.order_index for x in shots) == [0, 3]
+        shots = sorted(
+            s.exec(select(Shot).where(Shot.scene_id == got["episode_id"])).all(),
+            key=lambda x: x.order_index,
+        )
+        # Four panels, four slots, no holes.
+        assert [x.order_index for x in shots] == [0, 1, 2, 3]
+        # Each slot names the panel it is for, so an empty one is not a blank box.
+        assert [x.code for x in shots] == ["C0P0", "C0P1", "C0P2", "C0P3"]
+
+        filled, empty = [], []
+        for sh in shots:
+            nodes = s.exec(select(Node).where(Node.shot_id == sh.id)).all()
+            (filled if nodes else empty).append(sh.order_index)
+    assert filled == [0, 3], "the wrong slots carry artwork"
+    assert empty == [1, 2], "a slot with no approved panel is not empty"
+
+
+def test_a_panel_approved_later_fills_its_waiting_slot(client):
+    """It must land in the row already standing there, not append a second one
+    beside it."""
+    w = _world(client, chapters=1, panels=4)
+    _link(client, w)
+    ch = w["chapters"][0]
+    got = _approve(client, w, w["panels"][ch][0])["delivered"]
+
+    with get_session() as s:
+        before = len(s.exec(select(Shot).where(Shot.scene_id == got["episode_id"])).all())
+    later = _approve(client, w, w["panels"][ch][2])["delivered"]
+    with get_session() as s:
+        after = s.exec(select(Shot).where(Shot.scene_id == got["episode_id"])).all()
+
+    assert len(after) == before == 4, "delivering added a row instead of filling one"
+    with get_session() as s:
+        assert s.get(Shot, later["sequence_id"]).order_index == 2
 
 
 def test_position_is_measured_in_the_CHAPTER_not_the_batch(client):
@@ -466,3 +514,56 @@ def test_position_is_measured_in_the_CHAPTER_not_the_batch(client):
     with get_session() as s:
         got = sorted(s.get(Shot, sid).order_index for sid in seen)
     assert got == [0, 1, 2, 3, 4, 5], f"batch positions collided: {got}"
+
+
+def test_the_skeleton_repairs_itself_for_an_episode_that_predates_it(client):
+    """Building the slots only at episode-creation left two holes: an episode
+    made before this feature existed never got them, and a chapter that gains a
+    batch afterwards never got the new ones. Rebuilding on every delivery is
+    idempotent and needs no backfill anybody has to remember."""
+    w = _world(client, chapters=1, panels=2)
+    _link(client, w)
+    ch = w["chapters"][0]
+    got = _approve(client, w, w["panels"][ch][0])["delivered"]
+
+    # A second batch arrives in the same chapter, after the episode exists.
+    with get_session() as s:
+        b = ps.create_batch(s, ch, "late-arrival")
+        extra = ps.import_panels(
+            s, b.id, entries=[(f"LATE{i}.png", f"raw-late-{i}") for i in range(2)]
+        )
+        extra_ids = [p.id for p in extra]
+
+    _approve(client, w, extra_ids[0])
+    with get_session() as s:
+        shots = s.exec(select(Shot).where(Shot.scene_id == got["episode_id"])).all()
+    assert len(shots) == 4, "the late batch got no slots"
+    assert sorted(x.code for x in shots) == ["C0P0", "C0P1", "LATE0", "LATE1"]
+
+
+def test_a_fully_delivered_comic_still_gains_its_empty_slots(client):
+    """The bug the demo caught: `deliver_panel` short-circuited on
+    already-delivered BEFORE resolving the episode, so re-running sync on a
+    comic whose approved panels had all crossed returned "already done" without
+    ever looking at the episode — and the repair never ran."""
+    w = _world(client, chapters=1, panels=4)
+    _link(client, w)
+    ch = w["chapters"][0]
+    got = _approve(client, w, w["panels"][ch][1])["delivered"]
+
+    # Strip the episode back to only the delivered slot, as an episode created
+    # before the skeleton existed would look.
+    with get_session() as s:
+        for sh in s.exec(select(Shot).where(Shot.scene_id == got["episode_id"])).all():
+            if sh.id != uuid.UUID(got["sequence_id"]):
+                s.delete(sh)
+        s.commit()
+        assert len(s.exec(select(Shot).where(Shot.scene_id == got["episode_id"])).all()) == 1
+
+    r = client.post(f"/api/flowstudio/series/{w['comic_id']}/delivery/sync", headers=w["h"])
+    assert r.status_code == 200
+    assert r.json()["created"] == 0, "it re-delivered instead of repairing"
+
+    with get_session() as s:
+        shots = s.exec(select(Shot).where(Shot.scene_id == got["episode_id"])).all()
+    assert len(shots) == 4, "the empty slots were never rebuilt"
