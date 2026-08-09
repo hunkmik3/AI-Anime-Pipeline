@@ -567,3 +567,39 @@ def test_a_fully_delivered_comic_still_gains_its_empty_slots(client):
     with get_session() as s:
         shots = s.exec(select(Shot).where(Shot.scene_id == got["episode_id"])).all()
     assert len(shots) == 4, "the empty slots were never rebuilt"
+
+
+def test_a_delivered_sequence_keeps_the_panel_code_not_a_positional_one(client):
+    """The code is how a panel finds its slot, so it is not free to be prettier.
+
+    Giant Studio names its own sequences positionally — S1_EP01_SQ01 — and
+    applying that here looks like tidying up. It is not: `_slot_for` matches a
+    panel to the sequence waiting for it BY CODE, so restamping them means the
+    next approval finds nothing and appends a duplicate instead of filling the
+    slot. (I did exactly this by hand to a demo database and broke all 34.)
+
+    Position is not lost by keeping the panel code — `order_index` carries it,
+    and the canvas label is built from that.
+    """
+    from flowboard.db.models import FlowPanel
+
+    w = _world(client, chapters=1, panels=3)
+    _link(client, w)
+    ch = w["chapters"][0]
+    got = _approve(client, w, w["panels"][ch][0])["delivered"]
+
+    with get_session() as s:
+        codes = {
+            sh.code
+            for sh in s.exec(select(Shot).where(Shot.scene_id == got["episode_id"])).all()
+        }
+        panels = {
+            s.get(FlowPanel, pid).code for pid in w["panels"][ch]
+        }
+    assert codes == panels, "a sequence stopped naming the panel it is for"
+
+    # And the matching still works: approving another fills its slot rather
+    # than appending beside it.
+    before = len(_shots(got["episode_id"]))
+    _approve(client, w, w["panels"][ch][2])
+    assert len(_shots(got["episode_id"])) == before

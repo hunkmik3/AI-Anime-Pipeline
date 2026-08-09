@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from typing import Any, Optional
 
@@ -132,6 +133,27 @@ def _next_scene_order_index(
     return int(last) + 1 if last is not None else 0
 
 
+def _next_episode_code(session: Session, series_id: uuid.UUID) -> str:
+    """``<SERIES_CODE>_EP<NN>`` for the next episode of this series.
+
+    Numbered from the highest EP number already used rather than from the row
+    count, so deleting an episode does not hand its code to the next one — the
+    code is what the Episode_Tracker sheet is keyed on, and two episodes sharing
+    it is two rows nobody can tell apart.
+    """
+    from flowboard.services import series_service
+
+    series = session.get(Series, series_id)
+    if series is None:
+        return ""
+    used = []
+    for sc in session.exec(select(Scene).where(Scene.series_id == series_id)).all():
+        m = re.search(r"EP(\d+)$", (sc.code or "").upper())
+        if m:
+            used.append(int(m.group(1)))
+    return series_service.episode_code(series, (max(used) + 1) if used else 1)
+
+
 def create_scene(
     session: Session,
     project_id: uuid.UUID,
@@ -156,7 +178,11 @@ def create_scene(
         project_id=project_id,
         series_id=series_id,
         name=name,
-        code=code or "",
+        # Built when the caller does not name one. The convention existed and
+        # only the bulk scaffold used it, so an episode made the ordinary way —
+        # which is how they are actually made — came out with no code at all,
+        # and the Episode_Tracker column it mirrors stayed empty.
+        code=code or _next_episode_code(session, series_id),
         order_index=order_index,
     )
     session.add(scene)

@@ -7,6 +7,7 @@ this surface.
 """
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -52,6 +53,23 @@ def _next_shot_order_index(session: Session, scene_id: uuid.UUID) -> int:
     return int(last) + 1 if last is not None else 0
 
 
+def _next_sequence_code(session: Session, scene: Scene) -> str:
+    """``<EPISODE_CODE>_SQ<NN>`` — the episode's code with the sequence on it.
+
+    A bare ``SQ01`` is only unique inside one episode, and these codes are read
+    on their own: in an export folder, in a message, in the tracker. Carrying
+    the episode makes the code say what it identifies.
+    """
+    base = (scene.code or "").strip().upper()
+    used = []
+    for sh in session.exec(select(Shot).where(Shot.scene_id == scene.id)).all():
+        m = re.search(r"SQ(\d+)$", (sh.code or "").upper())
+        if m:
+            used.append(int(m.group(1)))
+    n = (max(used) + 1) if used else 1
+    return f"{base}_SQ{n:02d}" if base else f"SQ{n:02d}"
+
+
 def create_shot(
     session: Session,
     scene_id: uuid.UUID,
@@ -69,7 +87,7 @@ def create_shot(
         scene_id=scene_id,
         order_index=order_index,
         script_text=script_text,
-        code=code or "",
+        code=code or _next_sequence_code(session, scene),
     )
     session.add(shot)
     session.commit()

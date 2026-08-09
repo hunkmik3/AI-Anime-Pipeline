@@ -99,7 +99,9 @@ class Series(SQLModel, table=True):
 
     Owns the naming convention for its children: ``unit_label`` picks whether
     they read as Episodes (animation) or Chapters (webtoon/manga), and ``code``
-    is the short prefix used to build human codes like ``S1-EP007-SQ03``.
+    is the short prefix used to build human codes: ``S1_EP07``, ``S1_EP07_SQ03``.
+    Underscores, matching the Episode_Tracker sheet these mirror — a dashed
+    variant was written here once and nothing ever produced one.
     """
 
     __tablename__ = "series"
