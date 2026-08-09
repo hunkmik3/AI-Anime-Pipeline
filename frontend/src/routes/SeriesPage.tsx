@@ -282,7 +282,7 @@ export function SeriesPage() {
                 .map((sc) => (
                   <li key={sc.id}>
                     <Link
-                      to={`/projects/${projectId}/episodes/${sc.id}`}
+                      to={`/projects/${projectId}/scenes/${sc.id}`}
                       className="sp__ep"
                     >
                       <span className="sp__ep-code">{sc.code || sc.name}</span>

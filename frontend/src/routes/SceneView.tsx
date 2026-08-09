@@ -703,7 +703,7 @@ function EpisodeCard({
           This is the way to everything *about* the episode — assignee, quota,
           delivery, spend, history — which is a different task, done less often. */}
       <Link
-        to={`/projects/${projectId}/episodes/${scene.id}`}
+        to={`/projects/${projectId}/scenes/${scene.id}`}
         className="scene-card__details"
         title="Assignee, quota, delivery, spend and history"
       >

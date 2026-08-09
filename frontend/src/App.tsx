@@ -27,7 +27,6 @@ import { MyWorkPage } from "./routes/MyWorkPage";
 import { ReviewQueuePage } from "./routes/ReviewQueuePage";
 import { LoginPage } from "./routes/LoginPage";
 import { AdminPage } from "./routes/AdminPage";
-import { EpisodePage } from "./routes/EpisodePage";
 import { SeriesPage } from "./routes/SeriesPage";
 import { FlowApp } from "./flow/FlowApp";
 import { PanelProjectsPage } from "./flow/PanelProjectsPage";
@@ -137,9 +136,16 @@ export function App() {
             path="/projects/:projectId/series/:seriesId"
             element={<SeriesPage />}
           />
+          {/* The per-episode detail page is gone: everything it managed —
+              assignee, delivery state, the crew columns — is edited in the
+              admin console, in a table, which is the shape that job actually
+              has. Clicking an episode goes where the work is.
+
+              The URL stays as a redirect rather than 404ing: it is in people's
+              history and in chat logs, the same reason /my-work still resolves. */}
           <Route
             path="/projects/:projectId/episodes/:sceneId"
-            element={<EpisodePage />}
+            element={<EpisodeToCanvas />}
           />
           {/* Phase 8.3: multi-shot canvas, nested under its project. */}
           <Route
@@ -172,6 +178,12 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
  * colleague) goes to their projects rather than being shown an error.
  */
 /** An old /manage/:projectId link resolves to that project's page. */
+/** An old episode link lands on that episode's canvas. */
+function EpisodeToCanvas() {
+  const { projectId, sceneId } = useParams();
+  return <Navigate to={`/projects/${projectId}/scenes/${sceneId}`} replace />;
+}
+
 function ManageRedirect() {
   const { projectId } = useParams();
   return <Navigate to={projectId ? `/projects/${projectId}` : "/projects"} replace />;

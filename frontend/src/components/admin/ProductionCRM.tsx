@@ -7,7 +7,10 @@ import {
   getCrewNames,
   listProjects,
   listSeries,
+  deleteScene,
+  listAssignableUsers,
   listSeriesEpisodes,
+  setEpisodeAssignee,
   patchScene,
   patchSeries,
   type SceneDTO,
@@ -169,6 +172,15 @@ function EpisodeTable({
 }) {
   const [rows, setRows] = useState<SceneDTO[] | null>(null);
   const [adding, setAdding] = useState(false);
+  // Everyone who may hold work on this project. Asked once per table rather
+  // than per row — the list is the same for every episode in it.
+  const [people, setPeople] = useState<{ user_id: string; name: string }[]>([]);
+
+  useEffect(() => {
+    void listAssignableUsers(projectId)
+      .then(setPeople)
+      .catch(() => setPeople([]));
+  }, [projectId]);
 
   useEffect(() => {
     let alive = true;
@@ -272,6 +284,56 @@ function EpisodeTable({
     });
   }
 
+  async function removeEpisode(ep: SceneDTO) {
+    if (
+      // eslint-disable-next-line no-alert
+      !window.confirm(
+        `Xoá tập ${ep.code || ep.name}?\n\n` +
+          "Toàn bộ sequence và canvas bên trong sẽ mất theo. Không hoàn tác được.",
+      )
+    )
+      return;
+    try {
+      await deleteScene(ep.id);
+      setRows(await listSeriesEpisodes(seriesId));
+    } catch {
+      toast("Xoá không được", "error");
+    }
+  }
+
+  /** Who owns this episode: the one account that may submit its cut.
+   *
+   *  A separate control from the crew names beside it on purpose — those are
+   *  the sheet's record of who did what, and they grant nothing. This one
+   *  decides access. */
+  function AssigneeSelect({ ep }: { ep: SceneDTO }) {
+    const cur = ep.assignee_user_id ?? "";
+    return (
+      <select
+        className="crm-input crm-input--crew"
+        value={cur}
+        onChange={async (e) => {
+          const uid = e.target.value || null;
+          setRows((c) =>
+            c ? c.map((r) => (r.id === ep.id ? { ...r, assignee_user_id: uid } : r)) : c,
+          );
+          try {
+            await setEpisodeAssignee(ep.id, uid);
+          } catch {
+            toast("Gán không được", "error");
+          }
+        }}
+      >
+        <option value="">— chưa giao —</option>
+        {people.map((u) => (
+          <option key={u.user_id} value={u.user_id}>
+            {u.name}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
   /** Crew cell = a dropdown of known names + the current value + "＋ New…". */
   function CrewSelect({ ep, role }: { ep: SceneDTO; role: string }) {
     const cur = ep.production?.[role] == null ? "" : String(ep.production[role]);
@@ -349,12 +411,19 @@ function EpisodeTable({
           <tr>
             <th>Episode</th>
             <th>Status</th>
+            {/* The account that OWNS the episode — the only one who may hand
+                the cut in, and what decides who can see it at all. Distinct
+                from the four crew names beside it, which mirror the sheet and
+                grant nothing. It lived on a per-episode page that is going
+                away; without it here, nobody could assign work. */}
+            <th>Assignee</th>
             <th>Scriptwriter</th>
             <th>Concept</th>
             <th>AI creator</th>
             <th>Editor</th>
             <th>Deadline</th>
             <th>Done</th>
+            <th />
           </tr>
         </thead>
         <tbody>
@@ -378,6 +447,9 @@ function EpisodeTable({
                       </option>
                     ))}
                   </select>
+                </td>
+                <td>
+                  <AssigneeSelect ep={ep} />
                 </td>
                 {CREW_ROLES.map((role) => (
                   <td key={role}>
@@ -404,6 +476,15 @@ function EpisodeTable({
                         patch(ep, "complete_date", e.target.value);
                     }}
                   />
+                </td>
+                <td>
+                  <button
+                    className="crm-del"
+                    title="Xoá tập này"
+                    onClick={() => void removeEpisode(ep)}
+                  >
+                    ✕
+                  </button>
                 </td>
               </tr>
             );

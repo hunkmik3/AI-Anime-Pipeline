@@ -111,7 +111,7 @@ export function DeliveryCard({
           {ep ? (
             <Link
               className="inbox__name"
-              to={`/projects/${ep.project_id}/episodes/${ep.id}`}
+              to={`/projects/${ep.project_id}/scenes/${ep.id}`}
               title="Everything about this episode"
             >
               {ep.name}
