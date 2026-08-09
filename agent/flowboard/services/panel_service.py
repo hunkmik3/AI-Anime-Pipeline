@@ -138,6 +138,91 @@ def project_cover_media_id(session: Session, project_id: int) -> Optional[str]:
     return None
 
 
+#: Fixed prefix on every comic. The studio's own convention, and the reason it
+#: is in code rather than in people's fingers: six comics had been named by hand
+#: and four of them were missing it, which is the same drift the batch names were
+#: given a generator to stop.
+SERIES_PREFIX = "GCSA"
+
+#: ``GCSA_26001_MAGMEL`` — prefix, a five-digit slate number, then the title.
+_SERIES_NAME = re.compile(
+    rf"^{SERIES_PREFIX}_(\d{{5}})_(.+)$", re.I
+)
+
+
+def _series_year() -> str:
+    """The two digits the slate number opens with. 2026 → "26"."""
+    return f"{datetime.now(timezone.utc).year % 100:02d}"
+
+
+def next_series_number(session: Session, project_id: int) -> str:
+    """The next slate number, and it is never one that has been issued before.
+
+    Read from a high-water mark on the slate, not from the numbers currently in
+    use. Deriving it from what exists hands a deleted comic's number to the next
+    one — and that number is in exported folder names and in what people say to
+    each other, so two comics sharing it is two people certain they are
+    discussing the same thing.
+
+    The mark is bumped by `claim_series_number`, which is what actually issues
+    one; this only answers what is next.
+    """
+    project = get_project(session, project_id)
+    if project.last_series_seq:
+        return f"{project.last_series_seq + 1:05d}"
+    # Slates that predate the mark: carry on from what is there rather than
+    # restarting at 001 on top of an existing comic.
+    used = [
+        int(m.group(1))
+        for row in list_series(session, project_id)
+        if (m := _SERIES_NAME.match(row.name or ""))
+    ]
+    return f"{max(used) + 1:05d}" if used else f"{_series_year()}001"
+
+
+def claim_series_number(session: Session, project_id: int) -> str:
+    """Take the next number and record that it is gone."""
+    nxt = next_series_number(session, project_id)
+    project = get_project(session, project_id)
+    project.last_series_seq = int(nxt)
+    session.add(project)
+    session.flush()
+    return nxt
+
+
+def series_title_of(name: str) -> str:
+    """The part a person actually chose. Given a name already in the
+    convention, this is what they typed; given anything else, it is the whole
+    thing."""
+    m = _SERIES_NAME.match((name or "").strip())
+    return m.group(2) if m else (name or "").strip()
+
+
+def series_name(session: Session, project_id: int, title: str) -> str:
+    """Build the full name from a title.
+
+    A name already in the convention is kept as it is — re-saving a comic must
+    not renumber it, and typing its full name must not produce
+    ``GCSA_26009_GCSA_26001_MAGMEL``.
+    """
+    clean = (title or "").strip()
+    m = _SERIES_NAME.match(clean)
+    if m:
+        # A name brought in from outside still spends its number. Without this
+        # the mark stays where it was and the next generated comic is numbered
+        # BELOW one already on the slate — not a collision, but a numbering that
+        # runs backwards, which is worse to read than a gap.
+        project = get_project(session, project_id)
+        given = int(m.group(1))
+        if given > (project.last_series_seq or 0):
+            project.last_series_seq = given
+            session.add(project)
+            session.flush()
+        return clean
+    tail = _token(clean).upper()
+    return f"{SERIES_PREFIX}_{claim_series_number(session, project_id)}_{tail}"
+
+
 def create_series(
     session: Session,
     project_id: int,
@@ -149,6 +234,9 @@ def create_series(
     if not clean:
         raise PanelError("bad_input", "a series name is required")
     get_project(session, project_id)  # 404 rather than a dangling foreign key
+    # The caller types a TITLE; the number and prefix are the studio's, not
+    # theirs. Typing a full conventional name is recognised and left alone.
+    clean = series_name(session, project_id, clean)
     nxt = len(list_series(session, project_id))
     row = FlowSeries(
         project_id=project_id, name=clean, created_by=created_by, order_index=nxt

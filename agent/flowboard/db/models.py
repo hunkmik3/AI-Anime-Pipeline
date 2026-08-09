@@ -389,6 +389,12 @@ class FlowProject(SQLModel, table=True):
     __tablename__ = "flow_project"  # type: ignore[assignment]
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    #: Highest comic number ever issued on this slate — a high-water mark, not a
+    #: count. Reading the highest number IN USE would hand a deleted comic's
+    #: number to the next one, and that number is in exported folder names and
+    #: in what people say to each other; two comics sharing it is two people
+    #: certain they are discussing the same thing.
+    last_series_seq: Optional[int] = Field(default=None)
     name: str
     cover_media_id: Optional[str] = None
     order_index: int = Field(default=0, index=True)

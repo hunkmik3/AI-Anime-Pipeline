@@ -56,6 +56,16 @@ def slate(client):
     return out
 
 
+def _by_title(rows):
+    """Keyed on the title, not the full name.
+
+    Comic names carry a slate number the studio issues, so a test cannot know
+    the whole name in advance — and should not, since the number is exactly the
+    part it does not care about.
+    """
+    return {ps.series_title_of(r["name"]): r for r in rows}
+
+
 def _approve(panel_id, by):
     with get_session() as s:
         ps.add_generated(s, panel_id, [f"g-{panel_id}"])
@@ -94,7 +104,7 @@ def test_each_comic_counts_only_its_own_panels(client, slate):
     _approve(slate["panels_x"][1], slate["a"].id)
     _approve(slate["panels_y"][0], slate["b"].id)
 
-    rows = {r["name"]: r for r in fs.by_comic()}
+    rows = _by_title(fs.by_comic())
     assert rows["COMIC-X"]["panels"] == 5
     assert rows["COMIC-X"]["approved"] == 2
     assert rows["COMIC-Y"]["panels"] == 2
@@ -108,7 +118,7 @@ def test_a_comic_with_no_panels_still_appears(client, slate):
     with get_session() as s:
         proj = ps.list_projects(s)[0]
         ps.create_series(s, proj.id, "COMIC-EMPTY")
-    rows = {r["name"]: r for r in fs.by_comic()}
+    rows = _by_title(fs.by_comic())
     assert "COMIC-EMPTY" in rows
     assert rows["COMIC-EMPTY"]["panels"] == 0
     assert rows["COMIC-EMPTY"]["approved_pct"] == 0.0
@@ -182,7 +192,7 @@ def test_spend_follows_the_panel_a_run_was_for(client, slate):
     """
     _ran(slate["panels_x"][0], 1)
 
-    rows = {r["name"]: r for r in fs.by_comic()}
+    rows = _by_title(fs.by_comic())
     one = round(fq.SEEDREAM_USD_PER_IMAGE_1K, 4)
     assert rows["COMIC-X"]["spent_usd"] == one
     assert rows["COMIC-X"]["runs"] == 1
