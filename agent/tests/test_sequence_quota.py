@@ -232,3 +232,39 @@ def test_only_staff_can_unlock(client, seq):
         json={"extra": 5}, headers=_h(client, "sq_artist"),
     )
     assert r.status_code == 403
+
+
+# ── video only ──────────────────────────────────────────────────────────────
+
+
+def test_making_a_reference_image_is_not_a_take(client, seq):
+    """The ceiling is about video takes, and the five is calibrated to that.
+
+    `gen_image` and `edit_image` build and fix the references a take is made
+    FROM, and they carry a node exactly like a video does. Counting them would
+    make the artist ration the preparation that stops them wasting takes, which
+    is backwards.
+    """
+    for kind in ("gen_image", "edit_image", "gen_storyboard", "retry_storyboard_shot"):
+        _ran(seq["node_id"], 3, kind=kind)
+    with get_session() as s:
+        assert sq.used(s, seq["shot_id"]) == 0
+    # …and generating is still allowed.
+    assert _gen(client, seq).status_code == 200
+
+
+def test_only_video_is_counted(client, seq):
+    _ran(seq["node_id"], 2, kind="gen_image")
+    _ran(seq["node_id"], 2, kind="gen_video")
+    with get_session() as s:
+        assert sq.used(s, seq["shot_id"]) == 2
+
+
+def test_panel_generation_is_capped_elsewhere_and_not_here(client, seq):
+    """`flow_gen_image` was on this list and should not have been: it is the
+    comic path, capped by its own daily image quota, and it carries no node —
+    so it never bit. A line that is harmless only because nothing reaches it is
+    one refactor from being wrong."""
+    _ran(seq["node_id"], 9, kind="flow_gen_image")
+    with get_session() as s:
+        assert sq.used(s, seq["shot_id"]) == 0

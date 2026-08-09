@@ -31,10 +31,23 @@ from flowboard.db.models import Node, Request, Scene, Series, Shot
 #: Attempts allowed on a sequence before a PM has to look at it.
 DEFAULT_LIMIT = 5
 
-#: Request types that are a "generation" in the sense a person means. `vision`
-#: analyses an image the artist already has — it produces nothing and charging
-#: an attempt for it would punish looking closely at your own work.
-_GEN_TYPES = ("gen_video", "flow_gen_image")
+#: VIDEO only. The ceiling is about video takes — the expensive, slow thing a
+#: sequence exists to produce — and the five is calibrated to that.
+#:
+#: Everything else the canvas queues carries a node too and is deliberately not
+#: counted:
+#:   gen_image, edit_image  — building and fixing the references a take is made
+#:                            FROM. Charging attempts for them would make the
+#:                            artist ration exactly the preparation that stops
+#:                            them wasting takes.
+#:   gen_storyboard, retry_storyboard_shot — planning, before there is a take.
+#:   vision                 — analysing an image they already have.
+#:
+#: `flow_gen_image` was in this list and should not have been: it is the comic
+#: panel path, capped separately by a daily image quota, and it carries no node
+#: at all — so it never actually bit. A line that is only harmless because
+#: nothing reaches it is one refactor away from being wrong.
+_GEN_TYPES = ("gen_video",)
 
 
 class SequenceLocked(Exception):
