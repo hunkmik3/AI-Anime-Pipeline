@@ -23,6 +23,7 @@ import {
 import { nodeTypes } from "./nodes";
 import { VariantEdge } from "./VariantEdge";
 import { useGenerationStore } from "../store/generation";
+import { confirmPanelDelete } from "./confirmPanelDelete";
 
 // Single edge type used for everything — VariantEdge renders the
 // default bezier line and additionally surfaces a `v{N}` chip when the
@@ -233,6 +234,14 @@ export function ShotCanvas() {
     [dropPopover, addNodeOfType, addEdgeFromConnection],
   );
 
+  // Same guard as the scene canvas, from the same place: a panel deleted here
+  // is just as gone, and two copies of the rule would drift.
+  const onBeforeDelete = useCallback(
+    async (deleted: { nodes: FlowNode[]; edges: unknown[] }) =>
+      confirmPanelDelete({ nodes: deleted.nodes }),
+    [],
+  );
+
   const onNodesDelete = useCallback(
     (deletedNodes: FlowNode[]) => {
       deletedNodes.forEach((n) => deleteNodeByRfId(n.id));
@@ -331,6 +340,7 @@ export function ShotCanvas() {
         onConnect={onConnect}
         onConnectStart={onConnectStart}
         onConnectEnd={onConnectEnd}
+        onBeforeDelete={onBeforeDelete}
         onNodesDelete={onNodesDelete}
         onEdgesDelete={onEdgesDelete}
         onEdgeClick={onEdgeClick}

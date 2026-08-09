@@ -26,6 +26,7 @@ import { useShotStore } from "../store/shot";
 import { useShotWorkflowStore, type FlowNode, type NodeType } from "../store/shotWorkflow";
 import { useReferencesStore } from "../store/references";
 import { toast } from "../store/toast";
+import { confirmPanelDelete } from "../canvas/confirmPanelDelete";
 
 const edgeTypes = { default: VariantEdge };
 
@@ -456,6 +457,15 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
     }
   }, [setNodesInStore]);
 
+  // Vetoes BEFORE the node leaves the screen. `onNodesDelete` runs after the
+  // fact, so a confirm there would mean putting a removed node back — and the
+  // one node worth asking about is the panel, which does not come back on its
+  // own if the answer was a mis-click.
+  const onBeforeDelete = useCallback(
+    async (deleted: { nodes: Node[] }) => confirmPanelDelete(deleted),
+    [],
+  );
+
   // Delete (Backspace/Delete) — persist per node/edge. Group frames are
   // deletable:false so the key never drops a shot (that's the ✕ button).
   const onNodesDelete = useCallback(
@@ -660,6 +670,7 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
           onNodeDoubleClick={onNodeDoubleClick}
           onNodeContextMenu={onNodeCtxMenu}
           onConnect={onConnect}
+          onBeforeDelete={onBeforeDelete}
           onNodesDelete={onNodesDelete}
           onEdgesDelete={onEdgesDelete}
           onEdgeClick={onEdgeClick}
