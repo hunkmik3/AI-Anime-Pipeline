@@ -104,13 +104,26 @@ def state(session: Session, shot: Shot) -> dict:
     }
 
 
-def check(session: Session, node_id: Optional[int]) -> None:
-    """Refuse a generation on a sequence that has used its attempts.
+def counts(request_type: Optional[str]) -> bool:
+    """Whether this kind of run spends an attempt."""
+    return request_type in _GEN_TYPES
+
+
+def check(session: Session, node_id: Optional[int], request_type: Optional[str] = None) -> None:
+    """Refuse a VIDEO take on a sequence that has used its attempts.
+
+    Filtered by type here and not only where the tally is counted. Without it,
+    a locked sequence refused everything with a node on it — including
+    `gen_image` and `edit_image`, which build the references a take is made
+    from. That left the artist unable to do the one thing that would fix the
+    take, on exactly the sequence where five of them had already failed. Caught
+    by running all four paths against a locked sequence rather than reasoning
+    about which one reaches this.
 
     Checked before the request row exists, so a refusal costs nothing and does
     not itself count against the limit on the retry.
     """
-    if node_id is None:
+    if node_id is None or not counts(request_type):
         return
     node = session.get(Node, node_id)
     if node is None:

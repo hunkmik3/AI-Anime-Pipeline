@@ -268,3 +268,24 @@ def test_panel_generation_is_capped_elsewhere_and_not_here(client, seq):
     _ran(seq["node_id"], 9, kind="flow_gen_image")
     with get_session() as s:
         assert sq.used(s, seq["shot_id"]) == 0
+
+
+def test_a_locked_sequence_still_lets_you_build_references(client, seq):
+    """The bug this file did not catch until all four paths were run for real.
+
+    The type filter was on the TALLY only, so a locked sequence refused
+    everything carrying a node — including `gen_image` and `edit_image`, which
+    build the references a take is made from. That left the artist unable to do
+    the one thing that would fix the take, on exactly the sequence where five of
+    them had already failed.
+    """
+    _ran(seq["node_id"], 5)
+    assert _gen(client, seq).status_code == 423          # video: refused
+
+    for kind in ("gen_image", "edit_image", "gen_storyboard"):
+        r = client.post(
+            "/api/requests",
+            json={"node_id": seq["node_id"], "type": kind, "params": {}},
+            headers=seq["h"],
+        )
+        assert r.status_code != 423, f"{kind} was blocked by the take ceiling"

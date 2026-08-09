@@ -38,7 +38,7 @@ def create_request(body: RequestCreate, user=Depends(get_optional_user)):
             # the wrong person. The lock is also the cheaper question: one
             # query, and nothing reserved.
             try:
-                sequence_quota.check(s, body.node_id)
+                sequence_quota.check(s, body.node_id, body.type)
             except sequence_quota.SequenceLocked as exc:
                 raise HTTPException(
                     423,
