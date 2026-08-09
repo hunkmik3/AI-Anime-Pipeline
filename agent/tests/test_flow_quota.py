@@ -214,7 +214,9 @@ def test_spend_reaches_the_admin_rollup(client, panel):
     from flowboard.services import flow_stats as fs
 
     _spend(2, provider="avis", panel_id=panel["id"])
-    rows = {r["name"]: r for r in fs.by_comic()}
+    # Keyed on the title: the slate number in the full name is issued by the
+    # studio and is exactly the part this test does not care about.
+    rows = {ps.series_title_of(r["name"]): r for r in fs.by_comic()}
     assert rows["COMIC"]["runs"] == 2
     assert rows["COMIC"]["spent_usd"] == round(2 * q.SEEDREAM_USD_PER_IMAGE_1K, 4)
 

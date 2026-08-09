@@ -347,6 +347,10 @@ def test_the_breadcrumb_drops_the_stem_the_server_itself_generated(client):
     # The chapter already holds two batches, so this one is batch03 — read the
     # tail off the name rather than assuming the number.
     tail = full_name.rsplit("_", 1)[-1]
-    assert full_name == f"Slate_Comic_Ch-1_{tail}", full_name
-    assert row["where"] == f"Comic · Ch 1 · {tail}", row["where"]
+    # The comic's own name is built by the studio's convention now, so the test
+    # reads it rather than assuming what the fixture typed.
+    with get_session() as s:
+        comic_name = ps.get_series(s, t["series_id"]).name
+    assert full_name == f"Slate_{comic_name.replace('_', '-')}_Ch-1_{tail}", full_name
+    assert row["where"] == f"{comic_name} · Ch 1 · {tail}", row["where"]
     assert full_name not in row["where"], "the whole generated stem came through"
