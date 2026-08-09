@@ -21,6 +21,7 @@ import { SpendByPerson, SpendOverTime } from "../components/admin/SpendOverTime"
 import { TrackerTab } from "../components/admin/TrackerTab";
 import { ProductionCRM } from "../components/admin/ProductionCRM";
 import { UserRolesDrawer } from "../components/admin/UserRolesDrawer";
+import { ComicsTab } from "../components/admin/ComicsTab";
 
 interface AdminUser {
   id: string;
@@ -180,6 +181,7 @@ type AdminTab =
   | "spend"
   | "projects"
   | "production"
+  | "comics"
   | "audit";
 
 /** The views inside Spend & delivery — four former nav items, which were four
@@ -192,6 +194,7 @@ const ALL_TABS: readonly AdminTab[] = [
   "spend",
   "projects",
   "production",
+  "comics",
   "audit",
 ];
 
@@ -466,6 +469,10 @@ export function AdminPage() {
       items: [
         ["projects", "Projects", "projects"],
         ["production", "Series & episodes", "projects"],
+        // The comic side. Sits under Production and not under Money because
+        // the question it answers first is "how far along", and its cost is
+        // half quota anyway.
+        ["comics", "Comics & panels", "projects"],
       ],
     },
     {
@@ -860,6 +867,7 @@ export function AdminPage() {
       ) : null}
       {tab === "projects" ? <ProjectsTab /> : null}
       {tab === "production" ? <ProductionCRM /> : null}
+      {tab === "comics" ? <ComicsTab /> : null}
       {tab === "audit" ? <AuditTab fmtTime={fmtTime} /> : null}
         </main>
 

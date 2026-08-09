@@ -11410,3 +11410,75 @@ button:disabled {
   .roles__row { flex-wrap: wrap; }
   .roles__name { flex: 1 0 100%; }
 }
+
+/* ── Admin › Comics & panels ──────────────────────────────────────────────
+   The comic side, in the console that could not see it. Two kinds of "how much
+   is left" sit next to each other here — a daily image cap and a dollar figure
+   — and they are deliberately not added together: an Atrium image spends the
+   cap and costs nothing, a Seedream image costs money and spends no cap. */
+.comics { display: flex; flex-direction: column; gap: 26px; }
+
+.comics__top {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 1px; background: #2a2a33; border: 1px solid #2a2a33; border-radius: 10px;
+  overflow: hidden;
+}
+.comics__stat { background: #17171e; padding: 14px 16px; display: flex; flex-direction: column; gap: 2px; }
+.comics__stat-l { font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase; color: #8b93a1; }
+.comics__stat b { font-size: 23px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.comics__stat b.is-good { color: #34d19b; }
+.comics__stat small { font-size: 11.5px; color: #8b93a1; }
+
+.comics__sec { display: flex; flex-direction: column; gap: 10px; }
+.comics__h {
+  margin: 0; font-size: 14px; font-weight: 700; letter-spacing: -.01em;
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.comics__hint { font-size: 12px; font-weight: 400; color: #8b93a1; }
+.comics__note { margin: 0; font-size: 12.5px; color: #9aa3b0; line-height: 1.55; max-width: 78ch; }
+.comics__note b { color: #e6e9ef; }
+
+/* Quota. Amber past 70%, red past 90 — the point is to see the wall coming,
+   not to learn about it on the refusal. */
+.comics__quota { display: flex; flex-direction: column; gap: 6px; }
+.comics__quota-bar {
+  height: 10px; border-radius: 999px; background: #1d1d25; overflow: hidden;
+  border: 1px solid #2a2a33;
+}
+.comics__quota-bar span { display: block; height: 100%; background: #34d19b; }
+.comics__quota-bar span.is-warm { background: #e5b45e; }
+.comics__quota-bar span.is-full { background: #f0808f; }
+.comics__quota-nums { font-size: 12.5px; color: #9aa3b0; font-variant-numeric: tabular-nums; }
+.comics__quota-nums b { color: #e6e9ef; font-size: 14px; }
+
+.comics__scroll { overflow-x: auto; border: 1px solid #2a2a33; border-radius: 10px; }
+.comics__table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.comics__table th, .comics__table td {
+  text-align: left; padding: 9px 13px; border-bottom: 1px solid #22222b;
+}
+.comics__table thead th {
+  font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
+  color: #8b93a1; background: #1a1a21; white-space: nowrap;
+}
+.comics__table tbody tr:last-child td { border-bottom: 0; }
+.comics__table tbody tr:hover { background: #1c1c24; }
+.comics__table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.comics__table .num small { color: #8b93a1; font-size: 11px; }
+.comics__table .num.is-warn { color: #e5b45e; font-weight: 700; }
+.comics__name { font-weight: 600; color: #e6e9ef; }
+.comics__barcell { width: 34%; min-width: 160px; }
+
+/* The whole five-state spread. 40 untouched with 5 approved and 40 in review
+   with 5 approved read identically as a percentage, and they are nothing alike
+   to a producer. */
+.comics__bar {
+  display: flex; height: 8px; width: 100%; border-radius: 999px;
+  overflow: hidden; background: #1d1d25;
+}
+.comics__bar.is-empty { opacity: .45; }
+.comics__bar i { display: block; height: 100%; }
+.comics__bar i.is-todo { background: #4a5365; }
+.comics__bar i.is-in_progress { background: #e5b45e; }
+.comics__bar i.is-submitted { background: #6ea8fe; }
+.comics__bar i.is-changes_requested { background: #f0808f; }
+.comics__bar i.is-approved { background: #34d19b; }
