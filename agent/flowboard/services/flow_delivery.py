@@ -44,13 +44,15 @@ from flowboard.db.models import (
     FlowBatch,
     FlowChapter,
     FlowPanel,
+    FlowProject,
     Node,
+    Project,
     Scene,
     Series,
     Shot,
 )
 from flowboard.services import panel_service as ps
-from flowboard.services import scene_service, shot_service
+from flowboard.services import project_service, scene_service, series_service, shot_service
 from flowboard.short_id import generate_unique_short_id
 
 
@@ -94,6 +96,73 @@ def link_series(session: Session, flow_series_id: int, studio_series_id: Optiona
     session.commit()
     session.refresh(comic)
     return comic
+
+
+def _studio_code(title: str) -> str:
+    """A short production code from a comic's title — "Magmel Of The Sea Blue" →
+    "MAGM".
+
+    The production side builds every episode and sequence code off this prefix, so
+    it has to be short, ASCII and stable. Diacritics are folded rather than
+    dropped: a Vietnamese title would otherwise lose the letters that make it
+    recognisable and come out as punctuation.
+    """
+    import unicodedata
+
+    # Đ/đ first: it is a letter in its own right, not D with a mark, so NFD leaves
+    # it alone and it survives into a code that is supposed to be ASCII. Vietnamese
+    # titles start with it often enough that this is not an edge case.
+    seed = (title or "").replace("Đ", "D").replace("đ", "d")
+    folded = unicodedata.normalize("NFD", seed)
+    ascii_only = "".join(c for c in folded if unicodedata.category(c) != "Mn")
+    letters = "".join(c for c in ascii_only if c.isalnum())
+    return letters[:4].upper()
+
+
+def ensure_counterpart(session: Session, comic) -> Series:
+    """Give a comic its Giant Studio counterpart and link the two.
+
+    Called when a comic is created, so the production side carries the same shape
+    without anyone wiring it up comic by comic. Everything below — chapters into
+    episodes, panels into sequences — already follows from the link; this only
+    makes the link exist.
+
+    Idempotent, and that matters more than it looks: it is called on every comic
+    creation and could be called again by a repair. It reuses the slate's
+    production project if there is one, and returns the comic's existing
+    production series untouched if it already has one — re-running must never
+    strand delivered work under a second series nobody is looking at.
+    """
+    if comic.studio_series_id is not None:
+        existing = session.get(Series, comic.studio_series_id)
+        if existing is not None:
+            return existing
+
+    slate = session.get(FlowProject, comic.project_id)
+    if slate is None:
+        raise DeliveryError("not_found", "that comic's slate does not exist")
+
+    project = (
+        session.get(Project, slate.studio_project_id)
+        if slate.studio_project_id
+        else None
+    )
+    if project is None:
+        project = project_service.create_project(session, name=slate.name)
+        slate.studio_project_id = project.id
+        session.add(slate)
+        session.commit()
+
+    # The comic's own title, so the two sides read as the same thing on both
+    # screens. The stored comic name carries the slate's convention
+    # (GCSA_26001_…) which belongs to the panel side; the production side has its
+    # own, applied to what hangs below.
+    title = ps.series_title_of(comic.name) or comic.name
+    series = series_service.create_series(
+        session, project.id, name=title, code=_studio_code(title)
+    )
+    link_series(session, comic.id, series.id)
+    return series
 
 
 def linked_series(session: Session, flow_series_id: int) -> Optional[Series]:

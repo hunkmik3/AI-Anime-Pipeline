@@ -603,3 +603,64 @@ def test_a_delivered_sequence_keeps_the_panel_code_not_a_positional_one(client):
     before = len(_shots(got["episode_id"]))
     _approve(client, w, w["panels"][ch][2])
     assert len(_shots(got["episode_id"])) == before
+
+
+# ── every comic gets its counterpart ────────────────────────────────────────
+
+
+def test_creating_a_comic_creates_and_links_its_production_series(client):
+    """Chosen over asking a PM to wire each one up: the two sides carry the same
+    shape from the moment a comic exists."""
+    slate = client.post("/api/flowstudio/projects", json={"name": "Slate"}).json()
+    comic = client.post(
+        "/api/flowstudio/series", json={"project_id": slate["id"], "name": "Sea Devils"}
+    ).json()
+    state = client.get(f"/api/flowstudio/series/{comic['id']}/delivery").json()
+    assert state["linked"] is True
+    assert state["studio_series_name"] == "SEA-DEVILS"
+
+
+def test_a_second_comic_on_the_slate_reuses_the_same_project(client):
+    """One slate is one production project. Creating a second would split a
+    studio's comics across two boards that mean the same thing."""
+    slate = client.post("/api/flowstudio/projects", json={"name": "Slate"}).json()
+    before = len(client.get("/api/projects").json())
+    for name in ("One", "Two"):
+        client.post(
+            "/api/flowstudio/series", json={"project_id": slate["id"], "name": name}
+        )
+    after = client.get("/api/projects").json()
+    assert len(after) == before + 1, "a second project was created for the same slate"
+
+
+def test_the_link_survives_a_repair_run(client):
+    """`ensure_counterpart` is idempotent. Re-running it must not strand delivered
+    work under a second series nobody is looking at."""
+    from flowboard.db import get_session
+    from flowboard.db.models import FlowSeries
+    from flowboard.services import flow_delivery as fd
+
+    slate = client.post("/api/flowstudio/projects", json={"name": "Slate"}).json()
+    comic = client.post(
+        "/api/flowstudio/series", json={"project_id": slate["id"], "name": "Once"}
+    ).json()
+    with get_session() as s:
+        row = s.get(FlowSeries, comic["id"])
+        first = fd.ensure_counterpart(s, row)
+        again = fd.ensure_counterpart(s, row)
+    assert first.id == again.id
+
+
+def test_a_vietnamese_title_keeps_its_letters(client):
+    """The pattern behind these names keeps ASCII only, and applied straight to
+    Vietnamese it ATE the letters rather than transliterating them: "Đường Về Nhà"
+    came out "NG-V-NH" — unreadable, and inherited by the production side as the
+    name of a series."""
+    slate = client.post("/api/flowstudio/projects", json={"name": "Slate"}).json()
+    comic = client.post(
+        "/api/flowstudio/series",
+        json={"project_id": slate["id"], "name": "Đường Về Nhà"},
+    ).json()
+    assert comic["name"].endswith("DUONG-VE-NHA")
+    state = client.get(f"/api/flowstudio/series/{comic['id']}/delivery").json()
+    assert state["studio_series_name"] == "DUONG-VE-NHA"

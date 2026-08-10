@@ -424,6 +424,15 @@ class FlowProject(SQLModel, table=True):
     last_series_seq: Optional[int] = Field(default=None)
     name: str
     cover_media_id: Optional[str] = None
+    #: The production project this slate hands over into. Every comic created here
+    #: gets its counterpart under it, so the two sides carry the same shape without
+    #: anyone wiring them up comic by comic.
+    #:
+    #: Stored rather than matched by name: names get edited, and a rename would
+    #: otherwise silently start a second project beside the first.
+    studio_project_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="project.id", index=True
+    )
     order_index: int = Field(default=0, index=True)
     created_at: datetime = Field(default_factory=_utcnow)
 

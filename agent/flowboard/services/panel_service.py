@@ -18,6 +18,7 @@ Three rules shape everything here:
 from __future__ import annotations
 
 import re
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -508,8 +509,18 @@ _NAME_TOKEN = re.compile(r"[^A-Za-z0-9]+")
 
 
 def _token(text: str) -> str:
-    """One path segment of a batch name: letters and digits, joined by dashes."""
-    return _NAME_TOKEN.sub("-", (text or "").strip()).strip("-") or "x"
+    """One path segment of a batch name: letters and digits, joined by dashes.
+
+    Accented letters are FOLDED to their base, not dropped. The pattern only
+    keeps ASCII — because these end up in exported folder names — and applied
+    directly to Vietnamese it ate the letters instead of transliterating them:
+    "Đường Về Nhà" came out "NG-V-NH", which nobody can read and which the
+    production side then inherited as the name of a series.
+    """
+    seed = (text or "").strip().replace("Đ", "D").replace("đ", "d")
+    folded = unicodedata.normalize("NFD", seed)
+    ascii_only = "".join(c for c in folded if unicodedata.category(c) != "Mn")
+    return _NAME_TOKEN.sub("-", ascii_only).strip("-") or "x"
 
 
 def batch_name_prefix(session: Session, chapter_id: int) -> str:

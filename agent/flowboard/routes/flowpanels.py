@@ -303,6 +303,17 @@ def create_series(body: SeriesBody, user=Depends(get_optional_user)):
             )
         except ps.PanelError as exc:
             raise _fail(exc)
+        # Every comic gets its production counterpart now, by decision: the two
+        # sides carry the same shape without a PM wiring them up comic by comic.
+        #
+        # Failing here must not undo the comic. It exists, it is what was asked
+        # for, and the counterpart can be made later from the delivery screen —
+        # refusing the creation because the second half of it did not land would
+        # lose real work over a routing detail.
+        try:
+            fd.ensure_counterpart(s, row)
+        except Exception:  # noqa: BLE001
+            logger.exception("could not create the studio counterpart for comic %s", row.id)
         return _series_dict(s, row)
 
 
