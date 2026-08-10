@@ -110,10 +110,20 @@ def test_kpi_counts_delivery_and_rework_per_person(client, delivered):
 
 
 def test_kpi_surfaces_unassigned_work_instead_of_dropping_it(client, delivered):
-    """A PM needs to see the gap, so episodes with no owner are their own row."""
+    """A PM needs to see the gap, so work nobody is on the hook for is its own row.
+
+    Nobody means NOBODY: an episode with no assignee inside a series somebody was
+    handed is not a gap — that person is carrying it, which is what handing over a
+    series means. So the gap has to be built out of a series nobody holds.
+    """
+    orphan_series = client.post(
+        f"/api/projects/{delivered['pid']}/series",
+        json={"name": "S9", "code": "S9"},
+        headers=delivered["ah"],
+    ).json()["id"]
     client.post(
         f"/api/projects/{delivered['pid']}/scenes",
-        json={"name": "EP99", "series_id": delivered["sid"]},
+        json={"name": "EP99", "series_id": orphan_series},
         headers=delivered["ah"],
     )
     people = client.get(
@@ -122,6 +132,25 @@ def test_kpi_surfaces_unassigned_work_instead_of_dropping_it(client, delivered):
     unassigned = [p for p in people if p["user_id"] is None]
     assert unassigned and unassigned[0]["assigned"] == 1
     assert people[-1]["user_id"] is None  # sorted last — it reads as a residue
+
+
+def test_an_episode_inside_a_handed_over_series_has_an_owner(client, delivered):
+    """The bug this replaced: "assigned" read only the episode's own column, so a
+    PM who handed over a twelve-episode series saw that person carrying zero and
+    twelve episodes sitting in the unassigned residue."""
+    client.post(
+        f"/api/projects/{delivered['pid']}/scenes",
+        json={"name": "EP98", "series_id": delivered["sid"]},
+        headers=delivered["ah"],
+    )
+    people = {
+        p["name"]: p
+        for p in client.get(
+            f"/api/kpi/projects/{delivered['pid']}", headers=delivered["ah"]
+        ).json()["people"]
+    }
+    assert people["emp"]["assigned"] == 3, "two seeded episodes plus the new one"
+    assert not [p for p in people.values() if p["user_id"] is None]
 
 
 def test_series_rollup_reports_completion(client, delivered):
@@ -296,3 +325,112 @@ def test_export_is_not_open_to_outsiders(client, delivered):
         f"/api/export/projects/{delivered['pid']}/episodes", headers=_h(client, "nosy")
     )
     assert r.status_code == 404
+
+
+# ── whose money was it ──────────────────────────────────────────────────────
+
+
+def _spend(session, *, node_id, user_id, usd):
+    """One settled generation, recorded the way the app records one: a request
+    carrying the real cost, and a usage record naming who ran it."""
+    from flowboard.db.models import Request, UsageRecord
+
+    req = Request(
+        node_id=node_id,
+        type="gen_video",
+        status="done",
+        params={"duration_seconds": 5, "resolution": "720p"},
+        result={"cost_usd": usd},
+    )
+    session.add(req)
+    session.commit()
+    session.refresh(req)
+    session.add(
+        UsageRecord(
+            user_id=user_id,
+            request_id=req.id,
+            kind="video",
+            estimated_usd=usd,
+            actual_usd=usd,
+            status="settled",
+        )
+    )
+    session.commit()
+    return req.id
+
+
+def _node_in(client, headers, scene_id):
+    shot = client.post(f"/api/scenes/{scene_id}/shots", json={}, headers=headers).json()
+    return client.post(
+        "/api/nodes",
+        json={"shot_id": shot["id"], "type": "video", "x": 0, "y": 0, "data": {}},
+        headers=headers,
+    ).json()["id"]
+
+
+def test_credits_follow_the_person_who_ran_the_generation(client, delivered):
+    """Not the person who owns the episode. They are different the moment an
+    episode is lent out to clear a backlog, and "who is burning budget" is the
+    question this column exists to answer — charging it to the owner answers a
+    different one without saying so.
+    """
+    from flowboard.db import get_session
+
+    helper = user_service.create_user("kpi_helper", "pw123456", display_name="Helper")
+    node = _node_in(client, delivered["ah"], delivered["eps"][0])
+    with get_session() as s:
+        _spend(s, node_id=node, user_id=helper.id, usd=7.5)
+
+    people = {
+        p["name"]: p
+        for p in client.get(
+            f"/api/kpi/projects/{delivered['pid']}", headers=delivered["ah"]
+        ).json()["people"]
+    }
+    assert people["Helper"]["credits_usd"] == 7.5
+    assert people["emp"]["credits_usd"] == 0.0, "the episode's owner did not spend it"
+
+
+def test_the_per_person_column_adds_up_to_the_project(client, delivered):
+    """A cost table that does not add up to itself is worse than no table."""
+    from flowboard.db import get_session
+
+    node = _node_in(client, delivered["ah"], delivered["eps"][0])
+    with get_session() as s:
+        _spend(s, node_id=node, user_id=delivered["emp"].id, usd=4.25)
+
+    out = client.get(
+        f"/api/kpi/projects/{delivered['pid']}", headers=delivered["ah"]
+    ).json()
+    per_person = round(sum(p["credits_usd"] for p in out["people"]), 4)
+    project = round(out["projects"][0]["budget"]["spent_usd"], 4) if out.get("projects") else None
+    assert per_person == 4.25
+    if project is not None:
+        assert per_person == project
+
+
+def test_spend_with_no_usage_record_is_shown_as_unattributed(client, delivered):
+    """Generations from before metering, or from the no-auth path, carry no
+    spender. Dropping them would make the per-person column quietly under-report
+    the project total; they land in the `None` row instead."""
+    from flowboard.db import get_session
+    from flowboard.db.models import Request
+
+    node = _node_in(client, delivered["ah"], delivered["eps"][0])
+    with get_session() as s:
+        s.add(
+            Request(
+                node_id=node,
+                type="gen_video",
+                status="done",
+                params={},
+                result={"cost_usd": 3.0},
+            )
+        )
+        s.commit()
+
+    people = client.get(
+        f"/api/kpi/projects/{delivered['pid']}", headers=delivered["ah"]
+    ).json()["people"]
+    orphan = [p for p in people if p["user_id"] is None]
+    assert orphan and orphan[0]["credits_usd"] == 3.0

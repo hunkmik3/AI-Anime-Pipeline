@@ -93,6 +93,65 @@ def _series_in_scope(
     return list(session.exec(q).all())
 
 
+def _credits_by_user(
+    session: Session, eps: list[Scene]
+) -> dict[Optional[uuid.UUID], float]:
+    """Settled spend inside these episodes, per the person who ran it.
+
+    From `UsageRecord`, which is the only place the spender is recorded — the
+    request itself carries no user. Anything the scope spent that has no usage
+    record behind it lands under ``None``: generations from before metering, or
+    from the no-auth path. Dropping that remainder would make the per-person
+    column quietly under-report the project total, and a cost table that does not
+    add up to itself is worse than no table.
+    """
+    from flowboard.db.models import Node, Request, Shot, UsageRecord
+
+    scene_ids = [e.id for e in eps]
+    if not scene_ids:
+        return {}
+    shot_ids = list(
+        session.exec(select(Shot.id).where(Shot.scene_id.in_(scene_ids))).all()  # type: ignore[attr-defined]
+    )
+    if not shot_ids:
+        return {}
+    node_ids = list(
+        session.exec(select(Node.id).where(Node.shot_id.in_(shot_ids))).all()  # type: ignore[attr-defined]
+    )
+    if not node_ids:
+        return {}
+
+    total = 0.0
+    req_ids: list[int] = []
+    for req in session.exec(
+        select(Request).where(Request.node_id.in_(node_ids))  # type: ignore[attr-defined]
+    ).all():
+        if req.id is not None:
+            req_ids.append(req.id)
+        cost = (req.result or {}).get("cost_usd")
+        if isinstance(cost, (int, float)):
+            total += float(cost)
+    if not req_ids:
+        return {}
+
+    out: dict[Optional[uuid.UUID], float] = {}
+    attributed = 0.0
+    for ur in session.exec(
+        select(UsageRecord).where(
+            UsageRecord.request_id.in_(req_ids),  # type: ignore[attr-defined]
+            UsageRecord.status == "settled",
+        )
+    ).all():
+        amount = float(ur.actual_usd or 0.0)
+        out[ur.user_id] = out.get(ur.user_id, 0.0) + amount
+        attributed += amount
+
+    remainder = round(total - attributed, 6)
+    if remainder > 0.005:
+        out[None] = out.get(None, 0.0) + remainder
+    return {k: round(v, 6) for k, v in out.items()}
+
+
 def _days(a: Optional[datetime], b: Optional[datetime]) -> Optional[float]:
     if a is None or b is None:
         return None
@@ -158,17 +217,37 @@ def people(
 
     # TWO units, on purpose, because the studio has two.
     #
-    # An episode is what somebody WORKS in — so "assigned" and the credits burned
-    # are counted per episode, against whoever is in there. A SERIES is what gets
-    # handed in and reviewed — so delivered, attempts, rejections, first-pass and
-    # review turnaround are counted once per series, against the person it was
-    # given to. Counting a series' attempts once per episode would report a
-    # three-episode series that was sent back once as three rejections.
+    # An episode is what somebody WORKS in — so "assigned" is counted per episode.
+    # A SERIES is what gets handed in and reviewed — so delivered, attempts,
+    # rejections, first-pass and review turnaround are counted once per series,
+    # against the person it was given to. Counting a series' attempts once per
+    # episode would report a three-episode series sent back once as three
+    # rejections.
+    #
+    # "Assigned" follows the same fallback the rest of the app uses: the episode's
+    # own assignee, else whoever the whole series was handed to. Reading only the
+    # episode column reported 0 episodes for the person carrying twelve of them,
+    # because handing over a series does not assign its episodes one by one.
+    series_by_id = {
+        sr.id: sr
+        for sr in _series_in_scope(session, eps, project_id=project_id, series_id=series_id)
+    }
     for ep in eps:
         uid = ep.assignee_user_id
+        if uid is None and ep.series_id:
+            sr = series_by_id.get(ep.series_id) or session.get(Series, ep.series_id)
+            uid = sr.assignee_user_id if sr else None
         row = rows.setdefault(uid, _blank(uid, _name_of(uid)))
         row["assigned"] += 1
-        row["credits_usd"] += scope_budget.spend_usd(session, "scene", ep.id)["spent_usd"]
+
+    # Credits go to WHOEVER RAN THE GENERATION, which is recorded on the usage
+    # record, not to whoever owns the episode it landed in. They are different
+    # people the moment an episode is lent out to clear a backlog, and "who is
+    # burning budget" is the question this column exists to answer — charging it
+    # to the owner answers a different one, quietly.
+    for uid, amount in _credits_by_user(session, eps).items():
+        row = rows.setdefault(uid, _blank(uid, _name_of(uid)))
+        row["credits_usd"] += amount
 
     series_rows = _series_in_scope(session, eps, project_id=project_id, series_id=series_id)
     subs = _submissions_by_series(session, [sr.id for sr in series_rows])
