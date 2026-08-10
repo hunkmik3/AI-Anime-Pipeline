@@ -23,7 +23,7 @@ SERIES_PROD_FIELDS: tuple[str, ...] = (
     "priority",            # High | Medium | Low
     "producer",            # PM/Producer who assigns the series to staff
     "assignee",            # the staff member producing the series
-    "sec_per_video",       # nominal seconds per sequence (5–15) → sets the cap
+    "sec_per_video",       # nominal seconds per clip — a pacing note, not a rule
     "start_date",
     "end_date",
     "folder_link",

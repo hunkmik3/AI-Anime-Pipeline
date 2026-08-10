@@ -583,21 +583,26 @@ function SeriesForm({
     }
   }
 
-  // Producer sets N episodes + duration + seconds-per-video. From that we derive
-  // the "standard" sequences per episode and the HARD CAP (standard + 2) that
-  // artists can build up to. Episodes are created EMPTY — artists fill them.
+  // Only ONE number here decides anything: planned episodes, which is how many
+  // empty Episodes get created on Save. Duration and seconds-per-video are
+  // planning notes — they multiply out to roughly how many clips an episode
+  // needs, and nothing refuses anything on their account. `secPerVideo` used to
+  // feed a hard per-episode sequence cap; that cap is gone (an artist splits a
+  // beat into two angles when the cut needs it, and the ceiling that costs money
+  // is takes per sequence), so this figure is a target and is labelled as one.
   const plannedEps = Math.max(0, parseInt(f.total_episodes_planned ?? "", 10) || 0);
   const epDuration = Math.max(0, parseInt(f.episode_duration_sec ?? "", 10) || 0);
-  const stdSeq =
+  const clipsPerEp =
     epDuration > 0 && secPerVideo > 0 ? Math.ceil(epDuration / secPerVideo) : 0;
-  const capSeq = stdSeq > 0 ? stdSeq + 2 : 0;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (busy || !name.trim() || !projectId) return;
     setBusy(true);
     try {
-      // Persist seconds-per-video so the backend can enforce the per-episode cap.
+      // Kept on the series as the producer's pacing note — how long one clip is
+      // meant to run. Nothing enforces it; it is here so the sheet says what the
+      // episode was planned as.
       const production = { ...f, sec_per_video: String(secPerVideo) };
       let seriesId: string;
       if (editing) {
@@ -611,16 +616,17 @@ function SeriesForm({
         });
         seriesId = created.id;
       }
-      // Create the planned number of EMPTY episodes (artists add the sequences,
-      // up to the cap). Idempotent — only missing episodes are added.
+      // Create the planned number of EMPTY episodes — artists add the sequences
+      // themselves, as many as the cut needs. Idempotent: only missing episodes
+      // are added, so re-saving tops up instead of duplicating.
       if (plannedEps > 0) {
         const r = await generateSeriesStructure(seriesId, {
           episodes: plannedEps,
           sequences_per_episode: 0,
         });
         toast(
-          `Saved. +${r.episodes_created} empty episode(s). Artists add up to ` +
-            `${capSeq || "∞"} sequences each.`,
+          `Saved. +${r.episodes_created} empty episode(s)` +
+            (clipsPerEp ? ` · target ~${clipsPerEp} clips each` : ""),
         );
       } else {
         toast(editing ? `Saved "${name.trim()}"` : `Created "${name.trim()}"`);
@@ -827,10 +833,12 @@ function SeriesForm({
             <h3>Episodes &amp; pacing</h3>
             <p className="crm-gen__hint">
               On <b>Save</b>, <b>{plannedEps || "N"}</b> empty Episodes are created
-              on the project home. Each sequence is one 5–{secPerVideo}s video, so
-              from the Duration each episode is capped at{" "}
-              <b>⌈{epDuration || "D"}÷{secPerVideo}⌉ + 2</b> sequences — artists fill
-              them up to that limit. Idempotent; existing episodes are kept.
+              on the project home — idempotent, so existing episodes are kept.
+              Artists add the sequences themselves, <b>as many as the cut needs</b>;
+              nothing here limits that. Duration ÷ seconds-per-video is only a
+              pacing note: <b>≈{clipsPerEp || "—"}</b> clips per episode, a target
+              to aim at. The one real ceiling is <b>5 video takes per sequence</b>,
+              and a PM lifts it from <i>Admin → Sequences</i>.
             </p>
             <div className="crm-form__grid crm-gen__row">
               <label className="crm-field">
@@ -847,8 +855,8 @@ function SeriesForm({
               <div className="crm-gen__calc">
                 {plannedEps > 0 ? (
                   <>
-                    → <b>{plannedEps}</b> empty episodes · cap{" "}
-                    <b>{capSeq || "∞"}</b> sequences/ep (standard <b>{stdSeq || "—"}</b> + 2)
+                    → <b>{plannedEps}</b> empty episodes · target ≈
+                    <b>{clipsPerEp || "—"}</b> clips/ep · <b>5</b> takes / sequence
                   </>
                 ) : (
                   <span className="crm-gen__muted">Set “Planned episodes” to build</span>

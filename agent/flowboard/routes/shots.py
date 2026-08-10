@@ -110,15 +110,14 @@ def create_shot(
             scene = scenes.get_scene(s, scene_id)
         except (ss.SceneNotFound, scenes.SceneNotFound, ps.ProjectNotFound):
             raise HTTPException(404, "scene not found")
-        # Phase 10: hard cap — an episode can hold at most (planned ± 2)
-        # sequences, derived from its series' duration + seconds-per-video.
-        cap = scenes.sequence_cap(s, scene)
-        if cap is not None and scenes.scene_shot_count(s, scene_id) >= cap:
-            raise HTTPException(
-                409,
-                f"this episode is at its sequence limit ({cap}) — set by the "
-                f"series' duration ÷ seconds-per-video, +2 tolerance",
-            )
+        # Adding a sequence is free. There used to be a ceiling here derived from
+        # the series' duration ÷ seconds-per-video, and it was the wrong place for
+        # one: how a shot gets covered is the artist's call — two angles of the
+        # same beat is one more sequence, not a budget overrun — and the number
+        # that actually costs money is takes, which is capped per sequence in
+        # `sequence_quota`. Refusing the empty container while the expensive thing
+        # inside it stays allowed only teaches people to reuse a sequence they
+        # should have split.
         shot = ss.create_shot(
             s,
             scene_id,

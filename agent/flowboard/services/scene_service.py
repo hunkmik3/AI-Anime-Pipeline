@@ -10,8 +10,6 @@ from sqlalchemy import func
 from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Session, select
 
-import math
-
 from flowboard.db.models import (
     AppSetting,
     Asset,
@@ -327,26 +325,13 @@ def scene_shot_count(session: Session, scene_id: uuid.UUID) -> int:
     return int(n or 0)
 
 
-def sequence_cap(session: Session, scene: Scene) -> Optional[int]:
-    """Hard ceiling on how many Sequences an Episode may hold, derived from its
-    Series' plan: standard = ceil(duration / sec_per_video), cap = standard + 2
-    (the '±2' tolerance the producer allows). ``None`` = no cap (the series has
-    no duration/sec-per-video configured), so creation stays unrestricted."""
-    if scene.series_id is None:
-        return None
-    series = session.get(Series, scene.series_id)
-    if series is None:
-        return None
-    prod = series.production or {}
-    try:
-        duration = int(prod.get("episode_duration_sec") or 0)
-        per_video = int(prod.get("sec_per_video") or 0)
-    except (TypeError, ValueError):
-        return None
-    if duration <= 0 or per_video <= 0:
-        return None
-    standard = math.ceil(duration / per_video)
-    return standard + 2
+# An episode used to carry a hard ceiling here — ceil(duration / sec_per_video)
+# + 2 — enforced when a sequence was created. It is gone on purpose. A sequence
+# is an empty container; deciding one beat needs two angles is the artist's job,
+# and the ceiling that costs money is on TAKES, per sequence, in
+# `sequence_quota`. The producer's duration and seconds-per-video are still
+# recorded on the series: they say how long the episode should run, which is
+# planning, not a rule anything refuses.
 
 
 # ── Reorder ───────────────────────────────────────────────────────────────
