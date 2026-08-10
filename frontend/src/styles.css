@@ -9213,6 +9213,27 @@ button:disabled {
 .notif__rel-body { padding: 0 12px; }
 .notif__changes { list-style: none; margin: 0; padding: 2px 2px 12px 20px; display: flex; flex-direction: column; gap: 9px; }
 .notif__changes li { position: relative; font-size: 0.8rem; line-height: 1.5; color: #b6c0ca; }
+
+/* A release note is a sentence, and it has to wrap.
+   Every box between the panel and the text is a flex container, and a flex item's
+   default `min-width: auto` refuses to shrink below its content — so one long
+   line pushed the whole column wider than the panel, and `overflow: hidden` on
+   the release card cut the sentence off mid-word. Nothing said "don't wrap"; the
+   text was never given a width small enough to wrap INTO.
+
+   Stated on the whole chain rather than the one box that showed the symptom:
+   whichever link is left at `auto` is the one that reintroduces it. */
+.notif__panel,
+.notif__list,
+.notif__rel,
+.notif__rel-body,
+.notif__changes,
+.notif__changes li,
+.notif__rel-head { min-width: 0; }
+.notif__changes li { overflow-wrap: anywhere; }
+/* The head is a row: the label may shrink, the date and chevron may not — a date
+   that wraps to two lines is worse than a title that ellipsises. */
+.notif__rel-label { min-width: 0; overflow-wrap: anywhere; }
 .notif__changes li::before { content: ""; position: absolute; left: -14px; top: 7px; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
 
 /* project gallery: per-clip download button (prominent, not sunken) */
