@@ -25,6 +25,8 @@ from flowboard.db.models import (
     ProjectMember,
     Request,
     Scene,
+    SceneCollaborator,
+    Series,
     Shot,
 )
 
@@ -44,16 +46,37 @@ def list_projects(
     session: Session, owner_user_id: Optional[uuid.UUID] = None
 ) -> list[Project]:
     # Multi-user: scope to the caller when given (None = all → single-user/admin).
-    # A scoped user sees a project they OWN or are a MEMBER of (assigned to).
+    # A scoped user sees a project they OWN, are a MEMBER of, or hold WORK in.
+    #
+    # The last one was missing and made assignment a dead end: an episode handed to
+    # somebody showed on their "My work" page while this page said "No projects
+    # assigned to you yet", and the episode 404'd when opened. The three work
+    # sources are the ones `permissions.visible_scope` narrows by, so a project
+    # listed here is one the caller can actually open — and it shows only the
+    # episodes that are theirs once inside.
     stmt = select(Project)
     if owner_user_id is not None:
         member_pids = select(ProjectMember.project_id).where(
             ProjectMember.user_id == owner_user_id
         )
+        assigned_pids = select(Scene.project_id).where(
+            Scene.assignee_user_id == owner_user_id
+        )
+        helper_pids = (
+            select(Scene.project_id)
+            .join(SceneCollaborator, SceneCollaborator.scene_id == Scene.id)  # type: ignore[arg-type]
+            .where(SceneCollaborator.user_id == owner_user_id)
+        )
+        produced_pids = select(Series.project_id).where(
+            Series.producer_user_id == owner_user_id
+        )
         stmt = stmt.where(
             or_(
                 Project.owner_user_id == owner_user_id,
                 Project.id.in_(member_pids),  # type: ignore[attr-defined]
+                Project.id.in_(assigned_pids),  # type: ignore[attr-defined]
+                Project.id.in_(helper_pids),  # type: ignore[attr-defined]
+                Project.id.in_(produced_pids),  # type: ignore[attr-defined]
             )
         )
     return list(session.exec(stmt.order_by(Project.created_at, Project.id)).all())

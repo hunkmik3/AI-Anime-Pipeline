@@ -49,11 +49,16 @@ def world(client):
     with get_session() as s:
         slate = pn.create_project(s, "Comics")
         comic = pn.create_series(s, slate.id, "26001_MAGMEL")
-        comic_id = comic.id
+        # Read the name back rather than repeating the literal: comic series are
+        # named to a convention now (`GCSA_<number>_<Title>`), built by
+        # `panel_service`, so what goes in is not what comes out. This file is
+        # about which roles a person holds, and hard-coding the name made it fail
+        # for a reason that has nothing to do with roles.
+        comic_id, comic_name = comic.id, comic.name
     return {
         "owner": owner, "mgr": _h(client, "ur_mgr"),
         "a": a, "b": b, "a_h": _h(client, "ur_a"),
-        "pid": pid, "comic_id": comic_id,
+        "pid": pid, "comic_id": comic_id, "comic_name": comic_name,
     }
 
 
@@ -79,7 +84,9 @@ def test_one_request_answers_what_this_person_holds_on_both_sides(client, world)
 
     got = _roles(client, w, w["a"])
     assert [(x["name"], x["role"]) for x in got["studio"]] == [("MoguTV", "producer")]
-    assert [(x["name"], x["role"]) for x in got["flow"]] == [("26001_MAGMEL", "producer")]
+    assert [(x["name"], x["role"]) for x in got["flow"]] == [
+        (w["comic_name"], "producer")
+    ]
     assert got["system_role"] == "user", "a project role is not a system role"
 
 

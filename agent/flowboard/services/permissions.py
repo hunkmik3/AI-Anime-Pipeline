@@ -133,7 +133,56 @@ def project_role(
             ProjectMember.user_id == user.id,
         )
     ).first()
-    return normalize_role(member.role) if member else None
+    if member:
+        return normalize_role(member.role)
+    # Being given work IS access to the project holding it.
+    #
+    # Without this an assignment was a dead end: a PM handed somebody an episode,
+    # it appeared on their "My work" page — that query reads the assignment
+    # directly and never asks this function — and opening it returned 404, as did
+    # the project it lives in and every sequence inside it. The person could see
+    # the name of the job and nothing else, and the sidebar told them "No projects
+    # assigned to you yet" while they were assigned one.
+    #
+    # ARTIST, deliberately, and not the role of whoever handed it over: the role
+    # is the FLOOR of what an assignment implies, and `visible_scope` then narrows
+    # them to their own episodes. Producing a series is on the list because the
+    # subtree is theirs by the same logic, and it does not upgrade anyone — a PM
+    # holding that field already has a membership row, which is checked first.
+    if _holds_work_in(session, user, project_id):
+        return ARTIST
+    return None
+
+
+def _holds_work_in(session: Session, user: User, project_id: uuid.UUID) -> bool:
+    """Whether this account has actual work in the project: an episode assigned to
+    them, an episode they were added to as a helper, or a series they produce.
+
+    The same three sources `visible_scope` narrows by — stated once here so an
+    assignment cannot grant visibility inside a project the caller may not open.
+    """
+    from flowboard.db.models import Scene, SceneCollaborator, Series
+
+    if session.exec(
+        select(Scene.id)
+        .where(Scene.project_id == project_id, Scene.assignee_user_id == user.id)
+        .limit(1)
+    ).first():
+        return True
+    if session.exec(
+        select(SceneCollaborator.scene_id)
+        .join(Scene, Scene.id == SceneCollaborator.scene_id)  # type: ignore[arg-type]
+        .where(Scene.project_id == project_id, SceneCollaborator.user_id == user.id)
+        .limit(1)
+    ).first():
+        return True
+    return bool(
+        session.exec(
+            select(Series.id)
+            .where(Series.project_id == project_id, Series.producer_user_id == user.id)
+            .limit(1)
+        ).first()
+    )
 
 
 def role_allows(role: Optional[str], capability: str) -> bool:
