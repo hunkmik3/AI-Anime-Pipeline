@@ -60,7 +60,7 @@ export function MyWorkPage() {
       <StudioNav />
       <PageHeader
         title="Work"
-        subtitle="Episodes assigned to you. Generate the sequences on the canvas, edit the cut in your editor, upload it to Drive, then hand in the link here."
+        subtitle="Series handed to you. Generate the sequences on the canvas, edit the cut in your editor, upload it to Drive, then hand in one link for the whole series."
       />
 
       {error ? <p className="inbox__err">{error}</p> : null}
@@ -149,6 +149,7 @@ function Item({
     <DeliveryCard
       series={ep}
       submission={latest}
+      history={ep.submissions ?? []}
       tone={tone}
       status={status}
       statusTone={statusTone}

@@ -293,3 +293,62 @@ def test_a_folder_link_says_so(client, world):
     assert r.status_code == 400
     detail = r.json()["detail"]
     assert "folder" in detail and "Copy link" in detail
+
+
+# ── the thread both sides read ──────────────────────────────────────────────
+
+
+def test_the_card_carries_every_attempt_not_just_the_last(client, world):
+    """Both inboxes show the whole back-and-forth.
+
+    Showing only the current attempt is how "sent back" arrives with no memory:
+    the artist cannot see the same note was given twice, and the reviewer deciding
+    on v3 cannot see what they asked for in v1. Both then rebuild the thread out of
+    Discord, which is the habit this app exists to end.
+    """
+    w_sid, eh = world["sid"], world["h"]["emp"]
+    v1 = client.post(
+        f"/api/series/{w_sid}/submissions",
+        json={"drive_url": DRIVE, "note": "first pass"},
+        headers=eh,
+    ).json()
+    client.post(
+        f"/api/submissions/{v1['id']}/reject",
+        json={"note": "lip sync off"},
+        headers=world["h"]["sp"],
+    )
+    client.post(
+        f"/api/series/{w_sid}/submissions",
+        json={"drive_url": DRIVE, "note": "fixed it"},
+        headers=eh,
+    )
+
+    mine = client.get("/api/my/series", headers=eh).json()["series"][0]
+    assert [a["version"] for a in mine["submissions"]] == [2, 1], "newest first"
+    assert mine["latest_submission"]["version"] == 2
+
+    old = mine["submissions"][1]
+    assert old["status"] == "rejected"
+    assert old["note"] == "first pass"
+    assert old["review_note"] == "lip sync off"
+    # Both timestamps, because the gap between them is what people look for.
+    assert old["submitted_at"] and old["reviewed_at"]
+
+
+def test_the_reviewer_sees_the_same_thread(client, world):
+    """The queue used to carry the open attempt alone, so the person deciding had
+    the least history of anyone."""
+    w_sid, eh = world["sid"], world["h"]["emp"]
+    v1 = client.post(
+        f"/api/series/{w_sid}/submissions", json={"drive_url": DRIVE}, headers=eh
+    ).json()
+    client.post(
+        f"/api/submissions/{v1['id']}/reject",
+        json={"note": "again please"},
+        headers=world["h"]["sp"],
+    )
+    client.post(f"/api/series/{w_sid}/submissions", json={"drive_url": DRIVE}, headers=eh)
+
+    item = client.get("/api/review/queue", headers=world["h"]["sp"]).json()["items"][0]
+    assert [a["version"] for a in item["series"]["submissions"]] == [2, 1]
+    assert item["series"]["submissions"][1]["review_note"] == "again please"

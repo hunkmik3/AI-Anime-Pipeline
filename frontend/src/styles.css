@@ -10858,6 +10858,102 @@ button:disabled {
 .inbox__note--back { background: rgba(255, 171, 0, 0.06); }
 .inbox__note--back b { color: var(--warn); }
 
+/* ── The delivery thread ───────────────────────────────────────────────────
+   Every attempt at the series, newest first. The card showed only the current
+   one, so "sent back" arrived with no memory: the artist could not see the same
+   note had been given twice, and the reviewer deciding on v3 could not see what
+   they asked for in v1. Both were rebuilding the thread out of Discord.
+
+   Each attempt is TWO rows — handed in, then answered — because the gap between
+   them is what people are looking for. A cut refused in an hour and one that sat
+   nine days are different problems, and only both timestamps say which.       */
+.dlv__thread { border-top: 1px solid var(--border); padding: 8px 14px 12px; }
+.dlv__histToggle {
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.dlv__histToggle:hover { color: var(--text); border-color: var(--accent); }
+
+.dlv__hist { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 12px; }
+.dlv__att {
+  padding-left: 12px;
+  /* The spine is the attempt; the dots below hang off it. Colour-coded so a
+     rejected round is findable by eye in a long thread. */
+  border-left: 2px solid var(--border);
+}
+.dlv__att.is-approved { border-left-color: var(--ok, #00a76f); }
+.dlv__att.is-rejected { border-left-color: var(--warn, #ffab00); }
+.dlv__att.is-submitted { border-left-color: var(--accent); }
+
+.dlv__attHead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.dlv__ver {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  color: var(--text);
+}
+.dlv__verdict {
+  font-size: 10.5px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.dlv__verdict--approved { color: var(--ok, #00a76f); }
+.dlv__verdict--rejected { color: var(--warn, #ffab00); }
+.dlv__verdict--submitted { color: var(--accent); }
+.dlv__file { margin-left: auto; font-size: 11.5px; color: var(--muted); }
+.dlv__file:hover { color: var(--accent); }
+
+.dlv__leg {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 5px;
+  font-size: 12px;
+}
+.dlv__legDot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #4a5361;
+  transform: translateY(-1px);
+}
+.dlv__legDot--in { background: var(--accent); }
+.dlv__legDot--approved { background: var(--ok, #00a76f); }
+.dlv__legDot--rejected { background: var(--warn, #ffab00); }
+/* Hollow while nobody has answered: an empty circle reads as "still open" at a
+   glance, which is the state the whole page is about. */
+.dlv__legDot--open { background: transparent; box-shadow: inset 0 0 0 1.5px #4a5361; }
+.dlv__legWho { color: var(--text); overflow-wrap: anywhere; }
+.dlv__legWhen { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+.dlv__legWhen em { font-style: normal; opacity: 0.75; }
+
+.dlv__said {
+  margin: 4px 0 0 18px;
+  padding: 6px 9px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  background: var(--bg);
+  border-radius: 6px;
+  /* People write these as short lists with line breaks ("fix the lip sync / the
+     grade is too cold"). Collapsing them into one paragraph runs the points
+     together, and a sent-back note is read to find out what to change. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.dlv__said--back { color: #ffc46b; background: rgba(255, 171, 0, 0.08); }
+.dlv__said--ok { color: #7ee0b8; background: rgba(0, 167, 111, 0.08); }
+
+@media (max-width: 720px) {
+  .dlv__leg { grid-template-columns: 10px minmax(0, 1fr); }
+  .dlv__legWhen { grid-column: 2; white-space: normal; }
+}
+
 .inbox__panel {
   border-top: 1px solid var(--border);
   background: var(--bg);

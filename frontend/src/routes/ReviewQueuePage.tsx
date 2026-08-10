@@ -84,6 +84,9 @@ export function ReviewQueuePage() {
             key={s.id}
             series={sr}
             submission={s}
+            /* The reviewer needs the thread most: deciding on v3 is really asking
+               what was asked for in v1 and whether it was done. */
+            history={sr?.submissions ?? []}
             tone="todo"
             status="awaiting your verdict"
             statusTone="warn"

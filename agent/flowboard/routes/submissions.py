@@ -104,7 +104,13 @@ def _deliverable_dict(series, session) -> dict:
     episode count comes along because "3 episodes" is how somebody recognises which
     series this is and how much is behind the one link.
     """
-    latest = subs.latest_submission(session, series.id)
+    # The WHOLE back-and-forth, newest first — not just the current attempt.
+    # Both inboxes need it: an artist reading "sent back" wants to see what was
+    # said the last two times, and a reviewer deciding on v3 is really asking what
+    # changed since v1. It costs nothing extra — the latest attempt was already a
+    # query for this same list.
+    history = subs.list_submissions(session, series.id)
+    latest = history[0] if history else None
     project = session.get(Project, series.project_id)
     episodes = list(
         session.exec(
@@ -130,6 +136,7 @@ def _deliverable_dict(series, session) -> dict:
             {"id": str(e.id), "code": e.code or "", "name": e.name} for e in episodes
         ],
         "latest_submission": _sub_dict(latest) if latest else None,
+        "submissions": [_sub_dict(r) for r in history],
     }
 
 

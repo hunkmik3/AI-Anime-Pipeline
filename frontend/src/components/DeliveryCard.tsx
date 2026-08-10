@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type { DeliverableSeriesDTO, SubmissionDTO } from "../api/client";
@@ -46,6 +46,116 @@ function ago(iso: string | null | undefined): string {
   return months === 1 ? "a month ago" : `${months} months ago`;
 }
 
+/**
+ * Every attempt at this series, newest first.
+ *
+ * The card used to show only the current attempt, so "sent back" arrived with no
+ * memory: an artist could not see that the same note had been given twice, and a
+ * reviewer deciding on v3 could not see what they had asked for in v1. Both sides
+ * were then reconstructing the thread from Discord, which is the habit this app
+ * exists to end.
+ *
+ * Each attempt is TWO events — handed in, then answered — because the gap between
+ * them is the thing people are actually looking for. A v2 that sat for nine days
+ * before anyone watched it is a different story from one refused in an hour, and
+ * only the two timestamps side by side tell you which.
+ */
+function Attempts({ rows }: { rows: SubmissionDTO[] }) {
+  return (
+    <ol className="dlv__hist">
+      {rows.map((s) => {
+        const answered = s.status === "approved" || s.status === "rejected";
+        return (
+          <li key={s.id} className={`dlv__att is-${s.status}`}>
+            <div className="dlv__attHead">
+              <b className="dlv__ver">v{s.version}</b>
+              <span className={`dlv__verdict dlv__verdict--${s.status}`}>
+                {s.status === "approved"
+                  ? "Approved"
+                  : s.status === "rejected"
+                    ? "Sent back"
+                    : "Waiting on review"}
+              </span>
+              {s.drive_url ? (
+                <a
+                  className="dlv__file"
+                  href={s.drive_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="The cut that was handed in for this attempt"
+                >
+                  the cut ↗
+                </a>
+              ) : null}
+            </div>
+
+            <div className="dlv__leg">
+              <span className="dlv__legDot dlv__legDot--in" />
+              <span className="dlv__legWho">
+                {s.submitted_by_name ?? "Handed in"}
+              </span>
+              <span className="dlv__legWhen">
+                {fmtWhen(s.submitted_at)}
+                {s.submitted_at ? <em> · {ago(s.submitted_at)}</em> : null}
+              </span>
+            </div>
+            {s.note ? <p className="dlv__said">“{s.note}”</p> : null}
+
+            <div className="dlv__leg">
+              <span
+                className={`dlv__legDot dlv__legDot--${answered ? s.status : "open"}`}
+              />
+              <span className="dlv__legWho">
+                {answered
+                  ? (s.reviewed_by_name ?? "Reviewer")
+                  : `waiting on ${s.approver_name ?? "a reviewer"}`}
+              </span>
+              <span className="dlv__legWhen">
+                {answered ? (
+                  <>
+                    {fmtWhen(s.reviewed_at)}
+                    {s.reviewed_at ? <em> · {ago(s.reviewed_at)}</em> : null}
+                  </>
+                ) : (
+                  /* The number that matters while nothing has happened: how long
+                     it has been sitting there. */
+                  <em>{s.submitted_at ? `${ago(s.submitted_at)}` : ""}</em>
+                )}
+              </span>
+            </div>
+            {s.review_note ? (
+              <p
+                className={`dlv__said${
+                  s.status === "rejected" ? " dlv__said--back" : " dlv__said--ok"
+                }`}
+              >
+                “{s.review_note}”
+              </p>
+            ) : null}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function Thread({ rows }: { rows: SubmissionDTO[] }) {
+  const [open, setOpen] = useState(rows.length > 1);
+  return (
+    <div className="dlv__thread">
+      <button
+        type="button"
+        className="dlv__histToggle"
+        onClick={() => setOpen((v) => !v)}
+      >
+        {open ? "▾" : "▸"} History ({rows.length}{" "}
+        {rows.length === 1 ? "attempt" : "attempts"})
+      </button>
+      {open ? <Attempts rows={rows} /> : null}
+    </div>
+  );
+}
+
 function Fact({
   label,
   value,
@@ -76,6 +186,7 @@ function Fact({
 export function DeliveryCard({
   series: sr,
   submission: s,
+  history = [],
   tone,
   status,
   statusTone,
@@ -84,6 +195,8 @@ export function DeliveryCard({
 }: {
   series: DeliverableSeriesDTO | null;
   submission: SubmissionDTO | null;
+  /** Every attempt, newest first — the thread under the facts. */
+  history?: SubmissionDTO[];
   tone: "todo" | "waiting" | "done";
   status: string;
   statusTone: "muted" | "warn" | "good" | "bad" | "info";
@@ -161,20 +274,11 @@ export function DeliveryCard({
         />
       </div>
 
-      {s?.note ? (
-        <p className="inbox__note">
-          <b>From {s.submitted_by_name ?? "the assignee"}:</b> “{s.note}”
-        </p>
-      ) : null}
-
-      {s?.review_note ? (
-        <p
-          className={`inbox__note${s.status === "rejected" ? " inbox__note--back" : ""}`}
-        >
-          <b>{s.status === "rejected" ? "Sent back" : s.reviewed_by_name ?? "Reviewer"}:</b>{" "}
-          “{s.review_note}”
-        </p>
-      ) : null}
+      {/* The whole thread, not just the last word. Open by default once there has
+          been more than one attempt — that is exactly when somebody needs to see
+          what was asked for last time — and foldable so a first hand-in does not
+          make a wall of one entry. */}
+      {history.length > 0 ? <Thread rows={history} /> : null}
 
       {children}
     </li>

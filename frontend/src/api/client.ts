@@ -1786,6 +1786,8 @@ export interface DeliverableSeriesDTO {
   episode_count: number;
   episodes: { id: string; code: string; name: string }[];
   latest_submission: SubmissionDTO | null;
+  /** Every attempt, newest first. The current one is `submissions[0]`. */
+  submissions: SubmissionDTO[];
 }
 
 /** Hand in the finished cut (a Google Drive link) for a series. */
