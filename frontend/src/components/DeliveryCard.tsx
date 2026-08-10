@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type { DeliverableSeriesDTO, SubmissionDTO } from "../api/client";
@@ -46,6 +46,57 @@ function ago(iso: string | null | undefined): string {
   return months === 1 ? "a month ago" : `${months} months ago`;
 }
 
+/** How long the reviewer took — or, if nobody has answered, how long it has sat. */
+function span(from: string | null | undefined, to: string | null | undefined): string {
+  if (!from) return "";
+  const a = new Date(from).getTime();
+  const b = to ? new Date(to).getTime() : Date.now();
+  if (Number.isNaN(a) || Number.isNaN(b) || b < a) return "";
+  const mins = Math.round((b - a) / 60_000);
+  if (mins < 1) return "under a minute";
+  if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"}`;
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return `${hours} hour${hours === 1 ? "" : "s"}`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"}`;
+}
+
+function Leg({
+  kind,
+  label,
+  who,
+  when,
+  meta,
+  note,
+  noteTone,
+}: {
+  kind: string;
+  label: string;
+  who: string;
+  when?: string | null;
+  meta?: string;
+  note?: string | null;
+  noteTone?: "back" | "ok";
+}) {
+  return (
+    <div className="dlv__leg">
+      <span className={`dlv__legDot dlv__legDot--${kind}`} />
+      <span className={`dlv__legLabel dlv__legLabel--${kind}`}>{label}</span>
+      <span className="dlv__legWho">{who}</span>
+      <span className="dlv__legWhen">
+        {when ? fmtWhen(when) : <em>—</em>}
+        {when ? <em> · {ago(when)}</em> : null}
+        {meta ? <em className="dlv__legMeta">{meta}</em> : null}
+      </span>
+      {note ? (
+        <p className={`dlv__said${noteTone ? ` dlv__said--${noteTone}` : ""}`}>
+          {note}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 /**
  * Every attempt at this series, newest first.
  *
@@ -65,6 +116,7 @@ function Attempts({ rows }: { rows: SubmissionDTO[] }) {
     <ol className="dlv__hist">
       {rows.map((s) => {
         const answered = s.status === "approved" || s.status === "rejected";
+        const took = span(s.submitted_at, s.reviewed_at);
         return (
           <li key={s.id} className={`dlv__att is-${s.status}`}>
             <div className="dlv__attHead">
@@ -82,56 +134,50 @@ function Attempts({ rows }: { rows: SubmissionDTO[] }) {
                   href={s.drive_url}
                   target="_blank"
                   rel="noreferrer"
-                  title="The cut that was handed in for this attempt"
+                  title="Open the cut that was handed in for this attempt"
                 >
                   the cut ↗
                 </a>
               ) : null}
             </div>
 
-            <div className="dlv__leg">
-              <span className="dlv__legDot dlv__legDot--in" />
-              <span className="dlv__legWho">
-                {s.submitted_by_name ?? "Handed in"}
-              </span>
-              <span className="dlv__legWhen">
-                {fmtWhen(s.submitted_at)}
-                {s.submitted_at ? <em> · {ago(s.submitted_at)}</em> : null}
-              </span>
-            </div>
-            {s.note ? <p className="dlv__said">“{s.note}”</p> : null}
+            <Leg
+              kind="in"
+              label="Handed in"
+              who={s.submitted_by_name ?? "—"}
+              when={s.submitted_at}
+              note={s.note}
+            />
 
-            <div className="dlv__leg">
-              <span
-                className={`dlv__legDot dlv__legDot--${answered ? s.status : "open"}`}
-              />
-              <span className="dlv__legWho">
-                {answered
-                  ? (s.reviewed_by_name ?? "Reviewer")
-                  : `waiting on ${s.approver_name ?? "a reviewer"}`}
-              </span>
-              <span className="dlv__legWhen">
-                {answered ? (
-                  <>
-                    {fmtWhen(s.reviewed_at)}
-                    {s.reviewed_at ? <em> · {ago(s.reviewed_at)}</em> : null}
-                  </>
-                ) : (
-                  /* The number that matters while nothing has happened: how long
-                     it has been sitting there. */
-                  <em>{s.submitted_at ? `${ago(s.submitted_at)}` : ""}</em>
-                )}
-              </span>
-            </div>
-            {s.review_note ? (
-              <p
-                className={`dlv__said${
-                  s.status === "rejected" ? " dlv__said--back" : " dlv__said--ok"
-                }`}
-              >
-                “{s.review_note}”
-              </p>
-            ) : null}
+            <Leg
+              kind={answered ? s.status : "open"}
+              label={
+                s.status === "approved"
+                  ? "Approved"
+                  : s.status === "rejected"
+                    ? "Sent back"
+                    : "Waiting"
+              }
+              who={
+                answered
+                  ? (s.reviewed_by_name ?? "—")
+                  : (s.approver_name ?? "a reviewer")
+              }
+              when={answered ? s.reviewed_at : null}
+              /* The turnaround is the whole reason both timestamps are here: a cut
+                 refused in an hour and one that sat nine days are different
+                 problems, and neither date alone says which. While nothing has
+                 been answered the same number is how long it has been waiting. */
+              meta={
+                answered
+                  ? took
+                    ? ` · took ${took}`
+                    : undefined
+                  : `waiting ${span(s.submitted_at, null)}`
+              }
+              note={s.review_note}
+              noteTone={s.status === "rejected" ? "back" : "ok"}
+            />
           </li>
         );
       })}
@@ -139,19 +185,18 @@ function Attempts({ rows }: { rows: SubmissionDTO[] }) {
   );
 }
 
+/**
+ * Always open. It was behind a fold, which put the one thing somebody opens this
+ * card for — what was said last time — one click further away than the status
+ * chip they already knew.
+ */
 function Thread({ rows }: { rows: SubmissionDTO[] }) {
-  const [open, setOpen] = useState(rows.length > 1);
   return (
     <div className="dlv__thread">
-      <button
-        type="button"
-        className="dlv__histToggle"
-        onClick={() => setOpen((v) => !v)}
-      >
-        {open ? "▾" : "▸"} History ({rows.length}{" "}
-        {rows.length === 1 ? "attempt" : "attempts"})
-      </button>
-      {open ? <Attempts rows={rows} /> : null}
+      <div className="dlv__threadHead">
+        History · {rows.length} {rows.length === 1 ? "attempt" : "attempts"}
+      </div>
+      <Attempts rows={rows} />
     </div>
   );
 }
@@ -274,10 +319,8 @@ export function DeliveryCard({
         />
       </div>
 
-      {/* The whole thread, not just the last word. Open by default once there has
-          been more than one attempt — that is exactly when somebody needs to see
-          what was asked for last time — and foldable so a first hand-in does not
-          make a wall of one entry. */}
+      {/* The whole thread, not just the last word — and never behind a fold: what
+          was said last time is the reason somebody opens this card at all. */}
       {history.length > 0 ? <Thread rows={history} /> : null}
 
       {children}
