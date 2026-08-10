@@ -50,38 +50,24 @@ def list_projects(
     #
     # The last one was missing and made assignment a dead end: an episode handed to
     # somebody showed on their "My work" page while this page said "No projects
-    # assigned to you yet", and the episode 404'd when opened. The three work
-    # sources are the ones `permissions.visible_scope` narrows by, so a project
-    # listed here is one the caller can actually open — and it shows only the
-    # episodes that are theirs once inside.
+    # assigned to you yet", and the episode 404'd when opened. It comes from
+    # `permissions.work_project_ids` rather than being spelled out again here —
+    # written twice, the two spellings had already drifted apart once.
+    from flowboard.services import permissions
+
     stmt = select(Project)
     if owner_user_id is not None:
         member_pids = select(ProjectMember.project_id).where(
             ProjectMember.user_id == owner_user_id
         )
-        assigned_pids = select(Scene.project_id).where(
-            Scene.assignee_user_id == owner_user_id
-        )
-        helper_pids = (
-            select(Scene.project_id)
-            .join(SceneCollaborator, SceneCollaborator.scene_id == Scene.id)  # type: ignore[arg-type]
-            .where(SceneCollaborator.user_id == owner_user_id)
-        )
-        produced_pids = select(Series.project_id).where(
-            or_(
-                Series.producer_user_id == owner_user_id,
-                Series.assignee_user_id == owner_user_id,
-            )
-        )
-        stmt = stmt.where(
-            or_(
-                Project.owner_user_id == owner_user_id,
-                Project.id.in_(member_pids),  # type: ignore[attr-defined]
-                Project.id.in_(assigned_pids),  # type: ignore[attr-defined]
-                Project.id.in_(helper_pids),  # type: ignore[attr-defined]
-                Project.id.in_(produced_pids),  # type: ignore[attr-defined]
-            )
-        )
+        work_pids = permissions.work_project_ids(session, owner_user_id)
+        clauses = [
+            Project.owner_user_id == owner_user_id,
+            Project.id.in_(member_pids),  # type: ignore[attr-defined]
+        ]
+        if work_pids:
+            clauses.append(Project.id.in_(work_pids))  # type: ignore[attr-defined]
+        stmt = stmt.where(or_(*clauses))
     return list(session.exec(stmt.order_by(Project.created_at, Project.id)).all())
 
 
@@ -102,11 +88,22 @@ def is_project_member(
 def user_can_access_project(
     session: Session, project: Project, user_id: uuid.UUID
 ) -> bool:
-    """A scoped (non-admin) caller may access a project they own or are a
-    member of. Admins/no-auth pass ``user_id=None`` and never reach here."""
-    return project.owner_user_id == user_id or is_project_member(
+    """A scoped (non-admin) caller may access a project they own, are a member of,
+    or hold work in. Admins/no-auth pass ``user_id=None`` and never reach here.
+
+    The third clause was missing and it showed on the artist's own screen: the
+    project LIST offered them a project (that query had been taught about
+    assignments) and reading that same project 404'd, so the page rendered the card
+    under a red "project not found". A rule expressed twice had drifted, which is
+    why `holds_work_in` is now the one place it lives.
+    """
+    from flowboard.services import permissions
+
+    if project.owner_user_id == user_id or is_project_member(
         session, project.id, user_id
-    )
+    ):
+        return True
+    return permissions.holds_work_in(session, user_id, project.id)
 
 
 def get_project_member_ids(

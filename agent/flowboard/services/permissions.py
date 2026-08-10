@@ -150,46 +150,50 @@ def project_role(
     # them to their own episodes. Producing a series is on the list because the
     # subtree is theirs by the same logic, and it does not upgrade anyone — a PM
     # holding that field already has a membership row, which is checked first.
-    if _holds_work_in(session, user, project_id):
+    if holds_work_in(session, user.id, project_id):
         return ARTIST
     return None
 
 
-def _holds_work_in(session: Session, user: User, project_id: uuid.UUID) -> bool:
-    """Whether this account has actual work in the project: an episode assigned to
-    them, an episode they were added to as a helper, or a series they produce.
+def work_project_ids(session: Session, user_id: uuid.UUID) -> set[uuid.UUID]:
+    """Projects this account holds actual work in.
 
-    The same three sources `visible_scope` narrows by — stated once here so an
-    assignment cannot grant visibility inside a project the caller may not open.
+    Four ways to hold some, and they are the same four `visible_scope` narrows by:
+    an episode assigned to them, an episode they were added to as a helper, a
+    series handed to them to build, a series they review. Stated once, here,
+    because it is asked in three shapes — "may I open this project", "which
+    projects do I have", "what may I see inside one" — and three copies of an
+    access rule drift into three different answers to the same question.
     """
     from flowboard.db.models import Scene, SceneCollaborator, Series
 
-    if session.exec(
-        select(Scene.id)
-        .where(Scene.project_id == project_id, Scene.assignee_user_id == user.id)
-        .limit(1)
-    ).first():
-        return True
-    if session.exec(
-        select(SceneCollaborator.scene_id)
-        .join(Scene, Scene.id == SceneCollaborator.scene_id)  # type: ignore[arg-type]
-        .where(Scene.project_id == project_id, SceneCollaborator.user_id == user.id)
-        .limit(1)
-    ).first():
-        return True
-    return bool(
+    ids: set[uuid.UUID] = set(
         session.exec(
-            select(Series.id)
-            .where(
-                Series.project_id == project_id,
-                or_(
-                    Series.producer_user_id == user.id,
-                    Series.assignee_user_id == user.id,
-                ),
-            )
-            .limit(1)
-        ).first()
+            select(Scene.project_id).where(Scene.assignee_user_id == user_id)
+        ).all()
     )
+    ids |= set(
+        session.exec(
+            select(Scene.project_id)
+            .join(SceneCollaborator, SceneCollaborator.scene_id == Scene.id)  # type: ignore[arg-type]
+            .where(SceneCollaborator.user_id == user_id)
+        ).all()
+    )
+    ids |= set(
+        session.exec(
+            select(Series.project_id).where(
+                or_(
+                    Series.producer_user_id == user_id,
+                    Series.assignee_user_id == user_id,
+                )
+            )
+        ).all()
+    )
+    return {i for i in ids if i is not None}
+
+
+def holds_work_in(session: Session, user_id: uuid.UUID, project_id: uuid.UUID) -> bool:
+    return project_id in work_project_ids(session, user_id)
 
 
 def role_allows(role: Optional[str], capability: str) -> bool:

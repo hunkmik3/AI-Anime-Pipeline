@@ -212,6 +212,43 @@ def test_the_role_is_scoped_so_the_scope_narrows_it(studio, client):
         assert scope["scene_ids"] == {uuid.UUID(studio["eps"][0])}
 
 
+def test_the_listed_project_can_also_be_read(studio, client):
+    """Two expressions of one rule, and they had drifted.
+
+    `list_projects` learned about assignments; `user_can_access_project` — the
+    chokepoint behind `GET /api/projects/{id}` and everything hanging off it — did
+    not. The artist's screen showed the project card sitting under a red "project
+    not found", which is what a rule written in two places looks like from outside.
+    """
+    _assign(client, studio, studio["eps"][0], studio["artist_id"])
+    listed = client.get("/api/projects", headers=studio["artist"]).json()
+    assert listed, "precondition: it is on the list"
+    for p in listed:
+        assert (
+            client.get(f"/api/projects/{p['id']}", headers=studio["artist"]).status_code
+            == 200
+        ), "listed but unreadable"
+
+
+def test_everything_hanging_off_the_project_opens_too(studio, client):
+    """The same chokepoint gates the bible and the picture pool, so a fix that only
+    touched the project row would leave the page half broken."""
+    _assign(client, studio, studio["eps"][0], studio["artist_id"])
+    pid = studio["project_id"]
+    for path in (f"/api/projects/{pid}/bible", f"/api/projects/{pid}/images"):
+        assert client.get(path, headers=studio["artist"]).status_code == 200, path
+
+
+def test_a_stranger_still_cannot_read_the_project(studio, client):
+    """The other half: widening the read must not make it public."""
+    pid = studio["project_id"]
+    assert client.get(f"/api/projects/{pid}", headers=studio["other"]).status_code == 404
+    assert (
+        client.get(f"/api/projects/{pid}/bible", headers=studio["other"]).status_code
+        == 404
+    )
+
+
 def test_a_project_with_no_scenes_at_all_is_not_granted(studio, client):
     """`Scene.project_id` is the join; an empty project must not fall through it."""
     empty = client.post(
