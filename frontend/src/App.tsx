@@ -248,18 +248,19 @@ function AdminShell() {
 /**
  * What layout the current route wants.
  *
- * Three shapes, decided in one place so no page has to arrange its own chrome:
- *   canvas   — full bleed: no top bar, keep the project tree to navigate out
+ * Two shapes now, decided in one place so no page has to arrange its own chrome:
  *   listing  — top bar, no tree: Work and Review have no hierarchy to walk, and
  *              the 384px project sidebar was just squeezing them
  *   default  — top bar + project tree
+ *
+ * The canvas used to be a third — full bleed, no top bar — for the height. It
+ * cost more than it bought: the canvas is the ONE page where money is spent, and
+ * it was the one page that did not show the balance, so an artist found out they
+ * were out of credit by being refused mid-generation. The bell, the way back to
+ * the other product and Sign out went with it.
  */
 function useLayoutMode(): { topBar: boolean; sidebar: boolean } {
   const { pathname } = useLocation();
-  const isCanvas =
-    /^\/projects\/[^/]+\/scenes\/[^/]+/.test(pathname) ||
-    pathname.startsWith("/shots/");
-  if (isCanvas) return { topBar: false, sidebar: true };
   // Work, Review and the Flow Studio all bring their own body layout — the
   // studio even has its own left rail — so the project tree would just be a
   // second column fighting for width. The bar stays: it is the way back out.
@@ -295,8 +296,10 @@ function AppLayout() {
     <div className="app">
       {topBar ? <TopBar /> : null}
       <div className="app-body">
-        {/* The bar carries the brand, so the sidebar only shows its own on the
-            canvas — the one route with no bar. */}
+        {/* The bar carries the brand on every route now, so the sidebar never
+            draws a second one. `showBrand` stays because the prop is the contract
+            — a layout that stops using the bar again should not have to remember
+            to turn this back on. */}
         {sidebar ? <ProjectSidebar showBrand={!topBar} /> : null}
         <main className="app-main">
           <Outlet />
