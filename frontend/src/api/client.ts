@@ -1220,8 +1220,16 @@ export interface SceneDTO {
   /** Phase 10: human code within the series — "EP007", "CH012". */
   code?: string;
   order_index: number;
-  /** Phase 10 CRM: Episode_Tracker production metadata bag. */
+  /** Phase 10 CRM: Episode_Tracker production metadata bag.
+   *
+   *  `production.status` is resolved server-side: a PM's stored answer if there is
+   *  one, otherwise read off the work in the episode. So it can say "Production"
+   *  with nothing stored — see `status_auto`. */
   production?: Record<string, string | number>;
+  /** True when `production.status` was worked out from the episode's work rather
+   *  than chosen by a person. Picking a value in the dropdown stores it and it
+   *  stops being derived. */
+  status_auto?: boolean;
   /** Phase 11: the employee who owns this episode — the only person who may
    *  submit it, so nothing can be delivered until this is set. */
   assignee_user_id?: string | null;

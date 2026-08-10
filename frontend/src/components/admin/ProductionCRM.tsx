@@ -274,7 +274,17 @@ function EpisodeTable({
       cur
         ? cur.map((r) =>
             r.id === ep.id
-              ? { ...r, production: { ...(r.production ?? {}), [key]: value } }
+              ? {
+                  ...r,
+                  production: { ...(r.production ?? {}), [key]: value },
+                  // Setting the status by hand is what stops it being derived. Not
+                  // clearing this locally would leave the row claiming "worked out
+                  // from the work" until the next reload, on the value the PM just
+                  // chose themselves.
+                  ...(key === "status" && value !== "NotStarted"
+                    ? { status_auto: false }
+                    : {}),
+                }
               : r,
           )
         : cur,
@@ -436,8 +446,20 @@ function EpisodeTable({
                   <b>{ep.code || ep.name}</b>
                 </td>
                 <td>
+                  {/* The value can be DERIVED: nobody updates a status field for
+                      work they are in the middle of, so a row no one has set is
+                      filled in from what has actually happened in the episode.
+                      Flagged with a dot rather than styled apart — it is still the
+                      real status, and picking a value here stores it and wins. */}
                   <select
-                    className={`crm-input crm-input--status ${statusClass(str("status") || "NotStarted")}`}
+                    className={`crm-input crm-input--status ${statusClass(str("status") || "NotStarted")}${
+                      ep.status_auto ? " is-auto" : ""
+                    }`}
+                    title={
+                      ep.status_auto
+                        ? "Tự suy ra từ công việc trong episode — chọn một giá trị để chốt bằng tay"
+                        : "Do người đặt"
+                    }
                     value={str("status") || "NotStarted"}
                     onChange={(e) => patch(ep, "status", e.target.value)}
                   >

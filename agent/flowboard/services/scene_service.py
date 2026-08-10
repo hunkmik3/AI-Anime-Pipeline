@@ -334,6 +334,105 @@ def scene_shot_count(session: Session, scene_id: uuid.UUID) -> int:
 # planning, not a rule anything refuses.
 
 
+# ── Pipeline status ────────────────────────────────────────────────────────
+# `production["status"]` is a dropdown a PM sets by hand, and it stayed on
+# NotStarted for episodes people were plainly working in — the sheet said nothing
+# had started while five takes had already run. Nobody updates a status field for
+# work they are in the middle of doing.
+#
+# So: a human's answer is kept, and the absence of one is filled in from the work.
+#
+#   Completed / Dropped / Script / Production, once stored → returned untouched.
+#     These are judgements. "Dropped" especially: an episode with work in it that
+#     somebody decided to abandon must not creep back to Production because a
+#     stray generation exists.
+#   NotStarted (or blank) → DERIVED, because it is not a judgement. It is what a
+#     row says before anyone has touched it, and once there is work in the episode
+#     it is simply false.
+#
+# Derived, not written on the event. A status advanced by whoever handled the
+# generation needs a write at every site that can start work — the canvas, the
+# comic handover, whatever gets added next — and the one that gets forgotten is
+# invisible, because a stale "NotStarted" looks exactly like a true one. Read from
+# the work and it is right by construction, and it goes back down on its own when
+# the work is deleted.
+
+#: What the derived value can be. Anything else in the column came from a person.
+DERIVED_STATUSES = ("NotStarted", "Script", "Production")
+
+
+def effective_status_map(
+    session: Session, scenes: "list[Scene]"
+) -> dict[uuid.UUID, str]:
+    """Pipeline status for several episodes at once.
+
+    Batched deliberately: the CRM asks for every episode of a series and the
+    per-status rollup asks for every episode of every series, so the per-scene
+    version of this would be three queries per row on the busiest page there is.
+    Four queries total, whatever the number of episodes.
+    """
+    out: dict[uuid.UUID, str] = {}
+    need: list[uuid.UUID] = []
+    for sc in scenes:
+        stored = ((sc.production or {}).get("status") or "").strip()
+        if stored and stored != "NotStarted":
+            out[sc.id] = stored          # somebody decided; leave it alone
+        else:
+            need.append(sc.id)
+    if not need:
+        return out
+
+    # Sequences: none at all means nothing has been broken down yet.
+    shot_rows = session.exec(
+        select(Shot.id, Shot.scene_id).where(Shot.scene_id.in_(need))  # type: ignore[attr-defined]
+    ).all()
+    scene_of_shot = {sid: scid for sid, scid in shot_rows}
+    for sid in need:
+        out[sid] = "NotStarted"
+    for scid in scene_of_shot.values():
+        out[scid] = "Script"
+    if not scene_of_shot:
+        return out
+
+    # A generation that ran is the unambiguous signal that a person worked here —
+    # it is an action somebody took and it cost money. Errors are excluded: a run
+    # that failed upstream should not promote the episode on its own.
+    node_rows = session.exec(
+        select(Node.id, Node.shot_id).where(
+            Node.shot_id.in_(list(scene_of_shot.keys()))  # type: ignore[attr-defined]
+        )
+    ).all()
+    if not node_rows:
+        return out
+    scene_of_node = {
+        nid: scene_of_shot[shid] for nid, shid in node_rows if shid in scene_of_shot
+    }
+    if not scene_of_node:
+        return out
+    ran = session.exec(
+        select(Request.node_id).where(
+            Request.node_id.in_(list(scene_of_node.keys())),  # type: ignore[attr-defined]
+            Request.status != "error",
+        )
+    ).all()
+    for nid in ran:
+        scid = scene_of_node.get(nid if not isinstance(nid, tuple) else nid[0])
+        if scid is not None:
+            out[scid] = "Production"
+    return out
+
+
+def effective_status(session: Session, scene: Scene) -> str:
+    return effective_status_map(session, [scene]).get(scene.id, "NotStarted")
+
+
+def status_is_derived(scene: Scene) -> bool:
+    """Whether the value shown was worked out rather than chosen — so the UI can
+    say so instead of looking like somebody set it."""
+    stored = ((scene.production or {}).get("status") or "").strip()
+    return not stored or stored == "NotStarted"
+
+
 # ── Reorder ───────────────────────────────────────────────────────────────
 
 

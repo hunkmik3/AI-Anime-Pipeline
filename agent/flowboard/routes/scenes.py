@@ -49,10 +49,17 @@ def _user_name(user_id) -> str | None:
     return (u.display_name or u.username) if u else None
 
 
-def _scene_dict(session, scene) -> dict:
+def _scene_dict(session, scene, status: str | None = None) -> dict:
     # Takes a session because the cover can be DERIVED (frame 0 of the first
     # sequence's first clip) rather than stored — see scene_service.
     cs = scene.canvas_state or {}
+    # Pipeline status: a PM's answer if there is one, otherwise worked out from the
+    # work in the episode. `status` is passed in by callers listing many episodes,
+    # which resolve them in one batch rather than three queries per row.
+    if status is None:
+        status = ss.effective_status(session, scene)
+    prod = dict(scene.production or {})
+    prod["status"] = status
     return {
         "id": str(scene.id),
         "project_id": str(scene.project_id),
@@ -60,7 +67,9 @@ def _scene_dict(session, scene) -> dict:
         "name": scene.name,
         "code": scene.code or "",
         "order_index": scene.order_index,
-        "production": dict(scene.production or {}),
+        "production": prod,
+        # So the UI can show that nobody chose this — it was read off the work.
+        "status_auto": ss.status_is_derived(scene),
         # Phase 11: who owns this episode (the only person who may submit it)
         # and where its deliverable stands. Exposed so the structure UI can
         # assign it — without this the whole submit flow has no entry point.
@@ -105,7 +114,8 @@ def list_scenes(
         scope = permissions.visible_scope(s, user, project_id)
         if scope is not None:
             scenes = [sc for sc in scenes if sc.id in scope["scene_ids"]]
-        return [_scene_dict(s, sc) for sc in scenes]
+        smap = ss.effective_status_map(s, scenes)
+        return [_scene_dict(s, sc, smap.get(sc.id)) for sc in scenes]
 
 
 @router.post("/api/projects/{project_id}/scenes")

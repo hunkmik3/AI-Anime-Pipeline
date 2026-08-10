@@ -371,10 +371,17 @@ def series_stats(session: Session, series_id: uuid.UUID) -> dict:
     """Live production stats for a series, computed from its episodes: episode
     count, a per-pipeline-status breakdown and a completion %. Powers the
     Production CRM overview so the numbers always match the episodes."""
-    scenes = session.exec(select(Scene).where(Scene.series_id == series_id)).all()
+    from flowboard.services import scene_service
+
+    scenes = list(session.exec(select(Scene).where(Scene.series_id == series_id)).all())
+    # The same status the episode table shows — a PM's answer where there is one,
+    # otherwise read off the work. Counting the raw column instead would report a
+    # series as 12 × NotStarted while its episodes each say Production, and the
+    # rollup is the number people quote.
+    effective = scene_service.effective_status_map(session, scenes)
     by_status: dict[str, int] = {}
     for sc in scenes:
-        st = ((sc.production or {}).get("status") or "").strip() or "NotStarted"
+        st = effective.get(sc.id) or "NotStarted"
         by_status[st] = by_status.get(st, 0) + 1
     total = len(scenes)
     done = by_status.get("Completed", 0)

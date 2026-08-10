@@ -9579,6 +9579,16 @@ button:disabled {
 .dash .crm-input--num { width: 70px; min-width: 60px; }
 .dash .crm-input--date { width: 140px; min-width: 130px; }
 .dash .crm-input--status { font-weight: 700; cursor: pointer; }
+/* Derived status — nobody chose this, it was read off the work in the episode.
+   A dot on the left edge, not a different colour: the status colour is what the
+   row is scanned for, and recolouring it would say the value is less real than a
+   hand-set one. Two classes so it beats the plain rule above whatever the bundle
+   order. */
+.dash .crm-input--status.is-auto,
+.crm-input--status.is-auto {
+  background-image: radial-gradient(circle at 6px 50%, currentColor 2px, transparent 2.5px);
+  padding-left: 15px;
+}
 /* ── New/Edit series form modal ── */
 .dash .crm-form,
 .crm-form {
