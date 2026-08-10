@@ -24,27 +24,40 @@ def _series(client, production=None):
     body = {"name": "S"}
     if production is not None:
         body["production"] = production
-    sid = client.post(f"/api/projects/{pid}/series", json=body).json()["id"]
+    sr = client.post(f"/api/projects/{pid}/series", json=body).json()
     ep = client.post(
-        f"/api/projects/{pid}/scenes", json={"name": "EP1", "series_id": sid}
+        f"/api/projects/{pid}/scenes", json={"name": "EP1", "series_id": sr["id"]}
     ).json()["id"]
-    return ep
+    return ep, sr
 
 
 def test_a_planned_duration_does_not_cap_sequences(client):
     """120s ÷ 10s = 12 videos planned. The 13th, 14th and 20th sequence are all
     still allowed: the duration says how long the episode should run, which is
     planning, not something the API refuses."""
-    ep = _series(client, {"episode_duration_sec": 120, "sec_per_video": 10})
+    ep, _ = _series(client, {"episode_duration_sec": 120, "sec_per_video": 10})
     for i in range(20):
         r = client.post(f"/api/scenes/{ep}/shots", json={})
         assert r.status_code == 200, f"sequence {i + 1} was refused: {r.text}"
 
 
+def test_sec_per_video_is_no_longer_a_field(client):
+    """The other half of the cap's inputs is gone from the API, not just the form.
+
+    Its only reader was the cap. Leaving the key writable would keep collecting a
+    number nothing consults — and put the ingredient for the ceiling back within
+    reach of whoever next reads the series schema. Sent here exactly as an old
+    client would send it, and dropped.
+    """
+    _, sr = _series(client, {"episode_duration_sec": 120, "sec_per_video": 10})
+    assert "sec_per_video" not in (sr.get("production") or {})
+    assert (sr.get("production") or {}).get("episode_duration_sec") == 120
+
+
 def test_no_plan_at_all_is_the_same(client):
     """Unplanned series behaved this way before and must not start differing —
     otherwise filling in a duration would quietly change what is allowed."""
-    ep = _series(client)
+    ep, _ = _series(client)
     for _ in range(30):
         assert client.post(f"/api/scenes/{ep}/shots", json={}).status_code == 200
 

@@ -23,7 +23,11 @@ SERIES_PROD_FIELDS: tuple[str, ...] = (
     "priority",            # High | Medium | Low
     "producer",            # PM/Producer who assigns the series to staff
     "assignee",            # the staff member producing the series
-    "sec_per_video",       # nominal seconds per clip — a pacing note, not a rule
+    # `sec_per_video` used to live here. Its only reader was a per-episode
+    # sequence cap; with the cap gone it was a number the form collected and
+    # nothing consulted, so the key is no longer accepted. Values already stored
+    # are left alone — `merge_production` starts from the existing bag — they
+    # simply cannot be written or edited any more.
     "start_date",
     "end_date",
     "folder_link",
@@ -37,7 +41,7 @@ SERIES_PROD_FIELDS: tuple[str, ...] = (
     "total_episodes_planned",
     "episode_duration_sec",
 )
-_SERIES_INT_FIELDS = {"total_episodes_planned", "episode_duration_sec", "sec_per_video"}
+_SERIES_INT_FIELDS = {"total_episodes_planned", "episode_duration_sec"}
 
 
 def clean_production(patch: dict, allowed: tuple[str, ...], int_fields: set) -> dict:

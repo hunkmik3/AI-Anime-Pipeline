@@ -56,7 +56,6 @@ const FIELD_GROUPS: readonly {
       { key: "end_date", label: "End", kind: "date" },
       { key: "total_episodes_planned", label: "Episodes planned", kind: "int" },
       { key: "episode_duration_sec", label: "Episode length (sec)", kind: "int" },
-      { key: "sec_per_video", label: "Seconds per sequence", kind: "int" },
     ],
   },
   {
