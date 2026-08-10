@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-import { listMyEpisodes, listReviewQueue } from "../api/client";
+import { listMySeries, listReviewQueue } from "../api/client";
 
 /**
  * How much work is waiting for the signed-in user, for the badges in the nav.
@@ -17,7 +17,7 @@ import { listMyEpisodes, listReviewQueue } from "../api/client";
  */
 
 export interface InboxState {
-  /** Episodes assigned to me that I still have to deliver (draft or sent back). */
+  /** Series handed to me that I still have to deliver (draft or sent back). */
   myWork: number;
   /** Submissions waiting on my verdict. */
   toReview: number;
@@ -34,14 +34,14 @@ export const useInboxStore = create<InboxState>((set) => ({
     // Each side is independent: a viewer with no review rights still gets their
     // own count, so one failing call must not blank the other badge.
     const [work, review] = await Promise.allSettled([
-      listMyEpisodes(),
+      listMySeries(),
       listReviewQueue(),
     ]);
 
     const patch: Partial<InboxState> = { loaded: true };
     if (work.status === "fulfilled") {
-      patch.myWork = work.value.episodes.filter((e) => {
-        const status = e.deliverable_status || "draft";
+      patch.myWork = work.value.series.filter((s) => {
+        const status = s.deliverable_status || "draft";
         // Approved and in-review need nothing from the assignee.
         return status === "draft" || status === "rejected";
       }).length;

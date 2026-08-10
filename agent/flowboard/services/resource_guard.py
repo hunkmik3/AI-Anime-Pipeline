@@ -216,15 +216,30 @@ def authorize_submission(
     submission_id: uuid.UUID,
     capability: str = "canvas.read",
 ) -> Submission:
-    """Gate a delivery record by the episode it belongs to.
+    """Gate a delivery record by the SERIES it belongs to.
 
-    Project membership alone is not enough: it let an artist assigned one episode
-    read a sibling episode's delivery history and stream its cut.
+    Project membership alone is not enough: it let anyone on the project read
+    another team's delivery history and stream its cut, which is the one thing this
+    route exists to control — the file stays Restricted on Drive and the app is the
+    only way in.
+
+    Old rows point at an episode instead; they are gated by that episode, so
+    history written under the previous rule keeps exactly the reach it had.
     """
     row = session.get(Submission, submission_id)
     if row is None:
         raise _deny("submission")
-    authorize_scene(session, user, row.scene_id, capability)
+    if row.series_id is not None:
+        series = session.get(Series, row.series_id)
+        if series is None:
+            raise _deny("submission")
+        permissions.require(session, user, series.project_id, capability)
+        if not permissions.can_see_series(session, user, series.project_id, series.id):
+            raise _deny("submission")
+    elif row.scene_id is not None:
+        authorize_scene(session, user, row.scene_id, capability)
+    else:
+        raise _deny("submission")
     return row
 
 

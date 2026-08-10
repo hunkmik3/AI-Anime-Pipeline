@@ -128,6 +128,10 @@ class Series(SQLModel, table=True):
     assignee_user_id: Optional[uuid.UUID] = Field(
         default=None, foreign_key="app_user.id", index=True
     )
+    # draft | submitted | approved | paid. The series is the unit that is handed
+    # in: one finished cut for the whole thing, reviewed once. A rejection returns
+    # it to `draft` and the Submission row keeps the reason.
+    deliverable_status: str = Field(default="draft", index=True)
     order_index: int = 0
     settings: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
     # Phase 10 CRM: production-tracking bag mirroring the Series_Master sheet
@@ -155,16 +159,16 @@ class Scene(SQLModel, table=True):
     # Human code within the series — "EP007", "CH012". Free-form, not unique.
     code: str = ""
     order_index: int = 0
-    # Phase 11 — deliverable ownership + lifecycle. An episode is the unit that
-    # gets submitted: the assignee generates its sequences in-app, edits the cut
-    # OUTSIDE the app, then submits a Drive link for review.
-    #   assignee_user_id   — the only person who may submit (besides admins)
-    #   deliverable_status — draft | submitted | approved | paid
-    #     A rejection returns the episode to `draft` (the Submission row keeps
-    #     the rejection + reason), matching the deliverable state machine.
+    # Who works in this episode. Narrower than the series assignee and beats it:
+    # that is how a series is split when one person is overloaded.
     assignee_user_id: Optional[uuid.UUID] = Field(
         default=None, foreign_key="app_user.id", index=True
     )
+    # Kept for history and no longer the truth. The unit that gets DELIVERED is
+    # the series — one cut handed in for the whole thing, reviewed once — so
+    # `Series.deliverable_status` is what the app reads and writes. An episode's
+    # delivery state is its series' state; reading it from here would report
+    # "draft" for episodes inside an approved series.
     deliverable_status: str = Field(default="draft", index=True)
     # Phase 10 CRM: per-episode production bag mirroring the Episode_Tracker
     # sheet (pipeline status + the four role assignees + duration/deadline…).
@@ -890,7 +894,7 @@ class Registration(SQLModel, table=True):
 
 
 class Submission(SQLModel, table=True):
-    """One attempt at delivering an Episode.
+    """One attempt at delivering a Series.
 
     The finished cut is edited outside the app, so what we store is the link to
     it (Google Drive) plus who submitted, who reviewed, and the verdict. Rows
@@ -898,15 +902,25 @@ class Submission(SQLModel, table=True):
     next attempt gets ``version + 1``, so the whole back-and-forth is auditable
     (and the reviewer can compare against the previous cut).
 
-    ``status``: submitted | approved | rejected. The parent Scene carries the
+    ``status``: submitted | approved | rejected. The parent Series carries the
     current lifecycle state (draft/submitted/approved/paid) — a rejection sends
-    the Scene back to ``draft`` while this row keeps the reason.
+    the Series back to ``draft`` while this row keeps the reason.
+
+    Delivery used to be per EPISODE. It is per series because that is how the
+    work is handed over: one person takes a series, and a PM reviews the finished
+    thing once rather than signing off twelve times. ``scene_id`` stays nullable
+    so rows written under the old rule keep pointing at what they described.
     """
 
     __tablename__ = "submission"  # type: ignore[assignment]
 
     id: uuid.UUID = Field(default_factory=_uuid_pk, primary_key=True)
-    scene_id: uuid.UUID = Field(foreign_key="scene.id", index=True)
+    series_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="series.id", index=True
+    )
+    scene_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="scene.id", index=True
+    )
     version: int = 1
     # The delivered cut. ``drive_url`` is what the employee pasted;
     # ``drive_file_id`` is parsed out of it so the UI can embed a player.

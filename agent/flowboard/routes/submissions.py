@@ -1,13 +1,18 @@
 """Phase 11 — deliverable submission + review REST surface.
 
-    POST   /api/scenes/{scene_id}/submissions   — employee submits a Drive link
-    GET    /api/scenes/{scene_id}/submissions   — that episode's full history
+    POST   /api/series/{series_id}/submissions  — employee hands in the finished cut
+    GET    /api/series/{series_id}/submissions  — that series' full history
     POST   /api/submissions/{id}/approve        — reviewer accepts
     POST   /api/submissions/{id}/reject         — reviewer sends back (+ reason)
-    GET    /api/my/episodes                     — "My work" (assignee's episodes)
+    GET    /api/my/series                       — "My work" (what they hand in)
     GET    /api/review/queue                    — "Awaiting review" inbox
-    PATCH  /api/scenes/{scene_id}/assignee      — PM assigns the episode owner
+    PATCH  /api/scenes/{scene_id}/assignee      — PM assigns one episode
+    PATCH  /api/series/{series_id}/assignee     — PM hands over a whole series
     PATCH  /api/series/{series_id}/producer     — PM sets the Series Producer
+
+The SERIES is the deliverable: one person takes it, hands in one finished cut, and
+a PM reviews it once. It used to be the episode, which meant a twelve-episode
+series was twelve hand-ins and twelve sign-offs of the same piece of work.
 
 Authorization lives in ``submission_service`` (assignee-only submit, no
 self-review, approver chain); this module maps its error vocab to HTTP.
@@ -66,7 +71,9 @@ def _name(user_id) -> Optional[str]:
 def _sub_dict(row) -> dict:
     return {
         "id": str(row.id),
-        "scene_id": str(row.scene_id),
+        "series_id": str(row.series_id) if row.series_id else None,
+        # Only ever set on rows written before the series became the deliverable.
+        "scene_id": str(row.scene_id) if row.scene_id else None,
         "version": row.version,
         "drive_url": row.drive_url,
         "drive_file_id": row.drive_file_id,
@@ -90,25 +97,38 @@ def _sub_dict(row) -> dict:
     }
 
 
-def _episode_dict(s, session) -> dict:
-    """Episode + its delivery state, for the My-work / inbox lists."""
-    latest = subs.latest_submission(session, s.id)
-    project = session.get(Project, s.project_id)
-    series = session.get(Series, s.series_id) if s.series_id else None
+def _deliverable_dict(series, session) -> dict:
+    """A series + its delivery state, for the My-work / review lists.
+
+    The series is what is handed in, so it is what these pages are rows of. The
+    episode count comes along because "3 episodes" is how somebody recognises which
+    series this is and how much is behind the one link.
+    """
+    latest = subs.latest_submission(session, series.id)
+    project = session.get(Project, series.project_id)
+    episodes = list(
+        session.exec(
+            select(Scene)
+            .where(Scene.series_id == series.id)
+            .order_by(Scene.order_index, Scene.created_at)
+        ).all()
+    )
     return {
-        "id": str(s.id),
-        "name": s.name,
-        "code": s.code or "",
-        "project_id": str(s.project_id),
+        "id": str(series.id),
+        "name": series.name,
+        "code": series.code or "",
+        "project_id": str(series.project_id),
         "project_name": project.name if project else None,
-        "series_id": str(s.series_id) if s.series_id else None,
-        "series_name": series.name if series else None,
-        # The code is how people say which series it is out loud; without it two
-        # series both holding an "Episode 9" are indistinguishable in the inboxes.
-        "series_code": (series.code or "") if series else None,
-        "assignee_user_id": str(s.assignee_user_id) if s.assignee_user_id else None,
-        "assignee_name": _name(s.assignee_user_id),
-        "deliverable_status": s.deliverable_status or "draft",
+        "assignee_user_id": (
+            str(series.assignee_user_id) if series.assignee_user_id else None
+        ),
+        "assignee_name": _name(series.assignee_user_id),
+        "producer_name": _name(series.producer_user_id),
+        "deliverable_status": series.deliverable_status or "draft",
+        "episode_count": len(episodes),
+        "episodes": [
+            {"id": str(e.id), "code": e.code or "", "name": e.name} for e in episodes
+        ],
         "latest_submission": _sub_dict(latest) if latest else None,
     }
 
@@ -121,31 +141,37 @@ class SubmitBody(BaseModel):
     note: Optional[str] = Field(default=None, max_length=2000)
 
 
-@router.post("/api/scenes/{scene_id}/submissions")
+@router.post("/api/series/{series_id}/submissions")
 def create_submission(
-    scene_id: uuid.UUID, body: SubmitBody, user=Depends(get_optional_user)
+    series_id: uuid.UUID, body: SubmitBody, user=Depends(get_optional_user)
 ):
+    """Hand in the finished cut for a SERIES — one link, reviewed once."""
     with get_session() as s:
         try:
             row = subs.submit(
-                s, scene_id, user=user, drive_url=body.drive_url, note=body.note
+                s, series_id, user=user, drive_url=body.drive_url, note=body.note
             )
         except subs.SubmissionError as exc:
             raise _fail(exc)
         return _sub_dict(row)
 
 
-@router.get("/api/scenes/{scene_id}/submissions")
-def list_scene_submissions(scene_id: uuid.UUID, user=Depends(get_optional_user)):
+@router.get("/api/series/{series_id}/submissions")
+def list_series_submissions(series_id: uuid.UUID, user=Depends(get_optional_user)):
     with get_session() as s:
-        # Project membership was not enough: it let an artist assigned one
-        # episode read a sibling's delivery history — drive links, submitter
-        # notes and rejection reasons — which is exactly what the episode
-        # visibility scope exists to prevent.
-        scene = resource_guard.authorize_scene(s, user, scene_id)
+        series = s.get(Series, series_id)
+        if series is None:
+            raise HTTPException(404, "series not found")
+        # Bare project membership is not enough: it would let anyone on the project
+        # read another team's delivery history — drive links, submitter notes,
+        # rejection reasons. `can_see_series` is the same scope that decides whether
+        # the series exists for this caller at all.
+        permissions.require(s, user, series.project_id, "canvas.read")
+        if not permissions.can_see_series(s, user, series.project_id, series_id):
+            raise HTTPException(404, "series not found")
         return {
-            "episode": _episode_dict(scene, s),
-            "submissions": [_sub_dict(r) for r in subs.list_submissions(s, scene_id)],
+            "series": _deliverable_dict(series, s),
+            "submissions": [_sub_dict(r) for r in subs.list_submissions(s, series_id)],
         }
 
 
@@ -229,14 +255,14 @@ def reject_submission(
 # ── Listings ──────────────────────────────────────────────────────────────
 
 
-@router.get("/api/my/episodes")
-def my_episodes(user=Depends(get_optional_user)):
-    """The signed-in employee's assigned episodes + their delivery state."""
+@router.get("/api/my/series")
+def my_series(user=Depends(get_optional_user)):
+    """The series this employee has to hand in, with their delivery state."""
     with get_session() as s:
         if user is None:
-            return {"episodes": []}
-        rows = subs.episodes_for_assignee(s, user.id)
-        return {"episodes": [_episode_dict(r, s) for r in rows]}
+            return {"series": []}
+        rows = subs.series_for_assignee(s, user.id)
+        return {"series": [_deliverable_dict(r, s) for r in rows]}
 
 
 @router.get("/api/review/queue")
@@ -246,11 +272,11 @@ def review_inbox(user=Depends(get_optional_user)):
         rows = subs.review_queue(s, user)
         out = []
         for r in rows:
-            scene = s.get(Scene, r.scene_id)
+            series = s.get(Series, r.series_id) if r.series_id else None
             out.append(
                 {
                     "submission": _sub_dict(r),
-                    "episode": _episode_dict(scene, s) if scene else None,
+                    "series": _deliverable_dict(series, s) if series else None,
                 }
             )
         return {"items": out}
@@ -295,7 +321,15 @@ def set_episode_assignee(
             target=body.user_id,
             ip=audit_service.client_ip(request),
         )
-        return _episode_dict(scene, s)
+        return {
+            "id": str(scene.id),
+            "code": scene.code or "",
+            "name": scene.name,
+            "assignee_user_id": (
+                str(scene.assignee_user_id) if scene.assignee_user_id else None
+            ),
+            "assignee_name": _name(scene.assignee_user_id),
+        }
 
 
 # ── helpers on an episode ───────────────────────────────────────────────────

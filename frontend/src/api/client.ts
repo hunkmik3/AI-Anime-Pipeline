@@ -1765,37 +1765,45 @@ export interface SubmissionDTO {
   review_note: string | null;
 }
 
-export interface DeliverableEpisodeDTO {
+/**
+ * A SERIES and where its delivery stands — the row of "My work" and "Review".
+ *
+ * The series is what gets handed in: one person takes it, hands in one finished
+ * cut, and a PM reviews it once. This used to be per episode, so a twelve-episode
+ * series was twelve identical cards each offering to deliver a twelfth of the job.
+ */
+export interface DeliverableSeriesDTO {
   id: string;
   name: string;
   code: string;
   project_id: string;
   project_name: string | null;
-  series_id: string | null;
-  series_name: string | null;
-  series_code: string | null;
   assignee_user_id: string | null;
   assignee_name: string | null;
+  producer_name: string | null;
   deliverable_status: DeliverableStatus | string;
+  /** How much is behind the one link — what somebody recognises the series by. */
+  episode_count: number;
+  episodes: { id: string; code: string; name: string }[];
   latest_submission: SubmissionDTO | null;
 }
 
-/** Submit the finished cut (a Google Drive link) for an episode. */
-export function submitEpisode(
-  sceneId: string,
+/** Hand in the finished cut (a Google Drive link) for a series. */
+export function submitSeries(
+  seriesId: string,
   input: { drive_url: string; note?: string },
 ): Promise<SubmissionDTO> {
-  return api<SubmissionDTO>(`/api/scenes/${sceneId}/submissions`, {
+  return api<SubmissionDTO>(`/api/series/${seriesId}/submissions`, {
     method: "POST",
     body: JSON.stringify(input),
   });
 }
 
-/** Full submission history for an episode (newest version first). */
-export function listEpisodeSubmissions(
-  sceneId: string,
-): Promise<{ episode: DeliverableEpisodeDTO; submissions: SubmissionDTO[] }> {
-  return api(`/api/scenes/${sceneId}/submissions`);
+/** Full submission history for a series (newest version first). */
+export function listSeriesSubmissions(
+  seriesId: string,
+): Promise<{ series: DeliverableSeriesDTO; submissions: SubmissionDTO[] }> {
+  return api(`/api/series/${seriesId}/submissions`);
 }
 
 export function approveSubmission(id: string, note?: string): Promise<SubmissionDTO> {
@@ -1813,14 +1821,14 @@ export function rejectSubmission(id: string, note: string): Promise<SubmissionDT
   });
 }
 
-/** Episodes assigned to the signed-in employee ("My work"). */
-export function listMyEpisodes(): Promise<{ episodes: DeliverableEpisodeDTO[] }> {
-  return api(`/api/my/episodes`);
+/** The series the signed-in employee has to hand in ("My work"). */
+export function listMySeries(): Promise<{ series: DeliverableSeriesDTO[] }> {
+  return api(`/api/my/series`);
 }
 
 /** Submissions waiting on the signed-in reviewer. */
 export function listReviewQueue(): Promise<{
-  items: { submission: SubmissionDTO; episode: DeliverableEpisodeDTO | null }[];
+  items: { submission: SubmissionDTO; series: DeliverableSeriesDTO | null }[];
 }> {
   return api(`/api/review/queue`);
 }
@@ -1829,8 +1837,8 @@ export function listReviewQueue(): Promise<{
 export function setEpisodeAssignee(
   sceneId: string,
   userId: string | null,
-): Promise<DeliverableEpisodeDTO> {
-  return api<DeliverableEpisodeDTO>(`/api/scenes/${sceneId}/assignee`, {
+): Promise<{ id: string; assignee_user_id: string | null; assignee_name: string | null }> {
+  return api(`/api/scenes/${sceneId}/assignee`, {
     method: "PATCH",
     body: JSON.stringify({ user_id: userId }),
   });

@@ -28,7 +28,12 @@ def _rows(resp) -> list[dict]:
 
 @pytest.fixture()
 def delivered(client):
-    """Two episodes: one approved first try, one approved after a rejection."""
+    """Two series, one episode each: one approved first try, one after a rejection.
+
+    Two SERIES rather than two episodes because the series is what gets handed in
+    and reviewed. Built with an episode apiece so the per-episode numbers
+    ("assigned", credits) still have something to count.
+    """
     user_service.create_user("boss", "pw123456", role="admin")
     ah = _h(client, "boss")
     pm = user_service.create_user("pm", "pw123456")
@@ -37,34 +42,53 @@ def delivered(client):
     pid = client.post(
         "/api/projects", json={"name": "MOGU", "owner_user_id": str(pm.id)}, headers=ah
     ).json()["id"]
-    sid = client.post(
-        f"/api/projects/{pid}/series", json={"name": "S1", "code": "S1"}, headers=ah
-    ).json()["id"]
 
-    eps = []
+    sids, eps = [], []
     for n in (1, 2):
+        sid = client.post(
+            f"/api/projects/{pid}/series",
+            json={"name": f"S{n}", "code": f"S{n}"},
+            headers=ah,
+        ).json()["id"]
+        client.patch(
+            f"/api/series/{sid}/assignee", json={"user_id": str(emp.id)}, headers=ah
+        )
         ep = client.post(
             f"/api/projects/{pid}/scenes",
             json={"name": f"EP0{n}", "code": f"EP0{n}", "series_id": sid},
             headers=ah,
         ).json()["id"]
-        client.patch(f"/api/scenes/{ep}/assignee", json={"user_id": str(emp.id)}, headers=ah)
+        client.patch(
+            f"/api/scenes/{ep}/assignee", json={"user_id": str(emp.id)}, headers=ah
+        )
+        sids.append(sid)
         eps.append(ep)
 
     eh = _h(client, "emp")
     D = "https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUv/view"
 
-    # EP01: approved on the first attempt.
-    s1 = client.post(f"/api/scenes/{eps[0]}/submissions", json={"drive_url": D}, headers=eh).json()
+    # S1: approved on the first attempt.
+    s1 = client.post(
+        f"/api/series/{sids[0]}/submissions", json={"drive_url": D}, headers=eh
+    ).json()
     client.post(f"/api/submissions/{s1['id']}/approve", json={"note": "good"}, headers=ah)
 
-    # EP02: rejected once, then approved.
-    s2 = client.post(f"/api/scenes/{eps[1]}/submissions", json={"drive_url": D}, headers=eh).json()
-    client.post(f"/api/submissions/{s2['id']}/reject", json={"note": "lip sync off"}, headers=ah)
-    s2b = client.post(f"/api/scenes/{eps[1]}/submissions", json={"drive_url": D}, headers=eh).json()
+    # S2: rejected once, then approved.
+    s2 = client.post(
+        f"/api/series/{sids[1]}/submissions", json={"drive_url": D}, headers=eh
+    ).json()
+    client.post(
+        f"/api/submissions/{s2['id']}/reject", json={"note": "lip sync off"}, headers=ah
+    )
+    s2b = client.post(
+        f"/api/series/{sids[1]}/submissions", json={"drive_url": D}, headers=eh
+    ).json()
     client.post(f"/api/submissions/{s2b['id']}/approve", json={"note": "ok now"}, headers=ah)
 
-    return {"ah": ah, "pid": pid, "sid": sid, "eps": eps, "emp": emp, "pm": pm}
+    return {
+        "ah": ah, "pid": pid, "sid": sids[0], "sids": sids, "eps": eps,
+        "emp": emp, "pm": pm,
+    }
 
 
 # ── KPI ────────────────────────────────────────────────────────────────────
@@ -101,9 +125,12 @@ def test_kpi_surfaces_unassigned_work_instead_of_dropping_it(client, delivered):
 
 
 def test_series_rollup_reports_completion(client, delivered):
+    """Delivery is a fact about the SERIES, so every episode under an approved one
+    counts as delivered — this rollup used to read each episode's own column and
+    would now report 0% for a series that has been signed off."""
     out = client.get(f"/api/kpi/series/{delivered['sid']}", headers=delivered["ah"]).json()
-    assert out["episodes"] == 2
-    assert out["delivered"] == 2
+    assert out["episodes"] == 1
+    assert out["delivered"] == 1
     assert out["completion_pct"] == 100.0
     assert out["unassigned"] == 0
     assert "budget" in out and "people" in out

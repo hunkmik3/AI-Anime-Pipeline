@@ -82,9 +82,9 @@ def _first_admin(session: Session) -> Optional[User]:
 
 
 def resolve_approver(
-    session: Session, scene: Scene, submitter_id: Optional[uuid.UUID]
+    session: Session, series: Series, submitter_id: Optional[uuid.UUID]
 ) -> Optional[User]:
-    """Who reviews this episode, per the approver-chain diagram:
+    """Who reviews this series, per the approver-chain diagram:
 
         Series Producer (if set and not the submitter)
           → project PM / owner (if set and not the submitter)
@@ -94,14 +94,9 @@ def resolve_approver(
     the caller treats that as a configuration error rather than silently
     letting work sit unreviewable.
     """
-    candidates: list[Optional[uuid.UUID]] = []
+    candidates: list[Optional[uuid.UUID]] = [series.producer_user_id]
 
-    if scene.series_id:
-        series = session.get(Series, scene.series_id)
-        if series is not None:
-            candidates.append(series.producer_user_id)
-
-    project = session.get(Project, scene.project_id)
+    project = session.get(Project, series.project_id)
     if project is not None:
         candidates.append(project.owner_user_id)
         esc = (project.settings or {}).get("escalation_owner_id")
@@ -127,19 +122,19 @@ def resolve_approver(
 # ── Queries ─────────────────────────────────────────────────────────────────
 
 
-def list_submissions(session: Session, scene_id: uuid.UUID) -> list[Submission]:
-    """Full history for an episode, newest attempt first."""
+def list_submissions(session: Session, series_id: uuid.UUID) -> list[Submission]:
+    """Full history for a series, newest attempt first."""
     return list(
         session.exec(
             select(Submission)
-            .where(Submission.scene_id == scene_id)
+            .where(Submission.series_id == series_id)
             .order_by(Submission.version.desc())  # type: ignore[attr-defined]
         ).all()
     )
 
 
-def latest_submission(session: Session, scene_id: uuid.UUID) -> Optional[Submission]:
-    rows = list_submissions(session, scene_id)
+def latest_submission(session: Session, series_id: uuid.UUID) -> Optional[Submission]:
+    rows = list_submissions(session, series_id)
     return rows[0] if rows else None
 
 
@@ -148,52 +143,50 @@ def latest_submission(session: Session, scene_id: uuid.UUID) -> Optional[Submiss
 
 def submit(
     session: Session,
-    scene_id: uuid.UUID,
+    series_id: uuid.UUID,
     *,
     user: Optional[User],
     drive_url: str,
     note: Optional[str] = None,
 ) -> Submission:
-    """Record a delivery attempt for an episode.
+    """Record a delivery attempt for a SERIES.
 
-    Guards: only the assignee (or an admin) may submit; the URL must be a Drive
-    link we can embed; an episode already approved/paid is closed.
+    The series is what gets handed over: one person takes it, and a PM reviews the
+    finished thing once rather than signing off on each episode. Guards: only the
+    person the series was given to (or an admin) may submit; the URL must be a
+    Drive link we can embed; a series already approved/paid is closed.
     """
-    scene = session.get(Scene, scene_id)
-    if scene is None:
-        raise SubmissionError("not_found", "episode not found")
+    series = session.get(Series, series_id)
+    if series is None:
+        raise SubmissionError("not_found", "series not found")
 
     is_admin = user is not None and user.role == "admin"
     if user is not None and not is_admin:
-        # Either the episode is theirs, or the whole series is. A PM who hands over
-        # a twelve-episode series does not then assign twelve episodes, and without
-        # this the person they gave it to could open every episode and hand none of
-        # them in.
-        owner = _work_owner(session, scene)
+        owner = series.assignee_user_id
         if owner is None:
             raise SubmissionError(
-                "forbidden", "this episode has no assignee — ask your PM to assign it"
+                "forbidden", "this series has no assignee — ask your PM to assign it"
             )
-        if owner != user.id and scene.assignee_user_id != user.id:
+        if owner != user.id:
             raise SubmissionError(
-                "forbidden", "only the assigned employee can submit this episode"
+                "forbidden", "only the assigned employee can submit this series"
             )
 
-    if scene.deliverable_status in ("approved", "paid"):
+    if series.deliverable_status in ("approved", "paid"):
         raise SubmissionError(
-            "closed", f"this episode is already {scene.deliverable_status}"
+            "closed", f"this series is already {series.deliverable_status}"
         )
 
     # One open attempt at a time. In the lifecycle, `submitted` is left only by the
-    # approver — accepting or sending back — so the episode is out of the
+    # approver — accepting or sending back — so the series is out of the
     # assignee's hands until then. Without this an artist could stack v2, v3, v4
     # on top of a pending v1, and the reviewer's queue filled with several rows for
-    # the same episode with no way to tell which one counted.
-    open_attempt = latest_submission(session, scene_id)
+    # the same series with no way to tell which one counted.
+    open_attempt = latest_submission(session, series_id)
     if open_attempt is not None and open_attempt.status == "submitted":
         raise SubmissionError(
             "closed",
-            f"v{open_attempt.version} of this episode is already waiting for "
+            f"v{open_attempt.version} of this series is already waiting for "
             "review — ask the reviewer to send it back if you need to replace it",
         )
 
@@ -233,12 +226,12 @@ def submit(
             # will surface it instead.
             logger.warning("drive precheck skipped: %s", exc)
 
-    prev = latest_submission(session, scene_id)
+    prev = latest_submission(session, series_id)
     submitter_id = user.id if user is not None else None
-    approver = resolve_approver(session, scene, submitter_id)
+    approver = resolve_approver(session, series, submitter_id)
 
     row = Submission(
-        scene_id=scene_id,
+        series_id=series_id,
         version=(prev.version + 1) if prev else 1,
         drive_url=drive_url.strip(),
         drive_file_id=file_id,
@@ -248,8 +241,8 @@ def submit(
         approver_user_id=approver.id if approver else None,
     )
     session.add(row)
-    scene.deliverable_status = "submitted"
-    session.add(scene)
+    series.deliverable_status = "submitted"
+    session.add(series)
     session.commit()
     session.refresh(row)
     return row
@@ -269,9 +262,9 @@ def _review(
     if row.status != "submitted":
         raise SubmissionError("closed", f"this submission is already {row.status}")
 
-    scene = session.get(Scene, row.scene_id)
-    if scene is None:
-        raise SubmissionError("not_found", "episode not found")
+    series = session.get(Series, row.series_id) if row.series_id else None
+    if series is None:
+        raise SubmissionError("not_found", "series not found")
 
     is_admin = user is not None and user.role == "admin"
     if user is not None:
@@ -281,16 +274,12 @@ def _review(
         if not is_admin:
             # The resolved approver reviews; PM/producer of the project may also
             # step in (the chain picked one, but the tier above stays able to act).
-            allowed = {row.approver_user_id}
-            project = session.get(Project, scene.project_id)
+            allowed = {row.approver_user_id, series.producer_user_id}
+            project = session.get(Project, series.project_id)
             if project is not None and project.owner_user_id:
                 allowed.add(project.owner_user_id)
-            if scene.series_id:
-                series = session.get(Series, scene.series_id)
-                if series is not None and series.producer_user_id:
-                    allowed.add(series.producer_user_id)
             if user.id not in {a for a in allowed if a}:
-                raise SubmissionError("forbidden", "you are not the reviewer for this episode")
+                raise SubmissionError("forbidden", "you are not the reviewer for this series")
 
     clean_note = (note or "").strip() or None
     if not approve and not clean_note:
@@ -300,11 +289,11 @@ def _review(
     row.reviewed_by = user.id if user is not None else None
     row.reviewed_at = datetime.now(timezone.utc)
     row.review_note = clean_note
-    # Approved locks production; a rejection returns the episode to draft so the
+    # Approved locks production; a rejection returns the series to draft so the
     # assignee can resubmit — their generation quota is NOT topped up.
-    scene.deliverable_status = "approved" if approve else "draft"
+    series.deliverable_status = "approved" if approve else "draft"
     session.add(row)
-    session.add(scene)
+    session.add(series)
     session.commit()
     session.refresh(row)
     return row
@@ -334,8 +323,12 @@ def reject(
 
 
 def _work_owner(session: Session, scene: Scene) -> Optional[uuid.UUID]:
-    """Who is on the hook for this episode: its own assignee, else whoever the
-    whole series was handed to. ``None`` when nobody has been given it."""
+    """Who works in this episode: its own assignee, else whoever the whole series
+    was handed to.
+
+    Still about WORK, not delivery — the episode's canvas and its access. What
+    gets handed in is the series, and only its assignee submits that.
+    """
     if scene.assignee_user_id is not None:
         return scene.assignee_user_id
     if scene.series_id:
@@ -345,47 +338,53 @@ def _work_owner(session: Session, scene: Scene) -> Optional[uuid.UUID]:
     return None
 
 
-def episodes_for_assignee(session: Session, user_id: uuid.UUID) -> list[Scene]:
-    """Episodes this employee is on the hook for (their "My work" page).
+def delivery_status_map(
+    session: Session, scenes: "list[Scene]"
+) -> dict[uuid.UUID, str]:
+    """Each episode's delivery state, which is its SERIES' state.
 
-    Episodes assigned to them directly, plus every episode of a series handed to
-    them as a whole. Without the second, a PM assigning a twelve-episode series
-    left that person's "My work" page empty — and it is the page they work from.
+    An episode is not handed in on its own any more, so it has no state of its
+    own to report. `Scene.deliverable_status` is still a column — it holds what
+    rows written under the old rule said — and reading it now would report "draft"
+    for every episode inside an approved series.
 
-    An episode inside their series that was then assigned to somebody ELSE is not
-    theirs: the narrower assignment is a deliberate act and overrides the sweep.
+    One query for the whole list: the callers are per-project and per-series
+    rollups that would otherwise ask once per episode.
     """
-    mine = list(
+    sids = {sc.series_id for sc in scenes if sc.series_id}
+    if not sids:
+        return {sc.id: "draft" for sc in scenes}
+    by_series = {
+        sr.id: (sr.deliverable_status or "draft")
+        for sr in session.exec(
+            select(Series).where(Series.id.in_(sids))  # type: ignore[attr-defined]
+        ).all()
+    }
+    return {sc.id: by_series.get(sc.series_id, "draft") for sc in scenes}
+
+
+def episode_delivery_status(session: Session, scene: Scene) -> str:
+    return delivery_status_map(session, [scene]).get(scene.id, "draft")
+
+
+def series_for_assignee(session: Session, user_id: uuid.UUID) -> list[Series]:
+    """Series this employee has to hand in — their "My work" page.
+
+    The page lists what is DELIVERABLE, and a series is delivered as one thing.
+    It used to list episodes, one card each, every one offering a "Hand in" that
+    delivered a twelfth of the job.
+
+    Episode-level assignment is not swept in here on purpose: being lent one
+    episode of somebody else's series is work, and the person who hands the series
+    in is still the person it was given to.
+    """
+    return list(
         session.exec(
-            select(Scene)
-            .where(Scene.assignee_user_id == user_id)
-            .order_by(Scene.order_index, Scene.created_at)
+            select(Series)
+            .where(Series.assignee_user_id == user_id)
+            .order_by(Series.order_index, Series.created_at)
         ).all()
     )
-    series_ids = [
-        sid
-        for sid in session.exec(
-            select(Series.id).where(Series.assignee_user_id == user_id)
-        ).all()
-    ]
-    if series_ids:
-        mine += list(
-            session.exec(
-                select(Scene)
-                .where(
-                    Scene.series_id.in_(series_ids),  # type: ignore[attr-defined]
-                    Scene.assignee_user_id.is_(None),  # type: ignore[union-attr]
-                )
-                .order_by(Scene.order_index, Scene.created_at)
-            ).all()
-        )
-    seen: set[uuid.UUID] = set()
-    out = []
-    for sc in mine:
-        if sc.id not in seen:
-            seen.add(sc.id)
-            out.append(sc)
-    return out
 
 
 def review_queue(session: Session, user: Optional[User]) -> list[Submission]:
@@ -407,15 +406,13 @@ def review_queue(session: Session, user: Optional[User]) -> list[Submission]:
         if r.approver_user_id == user.id:
             mine.append(r)
             continue
-        scene = session.get(Scene, r.scene_id)
-        if scene is None:
+        series = session.get(Series, r.series_id) if r.series_id else None
+        if series is None:
             continue
-        project = session.get(Project, scene.project_id)
-        if project is not None and project.owner_user_id == user.id:
+        if series.producer_user_id == user.id:
             mine.append(r)
             continue
-        if scene.series_id:
-            series = session.get(Series, scene.series_id)
-            if series is not None and series.producer_user_id == user.id:
-                mine.append(r)
+        project = session.get(Project, series.project_id)
+        if project is not None and project.owner_user_id == user.id:
+            mine.append(r)
     return mine

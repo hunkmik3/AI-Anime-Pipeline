@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 
 import {
-  listMyEpisodes,
-  submitEpisode,
-  type DeliverableEpisodeDTO,
+  listMySeries,
+  submitSeries,
+  type DeliverableSeriesDTO,
 } from "../api/client";
 import { DeliveryCard } from "../components/DeliveryCard";
 import { PageHeader } from "../components/shell/PageHeader";
@@ -17,24 +17,26 @@ import { StudioNav } from "../components/shell/StudioNav";
  * Arranged by person rather than by object — "what do I have to do" is a real
  * question no object page can answer, which is why this and Review stay inboxes.
  *
- * Each row used to restate the episode inline (series, sequence count, status
- * chips, the whole submission history), so the same facts were maintained here, on
- * the episode page and in the review queue, and drifted apart. A row now identifies
- * the episode, links to it, and holds only the thing this page exists for: handing
- * the cut in. Grouped by whose move it is, so the top of the page is always the
- * work that is actually waiting on you.
+ * A row is a SERIES, because a series is what gets handed in — one person takes
+ * it, delivers one finished cut, and a PM signs off once. Rows were episodes until
+ * then, so a twelve-episode series filled this page with twelve identical cards,
+ * each repeating the same header and each offering to hand in a twelfth of the job.
+ *
+ * A row identifies the series, links into the work, and holds only the thing this
+ * page exists for: handing the cut in. Grouped by whose move it is, so the top of
+ * the page is always what is actually waiting on you.
  */
 
 export function MyWorkPage() {
-  const [episodes, setEpisodes] = useState<DeliverableEpisodeDTO[] | null>(null);
+  const [series, setSeries] = useState<DeliverableSeriesDTO[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const refreshBadges = useInboxStore((s) => s.refresh);
 
   const load = useCallback(async () => {
     try {
-      const r = await listMyEpisodes();
-      setEpisodes(r.episodes);
+      const r = await listMySeries();
+      setSeries(r.series);
       // The nav badge and this page must not disagree about how much is waiting.
       void refreshBadges();
     } catch (e) {
@@ -46,10 +48,10 @@ export function MyWorkPage() {
     void load();
   }, [load]);
 
-  const status = (e: DeliverableEpisodeDTO) => e.deliverable_status || "draft";
-  const todo = (episodes ?? []).filter((e) => status(e) === "draft");
-  const waiting = (episodes ?? []).filter((e) => status(e) === "submitted");
-  const done = (episodes ?? []).filter((e) =>
+  const status = (e: DeliverableSeriesDTO) => e.deliverable_status || "draft";
+  const todo = (series ?? []).filter((e) => status(e) === "draft");
+  const waiting = (series ?? []).filter((e) => status(e) === "submitted");
+  const done = (series ?? []).filter((e) =>
     ["approved", "paid"].includes(status(e)),
   );
 
@@ -62,12 +64,12 @@ export function MyWorkPage() {
       />
 
       {error ? <p className="inbox__err">{error}</p> : null}
-      {episodes === null ? <p className="rfoot">Loading…</p> : null}
+      {series === null ? <p className="rfoot">Loading…</p> : null}
 
-      {episodes !== null && episodes.length === 0 ? (
+      {series !== null && series.length === 0 ? (
         <div className="inbox__empty">
           <b>Nothing assigned to you yet.</b>
-          Your PM assigns episodes; they show up here as soon as they do.
+          Your PM hands over a whole series; it shows up here as soon as they do.
         </div>
       ) : null}
 
@@ -123,7 +125,7 @@ function Item({
   onToggle,
   onDone,
 }: {
-  ep: DeliverableEpisodeDTO;
+  ep: DeliverableSeriesDTO;
   tone: "todo" | "waiting" | "done";
   open: boolean;
   onToggle?: () => void;
@@ -145,7 +147,7 @@ function Item({
 
   return (
     <DeliveryCard
-      episode={ep}
+      series={ep}
       submission={latest}
       tone={tone}
       status={status}
@@ -167,7 +169,7 @@ function SubmitForm({
   ep,
   onDone,
 }: {
-  ep: DeliverableEpisodeDTO;
+  ep: DeliverableSeriesDTO;
   onDone: () => Promise<void>;
 }) {
   const [url, setUrl] = useState("");
@@ -179,7 +181,7 @@ function SubmitForm({
     setBusy(true);
     setError(null);
     try {
-      await submitEpisode(ep.id, {
+      await submitSeries(ep.id, {
         drive_url: url.trim(),
         note: note.trim() || undefined,
       });

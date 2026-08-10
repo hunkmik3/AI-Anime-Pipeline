@@ -7,9 +7,8 @@ put there would approve their own submissions. Two ends of the same handover, tw
 columns.
 
 The tests that matter most are the ones where the two must not be confused, and the
-one where a per-episode assignment overrides the sweep — that is how a series gets
-split when somebody is overloaded, which is the reason the narrower field still
-exists.
+one where an episode is lent to somebody else — that is how a series gets split when
+one person is overloaded, and it moves the WORK without moving the hand-in.
 """
 from __future__ import annotations
 
@@ -67,10 +66,14 @@ def _give(client, world, user_id, headers=None):
 
 
 def test_the_whole_series_arrives_at_once(world, client):
-    assert client.get("/api/my/episodes", headers=world["artist"]).json()["episodes"] == []
+    """One row on "My work", not one per episode — the series is what is handed in,
+    and the episode count is how somebody sees how much is behind the one link."""
+    assert client.get("/api/my/series", headers=world["artist"]).json()["series"] == []
     assert _give(client, world, world["artist_id"]).status_code == 200
-    mine = client.get("/api/my/episodes", headers=world["artist"]).json()["episodes"]
-    assert {e["id"] for e in mine} == set(world["eps"])
+    mine = client.get("/api/my/series", headers=world["artist"]).json()["series"]
+    assert [s["id"] for s in mine] == [world["series_id"]]
+    assert mine[0]["episode_count"] == len(world["eps"])
+    assert {e["id"] for e in mine[0]["episodes"]} == set(world["eps"])
 
 
 def test_the_project_appears_and_opens(world, client):
@@ -95,7 +98,7 @@ def test_taking_it_back_takes_all_of_it(world, client):
     copied onto the episodes that would have to be found and undone."""
     _give(client, world, world["artist_id"])
     assert _give(client, world, None).status_code == 200
-    assert client.get("/api/my/episodes", headers=world["artist"]).json()["episodes"] == []
+    assert client.get("/api/my/series", headers=world["artist"]).json()["series"] == []
     assert client.get("/api/projects", headers=world["artist"]).json() == []
     assert (
         client.get(f"/api/scenes/{world['eps'][0]}", headers=world["artist"]).status_code
@@ -155,19 +158,28 @@ def test_it_grants_work_not_structure(world, client):
 # ── the narrower assignment still wins ──────────────────────────────────────
 
 
-def test_an_episode_assigned_to_someone_else_leaves_the_sweep(world, client):
-    """How a series is split when one person is overloaded: the per-episode
-    assignment is a deliberate act and beats the series-wide one."""
+def test_lending_out_an_episode_does_not_move_the_hand_in(world, client):
+    """How a series is split when one person is overloaded — and what does NOT move
+    with it.
+
+    The helper gets to work in that episode. They do not get the series on their
+    "My work", because they are not the one who hands it in: a deliverable two
+    people can submit is one nobody is accountable for.
+    """
     _give(client, world, world["artist_id"])
     client.patch(
         f"/api/scenes/{world['eps'][1]}/assignee",
         json={"user_id": str(world["other_id"])},
         headers=world["admin"],
     )
-    mine = client.get("/api/my/episodes", headers=world["artist"]).json()["episodes"]
-    assert {e["id"] for e in mine} == {world["eps"][0], world["eps"][2]}
-    theirs = client.get("/api/my/episodes", headers=world["other"]).json()["episodes"]
-    assert [e["id"] for e in theirs] == [world["eps"][1]]
+    mine = client.get("/api/my/series", headers=world["artist"]).json()["series"]
+    assert [s["id"] for s in mine] == [world["series_id"]], "still theirs to deliver"
+    assert client.get("/api/my/series", headers=world["other"]).json()["series"] == []
+    # …but the episode itself opens for them, which is the point of lending it.
+    assert (
+        client.get(f"/api/scenes/{world['eps'][1]}", headers=world["other"]).status_code
+        == 200
+    )
 
 
 def test_the_helper_can_still_see_it_though(world, client):
@@ -184,16 +196,17 @@ def test_the_helper_can_still_see_it_though(world, client):
     assert r.status_code == 200
 
 
-def test_no_duplicates_when_both_apply(world, client):
-    """Assigned the series AND one of its episodes: the episode is listed once."""
+def test_holding_both_the_series_and_an_episode_is_still_one_row(world, client):
+    """Assigned the series AND one of its episodes — one thing to hand in, so one
+    row. The old per-episode page could list the same work twice this way."""
     _give(client, world, world["artist_id"])
     client.patch(
         f"/api/scenes/{world['eps'][0]}/assignee",
         json={"user_id": str(world["artist_id"])},
         headers=world["admin"],
     )
-    mine = client.get("/api/my/episodes", headers=world["artist"]).json()["episodes"]
-    assert len({e["id"] for e in mine}) == len(mine) == 3
+    mine = client.get("/api/my/series", headers=world["artist"]).json()["series"]
+    assert [s["id"] for s in mine] == [world["series_id"]]
 
 
 # ── handing the work in ─────────────────────────────────────────────────────

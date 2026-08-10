@@ -1,20 +1,23 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import type { DeliverableEpisodeDTO, SubmissionDTO } from "../api/client";
+import type { DeliverableSeriesDTO, SubmissionDTO } from "../api/client";
 
 /**
- * One episode's delivery, as it appears in Work and Review.
+ * One SERIES' delivery, as it appears in Work and Review.
  *
  * Shared by both because the two pages describe the same thing from opposite ends,
- * and when each had its own markup the same episode showed different facts on each
+ * and when each had its own markup the same row showed different facts on each
  * screen.
  *
- * Leads with **where** before **what**: a bare "Episode 9" is ambiguous the moment
- * two series each have one, which the demo data has. Then the four facts a reviewer
- * or an assignee actually needs — who owns it, who handed it in, and when each side
- * last acted — because "waiting on review" means something different after one day
- * than after two weeks.
+ * The row was an episode until the deliverable moved up a tier: a twelve-episode
+ * series meant twelve identical cards, each repeating the same series header and
+ * each offering to hand in a twelfth of one job.
+ *
+ * Leads with **where** before **what**, then the four facts a reviewer or an
+ * assignee actually needs — who has it, who handed it in, and when each side last
+ * acted — because "waiting on review" means something different after one day than
+ * after two weeks.
  */
 
 export function fmtWhen(iso: string | null | undefined): string {
@@ -71,7 +74,7 @@ function Fact({
 }
 
 export function DeliveryCard({
-  episode: ep,
+  series: sr,
   submission: s,
   tone,
   status,
@@ -79,7 +82,7 @@ export function DeliveryCard({
   actions,
   children,
 }: {
-  episode: DeliverableEpisodeDTO | null;
+  series: DeliverableSeriesDTO | null;
   submission: SubmissionDTO | null;
   tone: "todo" | "waiting" | "done";
   status: string;
@@ -93,31 +96,36 @@ export function DeliveryCard({
     <li className={`inbox__item inbox__item--${tone}`}>
       {/* Where it sits, before what it is. */}
       <div className="inbox__where">
-        <span className="inbox__project">{ep?.project_name ?? "—"}</span>
-        {ep?.series_name ? (
+        <span className="inbox__project">{sr?.project_name ?? "—"}</span>
+        {sr ? (
           <>
             <span className="inbox__sep">›</span>
-            {ep.series_code ? (
-              <span className="inbox__seriesCode">{ep.series_code}</span>
-            ) : null}
-            <span>{ep.series_name}</span>
+            <span className="inbox__epCount">
+              {sr.episode_count} {sr.episode_count === 1 ? "episode" : "episodes"}
+            </span>
           </>
         ) : null}
       </div>
 
       <div className="inbox__row">
         <span className="inbox__id">
-          {ep?.code ? <span className="inbox__code">{ep.code}</span> : null}
-          {ep ? (
+          {sr?.code ? <span className="inbox__code">{sr.code}</span> : null}
+          {sr ? (
+            /* Straight to the first episode's canvas: the series has no page of
+               its own, and "open the work" is what this link is for. */
             <Link
               className="inbox__name"
-              to={`/projects/${ep.project_id}/scenes/${ep.id}`}
-              title="Everything about this episode"
+              to={
+                sr.episodes[0]
+                  ? `/projects/${sr.project_id}/scenes/${sr.episodes[0].id}`
+                  : `/projects/${sr.project_id}`
+              }
+              title="Open the work"
             >
-              {ep.name}
+              {sr.name}
             </Link>
           ) : (
-            <span className="inbox__name">Episode</span>
+            <span className="inbox__name">Series</span>
           )}
         </span>
         <span className="inbox__right">
@@ -127,7 +135,7 @@ export function DeliveryCard({
       </div>
 
       <div className="inbox__facts">
-        <Fact label="Assignee" value={ep?.assignee_name} />
+        <Fact label="Assignee" value={sr?.assignee_name} />
         <Fact
           label="Handed in by"
           value={s?.submitted_by_name}

@@ -22,6 +22,7 @@ from flowboard.services import audit_service, permissions
 from flowboard.services import user_service
 from flowboard.services import project_service as ps
 from flowboard.services import scene_service as ss
+from flowboard.services import submission_service as subs
 
 router = APIRouter(tags=["scenes"])
 
@@ -70,12 +71,13 @@ def _scene_dict(session, scene, status: str | None = None) -> dict:
         "production": prod,
         # So the UI can show that nobody chose this — it was read off the work.
         "status_auto": ss.status_is_derived(scene),
-        # Phase 11: who owns this episode (the only person who may submit it)
-        # and where its deliverable stands. Exposed so the structure UI can
-        # assign it — without this the whole submit flow has no entry point.
+        # Who works in this episode. Exposed so the structure UI can assign it.
         "assignee_user_id": str(scene.assignee_user_id) if scene.assignee_user_id else None,
         "assignee_name": _user_name(scene.assignee_user_id),
-        "deliverable_status": scene.deliverable_status or "draft",
+        # Where the DELIVERY stands, which is a fact about the series — that is
+        # what gets handed in. Reading the episode's own column would report
+        # "draft" for every episode inside an approved series.
+        "deliverable_status": subs.episode_delivery_status(session, scene),
         "canvas_state": cs,
         "master_establishing_asset_id": scene.master_establishing_asset_id,
         # Cover thumbnail: a hand-set cover if there is one, else frame 0 of the

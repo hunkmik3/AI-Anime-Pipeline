@@ -7,7 +7,7 @@ import {
   listReviewQueue,
   rejectCreditRequest,
   type CreditGrantDTO,
-  type DeliverableEpisodeDTO,
+  type DeliverableSeriesDTO,
   type SubmissionDTO,
 } from "../../api/client";
 import { toast } from "../../store/toast";
@@ -231,7 +231,7 @@ function CreditRequests({ onCount }: { onCount: (n: number) => void }) {
 
 function DeliverableQueue({ onCount }: { onCount: (n: number) => void }) {
   const [items, setItems] = useState<
-    { submission: SubmissionDTO; episode: DeliverableEpisodeDTO | null }[] | null
+    { submission: SubmissionDTO; series: DeliverableSeriesDTO | null }[] | null
   >(null);
 
   useEffect(() => {
@@ -257,16 +257,16 @@ function DeliverableQueue({ onCount }: { onCount: (n: number) => void }) {
 
   return (
     <div>
-      {items.map(({ submission: s, episode: ep }) => (
+      {items.map(({ submission: s, series: sr }) => (
         <div key={s.id} style={{ ...S.row, alignItems: "flex-start" }}>
-          <b style={{ color: "#4bd6a4", minWidth: 100 }}>{ep?.code || "—"}</b>
+          <b style={{ color: "#4bd6a4", minWidth: 100 }}>{sr?.code || "—"}</b>
 
-          {/* what it belongs to: project → series → episode */}
+          {/* what it belongs to: project → series (the deliverable) */}
           <span style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, minWidth: 220 }}>
-            <span style={{ color: "#e7ecf0", fontWeight: 600 }}>{ep?.name ?? "Episode"}</span>
+            <span style={{ color: "#e7ecf0", fontWeight: 600 }}>{sr?.name ?? "Series"}</span>
             <span style={{ color: "#8a97a3", fontSize: "0.78rem" }}>
-              {ep?.project_name ?? "—"}
-              {ep?.series_name ? ` · ${ep.series_name}` : ""}
+              {sr?.project_name ?? "—"}
+              {sr ? ` · ${sr.episode_count} ep` : ""}
             </span>
           </span>
 
@@ -276,7 +276,7 @@ function DeliverableQueue({ onCount }: { onCount: (n: number) => void }) {
               v{s.version} · {s.submitted_by_name ?? "—"}
             </span>
             <span style={{ color: "#62707c", fontSize: "0.74rem" }}>
-              {ep?.assignee_name ? `assigned to ${ep.assignee_name}` : "unassigned"}
+              {sr?.assignee_name ? `assigned to ${sr.assignee_name}` : "unassigned"}
               {s.submitted_at ? ` · ${new Date(s.submitted_at).toLocaleString()}` : ""}
             </span>
           </span>

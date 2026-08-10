@@ -33,6 +33,7 @@ from sqlmodel import Session, select
 
 from flowboard.db.models import Project, Scene, Series, Submission, User
 from flowboard.services import scope_budget
+from flowboard.services import submission_service as subs_service
 
 
 def _episodes(
@@ -49,18 +50,47 @@ def _episodes(
     return list(session.exec(q).all())
 
 
-def _submissions_by_scene(session: Session, scene_ids: list[uuid.UUID]) -> dict:
-    if not scene_ids:
+def _submissions_by_series(session: Session, series_ids: list[uuid.UUID]) -> dict:
+    """Delivery attempts, grouped by the series they were attempts at.
+
+    Keyed on the series because that is what gets handed in. Keyed on the episode,
+    every one of these numbers silently became zero the day the deliverable moved
+    up a tier — the join simply stopped matching, which is the kind of breakage a
+    dashboard reports as "a quiet quarter".
+    """
+    if not series_ids:
         return {}
     out: dict[uuid.UUID, list[Submission]] = {}
     rows = session.exec(
-        select(Submission).where(Submission.scene_id.in_(scene_ids))  # type: ignore[attr-defined]
+        select(Submission).where(Submission.series_id.in_(series_ids))  # type: ignore[attr-defined]
     ).all()
     for r in rows:
-        out.setdefault(r.scene_id, []).append(r)
+        if r.series_id is not None:
+            out.setdefault(r.series_id, []).append(r)
     for v in out.values():
         v.sort(key=lambda r: r.version)
     return out
+
+
+def _series_in_scope(
+    session: Session,
+    eps: list[Scene],
+    *,
+    project_id: Optional[uuid.UUID] = None,
+    series_id: Optional[uuid.UUID] = None,
+) -> list[Series]:
+    """The series the caller's filter covers.
+
+    Taken from the filter rather than from the episodes, so a series that has been
+    handed over but has no episodes yet still shows the person carrying it — which
+    is exactly when a manager wants to see it.
+    """
+    q = select(Series)
+    if series_id:
+        q = q.where(Series.id == series_id)
+    elif project_id:
+        q = q.where(Series.project_id == project_id)
+    return list(session.exec(q).all())
 
 
 def _days(a: Optional[datetime], b: Optional[datetime]) -> Optional[float]:
@@ -116,25 +146,43 @@ def people(
     the gap a tracker exists to surface.
     """
     eps = _episodes(session, project_id=project_id, series_id=series_id)
-    subs = _submissions_by_scene(session, [e.id for e in eps])
 
     names: dict[Optional[uuid.UUID], Optional[str]] = {}
     rows: dict[Optional[uuid.UUID], dict] = {}
 
-    for ep in eps:
-        uid = ep.assignee_user_id
+    def _name_of(uid):
         if uid not in names:
             u = session.get(User, uid) if uid else None
             names[uid] = (u.display_name or u.username) if u else None
-        row = rows.setdefault(uid, _blank(uid, names[uid]))
+        return names[uid]
 
+    # TWO units, on purpose, because the studio has two.
+    #
+    # An episode is what somebody WORKS in — so "assigned" and the credits burned
+    # are counted per episode, against whoever is in there. A SERIES is what gets
+    # handed in and reviewed — so delivered, attempts, rejections, first-pass and
+    # review turnaround are counted once per series, against the person it was
+    # given to. Counting a series' attempts once per episode would report a
+    # three-episode series that was sent back once as three rejections.
+    for ep in eps:
+        uid = ep.assignee_user_id
+        row = rows.setdefault(uid, _blank(uid, _name_of(uid)))
         row["assigned"] += 1
-        if (ep.deliverable_status or "draft") in ("approved", "paid"):
+        row["credits_usd"] += scope_budget.spend_usd(session, "scene", ep.id)["spent_usd"]
+
+    series_rows = _series_in_scope(session, eps, project_id=project_id, series_id=series_id)
+    subs = _submissions_by_series(session, [sr.id for sr in series_rows])
+    for sr in series_rows:
+        uid = sr.assignee_user_id
+        row = rows.setdefault(uid, _blank(uid, _name_of(uid)))
+
+        st = sr.deliverable_status or "draft"
+        if st in ("approved", "paid"):
             row["delivered"] += 1
-        elif ep.deliverable_status == "submitted":
+        elif st == "submitted":
             row["in_review"] += 1
 
-        attempts = subs.get(ep.id, [])
+        attempts = subs.get(sr.id, [])
         row["attempts"] += len(attempts)
         row["rejections"] += sum(1 for a in attempts if a.status == "rejected")
         # "First pass" means approved without ever coming back, which is the
@@ -146,9 +194,6 @@ def people(
             d = _days(a.submitted_at, a.reviewed_at)
             if d is not None:
                 row["_review_days"].append(d)
-
-        spend = scope_budget.spend_usd(session, "scene", ep.id)
-        row["credits_usd"] += spend["spent_usd"]
 
     out = [_finalise(r) for r in rows.values()]
     # Most delivered first; unassigned work last so it reads as a residue.
@@ -169,8 +214,9 @@ def overview(session: Session) -> dict:
     per_project = []
     for p in projects:
         eps = _episodes(session, project_id=p.id)
+        delivery = subs_service.delivery_status_map(session, eps)
         delivered = sum(
-            1 for e in eps if (e.deliverable_status or "draft") in ("approved", "paid")
+            1 for e in eps if delivery.get(e.id, "draft") in ("approved", "paid")
         )
         per_project.append(
             {
@@ -178,7 +224,9 @@ def overview(session: Session) -> dict:
                 "project_name": p.name,
                 "episodes": len(eps),
                 "delivered": delivered,
-                "in_review": sum(1 for e in eps if e.deliverable_status == "submitted"),
+                "in_review": sum(
+                    1 for e in eps if delivery.get(e.id) == "submitted"
+                ),
                 "unassigned": sum(1 for e in eps if not e.assignee_user_id),
                 "completion_pct": (
                     round(delivered / len(eps) * 100, 1) if eps else None
@@ -212,14 +260,17 @@ def series_rollup(session: Session, series_id: uuid.UUID) -> dict:
         return {}
     eps = _episodes(session, series_id=series_id)
     per_person = people(session, series_id=series_id)
-    delivered = sum(1 for e in eps if (e.deliverable_status or "draft") in ("approved", "paid"))
+    delivery = subs_service.delivery_status_map(session, eps)
+    delivered = sum(
+        1 for e in eps if delivery.get(e.id, "draft") in ("approved", "paid")
+    )
     return {
         "series_id": str(series_id),
         "series_name": series.name,
         "series_code": series.code or "",
         "episodes": len(eps),
         "delivered": delivered,
-        "in_review": sum(1 for e in eps if e.deliverable_status == "submitted"),
+        "in_review": sum(1 for e in eps if delivery.get(e.id) == "submitted"),
         "unassigned": sum(1 for e in eps if not e.assignee_user_id),
         "completion_pct": round(delivered / len(eps) * 100, 1) if eps else None,
         "budget": scope_budget.summary(session, "series", series_id),

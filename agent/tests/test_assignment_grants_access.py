@@ -3,7 +3,7 @@
 Found live: a PM assigned an episode, it appeared on that person's "My work" page,
 and opening it returned 404 — as did the project, the episode list and every
 sequence inside. The sidebar said "No projects assigned to you yet" to somebody who
-was assigned one. `/api/my/episodes` reads the assignment directly and never asks
+was assigned one. The work list reads assignments directly and never asks
 `project_role`, so the one page that worked was the one that skipped the check.
 
 The other half of this file is the part that must not break: an assignment grants
@@ -95,12 +95,13 @@ def test_they_can_work_in_it_not_just_read_it(studio, client):
     assert r.status_code == 200, r.text
 
 
-def test_my_work_and_the_project_list_agree(studio, client):
-    """The two pages disagreed, and only one of them was checked."""
+def test_an_episode_assignment_opens_the_project_without_a_hand_in(studio, client):
+    """Being lent one episode is work, not a delivery. The project appears so it can
+    be opened; "My work" stays empty because the series was handed to somebody
+    else, and they are the one who submits it."""
     _assign(client, studio, studio["eps"][0], studio["artist_id"])
-    mine = client.get("/api/my/episodes", headers=studio["artist"]).json()["episodes"]
-    projects = client.get("/api/projects", headers=studio["artist"]).json()
-    assert len(mine) == 1 and len(projects) == 1
+    assert len(client.get("/api/projects", headers=studio["artist"]).json()) == 1
+    assert client.get("/api/my/series", headers=studio["artist"]).json()["series"] == []
 
 
 # ── and grants nothing more ─────────────────────────────────────────────────

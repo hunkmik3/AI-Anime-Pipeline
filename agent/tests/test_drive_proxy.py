@@ -41,7 +41,7 @@ def test_access_token_without_credentials_is_a_clear_error():
 
 @pytest.fixture()
 def submitted(client):
-    """An episode with one submission, ready to stream."""
+    """A series with one submission, ready to stream."""
     user_service.create_user("boss", "pw123456", role="admin")
     ah = _h(client, "boss")
     emp = user_service.create_user("emp", "pw123456")
@@ -55,8 +55,10 @@ def submitted(client):
         f"/api/projects/{pid}/scenes", json={"name": "EP1", "series_id": sid}, headers=ah
     ).json()["id"]
     client.patch(f"/api/scenes/{ep}/assignee", json={"user_id": str(emp.id)}, headers=ah)
+    # The series is what gets handed in, so it is what carries the delivered file.
+    client.patch(f"/api/series/{sid}/assignee", json={"user_id": str(emp.id)}, headers=ah)
     sub = client.post(
-        f"/api/scenes/{ep}/submissions", json={"drive_url": DRIVE}, headers=_h(client, "emp")
+        f"/api/series/{sid}/submissions", json={"drive_url": DRIVE}, headers=_h(client, "emp")
     ).json()
     return {"sub": sub, "ah": ah, "emp": emp, "outsider": outsider}
 

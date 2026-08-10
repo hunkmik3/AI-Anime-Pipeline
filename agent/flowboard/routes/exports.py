@@ -27,6 +27,7 @@ from flowboard.db import get_session
 from flowboard.db.models import Project, Scene, Series, Submission, User
 from flowboard.routes.deps import get_optional_user
 from flowboard.services import audit_service, permissions, scope_budget
+from flowboard.services import submission_service as subs
 from flowboard.services import user_service
 
 router = APIRouter(prefix="/api/export", tags=["export"])
@@ -81,8 +82,10 @@ def export_episodes(project_id: uuid.UUID, user=Depends(get_optional_user)):
         series_names = {
             r.id: (r.code or r.name) for r in s.exec(_select_series(project_id)).all()
         }
+        eps = _visible_episodes(s, project_id, user)
+        delivery = subs.delivery_status_map(s, eps)
         rows = []
-        for ep in _visible_episodes(s, project_id, user):
+        for ep in eps:
             budget = scope_budget.summary(s, "scene", ep.id)
             rows.append(
                 [
@@ -90,7 +93,8 @@ def export_episodes(project_id: uuid.UUID, user=Depends(get_optional_user)):
                     series_names.get(ep.series_id, ""),
                     ep.code or "",
                     ep.name,
-                    ep.deliverable_status or "draft",
+                    # The series' state: an episode is not handed in on its own.
+                    delivery.get(ep.id, "draft"),
                     _name(ep.assignee_user_id),
                     budget["base_usd"] or "",
                     budget["spent_usd"],
@@ -121,20 +125,29 @@ def export_submissions(project_id: uuid.UUID, user=Depends(get_optional_user)):
 
     with get_session() as s:
         _gate(s, project_id, user)
-        eps = {e.id: e for e in _visible_episodes(s, project_id, user)}
-        if not eps:
-            subs: list[Submission] = []
+        # Delivery is per SERIES, so the export is too. Scoped through the
+        # episodes the caller may see: a series they can see nothing of must not
+        # hand them its drive links and rejection reasons.
+        visible_series = {
+            e.series_id for e in _visible_episodes(s, project_id, user) if e.series_id
+        }
+        names = {
+            r.id: (r.code or r.name)
+            for r in s.exec(_select_series(project_id)).all()
+        }
+        if not visible_series:
+            rows_in: list[Submission] = []
         else:
-            subs = list(
+            rows_in = list(
                 s.exec(
                     select(Submission)
-                    .where(Submission.scene_id.in_(list(eps)))  # type: ignore[attr-defined]
+                    .where(Submission.series_id.in_(list(visible_series)))  # type: ignore[attr-defined]
                     .order_by(Submission.submitted_at)  # type: ignore[attr-defined]
                 ).all()
             )
         rows = [
             [
-                (eps[sub.scene_id].code or eps[sub.scene_id].name),
+                names.get(sub.series_id, ""),
                 sub.version,
                 sub.status,
                 _name(sub.submitted_by),
@@ -146,12 +159,12 @@ def export_submissions(project_id: uuid.UUID, user=Depends(get_optional_user)):
                 sub.note or "",
                 sub.drive_url or "",
             ]
-            for sub in subs
+            for sub in rows_in
         ]
     return _csv_response(
         f"submissions-{project_id}.csv",
         [
-            "episode", "version", "status", "submitted_by", "submitted_at",
+            "series", "version", "status", "submitted_by", "submitted_at",
             "assigned_reviewer", "reviewed_by", "reviewed_at", "review_note",
             "submitter_note", "drive_url",
         ],

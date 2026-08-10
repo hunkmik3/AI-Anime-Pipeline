@@ -80,7 +80,7 @@ SELF_SCOPED_ROUTES: dict[str, str] = {
     "POST /api/account/change-password": "changes the caller's own password",
     "GET /api/auth/me": "returns the caller's own account",
     "POST /api/auth/logout": "revokes the caller's own session",
-    "GET /api/my/episodes": "filters to episodes assigned to the caller",
+    "GET /api/my/series": "filters to the series handed to the caller",
     "GET /api/review/queue": "filters to submissions awaiting the caller",
 }
 
@@ -88,7 +88,7 @@ SELF_SCOPED_ROUTES: dict[str, str] = {
 #: Listed explicitly so the exemption is a decision, not an oversight — each was
 #: read and confirmed.
 SERVICE_AUTHORIZED_ROUTES: dict[str, str] = {
-    "POST /api/scenes/{scene_id}/submissions":
+    "POST /api/series/{series_id}/submissions":
         "submission_service.submit enforces assignee-only (nobody else may deliver)",
     "POST /api/submissions/{submission_id}/approve":
         "submission_service resolves the approver chain and forbids self-review",

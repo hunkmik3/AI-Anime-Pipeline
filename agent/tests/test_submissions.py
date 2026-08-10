@@ -51,8 +51,13 @@ def world(client):
     ep = client.post(
         f"/api/projects/{pid}/scenes", json={"name": "EP1", "series_id": sid}, headers=ah
     ).json()["id"]
+    # The series is the deliverable, so it is the series that is handed over.
+    # The episode assignment stays too: it is what decides who works in EP1.
     assert client.patch(
         f"/api/scenes/{ep}/assignee", json={"user_id": str(emp.id)}, headers=_h(client, "pm")
+    ).status_code == 200
+    assert client.patch(
+        f"/api/series/{sid}/assignee", json={"user_id": str(emp.id)}, headers=_h(client, "pm")
     ).status_code == 200
 
     return {
@@ -88,15 +93,15 @@ def test_preview_url_is_embeddable():
 
 
 def test_only_assignee_can_submit(client, world):
-    ep = world["ep"]
+    w_sid = world["sid"]
     # the SP (not the assignee) cannot submit
     r = client.post(
-        f"/api/scenes/{ep}/submissions", json={"drive_url": DRIVE}, headers=world["h"]["sp"]
+        f"/api/series/{w_sid}/submissions", json={"drive_url": DRIVE}, headers=world["h"]["sp"]
     )
     assert r.status_code == 403
     # the assignee can
     ok = client.post(
-        f"/api/scenes/{ep}/submissions", json={"drive_url": DRIVE}, headers=world["h"]["emp"]
+        f"/api/series/{w_sid}/submissions", json={"drive_url": DRIVE}, headers=world["h"]["emp"]
     )
     assert ok.status_code == 200
     body = ok.json()
@@ -108,7 +113,7 @@ def test_only_assignee_can_submit(client, world):
 
 def test_bad_drive_link_rejected(client, world):
     r = client.post(
-        f"/api/scenes/{world['ep']}/submissions",
+        f"/api/series/{world['sid']}/submissions",
         json={"drive_url": "https://youtube.com/watch?v=x"},
         headers=world["h"]["emp"],
     )
@@ -120,7 +125,7 @@ def test_bad_drive_link_rejected(client, world):
 
 def _submit(client, world):
     return client.post(
-        f"/api/scenes/{world['ep']}/submissions",
+        f"/api/series/{world['sid']}/submissions",
         json={"drive_url": DRIVE},
         headers=world["h"]["emp"],
     ).json()
@@ -135,14 +140,14 @@ def test_reject_returns_to_draft_and_keeps_history(client, world):
     )
     assert r.status_code == 200 and r.json()["status"] == "rejected"
 
-    detail = client.get(f"/api/scenes/{world['ep']}/submissions", headers=world["ah"]).json()
-    assert detail["episode"]["deliverable_status"] == "draft"  # back to draft
+    detail = client.get(f"/api/series/{world['sid']}/submissions", headers=world["ah"]).json()
+    assert detail["series"]["deliverable_status"] == "draft"  # back to draft
     assert detail["submissions"][0]["review_note"] == "âm thanh lệch ở 0:42"
 
     # resubmit → v2, v1 still on record
     v2 = _submit(client, world)
     assert v2["version"] == 2
-    hist = client.get(f"/api/scenes/{world['ep']}/submissions", headers=world["ah"]).json()
+    hist = client.get(f"/api/series/{world['sid']}/submissions", headers=world["ah"]).json()
     assert [s["version"] for s in hist["submissions"]] == [2, 1]
     assert [s["status"] for s in hist["submissions"]] == ["submitted", "rejected"]
 
@@ -153,16 +158,16 @@ def test_reject_requires_a_reason(client, world):
     assert r.status_code == 400
 
 
-def test_approve_locks_the_episode(client, world):
+def test_approve_locks_the_series(client, world):
     v1 = _submit(client, world)
     assert client.post(
         f"/api/submissions/{v1['id']}/approve", json={}, headers=world["h"]["sp"]
     ).status_code == 200
-    detail = client.get(f"/api/scenes/{world['ep']}/submissions", headers=world["ah"]).json()
-    assert detail["episode"]["deliverable_status"] == "approved"
+    detail = client.get(f"/api/series/{world['sid']}/submissions", headers=world["ah"]).json()
+    assert detail["series"]["deliverable_status"] == "approved"
     # no further submissions once approved
     again = client.post(
-        f"/api/scenes/{world['ep']}/submissions",
+        f"/api/series/{world['sid']}/submissions",
         json={"drive_url": DRIVE},
         headers=world["h"]["emp"],
     )
@@ -182,15 +187,16 @@ def test_cannot_review_twice(client, world):
 def test_chain_skips_the_submitter(client, world):
     """When the Series Producer is also the assignee, review must fall through
     to the PM instead of letting them approve their own cut."""
-    ep = world["ep"]
-    # reassign the episode to the SP themselves
+    w_sid = world["sid"]
+    # hand the SERIES to the SP themselves — they are its reviewer AND now the
+    # person delivering it, which is the collision the chain exists for.
     assert client.patch(
-        f"/api/scenes/{ep}/assignee",
+        f"/api/series/{w_sid}/assignee",
         json={"user_id": str(world["sp"].id)},
         headers=world["h"]["pm"],
     ).status_code == 200
     body = client.post(
-        f"/api/scenes/{ep}/submissions", json={"drive_url": DRIVE}, headers=world["h"]["sp"]
+        f"/api/series/{w_sid}/submissions", json={"drive_url": DRIVE}, headers=world["h"]["sp"]
     ).json()
     assert body["approver_name"] == "PM Anh A"  # fell through to the PM
     # and the SP cannot review it
@@ -209,18 +215,21 @@ def test_employee_cannot_review(client, world):
 # ── Listings ───────────────────────────────────────────────────────────────
 
 
-def test_my_episodes_lists_only_mine(client, world):
-    mine = client.get("/api/my/episodes", headers=world["h"]["emp"]).json()["episodes"]
-    assert [e["id"] for e in mine] == [world["ep"]]
-    # the SP has no assigned episodes
-    assert client.get("/api/my/episodes", headers=world["h"]["sp"]).json()["episodes"] == []
+def test_my_work_lists_the_series_they_hand_in(client, world):
+    """One row for the series, not one per episode. The page is a list of things
+    to deliver, and the series is delivered once."""
+    mine = client.get("/api/my/series", headers=world["h"]["emp"]).json()["series"]
+    assert [e["id"] for e in mine] == [world["sid"]]
+    assert mine[0]["episode_count"] == 1
+    # the SP reviews this series; they do not hand it in
+    assert client.get("/api/my/series", headers=world["h"]["sp"]).json()["series"] == []
 
 
 def test_review_queue_routes_to_the_approver(client, world):
     _submit(client, world)
     sp_queue = client.get("/api/review/queue", headers=world["h"]["sp"]).json()["items"]
     assert len(sp_queue) == 1
-    assert sp_queue[0]["episode"]["assignee_name"] == "Employee C"
+    assert sp_queue[0]["series"]["assignee_name"] == "Employee C"
     # the employee sees nothing to review
     assert client.get("/api/review/queue", headers=world["h"]["emp"]).json()["items"] == []
 
@@ -233,14 +242,14 @@ def test_only_one_attempt_can_await_review(client, world):
     reviewer's queue showed several rows for one episode with nothing to say which
     one counted.
     """
-    ep, eh = world["ep"], world["h"]["emp"]
+    w_sid, eh = world["sid"], world["h"]["emp"]
     first = client.post(
-        f"/api/scenes/{ep}/submissions", json={"drive_url": DRIVE}, headers=eh
+        f"/api/series/{w_sid}/submissions", json={"drive_url": DRIVE}, headers=eh
     )
     assert first.status_code == 200
 
     again = client.post(
-        f"/api/scenes/{ep}/submissions", json={"drive_url": DRIVE}, headers=eh
+        f"/api/series/{w_sid}/submissions", json={"drive_url": DRIVE}, headers=eh
     )
     assert again.status_code == 409
     assert "waiting for review" in again.json()["detail"]
@@ -253,31 +262,31 @@ def test_only_one_attempt_can_await_review(client, world):
         headers=world["ah"],
     )
     retry = client.post(
-        f"/api/scenes/{ep}/submissions", json={"drive_url": DRIVE}, headers=eh
+        f"/api/series/{w_sid}/submissions", json={"drive_url": DRIVE}, headers=eh
     )
     assert retry.status_code == 200
     assert retry.json()["version"] == 2
 
 
-def test_the_review_queue_holds_one_row_per_episode(client, world):
+def test_the_review_queue_holds_one_row_per_series(client, world):
     """The consequence the guard above protects: a reviewer's inbox must never show
-    the same episode twice, because only one attempt can be open at a time."""
-    ep, eh = world["ep"], world["h"]["emp"]
-    client.post(f"/api/scenes/{ep}/submissions", json={"drive_url": DRIVE}, headers=eh)
+    the same series twice, because only one attempt can be open at a time."""
+    w_sid, eh = world["sid"], world["h"]["emp"]
+    client.post(f"/api/series/{w_sid}/submissions", json={"drive_url": DRIVE}, headers=eh)
     # A refused second attempt must not add a row either.
-    client.post(f"/api/scenes/{ep}/submissions", json={"drive_url": DRIVE}, headers=eh)
+    client.post(f"/api/series/{w_sid}/submissions", json={"drive_url": DRIVE}, headers=eh)
 
     items = client.get("/api/review/queue", headers=world["ah"]).json()["items"]
-    scene_ids = [i["submission"]["scene_id"] for i in items]
-    assert scene_ids, "the queue should hold the one open attempt"
-    assert len(scene_ids) == len(set(scene_ids)), "one episode appeared twice"
+    ids = [i["submission"]["series_id"] for i in items]
+    assert ids, "the queue should hold the one open attempt"
+    assert len(ids) == len(set(ids)), "one series appeared twice"
 
 
 def test_a_folder_link_says_so(client, world):
     """People paste where they *put* the cut, not the cut. Repeating the required
     format doesn't help someone who thinks they already followed it."""
     r = client.post(
-        f"/api/scenes/{world['ep']}/submissions",
+        f"/api/series/{world['sid']}/submissions",
         json={"drive_url": "https://drive.google.com/drive/folders/1o77ivF7hqQNRJz2o"},
         headers=world["h"]["emp"],
     )

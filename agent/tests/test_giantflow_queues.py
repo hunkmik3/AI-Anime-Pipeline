@@ -75,7 +75,9 @@ def test_review_queue_holds_only_submitted_work(client):
     for r in rows:
         assert r["raw_media_id"]
         assert r["delivered_media_id"]
-        assert r["series_name"] == "X-MEN"
+        # Read back rather than asserted literally: comic series are named to a
+        # convention now (GCSA_<number>_<Title>), and this test is about the queue.
+        assert r["series_name"].endswith("X-MEN")
 
 
 def test_review_queue_can_be_narrowed_to_one_comic(client):

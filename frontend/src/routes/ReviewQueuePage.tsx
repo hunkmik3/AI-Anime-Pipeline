@@ -3,7 +3,7 @@ import {
   approveSubmission,
   listReviewQueue,
   rejectSubmission,
-  type DeliverableEpisodeDTO,
+  type DeliverableSeriesDTO,
   type SubmissionDTO,
 } from "../api/client";
 import { DeliveryCard } from "../components/DeliveryCard";
@@ -31,7 +31,7 @@ import { StudioNav } from "../components/shell/StudioNav";
 
 interface QueueItem {
   submission: SubmissionDTO;
-  episode: DeliverableEpisodeDTO | null;
+  series: DeliverableSeriesDTO | null;
 }
 
 export function ReviewQueuePage() {
@@ -74,15 +74,15 @@ export function ReviewQueuePage() {
       {items !== null && items.length === 0 ? (
         <div className="inbox__empty">
           <b>Nothing waiting on you.</b>
-          Submissions appear here when someone hands in an episode you review.
+          Submissions appear here when someone hands in a series you review.
         </div>
       ) : null}
 
       <ul className="inbox">
-        {(items ?? []).map(({ submission: s, episode: ep }) => (
+        {(items ?? []).map(({ submission: s, series: sr }) => (
           <DeliveryCard
             key={s.id}
-            episode={ep}
+            series={sr}
             submission={s}
             tone="todo"
             status="awaiting your verdict"
