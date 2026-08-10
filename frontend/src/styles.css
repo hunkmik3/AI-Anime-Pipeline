@@ -9128,7 +9128,11 @@ button:disabled {
   border-radius: 999px; line-height: 1;
 }
 .notif__panel {
-  position: absolute; top: calc(100% + 8px); left: 0; z-index: 300;
+  /* Hangs from the bell's RIGHT edge, not its left. The bell sits near the right
+     end of the top bar, so opening rightwards pushed 340px of panel off the
+     screen — the half with the version numbers and the "n new" count, which is
+     the half it is opened for. */
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 300;
   width: min(340px, 92vw); max-height: 70vh; overflow: auto;
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
   box-shadow: 0 18px 44px -12px rgba(0,0,0,0.6);
