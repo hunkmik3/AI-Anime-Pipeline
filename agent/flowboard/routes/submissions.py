@@ -424,6 +424,56 @@ class ProducerBody(BaseModel):
     user_id: Optional[uuid.UUID] = None  # None clears → chain falls back to PM
 
 
+@router.patch("/api/series/{series_id}/assignee")
+def set_series_assignee(
+    series_id: uuid.UUID,
+    body: ProducerBody,
+    request: Request,
+    user=Depends(get_optional_user),
+):
+    """Hand a whole series to one employee — every episode under it is theirs to
+    work in and to hand in.
+
+    The ordinary case: one person builds a series, and a PM should not have to
+    assign twelve episodes one at a time. A per-episode assignment still overrides
+    it, which is how a series is split when one person is overloaded.
+
+    Deliberately NOT `producer_user_id`, which sits beside it: that is the first
+    reviewer in the approver chain, and putting the artist there would make them
+    the approver of their own submissions.
+    """
+    with get_session() as s:
+        series = s.get(Series, series_id)
+        if series is None:
+            raise HTTPException(404, "series not found")
+        permissions.require(s, user, series.project_id, "member.manage")
+        if body.user_id is not None and s.get(User, body.user_id) is None:
+            raise HTTPException(404, "user not found")
+        previous = series.assignee_user_id
+        series.assignee_user_id = body.user_id
+        s.add(series)
+        s.commit()
+        s.refresh(series)
+        # This grants access to a whole subtree; who changed it is worth keeping.
+        audit_service.record_change(
+            "series.assignee",
+            object_type="series",
+            object_id=series.id,
+            object_label=series.code or series.name,
+            changes={"assignee": (_name(previous), _name(body.user_id))},
+            actor=user,
+            target=body.user_id,
+            ip=audit_service.client_ip(request),
+        )
+        return {
+            "id": str(series.id),
+            "assignee_user_id": (
+                str(series.assignee_user_id) if series.assignee_user_id else None
+            ),
+            "assignee_name": _name(series.assignee_user_id),
+        }
+
+
 @router.patch("/api/series/{series_id}/producer")
 def set_series_producer(
     series_id: uuid.UUID,

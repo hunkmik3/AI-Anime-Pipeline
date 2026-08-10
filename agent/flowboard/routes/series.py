@@ -64,6 +64,10 @@ def _series_dict(
         # Exposed here so the structure UI can show and change who nominates.
         "producer_user_id": str(row.producer_user_id) if row.producer_user_id else None,
         "producer_name": _user_name(row.producer_user_id),
+        # …and the person who BUILDS it. The pair are the two ends of the handover
+        # and are never the same field: one reviews, one delivers.
+        "assignee_user_id": str(row.assignee_user_id) if row.assignee_user_id else None,
+        "assignee_name": _user_name(row.assignee_user_id),
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
     if episode_count is not None:

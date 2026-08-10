@@ -11,6 +11,7 @@ import {
   listAssignableUsers,
   listSeriesEpisodes,
   setEpisodeAssignee,
+  setSeriesAssignee,
   patchScene,
   patchSeries,
   type SceneDTO,
@@ -528,16 +529,16 @@ interface ProjectLite {
 function SeriesForm({
   projects,
   editing,
-  crewNames,
   staff,
   onClose,
   onSaved,
 }: {
   projects: ProjectLite[];
   editing: Row | null;
-  crewNames: string[];
-  /** Real accounts. The person who produces a series is somebody with a login,
-   *  not a name typed into a sheet — so this is the list the picker offers. */
+  /** Real accounts. Handing over a series grants access to every episode under
+   *  it, and only an account can be granted anything — so this picker offers
+   *  accounts and not the sheet's free-text crew pool, which still feeds the
+   *  four per-episode crew columns where a name is only a record. */
   staff: { id: string; name: string }[];
   onClose: () => void;
   onSaved: () => void;
@@ -631,7 +632,10 @@ function SeriesForm({
     if (busy || !name.trim() || !projectId) return;
     setBusy(true);
     try {
-      const production = { ...f };
+      // The sheet's name column is written from the same choice as the account
+      // below, so the two cannot say different things about who has the series.
+      const chosen = staff.find((u) => u.id === assigneeId);
+      const production = { ...f, assignee: chosen?.name ?? "" };
       let seriesId: string;
       if (editing) {
         await patchSeries(editing.id, { name: name.trim(), code: code.trim(), production });
@@ -643,6 +647,14 @@ function SeriesForm({
           production,
         });
         seriesId = created.id;
+      }
+      // The handover itself — a separate call because it grants access to a whole
+      // subtree, so it is audited and gated on member.manage rather than riding
+      // along inside a metadata patch. Sent whenever it differs from what the row
+      // already had, INCLUDING when it is cleared: taking the series back is the
+      // same act as giving it away.
+      if ((editing?.assignee_user_id ?? "") !== assigneeId) {
+        await setSeriesAssignee(seriesId, assigneeId || null);
       }
       // Create the planned number of EMPTY episodes — artists add the sequences
       // themselves, as many as the cut needs. Idempotent: only missing episodes
@@ -666,13 +678,20 @@ function SeriesForm({
     }
   }
 
-  // Real accounts first. A name already stored that is not an account stays
-  // selectable — legacy sheet rows and contractors without a login exist, and
-  // silently dropping the current value would make an unrelated save blank it.
-  const current = typeof f.assignee === "string" ? f.assignee.trim() : "";
-  const assigneeOptions = Array.from(
-    new Set([...staff.map((u) => u.name), ...crewNames, ...(current ? [current] : [])]),
-  ).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  // Who the series is handed to. An account, because this one grants access to
+  // every episode under it — a name cannot be given a login. Rows written before
+  // this field existed hold only a name; it is matched back to an account so the
+  // dropdown opens on the right person instead of "chưa giao".
+  const [assigneeId, setAssigneeId] = useState("");
+  useEffect(() => {
+    if (editing?.assignee_user_id) {
+      setAssigneeId(editing.assignee_user_id);
+      return;
+    }
+    const legacy = typeof p0.assignee === "string" ? p0.assignee.trim() : "";
+    const match = legacy ? staff.find((u) => u.name === legacy) : undefined;
+    setAssigneeId(match?.id ?? "");
+  }, [editing?.assignee_user_id, p0.assignee, staff]);
 
   return (
     <div
@@ -788,28 +807,34 @@ function SeriesForm({
             {/* Producer is NOT asked for — whoever creates the series is its
                 producer (that's already their project role). Recorded server-side. */}
             <div className="crm-form__grid">
-              {/* A picked account, not typed text.
-                  It was an `<input list=…>`, which suggests names and accepts
-                  anything — so "Nguyễn Quang Huy", "nguyen quang huy" and a
-                  typo were three different producers as far as the column was
-                  concerned, and the sheet this mirrors is read by people.
-                  The stored value is still the NAME: this column records who
-                  did it and grants nothing, so an account id would be an
-                  identifier nobody reading the sheet could resolve. */}
+              {/* This actually hands the series over now.
+                  It used to write a NAME into the production bag, which is what
+                  the sheet column is — and a name grants nothing, so a PM who
+                  assigned here got a person who could not see the project. The
+                  value is an ACCOUNT, saved to `series.assignee_user_id`, and
+                  every episode under the series becomes theirs to work in and
+                  hand in. The sheet's name column is written from the same
+                  choice so the two cannot drift.
+                  Not `producer_user_id`, which sits beside it in the model: that
+                  is the first REVIEWER of this series' submissions. */}
               <label className="crm-field">
-                <span>Assignee (produces the series)</span>
+                <span>Assignee (builds the series)</span>
                 <select
                   className="crm-field__input"
-                  value={f.assignee ?? ""}
-                  onChange={(e) => set("assignee", e.target.value)}
+                  value={assigneeId}
+                  onChange={(e) => setAssigneeId(e.target.value)}
                 >
                   <option value="">— chưa giao —</option>
-                  {assigneeOptions.map((n) => (
-                    <option key={n} value={n}>
-                      {n}
+                  {staff.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name}
                     </option>
                   ))}
                 </select>
+                <small className="crm-field__hint">
+                  Cả series về tay người này — mọi episode bên trong. Giao riêng một
+                  tập cho người khác ở bảng Episode thì tập đó theo người kia.
+                </small>
               </label>
             </div>
           </section>
@@ -1102,7 +1127,6 @@ export function ProductionCRM() {
         <SeriesForm
           projects={projects}
           editing={formFor === "new" ? null : formFor}
-          crewNames={crewNames}
           staff={staff}
           onClose={() => setFormFor(null)}
           onSaved={() => void load()}

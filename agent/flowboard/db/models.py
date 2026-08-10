@@ -117,6 +117,17 @@ class Series(SQLModel, table=True):
     producer_user_id: Optional[uuid.UUID] = Field(
         default=None, foreign_key="app_user.id", index=True
     )
+    # The person who BUILDS this series — every episode under it is theirs to work
+    # in and to hand in. Separate from `producer_user_id` above on purpose: that
+    # one is the reviewer, so putting the artist there would make them the approver
+    # of their own submissions. One field cannot be both ends of a handover.
+    #
+    # Per-episode assignment (`Scene.assignee_user_id`) still stands and is
+    # narrower; this is for the ordinary case where one person takes a whole
+    # series and a PM does not want to assign twelve episodes one at a time.
+    assignee_user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="app_user.id", index=True
+    )
     order_index: int = 0
     settings: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
     # Phase 10 CRM: production-tracking bag mirroring the Series_Master sheet

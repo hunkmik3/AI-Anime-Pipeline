@@ -165,11 +165,16 @@ def submit(
 
     is_admin = user is not None and user.role == "admin"
     if user is not None and not is_admin:
-        if scene.assignee_user_id is None:
+        # Either the episode is theirs, or the whole series is. A PM who hands over
+        # a twelve-episode series does not then assign twelve episodes, and without
+        # this the person they gave it to could open every episode and hand none of
+        # them in.
+        owner = _work_owner(session, scene)
+        if owner is None:
             raise SubmissionError(
                 "forbidden", "this episode has no assignee — ask your PM to assign it"
             )
-        if scene.assignee_user_id != user.id:
+        if owner != user.id and scene.assignee_user_id != user.id:
             raise SubmissionError(
                 "forbidden", "only the assigned employee can submit this episode"
             )
@@ -328,15 +333,59 @@ def reject(
 # ── Inbox / my-work listings ────────────────────────────────────────────────
 
 
+def _work_owner(session: Session, scene: Scene) -> Optional[uuid.UUID]:
+    """Who is on the hook for this episode: its own assignee, else whoever the
+    whole series was handed to. ``None`` when nobody has been given it."""
+    if scene.assignee_user_id is not None:
+        return scene.assignee_user_id
+    if scene.series_id:
+        series = session.get(Series, scene.series_id)
+        if series is not None:
+            return series.assignee_user_id
+    return None
+
+
 def episodes_for_assignee(session: Session, user_id: uuid.UUID) -> list[Scene]:
-    """Episodes assigned to this employee (their "My work" page)."""
-    return list(
+    """Episodes this employee is on the hook for (their "My work" page).
+
+    Episodes assigned to them directly, plus every episode of a series handed to
+    them as a whole. Without the second, a PM assigning a twelve-episode series
+    left that person's "My work" page empty — and it is the page they work from.
+
+    An episode inside their series that was then assigned to somebody ELSE is not
+    theirs: the narrower assignment is a deliberate act and overrides the sweep.
+    """
+    mine = list(
         session.exec(
             select(Scene)
             .where(Scene.assignee_user_id == user_id)
             .order_by(Scene.order_index, Scene.created_at)
         ).all()
     )
+    series_ids = [
+        sid
+        for sid in session.exec(
+            select(Series.id).where(Series.assignee_user_id == user_id)
+        ).all()
+    ]
+    if series_ids:
+        mine += list(
+            session.exec(
+                select(Scene)
+                .where(
+                    Scene.series_id.in_(series_ids),  # type: ignore[attr-defined]
+                    Scene.assignee_user_id.is_(None),  # type: ignore[union-attr]
+                )
+                .order_by(Scene.order_index, Scene.created_at)
+            ).all()
+        )
+    seen: set[uuid.UUID] = set()
+    out = []
+    for sc in mine:
+        if sc.id not in seen:
+            seen.add(sc.id)
+            out.append(sc)
+    return out
 
 
 def review_queue(session: Session, user: Optional[User]) -> list[Submission]:

@@ -68,7 +68,10 @@ def list_projects(
             .where(SceneCollaborator.user_id == owner_user_id)
         )
         produced_pids = select(Series.project_id).where(
-            Series.producer_user_id == owner_user_id
+            or_(
+                Series.producer_user_id == owner_user_id,
+                Series.assignee_user_id == owner_user_id,
+            )
         )
         stmt = stmt.where(
             or_(

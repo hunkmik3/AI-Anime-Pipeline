@@ -1156,6 +1156,11 @@ export interface SeriesDTO {
   /** Phase 11: the Series Producer — first reviewer in the approver chain. */
   producer_user_id?: string | null;
   producer_name?: string | null;
+  /** The employee who BUILDS the series: every episode under it is theirs to work
+   *  in and to hand in, unless an episode names somebody else. Never the same
+   *  field as the producer above — that one reviews what this one delivers. */
+  assignee_user_id?: string | null;
+  assignee_name?: string | null;
   /** Live per-status episode rollup (list/detail only). */
   stats?: SeriesStats;
   /** Phase 11.1: credit-budget rollup (list only). */
@@ -1832,6 +1837,17 @@ export function setEpisodeAssignee(
 }
 
 /** PM sets the Series Producer (first reviewer in the approver chain). */
+/** Hand a whole series to one employee (every episode under it becomes theirs). */
+export function setSeriesAssignee(
+  seriesId: string,
+  userId: string | null,
+): Promise<{ id: string; assignee_user_id: string | null; assignee_name: string | null }> {
+  return api(`/api/series/${seriesId}/assignee`, {
+    method: "PATCH",
+    body: JSON.stringify({ user_id: userId }),
+  });
+}
+
 export function setSeriesProducer(
   projectId: string,
   userId: string | null,

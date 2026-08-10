@@ -35,6 +35,7 @@ import uuid
 from typing import Optional
 
 from fastapi import HTTPException
+from sqlalchemy import or_
 from sqlmodel import Session, select
 
 from flowboard.db.models import Project, ProjectMember, User
@@ -179,7 +180,13 @@ def _holds_work_in(session: Session, user: User, project_id: uuid.UUID) -> bool:
     return bool(
         session.exec(
             select(Series.id)
-            .where(Series.project_id == project_id, Series.producer_user_id == user.id)
+            .where(
+                Series.project_id == project_id,
+                or_(
+                    Series.producer_user_id == user.id,
+                    Series.assignee_user_id == user.id,
+                ),
+            )
             .limit(1)
         ).first()
     )
@@ -290,13 +297,20 @@ def visible_scope(
             )
         ).all()
     )
-    # Series they produce — that whole subtree is theirs (the "Manager assigned
-    # at Series" case: every episode under it is visible).
+    # Series that are theirs — the whole subtree is, every episode under it.
+    #
+    # Two ways to hold one, and they are different jobs: `producer_user_id` reviews
+    # the series (first link in the approver chain), `assignee_user_id` builds it.
+    # Both need to see all of it, which is why they are one query here and stay
+    # firmly apart everywhere else.
     produced = set(
         session.exec(
             select(Series.id).where(
                 Series.project_id == project_id,
-                Series.producer_user_id == user.id,
+                or_(
+                    Series.producer_user_id == user.id,
+                    Series.assignee_user_id == user.id,
+                ),
             )
         ).all()
     )
