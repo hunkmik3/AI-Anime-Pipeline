@@ -534,9 +534,31 @@ function SeriesForm({
     }
   })();
 
-  const [projectId, setProjectId] = useState(
+  // The RAW restored value — it may name a project that no longer exists. Use
+  // `projectId` below, never this.
+  const [rawProjectId, setProjectId] = useState(
     (draft0?.projectId as string) ?? editing?.project_id ?? projects[0]?.id ?? "",
   );
+  // A draft outlives the project it was written against: data gets wiped, a
+  // project gets deleted, and the uuid in localStorage stops resolving. That was
+  // invisible, because a <select> whose value matches no <option> renders as the
+  // FIRST option — so the form showed a real project sitting there selected while
+  // the state held a dead id, and Save came back "project not found" pointing at a
+  // project plainly on the screen.
+  //
+  // Resolved in the same render as the select reads it, not in an effect: an
+  // effect leaves one render where the box and the request disagree, and that
+  // render is long enough to submit in.
+  const projectId = projects.some((p) => p.id === rawProjectId)
+    ? rawProjectId
+    : projects[0]?.id ?? "";
+  // Write the correction back so the stale id leaves the draft too — otherwise it
+  // sits there and comes back the next time the list loads slowly. Skipped while
+  // the list is still empty, which would otherwise clear a perfectly good draft.
+  useEffect(() => {
+    if (projects.length > 0 && projectId !== rawProjectId) setProjectId(projectId);
+  }, [projects.length, projectId, rawProjectId]);
+
   const [name, setName] = useState((draft0?.name as string) ?? editing?.name ?? "");
   const [code, setCode] = useState((draft0?.code as string) ?? editing?.code ?? "");
   const [f, setF] = useState<Record<string, string>>(() => {
