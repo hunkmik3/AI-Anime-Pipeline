@@ -170,7 +170,40 @@ def me(user: User = Depends(get_current_user)) -> dict:
     if summ:
         d["available_usd"] = summ["available_usd"]
         d["reserved_usd"] = summ["reserved_usd"]
+    d["products"] = _products(user)
     return d
+
+
+def _products(user: User) -> dict:
+    """Which of the two products this account belongs to.
+
+    They are separate places of work, not two views of one. A panel artist has no
+    business in the production tree and a video editor has none in somebody's
+    comic, so the header should not offer a door that leads to an empty page or a
+    404 — the enforcement is per request either way; this is what stops the
+    interface lying about what is there.
+
+    `flow_manual` is the exception that keeps the old tool reachable: an account
+    on the studio side still gets the free-form image workspace at
+    /giantflow/studio, which is what Giantflow was before panel production was
+    built on top of it. It is a scratch space, not somebody's comic.
+    """
+    from flowboard.db import get_session
+    from flowboard.services import flow_permissions as fp
+    from flowboard.services import permissions as sp
+
+    staff = getattr(user, "role", None) in ("admin", "manager")
+    with get_session() as s:
+        flow = staff or fp.has_any_standing(s, user)
+        studio = staff or bool(sp.work_project_ids(s, user.id)) or bool(
+            sp.owned_or_member_project_ids(s, user.id)
+        )
+    return {
+        "studio": bool(studio),
+        "flow": bool(flow),
+        # Anyone signed in may use the free-form studio; it holds no comic.
+        "flow_manual": True,
+    }
 
 
 @router.get("/notifications")

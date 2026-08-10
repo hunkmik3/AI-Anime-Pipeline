@@ -47,6 +47,11 @@ def _fixture(client):
         panel = ps.import_panels(s, batch.id, entries=[("PANEL001.png", "media-1")])[0]
         ps.set_member(s, series.id, pm.id, "producer")
         ps.set_member(s, series.id, artist.id, "artist")
+        # A spectator is now somebody DELIBERATELY given that standing. It used to
+        # be the fallback for anyone signed in, which handed every comic to every
+        # account in the building — including the video side, who are not in this
+        # product at all.
+        ps.set_member(s, series.id, viewer.id, "viewer")
         ids = (series.id, batch.id, panel.id)
 
     return ids, {
@@ -92,18 +97,42 @@ def test_batch_assignee_is_an_artist_without_a_member_row(client):
     (series_id, batch_id, _), _ = _fixture(client)
     hand = user_service.create_user("gf_hand", "pw123456", role="user")
     with get_session() as s:
-        assert fp.role_for(s, hand, series_id) == fp.VIEWER
+        # Nothing on the comic side yet, so not a spectator — not here at all.
+        assert fp.role_for(s, hand, series_id) == fp.NONE
         ps.update_batch(s, batch_id, assignee_user_id=hand.id, set_assignee=True)
         # Assigning work already says "this is yours"; a membership row saying it
         # again would be the same fact stored twice.
         assert fp.role_for(s, hand, series_id) == fp.ARTIST
 
 
-def test_signed_in_stranger_can_read_but_not_act(client):
+def test_a_stranger_to_the_comic_side_is_not_a_spectator(client):
+    """Signing in is not a standing here.
+
+    This used to make anybody with an account a `viewer`, which reads every panel
+    of every comic — so a Giant Studio video editor, whose whole business is on
+    the other product, could read the lot. "Has an account" and "works on comics"
+    are different facts and only one of them belongs in this answer.
+    """
     (series_id, _, _), _ = _fixture(client)
     stranger = user_service.create_user("gf_stranger", "pw123456", role="user")
     with get_session() as s:
         role = fp.role_for(s, stranger, series_id)
+    assert role == fp.NONE
+    assert not fp.allows(role, "panel.read")
+    assert not fp.allows(role, "panel.generate")
+
+
+def test_a_colleague_on_another_comic_still_reads_across_the_slate(client):
+    """The half that is kept. Somebody who works on comics may look at the rest of
+    them — the studio reads across its own slate, and that is what viewer is for.
+    What changed is who counts as being on the comic side at all."""
+    (series_id, _, _), _ = _fixture(client)
+    with get_session() as s:
+        other_project = ps.create_project(s, "Other")
+        other_comic = ps.create_series(s, other_project.id, "Something Else")
+        colleague = user_service.create_user("gf_colleague", "pw123456", role="user")
+        ps.set_member(s, other_comic.id, colleague.id, fp.ARTIST)
+        role = fp.role_for(s, colleague, series_id)
     assert role == fp.VIEWER
     assert fp.allows(role, "panel.read")
     assert not fp.allows(role, "panel.generate")

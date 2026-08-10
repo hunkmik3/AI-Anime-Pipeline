@@ -93,10 +93,10 @@ export function App() {
           }
         >
           <Route index element={<Navigate to="/projects" replace />} />
-          <Route path="/projects" element={<ProjectListPage />} />
+          <Route path="/projects" element={<ProductGate need="studio"><ProjectListPage /></ProductGate>} />
           {/* Phase 11: deliverable hand-in + review. /my-work kept as a
               redirect — the old link is in people's history and chat logs. */}
-          <Route path="/work" element={<MyWorkPage />} />
+          <Route path="/work" element={<ProductGate need="studio"><MyWorkPage /></ProductGate>} />
           <Route path="/my-work" element={<Navigate to="/work" replace />} />
           {/* /manage is gone; its job moved onto the object pages. */}
           <Route path="/manage" element={<Navigate to="/projects" replace />} />
@@ -104,7 +104,7 @@ export function App() {
             path="/manage/:projectId"
             element={<ManageRedirect />}
           />
-          <Route path="/review" element={<ReviewQueuePage />} />
+          <Route path="/review" element={<ProductGate need="studio"><ReviewQueuePage /></ProductGate>} />
           {/* Flow Studio, brought over whole from the manga_extract repo. A
               standalone surface: its own board list, its own image engines, no tie
               to Project → Series → Episode yet — so it is a SHARED space, with no
@@ -113,17 +113,17 @@ export function App() {
           {/* Giantflow is now panel production: a project per comic, a grid of
               panels inside it. The free-form image studio stays reachable at
               /giantflow/studio until panel generation replaces it. */}
-          <Route path="/giantflow" element={<PanelProjectsPage />} />
+          <Route path="/giantflow" element={<ProductGate need="flow"><PanelProjectsPage /></ProductGate>} />
           <Route path="/giantflow/studio" element={<FlowApp />} />
-          <Route path="/giantflow/panel/:panelId" element={<PanelWorkspacePage />} />
-          <Route path="/giantflow/panels" element={<PanelAllPage />} />
-          <Route path="/giantflow/review" element={<PanelReviewPage />} />
-          <Route path="/giantflow/my-work" element={<PanelMyWorkPage />} />
-          <Route path="/giantflow/notices" element={<PanelNoticesPage />} />
-          <Route path="/giantflow/batch/:batchId" element={<PanelGridPage />} />
-          <Route path="/giantflow/p/:projectId" element={<PanelSeriesPage />} />
-          <Route path="/giantflow/s/:seriesId" element={<PanelChaptersPage />} />
-          <Route path="/giantflow/c/:chapterId" element={<PanelBatchesPage />} />
+          <Route path="/giantflow/panel/:panelId" element={<ProductGate need="flow"><PanelWorkspacePage /></ProductGate>} />
+          <Route path="/giantflow/panels" element={<ProductGate need="flow"><PanelAllPage /></ProductGate>} />
+          <Route path="/giantflow/review" element={<ProductGate need="flow"><PanelReviewPage /></ProductGate>} />
+          <Route path="/giantflow/my-work" element={<ProductGate need="flow"><PanelMyWorkPage /></ProductGate>} />
+          <Route path="/giantflow/notices" element={<ProductGate need="flow"><PanelNoticesPage /></ProductGate>} />
+          <Route path="/giantflow/batch/:batchId" element={<ProductGate need="flow"><PanelGridPage /></ProductGate>} />
+          <Route path="/giantflow/p/:projectId" element={<ProductGate need="flow"><PanelSeriesPage /></ProductGate>} />
+          <Route path="/giantflow/s/:seriesId" element={<ProductGate need="flow"><PanelChaptersPage /></ProductGate>} />
+          <Route path="/giantflow/c/:chapterId" element={<ProductGate need="flow"><PanelBatchesPage /></ProductGate>} />
           {/* Phase 8.3: project hub (entry point) = SceneView. */}
           <Route path="/projects/:projectId" element={<SceneView />} />
           <Route
@@ -160,6 +160,40 @@ export function App() {
       </Routes>
     </BrowserRouter>
   );
+}
+
+/**
+ * The two products are separate places of work, and a URL typed by hand must not
+ * get round that.
+ *
+ * A comic-only account landing on a Giant Studio page saw an empty project list
+ * and its own name in the header — indistinguishable from a broken app. A studio
+ * account opening /giantflow saw somebody else's comic. The server refuses both;
+ * this decides where they go INSTEAD, which the server cannot do.
+ *
+ * A studio account is sent to the free-form image workspace rather than being
+ * turned away: that is what Giantflow was before panel production was built on
+ * top of it, it holds nobody's comic, and it is the thing they came for.
+ */
+function ProductGate({
+  need,
+  children,
+}: {
+  need: "studio" | "flow";
+  children: React.ReactNode;
+}) {
+  const user = useAuthStore((s) => s.user);
+  // Undefined while /me is in flight — let it through rather than bouncing
+  // somebody off their own page for the half-second before the answer arrives.
+  const products = user?.products;
+  if (!products) return <>{children}</>;
+  if (need === "studio" && !products.studio) {
+    return <Navigate to={products.flow ? "/giantflow" : "/giantflow/studio"} replace />;
+  }
+  if (need === "flow" && !products.flow) {
+    return <Navigate to="/giantflow/studio" replace />;
+  }
+  return <>{children}</>;
 }
 
 function RequireAuth({ children }: { children: React.ReactNode }) {

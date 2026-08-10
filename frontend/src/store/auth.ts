@@ -14,6 +14,17 @@ export interface AuthUser {
   budget_usd?: number;
   spent_usd?: number;
   available_usd?: number;
+  /** Which of the two products this account belongs to.
+   *
+   *  They are separate places of work, not two views of one: a panel artist has
+   *  no business in the production tree and a video editor has none in somebody's
+   *  comic. The server enforces it per request; this is what stops the header
+   *  offering a door that leads to a 404.
+   *
+   *  `flow_manual` is the free-form image workspace at /giantflow/studio — what
+   *  Giantflow was before panel production was built on it. It holds no comic, so
+   *  anyone signed in may use it. */
+  products?: { studio: boolean; flow: boolean; flow_manual: boolean };
 }
 
 interface AuthState {

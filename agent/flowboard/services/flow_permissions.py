@@ -43,6 +43,10 @@ PRODUCER = "producer"
 LEAD = "lead"
 ARTIST = "artist"
 VIEWER = "viewer"
+#: Not in this product at all — an account whose standing is entirely on the
+#: Giant Studio side. Never stored on a member row; only ever the answer to "what
+#: is this person here", and the answer is "nothing".
+NONE = "none"
 
 #: Assignable giantflow roles, most to least authority. ``admin`` is a system
 #: role and is never stored on a member row.
@@ -73,6 +77,11 @@ def normalize_role(role: Optional[str]) -> str:
     r = (role or "").strip().lower()
     if r == LEAD:
         return PRODUCER
+    # Explicit, because the fallback below is ARTIST: without this line "no
+    # standing here" would be read as the working role and hand the whole comic
+    # side to somebody who has never been given a place in it.
+    if r == NONE:
+        return NONE
     return r if r in _RANK else ARTIST
 
 
@@ -151,7 +160,7 @@ def _role_for(session: Session, user: Optional[User], series_id: Optional[int]) 
     if _is_staff(user):
         return ADMIN
     if series_id is None:
-        return VIEWER
+        return VIEWER if has_any_standing(session, user) else NONE
     row = session.exec(
         select(FlowSeriesMember).where(
             FlowSeriesMember.series_id == series_id,
@@ -169,7 +178,39 @@ def _role_for(session: Session, user: Optional[User], series_id: Optional[int]) 
             FlowBatch.assignee_user_id == user.id,
         )
     ).first()
-    return ARTIST if assigned is not None else VIEWER
+    if assigned is not None:
+        return ARTIST
+    # Somebody with a standing on ANOTHER comic is a colleague: the studio reads
+    # across its own slate, which is what VIEWER is for. Somebody with no standing
+    # on any comic is not in this product at all — a Giant Studio editor was
+    # reading every panel of every comic, because the fallback treated "not a
+    # member" and "member with no particular comic" as the same thing.
+    return VIEWER if has_any_standing(session, user) else NONE
+
+
+def has_any_standing(session: Session, user: Optional[User]) -> bool:
+    """Whether this account belongs to the comic side at all.
+
+    A membership row on any comic, or a batch handed to them. Anything else is
+    somebody from the other product, and they get no role here.
+    """
+    if user is None:
+        return True
+    if _is_staff(user):
+        return True
+    if session.exec(
+        select(FlowSeriesMember.series_id)
+        .where(FlowSeriesMember.user_id == user.id)
+        .limit(1)
+    ).first():
+        return True
+    return bool(
+        session.exec(
+            select(FlowBatch.id)
+            .where(FlowBatch.assignee_user_id == user.id)
+            .limit(1)
+        ).first()
+    )
 
 
 #: Roles that see the whole slate. An artist is scoped to their own share —
@@ -240,6 +281,11 @@ def best_role(session: Session, user: Optional[User]) -> str:
     """
     if user is None or _is_staff(user):
         return cap_to_preview(ADMIN)
+    # Nothing on the comic side at all → not a role, an absence. The nav asks this
+    # to decide which product doors to draw, and drawing Giantflow for a Giant
+    # Studio editor sent them to a page that then had to explain itself.
+    if not has_any_standing(session, user):
+        return NONE
     rows = session.exec(
         select(FlowSeriesMember).where(FlowSeriesMember.user_id == user.id)
     ).all()

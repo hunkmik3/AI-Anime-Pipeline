@@ -196,6 +196,30 @@ def holds_work_in(session: Session, user_id: uuid.UUID, project_id: uuid.UUID) -
     return project_id in work_project_ids(session, user_id)
 
 
+def owned_or_member_project_ids(
+    session: Session, user_id: uuid.UUID
+) -> set[uuid.UUID]:
+    """Projects this account owns or is a member of — a standing without work.
+
+    The other half of `work_project_ids`. Together they answer "does this person
+    belong to Giant Studio at all", which is what decides whether the header
+    offers the door.
+    """
+    from flowboard.db.models import Project
+
+    ids = set(
+        session.exec(
+            select(ProjectMember.project_id).where(ProjectMember.user_id == user_id)
+        ).all()
+    )
+    ids |= set(
+        session.exec(
+            select(Project.id).where(Project.owner_user_id == user_id)
+        ).all()
+    )
+    return {i for i in ids if i is not None}
+
+
 def role_allows(role: Optional[str], capability: str) -> bool:
     if role is None:
         return False

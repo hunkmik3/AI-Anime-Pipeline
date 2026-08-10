@@ -114,7 +114,12 @@ def test_an_outsider_gets_the_spectator_feed_and_no_jobs(client):
     """
     t = _studio(client)
     _send_back(t["panels_a"][0], by=t["pm_id"], artist=t["a_id"])
-    user_service.create_user("nx_out", "pw123456", role="user")
+    # A spectator, deliberately: signing in is no longer a standing on the comic
+    # side, so the outsider has to be given one to BE an outsider here rather than
+    # somebody from the other product.
+    out = user_service.create_user("nx_out", "pw123456", role="user")
+    with get_session() as s:
+        ps.set_member(s, t["series_id"], out.id, "viewer")
 
     got = client.get("/api/flowstudio/notices", headers=_login(client, "nx_out")).json()
     assert got["role"] == "viewer"

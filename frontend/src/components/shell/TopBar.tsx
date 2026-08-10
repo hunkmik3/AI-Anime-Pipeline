@@ -24,6 +24,9 @@ import { Brand } from "./Brand";
 
 export function TopBar() {
   const user = useAuthStore((s) => s.user);
+  // Both while /me is still in flight, so the bar does not flicker a door
+  // away and back on every load.
+  const products = user?.products ?? { studio: true, flow: true, flow_manual: true };
   const logout = useAuthStore((s) => s.logout);
   const currentProjectId = useProjectStore((s) => s.currentProjectId);
   const { myWork, toReview } = useInboxStore();
@@ -57,9 +60,25 @@ export function TopBar() {
           The counts move with them: an unread badge belongs next to the page it
           is counting, not two levels up where it cannot say what is waiting. The
           product tab still carries the total, so nothing goes unseen from here. */}
+      {/* Only the products this account is actually in.
+          An account whose whole standing is on the comic side was still offered
+          Giant Studio, which then showed an empty project list — a door into a
+          room that is not theirs reads as a fault in the app, not as a boundary.
+
+          The Giantflow door leads somewhere different depending on who opens it.
+          Somebody in a comic gets panel production. Somebody from Giant Studio
+          gets the free-form image workspace — what this tool was before panel
+          production was built on top of it — because that is a scratch space and
+          holds nobody's comic. */}
       <nav className="topbar__nav" aria-label="Products">
-        <TopLink to="/projects" label="Giant Studio" count={myWork + toReview} owns={isStudio} />
-        <TopLink to="/giantflow" label="Giantflow" />
+        {products.studio ? (
+          <TopLink to="/projects" label="Giant Studio" count={myWork + toReview} owns={isStudio} />
+        ) : null}
+        {products.flow ? (
+          <TopLink to="/giantflow" label="Giantflow" />
+        ) : products.flow_manual ? (
+          <TopLink to="/giantflow/studio" label="Giantflow" />
+        ) : null}
       </nav>
 
       <div className="topbar__right">
