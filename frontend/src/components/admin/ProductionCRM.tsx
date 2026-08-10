@@ -507,12 +507,16 @@ function SeriesForm({
   projects,
   editing,
   crewNames,
+  staff,
   onClose,
   onSaved,
 }: {
   projects: ProjectLite[];
   editing: Row | null;
   crewNames: string[];
+  /** Real accounts. The person who produces a series is somebody with a login,
+   *  not a name typed into a sheet — so this is the list the picker offers. */
+  staff: { id: string; name: string }[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -631,6 +635,14 @@ function SeriesForm({
     }
   }
 
+  // Real accounts first. A name already stored that is not an account stays
+  // selectable — legacy sheet rows and contractors without a login exist, and
+  // silently dropping the current value would make an unrelated save blank it.
+  const current = typeof f.assignee === "string" ? f.assignee.trim() : "";
+  const assigneeOptions = Array.from(
+    new Set([...staff.map((u) => u.name), ...crewNames, ...(current ? [current] : [])]),
+  ).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+
   return (
     <div
       className="project-modal-backdrop"
@@ -745,21 +757,29 @@ function SeriesForm({
             {/* Producer is NOT asked for — whoever creates the series is its
                 producer (that's already their project role). Recorded server-side. */}
             <div className="crm-form__grid">
+              {/* A picked account, not typed text.
+                  It was an `<input list=…>`, which suggests names and accepts
+                  anything — so "Nguyễn Quang Huy", "nguyen quang huy" and a
+                  typo were three different producers as far as the column was
+                  concerned, and the sheet this mirrors is read by people.
+                  The stored value is still the NAME: this column records who
+                  did it and grants nothing, so an account id would be an
+                  identifier nobody reading the sheet could resolve. */}
               <label className="crm-field">
                 <span>Assignee (produces the series)</span>
-                <input
+                <select
                   className="crm-field__input"
-                  list="crm-people"
                   value={f.assignee ?? ""}
                   onChange={(e) => set("assignee", e.target.value)}
-                  placeholder="who makes this series"
-                />
+                >
+                  <option value="">— chưa giao —</option>
+                  {assigneeOptions.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
               </label>
-              <datalist id="crm-people">
-                {crewNames.map((n) => (
-                  <option key={n} value={n} />
-                ))}
-              </datalist>
             </div>
           </section>
 
@@ -863,11 +883,23 @@ export function ProductionCRM() {
   const [open, setOpen] = useState<string | null>(null);
   const [formFor, setFormFor] = useState<Row | null | "new">(null);
   const [crewNames, setCrewNames] = useState<string[]>([]);
+  // Real accounts, for the pickers. Two pools on purpose: `crewNames` is the
+  // sheet's own staff list (people who may not have a login at all), and these
+  // are accounts. The producer picker offers both, accounts first.
+  const [staff, setStaff] = useState<{ id: string; name: string }[]>([]);
 
   useEffect(() => {
     void getCrewNames()
       .then((r) => setCrewNames(r.names))
       .catch(() => {});
+    void fetch("/api/admin/users")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows: { id: string; username: string; display_name?: string | null }[]) =>
+        setStaff(
+          (rows ?? []).map((u) => ({ id: u.id, name: u.display_name || u.username })),
+        ),
+      )
+      .catch(() => setStaff([]));
   }, []);
 
   const load = useCallback(async () => {
@@ -1051,6 +1083,7 @@ export function ProductionCRM() {
           projects={projects}
           editing={formFor === "new" ? null : formFor}
           crewNames={crewNames}
+          staff={staff}
           onClose={() => setFormFor(null)}
           onSaved={() => void load()}
         />
