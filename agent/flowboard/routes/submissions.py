@@ -636,7 +636,7 @@ async def download_materials(
 
 async def _clip_bytes(media_id: str):
     """Cached file if there is one, otherwise fetch it once and cache it."""
-    from flowboard.services import media_service
+    from flowboard.services import media as media_service
 
     path = media_service.cached_path(media_id)
     if path is not None and path.exists():
