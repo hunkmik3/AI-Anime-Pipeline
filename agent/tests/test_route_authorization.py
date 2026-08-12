@@ -91,6 +91,12 @@ SELF_SCOPED_ROUTES: dict[str, str] = {
 SERVICE_AUTHORIZED_ROUTES: dict[str, str] = {
     "POST /api/series/{series_id}/submissions":
         "submission_service.submit enforces assignee-only (nobody else may deliver)",
+    "POST /api/submissions/{submission_id}/notes":
+        "_note_guard resolves the cut's series and requires cut.annotate on it",
+    "GET /api/submissions/{submission_id}/notes":
+        "_note_guard, canvas.read — plus the series visibility scope",
+    "POST /api/notes/{note_id}/resolve":
+        "_note_guard, canvas.write — the person who fixes it marks it fixed",
     "POST /api/submissions/{submission_id}/approve":
         "submission_service resolves the approver chain and forbids self-review",
     "POST /api/submissions/{submission_id}/reject":

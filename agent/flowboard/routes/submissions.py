@@ -29,10 +29,12 @@ from sqlmodel import select
 
 from flowboard.db import get_session
 from flowboard.db.models import (
+    EditNote,
     Project,
     Scene,
     SceneCollaborator,
     Series,
+    Shot,
     Submission,
     User,
 )
@@ -601,6 +603,125 @@ def list_edits(series_id: uuid.UUID, user=Depends(get_optional_user)):
         if not permissions.can_see_series(s, user, series.project_id, series_id):
             raise HTTPException(404, "series not found")
         return {"edits": [_sub_dict(r) for r in subs.list_submissions(s, series_id, kind="edit")]}
+
+
+class NoteBody(BaseModel):
+    at_seconds: float = Field(ge=0)
+    body: str = Field(default="", max_length=4000)
+    #: Which sequence this is about. Optional so a general note ("the whole thing
+    #: is too dark") can be left without pinning it to a shot that is not at fault.
+    shot_id: Optional[uuid.UUID] = None
+    drawing_media_id: Optional[str] = Field(default=None, max_length=200)
+
+
+def _note_dict(session, n: EditNote) -> dict:
+    shot = session.get(Shot, n.shot_id) if n.shot_id else None
+    return {
+        "id": n.id,
+        "submission_id": str(n.submission_id),
+        "shot_id": str(n.shot_id) if n.shot_id else None,
+        "shot_code": (shot.code or "") if shot else None,
+        "at_seconds": n.at_seconds,
+        "body": n.body,
+        "drawing_media_id": n.drawing_media_id,
+        "resolved": bool(n.resolved),
+        "resolved_at": n.resolved_at.isoformat() if n.resolved_at else None,
+        "author_name": _name(n.author_user_id),
+        "created_at": n.created_at.isoformat() if n.created_at else None,
+    }
+
+
+def _note_guard(s, user, submission_id: uuid.UUID, capability: str):
+    row = s.get(Submission, submission_id)
+    if row is None or row.series_id is None:
+        raise HTTPException(404, "submission not found")
+    series = s.get(Series, row.series_id)
+    if series is None:
+        raise HTTPException(404, "submission not found")
+    permissions.require(s, user, series.project_id, capability)
+    if not permissions.can_see_series(s, user, series.project_id, series.id):
+        raise HTTPException(404, "submission not found")
+    return row, series
+
+
+@router.post("/api/submissions/{submission_id}/notes")
+def add_note(
+    submission_id: uuid.UUID, body: NoteBody, request: Request,
+    user=Depends(get_optional_user),
+):
+    """Leave a note on a frame of the cut, pinned to the sequence it is about."""
+    with get_session() as s:
+        _note_guard(s, user, submission_id, "cut.annotate")
+        note = EditNote(
+            submission_id=submission_id,
+            shot_id=body.shot_id,
+            at_seconds=float(body.at_seconds),
+            body=(body.body or "").strip(),
+            drawing_media_id=body.drawing_media_id,
+            author_user_id=user.id if user else None,
+        )
+        s.add(note); s.commit(); s.refresh(note)
+        return _note_dict(s, note)
+
+
+@router.get("/api/submissions/{submission_id}/notes")
+def list_notes(submission_id: uuid.UUID, user=Depends(get_optional_user)):
+    """Every note on this cut, in play order — the order they are worked through."""
+    with get_session() as s:
+        _note_guard(s, user, submission_id, "canvas.read")
+        rows = s.exec(
+            select(EditNote)
+            .where(EditNote.submission_id == submission_id)
+            .order_by(EditNote.at_seconds)
+        ).all()
+        return {"notes": [_note_dict(s, n) for n in rows]}
+
+
+@router.post("/api/notes/{note_id}/resolve")
+def resolve_note(note_id: int, done: bool = True, user=Depends(get_optional_user)):
+    """The artist marks a note dealt with — or puts it back.
+
+    `canvas.write`, because the person who fixes it is the one who marks it fixed.
+    Reversible on purpose: "fixed" that cannot be undone makes a mis-click a lie
+    the editor then has to argue with.
+    """
+    with get_session() as s:
+        note = s.get(EditNote, note_id)
+        if note is None:
+            raise HTTPException(404, "note not found")
+        _note_guard(s, user, note.submission_id, "canvas.write")
+        note.resolved = bool(done)
+        note.resolved_by = (user.id if user and done else None)
+        note.resolved_at = __import__("datetime").datetime.now(
+            __import__("datetime").timezone.utc) if done else None
+        s.add(note); s.commit(); s.refresh(note)
+        return _note_dict(s, note)
+
+
+@router.get("/api/shots/{shot_id}/notes")
+def notes_on_shot(shot_id: uuid.UUID, user=Depends(get_optional_user)):
+    """What the editor said about THIS sequence.
+
+    The half the artist sees. Arranged by sequence rather than by cut, because an
+    artist opening a sequence is asking "what is wrong with this one" — making
+    them open the editor's timeline and find their own shot in it is asking them
+    to do the app's job.
+    """
+    with get_session() as s:
+        shot = s.get(Shot, shot_id)
+        if shot is None:
+            raise HTTPException(404, "sequence not found")
+        scene = s.get(Scene, shot.scene_id)
+        permissions.require_scene(s, user, scene.project_id, scene.id, "canvas.read")
+        rows = s.exec(
+            select(EditNote)
+            .where(EditNote.shot_id == shot_id)
+            .order_by(EditNote.resolved, EditNote.at_seconds)
+        ).all()
+        return {
+            "notes": [_note_dict(s, n) for n in rows],
+            "open_count": sum(1 for n in rows if not n.resolved),
+        }
 
 
 @router.get("/api/my/materials")

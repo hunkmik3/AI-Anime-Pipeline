@@ -815,6 +815,49 @@ class UsageRecord(SQLModel, table=True):
     settled_at: Optional[datetime] = None
 
 
+class EditNote(SQLModel, table=True):
+    """One note the editor left on a frame of their cut.
+
+    SyncSketch in one row: where in the cut, which sequence it is really about,
+    what was said, and a drawing over the frame.
+
+    ``shot_id`` is the point of the whole feature and it is CHOSEN, not computed.
+    The cut is assembled outside the app — trimmed, reordered, shots dropped — so
+    a timecode cannot be resolved back to a sequence by arithmetic without an EDL
+    the app does not have. The editor is already paused on the frame; picking the
+    clip they are looking at is one click and is always right, where a guess is
+    silently wrong the first time somebody trims a shot.
+
+    ``resolved`` is what stops the second round starting from nothing: without it
+    the editor has to remember which of six notes were acted on.
+    """
+
+    __tablename__ = "edit_note"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    submission_id: uuid.UUID = Field(foreign_key="submission.id", index=True)
+    #: The sequence this is about, as the editor identified it.
+    shot_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="shot.id", index=True
+    )
+    #: Seconds into the editor's cut. Kept as float — a note lands on a frame, and
+    #: 02:47.12 rounded to the second points at the wrong one at 24fps.
+    at_seconds: float = 0.0
+    body: str = ""
+    #: The drawing over the frame, as a media id. Optional: plenty of notes are
+    #: just a sentence, and forcing a canvas export for those costs a round trip.
+    drawing_media_id: Optional[str] = None
+    resolved: bool = Field(default=False, index=True)
+    resolved_by: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="app_user.id"
+    )
+    resolved_at: Optional[datetime] = None
+    author_user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="app_user.id", index=True
+    )
+    created_at: datetime = Field(default_factory=_utcnow, index=True)
+
+
 class DownloadEvent(SQLModel, table=True):
     """A user actually downloaded an output — the strongest "this was used"
     signal we can get without asking them to click anything extra.
