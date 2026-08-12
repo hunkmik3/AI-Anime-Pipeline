@@ -127,3 +127,23 @@ def test_notes_come_back_in_play_order_on_the_cut(world, client):
     _note(client, world, at_seconds=20, body="a")
     got = client.get(f"/api/submissions/{world['cut']}/notes", headers=world["editor"]).json()
     assert [n["body"] for n in got["notes"]] == ["a", "b"]
+
+
+def test_a_drawing_arrives_with_its_note(world, client):
+    """Sent together, not uploaded first: a drawing without its note is an orphan
+    nobody can interpret, and two round trips is two ways to half-fail."""
+    png = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+           "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+    r = _note(client, world, drawing_data_url=png)
+    assert r.status_code == 200, r.text
+    assert r.json()["drawing_media_id"], "the drawing was dropped"
+
+
+def test_a_bad_drawing_does_not_cost_the_note(world, client):
+    """The sentence and the sequence are what route the work to the right person;
+    the drawing makes it precise. Losing the note because the picture would not
+    save trades the whole message for the annotation on it."""
+    r = _note(client, world, drawing_data_url="not-a-data-url")
+    assert r.status_code == 200
+    assert r.json()["drawing_media_id"] is None
+    assert r.json()["body"] == "Mặt bị méo"

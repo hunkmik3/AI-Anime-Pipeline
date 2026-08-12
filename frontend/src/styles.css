@@ -11802,3 +11802,21 @@ button:disabled {
 .epnotes__act { border:1px solid var(--border); background:var(--panel); color:var(--muted);
   border-radius:6px; cursor:pointer; width:24px; height:24px; flex:0 0 auto; }
 .epnotes__act:hover { border-color:var(--accent); color:var(--accent); }
+
+/* The drawing pad over the frame. Only takes the pointer while the pen is on —
+   an editor scrubbing with the pen armed would draw instead of seek, and the
+   control they reach for most is the one they would lose. */
+.cut__stage { position:relative; }
+.cut__pad { position:absolute; inset:0; width:100%; height:100%;
+  pointer-events:none; touch-action:none; }
+.cut__pad.is-on { pointer-events:auto; cursor:crosshair; }
+.cut__tools { position:absolute; right:10px; top:10px; display:flex; gap:3px;
+  background:rgba(10,14,17,.74); border:1px solid rgba(255,255,255,.13);
+  border-radius:9px; padding:4px; }
+.cut__tool { width:28px; height:28px; border:0; border-radius:6px; cursor:pointer;
+  background:transparent; color:#cfd8dd; font-size:13px; }
+.cut__tool:hover { background:rgba(255,255,255,.12); color:#fff; }
+.cut__tool[aria-pressed="true"] { background:#ff5a2e; color:#fff; }
+.cut__notepic img, .epnotes__pic img { display:block; width:52px; height:30px;
+  object-fit:cover; border-radius:5px; border:1px solid var(--border); }
+.epnotes__pic { flex:0 0 auto; }

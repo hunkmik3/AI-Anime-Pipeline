@@ -19,6 +19,7 @@ self-review, approver chain); this module maps its error vocab to HTTP.
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Optional
 
@@ -50,6 +51,7 @@ from flowboard.services import editor_service as es
 from flowboard.services import submission_service as subs
 from flowboard.services import user_service
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["submissions"])
 
 _STATUS_BY_CODE = {
@@ -607,6 +609,10 @@ def list_edits(series_id: uuid.UUID, user=Depends(get_optional_user)):
 
 class NoteBody(BaseModel):
     at_seconds: float = Field(ge=0)
+    #: The drawing over the frame, as a `data:image/png;base64,…` URL. Sent with
+    #: the note rather than uploaded first: a drawing without its note is an
+    #: orphan nobody can interpret, and two round trips is two ways to half-fail.
+    drawing_data_url: Optional[str] = Field(default=None, max_length=8_000_000)
     body: str = Field(default="", max_length=4000)
     #: Which sequence this is about. Optional so a general note ("the whole thing
     #: is too dark") can be left without pinning it to a shot that is not at fault.
@@ -631,6 +637,32 @@ def _note_dict(session, n: EditNote) -> dict:
     }
 
 
+def _ingest_drawing(data_url: str) -> Optional[str]:
+    """Store a canvas export and return its media id.
+
+    A failure here does NOT cost the note. The sentence and the sequence are what
+    route the work to the right person; the drawing makes it precise. Losing the
+    note because the picture would not save trades the whole message for the
+    annotation on it.
+    """
+    import base64
+    import uuid as _uuid
+
+    from flowboard.services import media as media_service
+
+    try:
+        header, _, payload = data_url.partition(",")
+        if "base64" not in header or not payload:
+            return None
+        raw = base64.b64decode(payload)
+        mid = str(_uuid.uuid4())
+        if media_service.ingest_inline_bytes(mid, raw, kind="image", mime="image/png"):
+            return mid
+    except Exception:  # noqa: BLE001
+        logger.exception("could not store an annotation drawing")
+    return None
+
+
 def _note_guard(s, user, submission_id: uuid.UUID, capability: str):
     row = s.get(Submission, submission_id)
     if row is None or row.series_id is None:
@@ -652,12 +684,15 @@ def add_note(
     """Leave a note on a frame of the cut, pinned to the sequence it is about."""
     with get_session() as s:
         _note_guard(s, user, submission_id, "cut.annotate")
+        media_id = body.drawing_media_id
+        if not media_id and body.drawing_data_url:
+            media_id = _ingest_drawing(body.drawing_data_url)
         note = EditNote(
             submission_id=submission_id,
             shot_id=body.shot_id,
             at_seconds=float(body.at_seconds),
             body=(body.body or "").strip(),
-            drawing_media_id=body.drawing_media_id,
+            drawing_media_id=media_id,
             author_user_id=user.id if user else None,
         )
         s.add(note); s.commit(); s.refresh(note)

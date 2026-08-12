@@ -1862,7 +1862,12 @@ export function listEditNotes(
  *  is assembled outside the app, so no arithmetic can work it out. */
 export function addEditNote(
   submissionId: string,
-  input: { at_seconds: number; body: string; shot_id?: string | null },
+  input: {
+    at_seconds: number; body: string; shot_id?: string | null;
+    /** The strokes over the frame, as a data URL. Sent WITH the note: a drawing
+     *  without its note is an orphan nobody can interpret. */
+    drawing_data_url?: string | null;
+  },
 ): Promise<EditNoteDTO> {
   return api(`/api/submissions/${submissionId}/notes`, {
     method: "POST",

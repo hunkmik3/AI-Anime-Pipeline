@@ -44,7 +44,10 @@ export function CutReviewPage() {
   const [pick, setPick] = useState<string | null>(null);
   const [body, setBody] = useState("");
   const [busy, setBusy] = useState(false);
+  const [drawing, setDrawing] = useState(false);
   const video = useRef<HTMLVideoElement | null>(null);
+  const pad = useRef<HTMLCanvasElement | null>(null);
+  const drew = useRef(false);
 
   const load = useCallback(async () => {
     const r = await listEditNotes(submissionId);
@@ -70,6 +73,24 @@ export function CutReviewPage() {
     [material],
   );
 
+  /** The strokes over the frame, as a PNG — or nothing if the pad is clean. */
+  function exportDrawing(): string | null {
+    if (!drew.current || !pad.current) return null;
+    try {
+      return pad.current.toDataURL("image/png");
+    } catch {
+      // A tainted canvas would throw. The note is worth more than the drawing.
+      return null;
+    }
+  }
+
+  function clearPad() {
+    const c = pad.current;
+    if (!c) return;
+    c.getContext("2d")?.clearRect(0, 0, c.width, c.height);
+    drew.current = false;
+  }
+
   async function send() {
     if (busy || !body.trim()) return;
     setBusy(true);
@@ -78,7 +99,9 @@ export function CutReviewPage() {
         at_seconds: at,
         body: body.trim(),
         shot_id: pick,
+        drawing_data_url: exportDrawing(),
       });
+      clearPad();
       setBody("");
       await load();
       toast("Đã gửi ghi chú");
@@ -111,10 +134,69 @@ export function CutReviewPage() {
           <video
             ref={video}
             className="cut__video"
-            controls
+            controls={!drawing}
             src={`/api/submissions/${submissionId}/video`}
             onTimeUpdate={(e) => setAt(e.currentTarget.currentTime)}
+            onLoadedMetadata={(e) => {
+              // Size the pad to the frame ONCE it is known, so a stroke lands
+              // where it was drawn instead of on a stretched guess.
+              const c = pad.current;
+              if (c) {
+                c.width = e.currentTarget.videoWidth || 1280;
+                c.height = e.currentTarget.videoHeight || 720;
+              }
+            }}
           />
+          {/* The pad only takes the pointer while the pen is on: an editor
+              scrubbing with the pen armed would draw instead of seek, and the
+              control they reach for most is the one they would lose. */}
+          <canvas
+            ref={pad}
+            className={`cut__pad${drawing ? " is-on" : ""}`}
+            onPointerDown={(e) => {
+              if (!drawing) return;
+              const c = e.currentTarget;
+              c.setPointerCapture(e.pointerId);
+              const ctx = c.getContext("2d");
+              if (!ctx) return;
+              const r = c.getBoundingClientRect();
+              ctx.strokeStyle = "#ff5a2e";
+              ctx.lineWidth = Math.max(3, c.width / 320);
+              ctx.lineCap = "round";
+              ctx.lineJoin = "round";
+              ctx.beginPath();
+              ctx.moveTo(
+                ((e.clientX - r.left) / r.width) * c.width,
+                ((e.clientY - r.top) / r.height) * c.height,
+              );
+            }}
+            onPointerMove={(e) => {
+              if (!drawing || !e.currentTarget.hasPointerCapture(e.pointerId)) return;
+              const c = e.currentTarget;
+              const ctx = c.getContext("2d");
+              const r = c.getBoundingClientRect();
+              if (!ctx) return;
+              ctx.lineTo(
+                ((e.clientX - r.left) / r.width) * c.width,
+                ((e.clientY - r.top) / r.height) * c.height,
+              );
+              ctx.stroke();
+              drew.current = true;
+            }}
+          />
+          <div className="cut__tools">
+            <button
+              className="cut__tool"
+              aria-pressed={drawing}
+              title="Vẽ lên khung hình"
+              onClick={() => setDrawing((v) => !v)}
+            >
+              ✏
+            </button>
+            <button className="cut__tool" title="Xoá nét vẽ" onClick={clearPad}>
+              ⌫
+            </button>
+          </div>
         </div>
 
         {/* Notes as ticks on their own rail. Scanning it answers "how bad is this
@@ -181,6 +263,12 @@ export function CutReviewPage() {
                 {tc(n.at_seconds)}
               </button>
               <span className="cut__noteseq">{n.shot_code || "cả tập"}</span>
+              {n.drawing_media_id ? (
+                <a className="cut__notepic" href={`/media/${n.drawing_media_id}`}
+                   target="_blank" rel="noreferrer" title="Nét vẽ trên khung hình">
+                  <img src={`/media/${n.drawing_media_id}`} alt="" />
+                </a>
+              ) : null}
               <span className="cut__notebody">{n.body}</span>
               <span className="cut__notewho">{n.author_name}</span>
               <button

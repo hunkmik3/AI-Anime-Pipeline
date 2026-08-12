@@ -75,6 +75,12 @@ export function EpisodeNotes({ sceneId }: { sceneId: string }) {
                   className={`epnotes__n${n.resolved ? " is-done" : ""}`}
                 >
                   <span className="epnotes__at">{tc(n.at_seconds)}</span>
+                  {n.drawing_media_id ? (
+                    <a className="epnotes__pic" href={`/media/${n.drawing_media_id}`}
+                       target="_blank" rel="noreferrer" title="Nét vẽ của editor">
+                      <img src={`/media/${n.drawing_media_id}`} alt="" />
+                    </a>
+                  ) : null}
                   <span className="epnotes__b">{n.body}</span>
                   <button
                     className="epnotes__act"
