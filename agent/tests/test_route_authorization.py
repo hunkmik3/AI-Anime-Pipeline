@@ -81,6 +81,7 @@ SELF_SCOPED_ROUTES: dict[str, str] = {
     "GET /api/auth/me": "returns the caller's own account",
     "POST /api/auth/logout": "revokes the caller's own session",
     "GET /api/my/series": "filters to the series handed to the caller",
+    "GET /api/my/materials": "walks series and keeps only those the caller may pull",
     "GET /api/review/queue": "filters to submissions awaiting the caller",
 }
 

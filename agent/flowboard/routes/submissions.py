@@ -559,6 +559,39 @@ def set_series_producer(
 # ── Raw material, for the editor ────────────────────────────────────────────
 
 
+@router.get("/api/my/materials")
+def my_materials(user=Depends(get_optional_user)):
+    """Series this account may pull raw material from — the editor's own page.
+
+    Arranged by person rather than by project, for the same reason "My work" is:
+    an editor is handed series across several projects and their question is
+    "what is waiting for me to cut", which no project page can answer.
+    """
+    with get_session() as s:
+        if user is None:
+            return {"series": []}
+        out = []
+        for sr in s.exec(select(Series).order_by(Series.order_index, Series.created_at)).all():
+            role = permissions.project_role(s, user, sr.project_id)
+            if not permissions.role_allows(role, "material.pull"):
+                continue
+            if not permissions.can_see_series(s, user, sr.project_id, sr.id):
+                continue
+            project = s.get(Project, sr.project_id)
+            data = es.materials(s, sr.id)
+            out.append({
+                "id": str(sr.id),
+                "name": sr.name,
+                "code": sr.code or "",
+                "project_name": project.name if project else None,
+                "role": role,
+                "episode_count": len(data["episodes"]),
+                "clip_count": data["clip_count"],
+                "deliverable_status": sr.deliverable_status or "draft",
+            })
+        return {"series": out}
+
+
 @router.get("/api/series/{series_id}/materials")
 def list_materials(
     series_id: uuid.UUID, all_takes: bool = False, user=Depends(get_optional_user)

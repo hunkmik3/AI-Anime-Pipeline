@@ -1823,6 +1823,40 @@ export function rejectSubmission(id: string, note: string): Promise<SubmissionDT
   });
 }
 
+export interface MaterialSeriesDTO {
+  id: string; name: string; code: string;
+  project_name: string | null; role: string;
+  episode_count: number; clip_count: number;
+  deliverable_status: string;
+}
+export interface MaterialsDTO {
+  series_id: string; name?: string; clip_count: number;
+  episodes: {
+    scene_id: string; code: string; name: string; sequence_count: number;
+    sequences: {
+      shot_id: string; code: string; take_count: number;
+      clips: { media_id: string; take: number; filename: string;
+               duration_seconds?: number | null; resolution?: string | null }[];
+    }[];
+  }[];
+}
+
+/** Series this account may pull raw material from — the editor's own page. */
+export function listMyMaterials(): Promise<{ series: MaterialSeriesDTO[] }> {
+  return api(`/api/my/materials`);
+}
+
+/** One series' clips, grouped episode → sequence, in play order. */
+export function listSeriesMaterials(seriesId: string): Promise<MaterialsDTO> {
+  return api(`/api/series/${seriesId}/materials`);
+}
+
+/** A plain URL, not a fetch: the browser's own downloader handles a 2 GB file,
+ *  a progress bar and a resume, none of which is worth rebuilding here. */
+export function materialsZipUrl(seriesId: string): string {
+  return `/api/series/${seriesId}/materials.zip`;
+}
+
 /** The series the signed-in employee has to hand in ("My work"). */
 export function listMySeries(): Promise<{ series: DeliverableSeriesDTO[] }> {
   return api(`/api/my/series`);

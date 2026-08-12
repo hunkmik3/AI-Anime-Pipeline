@@ -1,5 +1,7 @@
+import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 
+import { listMyMaterials } from "../../api/client";
 import { useInboxStore } from "../../store/inbox";
 
 /**
@@ -18,6 +20,14 @@ import { useInboxStore } from "../../store/inbox";
  * were written there first and are the shared ones now.)
  */
 export function StudioNav() {
+  // A per-project role, so there is no global answer — ask the server which
+  // series it would hand over, and show the tab when the answer is "some".
+  const [canEdit, setCanEdit] = useState(false);
+  useEffect(() => {
+    void listMyMaterials()
+      .then((r) => setCanEdit(r.series.length > 0))
+      .catch(() => setCanEdit(false));
+  }, []);
   const { myWork, toReview } = useInboxStore();
 
   return (
@@ -25,6 +35,11 @@ export function StudioNav() {
       <nav className="pn__nav">
         <Tab to="/projects" label="Projects" end />
         <Tab to="/work" label="My work" count={myWork} />
+        {/* Only for the person who actually cuts. Hiding it is not the
+            protection — the server is — but a tab leading to "chưa có series nào
+            giao cho bạn" on every account is a tab that teaches people to ignore
+            the strip. */}
+        {canEdit ? <Tab to="/materials" label="Raw material" /> : null}
         <Tab to="/review" label="Review" count={toReview} />
       </nav>
     </div>

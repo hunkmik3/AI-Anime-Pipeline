@@ -24,6 +24,7 @@ import { LegacySceneRedirect } from "./routes/LegacySceneRedirect";
 import { ShotEditor } from "./routes/ShotEditor";
 import { AssetLibraryPage } from "./routes/AssetLibraryPage";
 import { MyWorkPage } from "./routes/MyWorkPage";
+import { MaterialsPage } from "./routes/MaterialsPage";
 import { ReviewQueuePage } from "./routes/ReviewQueuePage";
 import { LoginPage } from "./routes/LoginPage";
 import { AdminPage } from "./routes/AdminPage";
@@ -105,6 +106,10 @@ export function App() {
             element={<ManageRedirect />}
           />
           <Route path="/review" element={<ProductGate need="studio"><ReviewQueuePage /></ProductGate>} />
+          {/* The editor's page: pull the raw material out. Its own route, not a
+              panel inside the project tree — an editor is handed series across
+              several projects and never opens a canvas. */}
+          <Route path="/materials" element={<ProductGate need="studio"><MaterialsPage /></ProductGate>} />
           {/* Flow Studio, brought over whole from the manga_extract repo. A
               standalone surface: its own board list, its own image engines, no tie
               to Project → Series → Episode yet — so it is a SHARED space, with no
