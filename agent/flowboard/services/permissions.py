@@ -49,13 +49,25 @@ PRODUCER = "producer"
 #: producer; it is not assignable and carries no rank.
 LEAD = "lead"
 ARTIST = "artist"
+#: The person who cuts the finished episode together. They take the raw material
+#: out, do the edit in their own software, and bring one file back with notes on
+#: it. Deliberately NOT above artist: an editor generates nothing and rules on
+#: nothing, they answer a different question about the same work. Ranked beside
+#: viewer for that reason — what they get is not "more than viewer", it is the
+#: material and the right to hand a cut back.
+EDITOR = "editor"
 VIEWER = "viewer"
 
 #: Assignable project roles, most to least authority. ``admin`` is a system
 #: role and is never stored on a member row.
-PROJECT_ROLES: tuple[str, ...] = (PRODUCER, ARTIST, VIEWER)
+PROJECT_ROLES: tuple[str, ...] = (PRODUCER, ARTIST, EDITOR, VIEWER)
 
-_RANK: dict[str, int] = {VIEWER: 0, ARTIST: 1, PRODUCER: 3, ADMIN: 4}
+# Editor sits at the same rank as viewer on the READING scale, and gets its own
+# capabilities below. Rank alone cannot express it: an editor may pull the raw
+# material and hand a cut back, which an artist ranked above them cannot be
+# assumed to want to do, and may not generate, which an artist may. A ladder was
+# the wrong shape the moment a role stopped being "more of the same".
+_RANK: dict[str, int] = {VIEWER: 0, EDITOR: 0, ARTIST: 1, PRODUCER: 3, ADMIN: 4}
 
 #: capability → minimum role. Anything not listed is admin-only by omission
 #: (``require`` raises on an unknown capability rather than silently allowing).
@@ -90,6 +102,14 @@ CAPABILITIES: dict[str, str] = {
     # Create / rename / delete the Project itself
     "project.manage": ADMIN,
 }
+
+#: Capabilities an EDITOR holds that its rank does not give it. Kept apart from
+#: the ladder above because that ladder answers "how much authority" and these
+#: answer "which job" — an editor pulls material and hands a cut back, and does
+#: neither more nor less than the person who generated it.
+_EDITOR_EXTRA: frozenset = frozenset({"material.pull", "cut.submit", "cut.annotate"})
+
+CAPABILITIES.update({k: EDITOR for k in _EDITOR_EXTRA})
 
 
 class ProjectAccessDenied(Exception):
@@ -227,6 +247,13 @@ def role_allows(role: Optional[str], capability: str) -> bool:
         needed = CAPABILITIES[capability]
     except KeyError:  # pragma: no cover - programming error
         raise ValueError(f"unknown capability {capability!r}")
+    if capability in _EDITOR_EXTRA:
+        # Rank cannot answer this one. Editor sits at viewer's rank — it is not
+        # "more than viewer", it is a different job — so a rank comparison would
+        # hand the raw material to every viewer on the project. Named roles
+        # instead: the editor, and anyone from artist upwards so a PM can cover
+        # an empty seat.
+        return role == EDITOR or _RANK.get(role, -1) >= _RANK[ARTIST]
     return _RANK.get(role, -1) >= _RANK[needed]
 
 
