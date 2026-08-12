@@ -750,7 +750,12 @@ def my_materials(user=Depends(get_optional_user)):
                 continue
             project = s.get(Project, sr.project_id)
             data = es.materials(s, sr.id)
+            # The editor's own latest cut, so the page can offer the way into it.
+            # Without this the review screen existed and nothing led to it.
+            latest_edit = subs.latest_submission(s, sr.id, kind="edit")
             out.append({
+                "latest_edit_id": str(latest_edit.id) if latest_edit else None,
+                "latest_edit_version": latest_edit.version if latest_edit else None,
                 "id": str(sr.id),
                 "name": sr.name,
                 "code": sr.code or "",

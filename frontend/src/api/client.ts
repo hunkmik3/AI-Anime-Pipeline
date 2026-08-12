@@ -1828,6 +1828,8 @@ export interface MaterialSeriesDTO {
   project_name: string | null; role: string;
   episode_count: number; clip_count: number;
   deliverable_status: string;
+  latest_edit_id: string | null;
+  latest_edit_version: number | null;
 }
 export interface MaterialsDTO {
   series_id: string; name?: string; clip_count: number;

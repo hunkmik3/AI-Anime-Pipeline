@@ -103,6 +103,13 @@ function SeriesCard({
           <h3 className="mat__name">{s.name}</h3>
           <span className="mat__where">{s.project_name}</span>
         </div>
+        {/* The way into the cut. Only once there IS one — a button that opens an
+            empty review screen teaches people the button does nothing. */}
+        {s.latest_edit_id ? (
+          <a className="btn2 btn2--primary" href={`/cut/${s.latest_edit_id}`}>
+            Mở bản dựng v{s.latest_edit_version}
+          </a>
+        ) : null}
         <button className="btn2" onClick={onToggle}>
           {open ? "Thu gọn" : "Xem clip"}
         </button>
