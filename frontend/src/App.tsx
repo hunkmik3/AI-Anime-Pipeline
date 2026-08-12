@@ -25,6 +25,7 @@ import { ShotEditor } from "./routes/ShotEditor";
 import { AssetLibraryPage } from "./routes/AssetLibraryPage";
 import { MyWorkPage } from "./routes/MyWorkPage";
 import { MaterialsPage } from "./routes/MaterialsPage";
+import { CutReviewPage } from "./routes/CutReviewPage";
 import { ReviewQueuePage } from "./routes/ReviewQueuePage";
 import { LoginPage } from "./routes/LoginPage";
 import { AdminPage } from "./routes/AdminPage";
@@ -110,6 +111,10 @@ export function App() {
               panel inside the project tree — an editor is handed series across
               several projects and never opens a canvas. */}
           <Route path="/materials" element={<ProductGate need="studio"><MaterialsPage /></ProductGate>} />
+          {/* One cut, with its notes. Keyed by the submission rather than the
+              series: a series has several cuts and a note belongs to the one it
+              was left on. */}
+          <Route path="/cut/:submissionId" element={<ProductGate need="studio"><CutReviewPage /></ProductGate>} />
           {/* Flow Studio, brought over whole from the manga_extract repo. A
               standalone surface: its own board list, its own image engines, no tie
               to Project → Series → Episode yet — so it is a SHARED space, with no

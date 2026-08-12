@@ -674,7 +674,13 @@ def list_notes(submission_id: uuid.UUID, user=Depends(get_optional_user)):
             .where(EditNote.submission_id == submission_id)
             .order_by(EditNote.at_seconds)
         ).all()
-        return {"notes": [_note_dict(s, n) for n in rows]}
+        row = s.get(Submission, submission_id)
+        # The series comes back with the notes because the page needs the strip of
+        # sequences to pick from, and one call is one round trip.
+        return {
+            "series_id": str(row.series_id) if row and row.series_id else None,
+            "notes": [_note_dict(s, n) for n in rows],
+        }
 
 
 @router.post("/api/notes/{note_id}/resolve")

@@ -1841,6 +1841,47 @@ export interface MaterialsDTO {
   }[];
 }
 
+export interface EditNoteDTO {
+  id: number; submission_id: string;
+  shot_id: string | null; shot_code: string | null;
+  at_seconds: number; body: string;
+  drawing_media_id: string | null;
+  resolved: boolean; author_name: string | null; created_at: string | null;
+}
+
+/** Every note on one cut, in play order — the order they are worked through. */
+export function listEditNotes(
+  submissionId: string,
+): Promise<{ series_id: string | null; notes: EditNoteDTO[] }> {
+  return api(`/api/submissions/${submissionId}/notes`);
+}
+
+/** Leave a note on a frame. `shot_id` is the sequence the editor PICKED — the cut
+ *  is assembled outside the app, so no arithmetic can work it out. */
+export function addEditNote(
+  submissionId: string,
+  input: { at_seconds: number; body: string; shot_id?: string | null },
+): Promise<EditNoteDTO> {
+  return api(`/api/submissions/${submissionId}/notes`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+/** Mark a note dealt with — or put it back. Reversible on purpose. */
+export function resolveEditNote(noteId: number, done = true): Promise<EditNoteDTO> {
+  return api(`/api/notes/${noteId}/resolve?done=${done ? "true" : "false"}`, {
+    method: "POST",
+  });
+}
+
+/** What the editor said about ONE sequence — the artist's half. */
+export function listShotNotes(
+  shotId: string,
+): Promise<{ notes: EditNoteDTO[]; open_count: number }> {
+  return api(`/api/shots/${shotId}/notes`);
+}
+
 /** Series this account may pull raw material from — the editor's own page. */
 export function listMyMaterials(): Promise<{ series: MaterialSeriesDTO[] }> {
   return api(`/api/my/materials`);

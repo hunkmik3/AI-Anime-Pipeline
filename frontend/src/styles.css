@@ -11717,3 +11717,53 @@ button:disabled {
   color:var(--muted); }
 .mat__clipf b { color:var(--text); font-weight:600; font-size:11.5px;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* ── The editor's cut, with notes ──────────────────────────────────────────
+   The player IS the page: a note is left while watching, so the video takes the
+   width and the controls sit under it. A form with a video inside would make the
+   watching the secondary act.                                                */
+.cut { display:flex; flex-direction:column; gap:0; border:1px solid var(--border);
+  border-radius:12px; overflow:hidden; background:var(--panel); }
+.cut__stage { background:#0b0f12; }
+.cut__video { display:block; width:100%; max-height:62vh; background:#0b0f12; }
+/* Notes as ticks on their own rail. Scanning it answers "how bad is this round,
+   and where does it go wrong" — a count in a list cannot. */
+.cut__rail { position:relative; height:16px; background:var(--bg);
+  border-bottom:1px solid var(--border); }
+.cut__tick { position:absolute; top:3px; width:3px; height:10px; padding:0;
+  border:0; border-radius:2px; background:var(--warn,#ffab00); cursor:pointer; }
+.cut__tick:hover { transform:scaleX(2); }
+.cut__tick.is-done { background:var(--accent); }
+.cut__tick:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.cut__ask { padding:14px 15px; background:var(--panel-high,var(--bg));
+  border-bottom:1px solid var(--border); }
+.cut__q { margin:0 0 9px; font-size:13px; color:var(--muted); }
+.cut__q b { color:var(--text); }
+.cut__strip { display:flex; gap:7px; overflow-x:auto; padding-bottom:6px; }
+.cut__pick { flex:0 0 auto; width:96px; padding:0; border:1px solid var(--border);
+  border-radius:8px; overflow:hidden; background:var(--panel); cursor:pointer; }
+.cut__pick[aria-pressed="true"] { border-color:var(--accent);
+  box-shadow:0 0 0 2px rgba(0,167,111,.22); }
+.cut__pick[aria-pressed="true"] .cut__pickn { color:var(--accent); font-weight:600; }
+.cut__pick:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.cut__thumb { display:block; width:100%; aspect-ratio:16/9; object-fit:cover;
+  background:linear-gradient(140deg,#2b3a44,#16202a); }
+.cut__pickn { display:block; padding:4px 0; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:11px; color:var(--muted); }
+.cut__in { display:flex; gap:9px; margin-top:11px; flex-wrap:wrap; }
+.cut__in textarea { flex:1; min-width:220px; min-height:54px; resize:vertical;
+  font:inherit; font-size:13.5px; padding:9px 11px; border-radius:8px;
+  border:1px solid var(--border); background:var(--panel); color:var(--text); }
+.cut__notes { list-style:none; margin:0; padding:8px; display:flex;
+  flex-direction:column; gap:4px; }
+.cut__note { display:flex; align-items:center; gap:11px; padding:8px 10px;
+  border-radius:8px; border:1px solid transparent; font-size:13.5px; flex-wrap:wrap; }
+.cut__note:hover { background:var(--bg); }
+.cut__note.is-done { opacity:.55; }
+.cut__noteat { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px;
+  color:var(--warn,#ffab00); background:none; border:0; cursor:pointer; padding:0; }
+.cut__note.is-done .cut__noteat { color:var(--accent); }
+.cut__noteseq { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px;
+  color:var(--muted); background:var(--bg); border-radius:5px; padding:1px 7px; }
+.cut__notebody { flex:1; min-width:180px; color:var(--text); overflow-wrap:anywhere; }
+.cut__notewho { font-size:11.5px; color:var(--muted); }
