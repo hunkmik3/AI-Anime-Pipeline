@@ -146,7 +146,12 @@ function SeriesCard({
                       >
                         <span className="mat__thumb" />
                         <span className="mat__clipf">
-                          <b>{sq.code || "—"}</b>
+                          {/* The sequence code alone: the card already sits under
+                              its episode heading, so repeating the episode in
+                              every tile spends the width on what is already
+                              known. The full filename is the title attribute and
+                              is what the download is called. */}
+                          <b>{(sq.code || "—").split("_").pop()}</b>
                           <span>
                             v{c.take}
                             {/* The take count only earns its place when there is

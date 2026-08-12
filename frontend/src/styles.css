@@ -11709,7 +11709,11 @@ button:disabled {
 .mat__clip:hover { border-color:var(--accent); }
 .mat__thumb { display:block; aspect-ratio:16/9;
   background:linear-gradient(140deg,#2b3a44,#16202a 60%,#22303a); }
-.mat__clipf { display:flex; align-items:baseline; justify-content:space-between; gap:6px;
-  padding:6px 8px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px;
+/* Stacked, not a row. The filename is 20 mono characters and the take is four
+   more; side by side in a 112px card the take broke onto its own lines and read
+   as "SQ01 v / 2" — three fragments of one label. */
+.mat__clipf { display:flex; flex-direction:column; gap:1px;
+  padding:6px 8px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px;
   color:var(--muted); }
-.mat__clipf b { color:var(--text); font-weight:600; }
+.mat__clipf b { color:var(--text); font-weight:600; font-size:11.5px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
