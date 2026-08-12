@@ -924,6 +924,12 @@ class Submission(SQLModel, table=True):
     __tablename__ = "submission"  # type: ignore[assignment]
 
     id: uuid.UUID = Field(default_factory=_uuid_pk, primary_key=True)
+    #: Which hand-over this is. ``cut`` is the artist handing the generated work
+    #: over; ``edit`` is the editor handing the assembled episode back. Two rows
+    #: on the same series that mean different things, so they cannot share a
+    #: version sequence or a queue — an artist's v2 and an editor's v2 are not the
+    #: same round of anything.
+    kind: str = Field(default="cut", index=True)
     series_id: Optional[uuid.UUID] = Field(
         default=None, foreign_key="series.id", index=True
     )

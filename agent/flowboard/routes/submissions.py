@@ -89,6 +89,7 @@ def _sub_dict(row) -> dict:
         "submitted_by": str(row.submitted_by) if row.submitted_by else None,
         "submitted_by_name": _name(row.submitted_by),
         "submitted_at": row.submitted_at.isoformat() if row.submitted_at else None,
+        "kind": getattr(row, "kind", "cut"),
         "status": row.status,
         "approver_user_id": str(row.approver_user_id) if row.approver_user_id else None,
         "approver_name": _name(row.approver_user_id),
@@ -557,6 +558,49 @@ def set_series_producer(
         }
 
 # ── Raw material, for the editor ────────────────────────────────────────────
+
+
+@router.post("/api/series/{series_id}/edits")
+def submit_edit(series_id: uuid.UUID, body: SubmitBody, user=Depends(get_optional_user)):
+    """The editor hands the assembled episode back.
+
+    A second hand-over on the same series, not another attempt at the artist's:
+    it has its own version sequence, and it does NOT move `deliverable_status`.
+    That field tracks the artist's hand-over to the PM, and an approved series can
+    still be re-cut — refusing that would make a fix after sign-off impossible.
+
+    Gated on `cut.submit`, which the editor holds. Not on being the series
+    assignee: that is the artist, and requiring it would mean the only person
+    allowed to hand the edit back is the one who did not make it.
+    """
+    with get_session() as s:
+        series = s.get(Series, series_id)
+        if series is None:
+            raise HTTPException(404, "series not found")
+        permissions.require(s, user, series.project_id, "cut.submit")
+        if not permissions.can_see_series(s, user, series.project_id, series_id):
+            raise HTTPException(404, "series not found")
+        try:
+            row = subs.submit(
+                s, series_id, user=user, drive_url=body.drive_url,
+                note=body.note, kind="edit",
+            )
+        except subs.SubmissionError as exc:
+            raise _fail(exc)
+        return _sub_dict(row)
+
+
+@router.get("/api/series/{series_id}/edits")
+def list_edits(series_id: uuid.UUID, user=Depends(get_optional_user)):
+    """Every cut the editor has handed back, newest first."""
+    with get_session() as s:
+        series = s.get(Series, series_id)
+        if series is None:
+            raise HTTPException(404, "series not found")
+        permissions.require(s, user, series.project_id, "canvas.read")
+        if not permissions.can_see_series(s, user, series.project_id, series_id):
+            raise HTTPException(404, "series not found")
+        return {"edits": [_sub_dict(r) for r in subs.list_submissions(s, series_id, kind="edit")]}
 
 
 @router.get("/api/my/materials")

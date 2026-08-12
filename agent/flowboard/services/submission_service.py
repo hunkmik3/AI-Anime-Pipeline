@@ -122,19 +122,25 @@ def resolve_approver(
 # ── Queries ─────────────────────────────────────────────────────────────────
 
 
-def list_submissions(session: Session, series_id: uuid.UUID) -> list[Submission]:
-    """Full history for a series, newest attempt first."""
-    return list(
-        session.exec(
-            select(Submission)
-            .where(Submission.series_id == series_id)
-            .order_by(Submission.version.desc())  # type: ignore[attr-defined]
-        ).all()
-    )
+def list_submissions(
+    session: Session, series_id: uuid.UUID, *, kind: Optional[str] = "cut"
+) -> list[Submission]:
+    """Full history for a series, newest attempt first.
+
+    Filtered by KIND, defaulting to the artist's hand-over. An artist's v2 and an
+    editor's v2 are different rounds of different work; mixed into one list they
+    read as one back-and-forth that went twice as long as it did.
+    """
+    stmt = select(Submission).where(Submission.series_id == series_id)
+    if kind is not None:
+        stmt = stmt.where(Submission.kind == kind)
+    return list(session.exec(stmt.order_by(Submission.version.desc())).all())  # type: ignore[attr-defined]
 
 
-def latest_submission(session: Session, series_id: uuid.UUID) -> Optional[Submission]:
-    rows = list_submissions(session, series_id)
+def latest_submission(
+    session: Session, series_id: uuid.UUID, *, kind: str = "cut"
+) -> Optional[Submission]:
+    rows = list_submissions(session, series_id, kind=kind)
     return rows[0] if rows else None
 
 
@@ -148,6 +154,7 @@ def submit(
     user: Optional[User],
     drive_url: str,
     note: Optional[str] = None,
+    kind: str = "cut",
 ) -> Submission:
     """Record a delivery attempt for a SERIES.
 
@@ -161,7 +168,7 @@ def submit(
         raise SubmissionError("not_found", "series not found")
 
     is_admin = user is not None and user.role == "admin"
-    if user is not None and not is_admin:
+    if user is not None and not is_admin and kind == "cut":
         owner = series.assignee_user_id
         if owner is None:
             raise SubmissionError(
@@ -171,8 +178,15 @@ def submit(
             raise SubmissionError(
                 "forbidden", "only the assigned employee can submit this series"
             )
+    # An `edit` is gated by the ROUTE on `cut.submit`, which the editor holds and
+    # the series assignee does not have to. Checking the assignee here as well
+    # would mean the only person allowed to hand the edit back is the artist who
+    # did not make it.
 
-    if series.deliverable_status in ("approved", "paid"):
+    # The editor's cut does not close the series. `deliverable_status` tracks the
+    # artist's hand-over to the PM; an approved series can still be re-cut, and
+    # refusing that would make a fix after sign-off impossible.
+    if kind == "cut" and series.deliverable_status in ("approved", "paid"):
         raise SubmissionError(
             "closed", f"this series is already {series.deliverable_status}"
         )
@@ -182,7 +196,7 @@ def submit(
     # assignee's hands until then. Without this an artist could stack v2, v3, v4
     # on top of a pending v1, and the reviewer's queue filled with several rows for
     # the same series with no way to tell which one counted.
-    open_attempt = latest_submission(session, series_id)
+    open_attempt = latest_submission(session, series_id, kind=kind)
     if open_attempt is not None and open_attempt.status == "submitted":
         raise SubmissionError(
             "closed",
@@ -226,12 +240,13 @@ def submit(
             # will surface it instead.
             logger.warning("drive precheck skipped: %s", exc)
 
-    prev = latest_submission(session, series_id)
+    prev = latest_submission(session, series_id, kind=kind)
     submitter_id = user.id if user is not None else None
     approver = resolve_approver(session, series, submitter_id)
 
     row = Submission(
         series_id=series_id,
+        kind=kind,
         version=(prev.version + 1) if prev else 1,
         drive_url=drive_url.strip(),
         drive_file_id=file_id,
@@ -241,8 +256,9 @@ def submit(
         approver_user_id=approver.id if approver else None,
     )
     session.add(row)
-    series.deliverable_status = "submitted"
-    session.add(series)
+    if kind == "cut":
+        series.deliverable_status = "submitted"
+        session.add(series)
     session.commit()
     session.refresh(row)
     return row
