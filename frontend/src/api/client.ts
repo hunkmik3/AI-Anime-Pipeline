@@ -1877,6 +1877,13 @@ export function resolveEditNote(noteId: number, done = true): Promise<EditNoteDT
   });
 }
 
+/** Every editor note on any sequence of an episode — one call for the canvas. */
+export function listEpisodeNotes(
+  sceneId: string,
+): Promise<{ notes: EditNoteDTO[]; open_count: number }> {
+  return api(`/api/scenes/${sceneId}/notes`);
+}
+
 /** What the editor said about ONE sequence — the artist's half. */
 export function listShotNotes(
   shotId: string,

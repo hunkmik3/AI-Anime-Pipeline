@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+
+import { EpisodeNotes } from "../components/EpisodeNotes";
 import {
   Background,
   BackgroundVariant,
@@ -784,6 +786,8 @@ export function SceneCanvas() {
   return (
     <ReactFlowProvider>
       <SceneCanvasInner projectId={projectId} sceneId={sceneId} />
+      {/* What the editor said, on the page where it gets fixed. */}
+      <EpisodeNotes sceneId={sceneId} />
     </ReactFlowProvider>
   );
 }

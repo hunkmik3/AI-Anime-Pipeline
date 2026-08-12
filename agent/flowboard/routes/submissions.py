@@ -730,6 +730,32 @@ def notes_on_shot(shot_id: uuid.UUID, user=Depends(get_optional_user)):
         }
 
 
+@router.get("/api/scenes/{scene_id}/notes")
+def notes_on_episode(scene_id: uuid.UUID, user=Depends(get_optional_user)):
+    """Every editor note landing on any sequence of this episode.
+
+    One call for the canvas. Per-sequence it would be one request per node on a
+    page that already has forty, and the answer is almost always "none".
+    """
+    with get_session() as s:
+        scene = s.get(Scene, scene_id)
+        if scene is None:
+            raise HTTPException(404, "episode not found")
+        permissions.require_scene(s, user, scene.project_id, scene_id, "canvas.read")
+        shot_ids = list(s.exec(select(Shot.id).where(Shot.scene_id == scene_id)).all())
+        if not shot_ids:
+            return {"notes": [], "open_count": 0}
+        rows = s.exec(
+            select(EditNote)
+            .where(EditNote.shot_id.in_(shot_ids))  # type: ignore[attr-defined]
+            .order_by(EditNote.resolved, EditNote.at_seconds)
+        ).all()
+        return {
+            "notes": [_note_dict(s, n) for n in rows],
+            "open_count": sum(1 for n in rows if not n.resolved),
+        }
+
+
 @router.get("/api/my/materials")
 def my_materials(user=Depends(get_optional_user)):
     """Series this account may pull raw material from — the editor's own page.

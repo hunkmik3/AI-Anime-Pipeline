@@ -95,6 +95,8 @@ SERVICE_AUTHORIZED_ROUTES: dict[str, str] = {
         "_note_guard resolves the cut's series and requires cut.annotate on it",
     "GET /api/submissions/{submission_id}/notes":
         "_note_guard, canvas.read — plus the series visibility scope",
+    "GET /api/scenes/{scene_id}/notes":
+        "require_scene, canvas.read — the episode visibility scope",
     "POST /api/notes/{note_id}/resolve":
         "_note_guard, canvas.write — the person who fixes it marks it fixed",
     "POST /api/submissions/{submission_id}/approve":
