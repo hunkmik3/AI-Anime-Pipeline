@@ -44,6 +44,7 @@ from flowboard.services import (
     permissions,
     resource_guard,
 )
+from flowboard.services import editor_service as es
 from flowboard.services import submission_service as subs
 from flowboard.services import user_service
 
@@ -554,3 +555,94 @@ def set_series_producer(
             ),
             "producer_name": _name(series.producer_user_id),
         }
+
+# ── Raw material, for the editor ────────────────────────────────────────────
+
+
+@router.get("/api/series/{series_id}/materials")
+def list_materials(
+    series_id: uuid.UUID, all_takes: bool = False, user=Depends(get_optional_user)
+):
+    """Every generated clip in the series, grouped episode → sequence.
+
+    `material.pull`, which the editor holds and a viewer does not — the raw
+    material of a series is the whole of somebody's unfinished work, and being
+    able to READ a project is not the same as being handed all of it as files.
+    """
+    with get_session() as s:
+        series = s.get(Series, series_id)
+        if series is None:
+            raise HTTPException(404, "series not found")
+        permissions.require(s, user, series.project_id, "material.pull")
+        if not permissions.can_see_series(s, user, series.project_id, series_id):
+            raise HTTPException(404, "series not found")
+        return es.materials(s, series_id, all_takes=all_takes)
+
+
+@router.get("/api/series/{series_id}/materials.zip")
+async def download_materials(
+    series_id: uuid.UUID, all_takes: bool = False, user=Depends(get_optional_user)
+):
+    """The whole series as one archive, named the way the editor will refer to it.
+
+    Files that cannot be read are SKIPPED, not fatal, and the count of skips comes
+    back in a header: one clip missing from storage must not cost the editor the
+    other thirty-nine, and silently shipping thirty-nine as if it were forty is
+    how a missing shot reaches the cut.
+    """
+    import io
+    import zipfile
+
+    with get_session() as s:
+        series = s.get(Series, series_id)
+        if series is None:
+            raise HTTPException(404, "series not found")
+        permissions.require(s, user, series.project_id, "material.pull")
+        if not permissions.can_see_series(s, user, series.project_id, series_id):
+            raise HTTPException(404, "series not found")
+        data = es.materials(s, series_id, all_takes=all_takes)
+        stem = (series.code or series.name or "series").strip().replace(" ", "-")
+
+    clips = es.flat_clips(data)
+    if not clips:
+        raise HTTPException(404, "this series has no generated clips yet")
+
+    buf = io.BytesIO()
+    written = skipped = 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        # STORED, not DEFLATED: these are already-compressed video files, so
+        # deflate spends minutes of CPU to save nothing.
+        for name, media_id in clips:
+            got = await _clip_bytes(media_id)
+            if got is None:
+                skipped += 1
+                continue
+            payload, ext = got
+            if ext and not name.lower().endswith(f".{ext}"):
+                name = name.rsplit(".", 1)[0] + f".{ext}"
+            zf.writestr(name, payload)
+            written += 1
+
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="application/zip",
+        headers={
+            "content-disposition": f'attachment; filename="{stem}_material.zip"',
+            "x-clips-written": str(written),
+            "x-clips-skipped": str(skipped),
+        },
+    )
+
+
+async def _clip_bytes(media_id: str):
+    """Cached file if there is one, otherwise fetch it once and cache it."""
+    from flowboard.services import media_service
+
+    path = media_service.cached_path(media_id)
+    if path is not None and path.exists():
+        return path.read_bytes(), path.suffix.lstrip(".").lower() or "mp4"
+    got = await media_service.fetch_and_cache(media_id)
+    if got is None:
+        return None
+    payload, _mime, cached = got
+    return payload, (cached.suffix.lstrip(".").lower() or "mp4")
