@@ -37,6 +37,7 @@ function estimateVideoUsd(duration: number, resolution: string): number {
  * - Last frame keyframe — disabled when `supports_last_frame` is false
  * - Audio toggle — only shown when `supports_audio_toggle` is true
  * - Duration / aspect / resolution — `<select>` from capability tuples
+ * - Skip content filter (B2B) — only when `supports_b2b_unmoderated`
  */
 
 interface Props {
@@ -104,6 +105,10 @@ export function VideoNodeSettings({ rfId }: Props) {
   // Person-driven (KYC): when on, the wired image/audio/video refs are sent as
   // identity-verified KYC assets (portrait→video / lip-sync / video-reference).
   const kycMode = typeof data.kycMode === "boolean" ? (data.kycMode as boolean) : false;
+  const contentFilterDisabled =
+    typeof data.contentFilterDisabled === "boolean"
+      ? (data.contentFilterDisabled as boolean)
+      : false;
 
   function persist(patch: Record<string, unknown>) {
     updateNodeData(rfId, patch);
@@ -240,6 +245,26 @@ export function VideoNodeSettings({ rfId }: Props) {
           <span>
             Real person (KYC) — portrait→video / lip-sync
             <span className="video-settings-hint"> needs KYC + a real-person photo</span>
+          </span>
+        </label>
+      ) : null}
+
+      {caps.supports_b2b_unmoderated ? (
+        <label className="video-settings-row video-settings-row--toggle">
+          <input
+            type="checkbox"
+            checked={contentFilterDisabled}
+            onChange={(e) => persist({ contentFilterDisabled: e.target.checked })}
+          />
+          <span>
+            Skip content filter (B2B)
+            <span className="video-settings-hint">
+              {" "}
+              DanceSee B2B account required
+              {contentFilterDisabled
+                ? " · explicit refs: also enable Real person (KYC) · output kept ~3h"
+                : ""}
+            </span>
           </span>
         </label>
       ) : null}

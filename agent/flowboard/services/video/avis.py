@@ -19,7 +19,12 @@ BytePlus ARK directly (see ``dreamina.py`` for the direct path). Probed live
   generateAudio``. No ``--rt/--rs`` inline flags (that's the BytePlus-direct
   quirk); aspect ratio rides the top-level ``ratio`` field.
 - **Model id** — ``dreamina-seedance-2-0`` (Seedance 2.0; also a ``-fast``
-  variant). Discover via ``GET /ai/models?outputModalities=video``.
+  / ``-mini`` / 2.5 variant). Discover via ``GET /ai/models?outputModalities=video``.
+- **B2B unmoderated** — ``content_filter_disabled=True`` routes submit/poll
+  (and KYC asset create) to ``https://api.dancesee.io/api/v1/b2b/*``. Not a
+  flag on the regular endpoints. Only Seedance 2.0/2.5; account must be
+  ``userType: B2B``. Job ids are prefixed ``b2b:`` so later polls stay on
+  that path.
 
 Envelope: every 2xx response wraps the payload in ``{data, success, status,
 timestamp}``; 4xx errors come back as ``{errors:[...], success:false,
@@ -63,6 +68,37 @@ logger = logging.getLogger(__name__)
 
 
 BASE_URL = "https://api.avis.xyz/api/v1"
+
+# B2B unmoderated (content-filter-disabled) lives on a separate host + path
+# prefix — not a flag on the regular KYC/video endpoints. Production traffic
+# to /api/v1/b2b/* is routed at api.dancesee.io; override if the key is bound
+# to a different gateway. Auth is the same AVIS_API_KEY (x-api-key).
+B2B_BASE_URL = os.getenv("FLOWBOARD_AVIS_B2B_BASE_URL", "https://api.dancesee.io/api/v1").rstrip("/")
+B2B_JOB_PREFIX = "b2b:"
+B2B_ALLOWED_UPSTREAM_MODELS = frozenset({
+    "dreamina-seedance-2-0",
+    "dreamina-seedance-2-0-fast",
+    "dreamina-seedance-2-0-mini",
+    "dreamina-seedance-2-5",
+})
+
+
+def b2b_feature_enabled() -> bool:
+    """Process-wide kill switch. Default on; set FLOWBOARD_AVIS_B2B_ENABLED=0 to hide."""
+    raw = os.getenv("FLOWBOARD_AVIS_B2B_ENABLED", "1")
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def b2b_unmoderated_allowed(upstream_model_id: Optional[str]) -> bool:
+    return b2b_feature_enabled() and (upstream_model_id or "") in B2B_ALLOWED_UPSTREAM_MODELS
+
+
+def _b2b_urls(unmoderated: bool) -> tuple[str, str, str]:
+    """Return (kyc_create, kyc_get_prefix, video_base) for the chosen path."""
+    if unmoderated:
+        base = B2B_BASE_URL
+        return f"{base}/b2b/kyc/assets", f"{base}/b2b/kyc/assets", f"{base}/b2b"
+    return f"{BASE_URL}/kyc/user/assets", f"{BASE_URL}/kyc/user/assets", BASE_URL
 
 # Local poll cadence + ceiling for a running video task. Seedance 2.0 at
 # 1080p / 15s / multi-ref (or person-driven) can take well over 7.5 min, so
@@ -117,12 +153,31 @@ AVIS_SEEDANCE_2_0_CAPABILITY = VideoProviderCapability(
     supports_audio_ref=True,
     supports_video_ref=True,
     supports_kyc=True,
+    supports_b2b_unmoderated=True,
     max_refs=9,
     aspect_ratios=("1:1", "16:9", "9:16", "4:3"),
     # 480p/720p/1080p (4k intentionally disabled per request). Shared by the
     # 2.0 family (2.0, 2.0-fast, 2.0-mini) — all r2v + audio + KYC via Avis.
     resolutions=("480p", "720p", "1080p"),
     durations=tuple(range(4, 16)),
+)
+
+
+# Seedance 2.5 — same r2v / audio / KYC / B2B surface as 2.0, but native
+# clips go to 30s (2.0 is hard-capped at 15). Contiguous 4..30 so the
+# duration slider stays a range, not a discrete dropdown.
+AVIS_SEEDANCE_2_5_CAPABILITY = VideoProviderCapability(
+    supports_multi_ref=True,
+    supports_last_frame=True,
+    supports_audio_toggle=True,
+    supports_audio_ref=True,
+    supports_video_ref=True,
+    supports_kyc=True,
+    supports_b2b_unmoderated=True,
+    max_refs=9,
+    aspect_ratios=("1:1", "16:9", "9:16", "4:3"),
+    resolutions=("480p", "720p", "1080p"),
+    durations=tuple(range(4, 31)),
 )
 
 
@@ -355,7 +410,15 @@ def _kyc_headers() -> dict[str, str]:
     return {"accept": "application/json", "x-api-key": api_key, "Content-Type": "application/json"}
 
 
-def _read_cached_kyc_asset(media_id: str, asset_type: str) -> Optional[str]:
+def _kyc_cache_key(unmoderated: bool) -> str:
+    # B2B Skip-moderation assets must not reuse a Default-moderated assetId
+    # (or vice versa) — same file, different BytePlus strategy.
+    return "avis_kyc_b2b" if unmoderated else "avis_kyc"
+
+
+def _read_cached_kyc_asset(
+    media_id: str, asset_type: str, *, unmoderated: bool = False
+) -> Optional[str]:
     """Return a cached, still-active Avis KYC assetId for this media_id, if any."""
     from sqlmodel import select
 
@@ -365,7 +428,7 @@ def _read_cached_kyc_asset(media_id: str, asset_type: str) -> Optional[str]:
     with get_session() as s:
         row = s.exec(select(Asset).where(Asset.uuid_media_id == media_id)).first()
         meta = (row.asset_metadata or {}) if row is not None else {}
-        kyc = meta.get("avis_kyc") if isinstance(meta, dict) else None
+        kyc = meta.get(_kyc_cache_key(unmoderated)) if isinstance(meta, dict) else None
         if (
             isinstance(kyc, dict)
             and kyc.get("status") == "active"
@@ -376,7 +439,9 @@ def _read_cached_kyc_asset(media_id: str, asset_type: str) -> Optional[str]:
     return None
 
 
-def _write_cached_kyc_asset(media_id: str, asset_type: str, asset_id: str) -> None:
+def _write_cached_kyc_asset(
+    media_id: str, asset_type: str, asset_id: str, *, unmoderated: bool = False
+) -> None:
     from sqlmodel import select
 
     from flowboard.db import get_session
@@ -387,26 +452,38 @@ def _write_cached_kyc_asset(media_id: str, asset_type: str, asset_id: str) -> No
         if row is None:
             return  # no Asset row to cache on — harmless, re-resolve next time
         meta = dict(row.asset_metadata or {})
-        meta["avis_kyc"] = {"asset_id": asset_id, "asset_type": asset_type, "status": "active"}
+        meta[_kyc_cache_key(unmoderated)] = {
+            "asset_id": asset_id,
+            "asset_type": asset_type,
+            "status": "active",
+            "moderation_strategy": "Skip" if unmoderated else "Default",
+        }
         row.asset_metadata = meta
         s.add(row)
         s.commit()
 
 
 async def ensure_kyc_asset(
-    media_id: str, asset_type: str, *, project_id: Optional[str] = None
+    media_id: str,
+    asset_type: str,
+    *,
+    project_id: Optional[str] = None,
+    unmoderated: bool = False,
 ) -> str:
     """Resolve a local media_id to an *active* Avis KYC assetId (cached, reused).
 
     Hoists the cached file to a public R2 URL, creates the KYC asset, polls until
     ``active``, caches the assetId on the Asset row, and returns it. Raises
-    VideoError on R2 misconfig, processing failure, or timeout. The caller must
-    have a KYC-verified account (``isKyc: true``) or creation returns 403.
+    VideoError on R2 misconfig, processing failure, or timeout.
+
+    Regular path requires a KYC-verified account (``isKyc: true``). The B2B
+    unmoderated path (``unmoderated=True``) posts to ``/b2b/kyc/assets`` with
+    moderation skipped, and requires ``userType: B2B`` instead.
     """
     if asset_type not in _KYC_ASSET_TYPES:
         raise VideoError("internal", f"bad KYC asset_type: {asset_type!r}")
 
-    cached = _read_cached_kyc_asset(media_id, asset_type)
+    cached = _read_cached_kyc_asset(media_id, asset_type, unmoderated=unmoderated)
     if cached:
         return cached
 
@@ -422,10 +499,11 @@ async def ensure_kyc_asset(
             f"set the R2 block in .env/secrets. ({exc})",
         ) from exc
 
+    create_url, get_prefix, _video_base = _b2b_urls(unmoderated)
     async with _http_client_factory() as client:
         try:
             resp = await client.post(
-                f"{BASE_URL}/kyc/user/assets",
+                create_url,
                 json={"url": public_url, "assetType": asset_type, "name": media_id[:64]},
                 headers=_kyc_headers(),
             )
@@ -446,7 +524,7 @@ async def ensure_kyc_asset(
         async with _http_client_factory() as client:
             try:
                 presp = await client.get(
-                    f"{BASE_URL}/kyc/user/assets/{asset_id}", headers=_kyc_headers()
+                    f"{get_prefix}/{asset_id}", headers=_kyc_headers()
                 )
             except httpx.HTTPError as exc:
                 raise VideoError("internal", f"avis kyc poll transport error: {exc}") from exc
@@ -465,18 +543,22 @@ async def ensure_kyc_asset(
     if status != "active":
         raise VideoError("timeout", f"KYC asset {asset_id} not active after {attempts} polls")
 
-    _write_cached_kyc_asset(media_id, asset_type, asset_id)
+    _write_cached_kyc_asset(media_id, asset_type, asset_id, unmoderated=unmoderated)
     return asset_id
 
 
-async def _fetch_actual_usd_cost(generation_id: str) -> Optional[float]:
+async def _fetch_actual_usd_cost(
+    generation_id: str, *, unmoderated: bool = False
+) -> Optional[float]:
     """Real usdCost for a finished gen, looked up from the generations history
     (``/video/generations``) — the per-task endpoint doesn't include it. Used to
     settle per-user budgets on actual spend. Returns None if not found."""
+    _create, _get, video_base = _b2b_urls(unmoderated)
+    list_url = f"{video_base}/video/generations?limit=50"
     try:
         async with _http_client_factory() as client:
             resp = await client.get(
-                f"{BASE_URL}/video/generations?limit=50", headers=_kyc_headers()
+                list_url, headers=_kyc_headers()
             )
         if resp.status_code >= 400:
             return None
@@ -529,6 +611,15 @@ class AvisVideoProvider:
         if not motion_prompt:
             raise VideoError("bad_input", "missing motion_prompt")
 
+        unmoderated = bool(params.get("content_filter_disabled"))
+        if unmoderated and not b2b_unmoderated_allowed(self.upstream_model_id):
+            raise VideoError(
+                "bad_input",
+                "B2B unmoderated generation is only available on Seedance 2.0/2.5 "
+                f"({', '.join(sorted(B2B_ALLOWED_UPSTREAM_MODELS))}); "
+                f"got {self.upstream_model_id!r}",
+            )
+
         # ── person-driven (KYC) path ────────────────────────────────────
         # Pre-resolved Avis KYC assetIds (the worker creates them from local
         # media_ids). When any is present this is portrait→video / lip-sync /
@@ -545,7 +636,10 @@ class AvisVideoProvider:
                     f"support person-driven video."
                 )
             else:
-                return await self._submit_kyc(params, motion_prompt, kyc_ids, headers, warnings)
+                return await self._submit_kyc(
+                    params, motion_prompt, kyc_ids, headers, warnings,
+                    unmoderated=unmoderated,
+                )
 
         first_frame_url = (params.get("first_frame_url") or "").strip()
         last_frame_url = params.get("last_frame_url")
@@ -787,17 +881,19 @@ class AvisVideoProvider:
         if generate_audio is not None:
             body["generateAudio"] = bool(generate_audio)
 
-        return await self._post_generation(body, headers, warnings)
+        return await self._post_generation(body, headers, warnings, unmoderated=unmoderated)
 
     async def _post_generation(
-        self, body: dict, headers: dict, warnings: list[str]
+        self, body: dict, headers: dict, warnings: list[str], *, unmoderated: bool = False
     ) -> VideoGenSubmitResult:
         """POST a built /video/generations body; return the submit result.
 
         Avis returns HTTP 429 ("api key gen limit reached") when the key's
         rate/concurrency cap is hit. Rather than fail the generation, retry the
         submit with backoff (honoring Retry-After) so it goes through once a
-        slot frees up."""
+        slot frees up. B2B unmoderated posts to /b2b/video/generations instead."""
+        _create, _get, video_base = _b2b_urls(unmoderated)
+        submit_url = f"{video_base}/video/generations"
         await _CONCURRENCY_SEM.acquire()
         try:
             async with _http_client_factory() as client:
@@ -805,7 +901,7 @@ class AvisVideoProvider:
                 for attempt in range(_SUBMIT_MAX_RETRIES):
                     try:
                         resp = await client.post(
-                            f"{BASE_URL}/video/generations", json=body, headers=headers
+                            submit_url, json=body, headers=headers
                         )
                     except httpx.HTTPError as exc:
                         raise VideoError("internal", f"avis submit transport error: {exc}") from exc
@@ -826,6 +922,8 @@ class AvisVideoProvider:
         task_id = data.get("taskId")
         if not isinstance(task_id, str) or not task_id:
             raise VideoError("internal", "avis submit missing taskId", raw=data)
+        if unmoderated:
+            task_id = f"{B2B_JOB_PREFIX}{task_id}"
         return {
             "external_job_id": task_id,
             "submitted_at": int(time.time()),
@@ -839,6 +937,8 @@ class AvisVideoProvider:
         kyc_ids: dict,
         headers: dict,
         warnings: list[str],
+        *,
+        unmoderated: bool = False,
     ) -> VideoGenSubmitResult:
         """Person-driven submit: text + kyc*AssetId content parts (no regular refs)."""
         duration = int(params.get("duration_seconds") or 5)
@@ -871,17 +971,19 @@ class AvisVideoProvider:
         generate_audio = params.get("generate_audio")
         if generate_audio is not None and self.capabilities.supports_audio_toggle:
             body["generateAudio"] = bool(generate_audio)
-        return await self._post_generation(body, headers, warnings)
+        return await self._post_generation(body, headers, warnings, unmoderated=unmoderated)
 
     # ── poll ──────────────────────────────────────────────────────────
 
     async def poll(self, external_job_id: str) -> VideoGenPollResult:
         headers = self._headers()
+        unmoderated = external_job_id.startswith(B2B_JOB_PREFIX)
+        job_id = external_job_id[len(B2B_JOB_PREFIX):] if unmoderated else external_job_id
+        _create, _get, video_base = _b2b_urls(unmoderated)
+        poll_url = f"{video_base}/video/tasks/{job_id}"
         async with _http_client_factory() as client:
             try:
-                resp = await client.get(
-                    f"{BASE_URL}/video/tasks/{external_job_id}", headers=headers
-                )
+                resp = await client.get(poll_url, headers=headers)
             except httpx.HTTPError as exc:
                 raise VideoError("internal", f"avis poll transport error: {exc}") from exc
         if resp.status_code == 404:
@@ -910,7 +1012,9 @@ class AvisVideoProvider:
                 "cost_tokens": None,
             }
         if status == "succeeded":
-            return await self._on_succeeded(data, client_factory=_http_client_factory)
+            return await self._on_succeeded(
+                data, client_factory=_http_client_factory, unmoderated=unmoderated
+            )
         if status in {"failed", "cancelled"}:
             err = data.get("error")
             err_msg = err if isinstance(err, str) else (
@@ -944,7 +1048,9 @@ class AvisVideoProvider:
             "cost_tokens": None,
         }
 
-    async def _on_succeeded(self, data: dict, *, client_factory) -> VideoGenPollResult:
+    async def _on_succeeded(
+        self, data: dict, *, client_factory, unmoderated: bool = False
+    ) -> VideoGenPollResult:
         """Download bytes eagerly (Avis downloadUrl is a presigned R2 link that
         expires) + read provider-reported cost from ``usage.usdCost``."""
         video_url = data.get("downloadUrl") or data.get("videoUrl")
@@ -988,7 +1094,7 @@ class AvisVideoProvider:
         if usd_cost is None:
             gen_id = data.get("generationId")
             if isinstance(gen_id, str) and gen_id:
-                usd_cost = await _fetch_actual_usd_cost(gen_id)
+                usd_cost = await _fetch_actual_usd_cost(gen_id, unmoderated=unmoderated)
         # Prefer the real USD cost; fall back to local token pricing.
         cost_usd = usd_cost if usd_cost is not None else compute_cost_usd(self.model_id, tokens=tokens)
 
@@ -1082,6 +1188,17 @@ def _classify_avis_http_error(resp: httpx.Response) -> VideoError:
         msg = str(payload.get("detail") or payload.get("title") or "")[:300]
     low = msg.lower()
     if resp.status_code in (401, 403):
+        req_url = ""
+        try:
+            req_url = str(resp.request.url)
+        except (AttributeError, RuntimeError):
+            req_url = ""
+        if "/b2b/" in req_url:
+            return VideoError(
+                "auth",
+                msg or "B2B unmoderated requires a DanceSee account with userType=B2B",
+                raw=payload,
+            )
         return VideoError("auth", msg or "unauthorized", raw=payload)
     if resp.status_code == 404:
         return VideoError("bad_input", msg or "not found", raw=payload)

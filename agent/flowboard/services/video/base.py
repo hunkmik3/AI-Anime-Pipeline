@@ -81,6 +81,9 @@ class VideoProviderCapability:
     # via identity-verified KYC assets. Only the Avis Seedance 2.0 models.
     # The frontend shows the "Person-driven (KYC)" toggle when this is True.
     supports_kyc: bool = False
+    # Dedicated DanceSee /api/v1/b2b/* path (content-filter disabled). Only
+    # Seedance 2.0/2.5; the account behind AVIS_API_KEY must be userType=B2B.
+    supports_b2b_unmoderated: bool = False
 
 
 class VideoGenSubmitParams(TypedDict, total=False):
@@ -128,6 +131,11 @@ class VideoGenSubmitParams(TypedDict, total=False):
     kyc_image_asset_id: Optional[str]
     kyc_audio_asset_id: Optional[str]
     kyc_video_asset_id: Optional[str]
+    # DanceSee B2B unmoderated path. When True the provider POSTs/GETs
+    # /api/v1/b2b/video/* (and KYC assets via /api/v1/b2b/kyc/assets) instead
+    # of the regular moderated endpoints. No per-request flag is sent upstream
+    # — the dedicated prefix is the switch. Only honored on Seedance 2.0/2.5.
+    content_filter_disabled: bool
     # Flow-only fields. Other providers ignore these. Kept on the same
     # TypedDict so the worker doesn't need to branch params per provider.
     project_id: str

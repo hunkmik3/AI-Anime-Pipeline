@@ -23,8 +23,13 @@ def test_capability_block_is_present(client):
             "aspect_ratios",
             "resolutions",
             "durations",
+            "supports_b2b_unmoderated",
         ):
             assert key in cap, f"{m['model_id']} missing capability key {key}"
+    seedance20 = next(m for m in body["models"] if m["model_id"] == "seedance-2-0")
+    assert seedance20["capabilities"]["supports_b2b_unmoderated"] is True
+    pro15 = next(m for m in body["models"] if m["model_id"] == "seedance-1-5-pro")
+    assert pro15["capabilities"]["supports_b2b_unmoderated"] is False
 
 
 def test_project_settings_rejects_unknown_model(client):

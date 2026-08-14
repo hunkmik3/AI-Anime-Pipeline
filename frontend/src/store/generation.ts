@@ -484,6 +484,11 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         // Person-driven (KYC): backend turns the wired image/audio/video refs
         // into Avis KYC assets and dispatches portrait→video / lip-sync / video-ref.
         if (videoSettings.kycMode === true) videoParams.kyc_mode = true;
+        // B2B unmoderated: dedicated /api/v1/b2b/* endpoints (no flag sent
+        // upstream). Worker rejects this on models outside Seedance 2.0/2.5.
+        if (videoSettings.contentFilterDisabled === true) {
+          videoParams.content_filter_disabled = true;
+        }
         // References for r2v. Phase 8.1.5d: the legacy manual multi-ref list
         // (VideoNodeSettings text input) was removed — canvas-wired ref nodes
         // (Character/VisualAsset/MasterShot) are the single source, each

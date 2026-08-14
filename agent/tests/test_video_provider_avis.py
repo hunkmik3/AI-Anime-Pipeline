@@ -36,8 +36,11 @@ def _registry():
 
 @pytest.fixture(autouse=True)
 def _reset_http_factory():
+    first, interval = avis.AVIS_POLL_FIRST_S, avis.AVIS_POLL_INTERVAL_S
     yield
     avis.reset_http_client_factory()
+    avis.AVIS_POLL_FIRST_S = first
+    avis.AVIS_POLL_INTERVAL_S = interval
 
 
 def _factory(handler):
@@ -544,7 +547,7 @@ async def test_ensure_kyc_asset_create_poll_active(monkeypatch, tmp_path):
     written: dict = {}
     monkeypatch.setattr(
         avis_mod, "_write_cached_kyc_asset",
-        lambda mid, t, aid: written.update({"mid": mid, "t": t, "aid": aid}),
+        lambda mid, t, aid, **k: written.update({"mid": mid, "t": t, "aid": aid}),
     )
     monkeypatch.setattr(avis_mod, "KYC_POLL_INTERVAL_S", 0)
 
@@ -572,7 +575,7 @@ async def test_ensure_kyc_asset_cache_hit(monkeypatch):
 
     monkeypatch.setattr(
         avis_mod, "_read_cached_kyc_asset",
-        lambda mid, t: "asset-cached" if t == "Image" else None,
+        lambda mid, t, **k: "asset-cached" if t == "Image" else None,
     )
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -656,3 +659,237 @@ async def test_submit_kyc_emits_kyc_content_parts():
     assert {"type": "kycAudioAssetId", "assetId": "asset-aud"} in content
     assert not any(b.get("type") in ("imageUrl", "imageBase64", "videoUrl") for b in content)
     assert seen[0]["generateAudio"] is False
+
+
+# ── B2B unmoderated (DanceSee /api/v1/b2b/*) ─────────────────────────────
+
+
+def _b2b_urls(req: httpx.Request) -> tuple[str, str]:
+    return req.url.host or "", req.url.path
+
+
+@pytest.mark.asyncio
+async def test_b2b_submit_posts_to_dancesee_prefix():
+    """content_filter_disabled → POST api.dancesee.io /b2b/video/generations."""
+    seen: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        return httpx.Response(200, json={"data": {"taskId": "task-b2b"}, "success": True})
+
+    avis.set_http_client_factory(_factory(handler))
+    res = await _provider().submit({
+        "first_frame_url": "https://e/frame.png",
+        "motion_prompt": "slow push in",
+        "duration_seconds": 5,
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
+        "content_filter_disabled": True,
+    })
+
+    assert res["external_job_id"] == "b2b:task-b2b"
+    host, path = _b2b_urls(seen[0])
+    assert host == "api.dancesee.io"
+    assert path == "/api/v1/b2b/video/generations"
+    body = json.loads(seen[0].content)
+    assert body["model"] == "dreamina-seedance-2-0"
+    assert "contentFilterDisabled" not in body
+
+
+@pytest.mark.asyncio
+async def test_b2b_poll_uses_prefixed_job_and_b2b_path():
+    seen: list[str] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(str(req.url))
+        return httpx.Response(200, json={"data": {
+            "status": "running",
+        }, "success": True})
+
+    avis.set_http_client_factory(_factory(handler))
+    res = await _provider().poll("b2b:task-abc123")
+    assert res["status"] == "running"
+    assert seen[0] == "https://api.dancesee.io/api/v1/b2b/video/tasks/task-abc123"
+
+
+@pytest.mark.asyncio
+async def test_b2b_rejects_unsupported_model():
+    """seedance-1-5-pro has no unmoderated inference endpoint → 400 locally."""
+    provider = get_video_provider("seedance-1-5-pro")
+    with pytest.raises(VideoError) as exc:
+        await provider.submit({
+            "first_frame_url": "https://e/frame.png",
+            "motion_prompt": "x",
+            "duration_seconds": 5,
+            "aspect_ratio": "16:9",
+            "resolution": "720p",
+            "content_filter_disabled": True,
+        })
+    assert exc.value.code == "bad_input"
+    assert "Seedance 2.0/2.5" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_ensure_kyc_asset_b2b_uses_skip_endpoint(monkeypatch, tmp_path):
+    """unmoderated=True → POST /b2b/kyc/assets on dancesee, not /kyc/user/assets."""
+    from flowboard.services.video import avis as avis_mod
+
+    img = tmp_path / "p.png"
+    img.write_bytes(b"x")
+    monkeypatch.setattr(avis_mod.media_service, "cached_path", lambda mid: str(img))
+    monkeypatch.setattr(avis_mod, "prepare_image_url", lambda *a, **k: "https://r2.example/p.png")
+    monkeypatch.setattr(avis_mod, "_read_cached_kyc_asset", lambda *a, **k: None)
+    written: dict = {}
+    monkeypatch.setattr(
+        avis_mod, "_write_cached_kyc_asset",
+        lambda mid, t, aid, **k: written.update({"mid": mid, "t": t, "aid": aid, **k}),
+    )
+    monkeypatch.setattr(avis_mod, "KYC_POLL_INTERVAL_S", 0)
+
+    seen: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        if req.method == "POST" and req.url.path.endswith("/b2b/kyc/assets"):
+            return httpx.Response(201, json={"data": {"assetId": "asset-b2b", "status": "processing"}, "success": True})
+        if req.method == "GET" and req.url.path.endswith("/b2b/kyc/assets/asset-b2b"):
+            return httpx.Response(200, json={"data": {"status": "active", "moderationStrategy": "Skip"}, "success": True})
+        return httpx.Response(500, json={"error": f"unexpected {req.method} {req.url}"})
+
+    avis.set_http_client_factory(_factory(handler))
+    asset_id = await avis_mod.ensure_kyc_asset("mid-1", "Image", project_id="p", unmoderated=True)
+    assert asset_id == "asset-b2b"
+    assert seen[0].url.host == "api.dancesee.io"
+    assert seen[0].url.path == "/api/v1/b2b/kyc/assets"
+    assert written["aid"] == "asset-b2b"
+    assert written.get("unmoderated") is True
+
+
+@pytest.mark.asyncio
+async def test_b2b_kyc_submit_posts_to_b2b_generations():
+    seen: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        return httpx.Response(200, json={"data": {"taskId": "task-kyc-b2b"}, "success": True})
+
+    avis.set_http_client_factory(_factory(handler))
+    res = await _provider().submit({
+        "motion_prompt": "the person walks",
+        "kyc_image_asset_id": "asset-img",
+        "duration_seconds": 5,
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
+        "content_filter_disabled": True,
+    })
+    assert res["external_job_id"] == "b2b:task-kyc-b2b"
+    assert seen[0].url.path == "/api/v1/b2b/video/generations"
+    body = json.loads(seen[0].content)
+    assert {"type": "kycImageAssetId", "assetId": "asset-img"} in body["content"]
+
+
+@pytest.mark.asyncio
+async def test_b2b_403_maps_to_auth_with_b2b_hint():
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={
+            "errors": ["account is not B2B"],
+            "status": 403, "success": False,
+        })
+
+    avis.set_http_client_factory(_factory(handler))
+    with pytest.raises(VideoError) as exc:
+        await _provider().submit({
+            "first_frame_url": "https://e/frame.png",
+            "motion_prompt": "x",
+            "duration_seconds": 5,
+            "aspect_ratio": "16:9",
+            "resolution": "720p",
+            "content_filter_disabled": True,
+        })
+    assert exc.value.code == "auth"
+    assert "B2B" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_regular_submit_still_hits_avis_xyz():
+    """Without the flag, traffic stays on the moderated avis.xyz endpoints."""
+    seen: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        return httpx.Response(200, json={"data": {"taskId": "cgt-reg"}, "success": True})
+
+    avis.set_http_client_factory(_factory(handler))
+    res = await _provider().submit({
+        "first_frame_url": "https://e/frame.png",
+        "motion_prompt": "x",
+        "duration_seconds": 5,
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
+    })
+    assert res["external_job_id"] == "cgt-reg"
+    assert seen[0].url.host == "api.avis.xyz"
+    assert seen[0].url.path == "/api/v1/video/generations"
+
+
+@pytest.mark.asyncio
+async def test_worker_forwards_b2b_flag_to_dancesee():
+    """_handle_gen_video with content_filter_disabled hits /b2b/video/*."""
+    from flowboard.worker import processor as proc
+
+    seen: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        if req.method == "POST" and req.url.path.endswith("/b2b/video/generations"):
+            return httpx.Response(200, json={"data": {"taskId": "task-w"}, "success": True})
+        if req.method == "GET" and "/b2b/video/tasks/" in req.url.path:
+            return httpx.Response(200, json={"success": True, "data": {
+                "taskId": "task-w", "status": "succeeded",
+                "videoUrl": "https://signed.example/c.mp4",
+                "duration": 5, "resolution": "720p",
+            }})
+        if req.url.host == "signed.example":
+            return httpx.Response(200, content=b"MP4" * 40)
+        return httpx.Response(500, json={"error": f"unexpected {req.method} {req.url}"})
+
+    avis.set_http_client_factory(_factory(handler))
+    avis.AVIS_POLL_FIRST_S = 0.0
+    avis.AVIS_POLL_INTERVAL_S = 0.0
+    result, err = await proc._handle_gen_video({
+        "model_id": "seedance-2-0",
+        "motion_prompt": "slow push in",
+        "first_frame_url": "https://e/frame.png",
+        "duration_seconds": 5,
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
+        "content_filter_disabled": True,
+    })
+    assert err is None, result
+    posts = [r for r in seen if r.method == "POST"]
+    assert posts[0].url.host == "api.dancesee.io"
+    assert posts[0].url.path == "/api/v1/b2b/video/generations"
+    polls = [r for r in seen if r.method == "GET" and "/b2b/video/tasks/" in r.url.path]
+    assert polls, "worker must poll the B2B task endpoint"
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_b2b_on_unsupported_model():
+    from flowboard.worker import processor as proc
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"must not hit the network: {req.url}")
+
+    avis.set_http_client_factory(_factory(handler))
+    result, err = await proc._handle_gen_video({
+        "model_id": "seedance-1-5-pro",
+        "motion_prompt": "x",
+        "first_frame_url": "https://e/frame.png",
+        "duration_seconds": 5,
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
+        "content_filter_disabled": True,
+    })
+    assert err is not None
+    assert err.startswith("bad_input:")
+    assert result["code"] == "bad_input"

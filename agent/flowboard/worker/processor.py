@@ -211,9 +211,24 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
         "motion_prompt": motion_prompt.strip(),
     }
 
+    # DanceSee B2B unmoderated: dedicated /api/v1/b2b/* endpoints, not a flag
+    # on the regular KYC/video paths. Reject here (before KYC upload) when the
+    # selected model has no unmoderated inference endpoint.
+    unmoderated = bool(params.get("content_filter_disabled"))
+    if unmoderated:
+        from flowboard.services.video.avis import b2b_unmoderated_allowed
+
+        if not b2b_unmoderated_allowed(entry.upstream_model_id):
+            return {
+                "error": "B2B unmoderated generation is only available on Seedance 2.0/2.5",
+                "code": "bad_input",
+            }, "bad_input:B2B unmoderated only supports Seedance 2.0/2.5"
+        provider_params["content_filter_disabled"] = True
+
     # Person-driven (KYC) path — resolve up to one image/audio/video media_id
     # into Avis KYC assetIds and dispatch with those (portrait→video / lip-sync
     # / video-reference). Bypasses Flow + the regular base64/R2 ref resolution.
+    # B2B unmoderated KYC uploads go through /b2b/kyc/assets (Skip moderation).
     if params.get("kyc_mode") and entry.capabilities.supports_kyc:
         from flowboard.services.video.avis import ensure_kyc_asset
 
@@ -232,15 +247,15 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
         try:
             if img_mid:
                 provider_params["kyc_image_asset_id"] = await ensure_kyc_asset(
-                    img_mid, "Image", project_id=proj
+                    img_mid, "Image", project_id=proj, unmoderated=unmoderated
                 )
             if aud_mid:
                 provider_params["kyc_audio_asset_id"] = await ensure_kyc_asset(
-                    aud_mid, "Audio", project_id=proj
+                    aud_mid, "Audio", project_id=proj, unmoderated=unmoderated
                 )
             if vid_mid:
                 provider_params["kyc_video_asset_id"] = await ensure_kyc_asset(
-                    vid_mid, "Video", project_id=proj
+                    vid_mid, "Video", project_id=proj, unmoderated=unmoderated
                 )
         except VideoError as exc:
             return {"error": str(exc), "code": exc.code, "raw": exc.raw}, f"{exc.code}:{exc}"

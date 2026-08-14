@@ -107,6 +107,9 @@ export interface FlowboardNodeData extends Record<string, unknown> {
   duration_seconds?: number;
   resolution?: string;
   generate_audio?: boolean;
+  kycMode?: boolean;
+  // DanceSee B2B unmoderated path (/api/v1/b2b/*). Seedance 2.0/2.5 only.
+  contentFilterDisabled?: boolean;
 
   // Phase 8.1 — Manual vs Automation prompt mode (VideoNode only; default
   // "manual"). Manual = paste full prompt, no synth / no Bible.
@@ -209,7 +212,7 @@ function nodeFromDto(n: RawNode): FlowNode {
     data: {
       // Round-trip ALL persisted data fields first (duration_seconds,
       // resolution, generate_audio, videoModelId, reference_label/description,
-      // kycMode, videoRefMediaId, audioMediaId, …). Without this, any field not
+      // kycMode, contentFilterDisabled, videoRefMediaId, audioMediaId, …). Without this, any field not
       // explicitly re-listed below silently reverts to its default on reload.
       ...(n.data as Partial<FlowboardNodeData>),
       type: n.type,

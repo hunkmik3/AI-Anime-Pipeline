@@ -1671,6 +1671,8 @@ export interface VideoModelCapability {
   // Person-driven (KYC) inputs — portrait→video / lip-sync / video-ref.
   // Only the Avis Seedance 2.0 model; the gen dialog shows the KYC toggle.
   supports_kyc?: boolean;
+  // DanceSee /api/v1/b2b/* unmoderated path (Seedance 2.0/2.5, B2B account).
+  supports_b2b_unmoderated?: boolean;
 }
 
 export interface VideoModelDTO {

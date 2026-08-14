@@ -39,6 +39,7 @@ def test_models_registered_at_boot():
         "seedance-2-0",
         "dreamina-seedance-2-0-fast",
         "dreamina-seedance-2-0-mini",
+        "dreamina-seedance-2-5",
     }
     assert {m.provider_name for m in list_video_models()} == {"avis"}
 
@@ -72,6 +73,19 @@ def test_seedance_2_0_routes_through_avis():
     assert entry.capabilities.supports_audio_ref is True
     # Person-driven (KYC) supported on Avis Seedance 2.0; not on the byteplus path.
     assert entry.capabilities.supports_kyc is True
+    assert entry.capabilities.supports_b2b_unmoderated is True
+
+
+def test_seedance_2_5_is_b2b_capable():
+    entry = get_video_model("dreamina-seedance-2-5")
+    assert entry.provider_name == "avis"
+    assert entry.upstream_model_id == "dreamina-seedance-2-5"
+    assert entry.capabilities.supports_b2b_unmoderated is True
+    assert entry.capabilities.supports_kyc is True
+    # 2.5's headline vs 2.0: native clips go to 30s, not 15.
+    assert 30 in entry.capabilities.durations
+    assert max(entry.capabilities.durations) == 30
+    assert min(entry.capabilities.durations) == 4
 
 
 

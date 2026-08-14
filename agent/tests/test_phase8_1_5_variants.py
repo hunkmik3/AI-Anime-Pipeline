@@ -225,3 +225,41 @@ async def test_seedance_2_0_rejects_out_of_range_duration(_avis_env, dur):
             "resolution": "720p",
         })
     assert exc.value.code == "bad_input"
+
+
+@pytest.mark.parametrize("dur", [4, 15, 16, 30])
+@pytest.mark.asyncio
+async def test_seedance_2_5_accepts_duration_up_to_30(_avis_env, dur):
+    """2.5 doubles 2.0's 15s cap — 16..30 must reach the API."""
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"data": {"taskId": "cgt-dur25"}, "success": True})
+
+    transport = httpx.MockTransport(handler)
+    avis.set_http_client_factory(lambda: httpx.AsyncClient(transport=transport, timeout=5.0))
+    provider = get_video_provider("dreamina-seedance-2-5")
+
+    await provider.submit({
+        "reference_images": ["https://e/a.png", "https://e/b.png"],
+        "motion_prompt": "@image1 @image2 walk",
+        "duration_seconds": dur,
+        "aspect_ratio": "16:9",
+        "resolution": "720p",
+    })
+    assert seen[0]["duration"] == dur
+
+
+@pytest.mark.asyncio
+async def test_seedance_2_5_rejects_duration_31(_avis_env):
+    provider = get_video_provider("dreamina-seedance-2-5")
+    with pytest.raises(VideoError) as exc:
+        await provider.submit({
+            "reference_images": ["https://e/a.png", "https://e/b.png"],
+            "motion_prompt": "x",
+            "duration_seconds": 31,
+            "aspect_ratio": "16:9",
+            "resolution": "720p",
+        })
+    assert exc.value.code == "bad_input"
