@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+
+import { useRevalidate } from "../../hooks/useRevalidate";
 
 /**
  * The comic side of the studio, in the console that could not see it.
@@ -94,26 +96,31 @@ export function ComicsTab() {
   const [orphan, setOrphan] = useState<Unattributed | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    void (async () => {
-      try {
-        const [o, c, a, q, u] = await Promise.all([
-          json<Overview>("/api/admin/stats/comics"),
-          json<ComicRow[]>("/api/admin/stats/comics/by-comic"),
-          json<ArtistRow[]>("/api/admin/stats/comics/by-artist"),
-          json<Quota>("/api/admin/stats/comics/quota"),
-          json<Unattributed>("/api/admin/stats/unattributed"),
-        ]);
-        setOverview(o);
-        setComics(c);
-        setArtists(a);
-        setQuota(q);
-        setOrphan(u);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Could not load");
-      }
-    })();
+  const load = useCallback(async () => {
+    try {
+      const [o, c, a, q, u] = await Promise.all([
+        json<Overview>("/api/admin/stats/comics"),
+        json<ComicRow[]>("/api/admin/stats/comics/by-comic"),
+        json<ArtistRow[]>("/api/admin/stats/comics/by-artist"),
+        json<Quota>("/api/admin/stats/comics/quota"),
+        json<Unattributed>("/api/admin/stats/unattributed"),
+      ]);
+      setOverview(o);
+      setComics(c);
+      setArtists(a);
+      setQuota(q);
+      setOrphan(u);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load");
+    }
   }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // Live quota countdown + comic spend — keep fresh without a reload.
+  useRevalidate(() => void load(), { intervalMs: 15000 });
 
   if (error) return <div className="admin-error">{error}</div>;
   if (!overview || !quota) return <div className="admin-loading">Loading…</div>;

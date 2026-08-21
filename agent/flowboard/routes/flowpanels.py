@@ -43,6 +43,7 @@ from flowboard.services import flow_permissions as fp
 from flowboard.services import panel_service as ps
 from flowboard.services import resource_guard
 from flowboard.services import user_service
+from flowboard.services.flowstudio import r2
 
 logger = logging.getLogger(__name__)
 
@@ -397,6 +398,7 @@ def set_series_cover(series_id: int, body: CoverBody, user=Depends(get_optional_
 # ── Import ──────────────────────────────────────────────────────────────────
 
 _ALLOWED_MIME = {"image/png", "image/jpeg", "image/webp", "image/bmp"}
+_EXT_FOR = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/bmp": ".bmp"}
 #: Per file. Raw panels are scans, not 4K renders — generous but not unbounded.
 _MAX_FILE_BYTES = 30 * 1024 * 1024
 #: A chapter is a few hundred panels; well past that means someone picked the
@@ -409,6 +411,7 @@ async def import_folder(
     batch_id: int,
     files: list[UploadFile] = File(...),
     paths: list[str] = Form(...),
+    append: bool = Form(False),
     user=Depends(get_optional_user),
 ):
     """Import a raw-material folder: one panel per file, or per subfolder.
@@ -432,6 +435,7 @@ async def import_folder(
 
     entries: list[tuple[str, str]] = []
     skipped: list[str] = []
+    asset_items: list[tuple[str, str, str]] = []
     for upload, rel in zip(files, paths):
         mime = (upload.content_type or "").lower().split(";")[0].strip()
         if mime not in _ALLOWED_MIME:
@@ -444,26 +448,144 @@ async def import_folder(
             skipped.append(rel)
             continue
         mid = str(uuid.uuid4())
-        if not media_service.ingest_inline_bytes(mid, raw, kind="image", mime=mime):
+        # Write the file now (one at a time, so a big folder never holds every
+        # image in memory at once); the Asset rows are staged and committed in a
+        # single transaction below instead of one session+commit per file.
+        path = media_service.write_inline_cache(mid, raw, mime=mime)
+        if path is None:
             skipped.append(rel)
             continue
         entries.append((rel, mid))
+        asset_items.append((mid, str(path), mime))
 
     with get_session() as s:
         try:
-            panels = ps.import_panels(s, batch_id, entries=entries)
+            media_service.register_inline_assets(s, asset_items)
+            panels = ps.import_panels(s, batch_id, entries=entries, append=append)
         except ps.PanelError as exc:
             raise _fail(exc)
+        # Response from data fetched in BULK: every imported panel shares one
+        # batch + chapter, and their images/notes load in a few queries instead
+        # of ~5 per panel (which was ~700 queries for a 136-panel chapter).
+        batch = ps.get_batch(s, batch_id)
+        chapter = ps.get_chapter(s, batch.chapter_id)
+        pids = [p.id for p in panels]
+        ctx = {
+            "batch": batch,
+            "chapter": chapter,
+            "assignee_name": _user_name(batch.assignee_user_id),
+            "raws": ps.panel_images_bulk(s, pids, role="raw"),
+            "generated": ps.panel_images_bulk(s, pids, role="generated"),
+            "unresolved": ps.unresolved_counts_bulk(s, pids),
+        }
         logger.info(
             "flowpanels: imported %d file(s) into %d panel(s) on batch %s (%d skipped)",
             len(entries), len(panels), batch_id, len(skipped),
         )
         return {
             "batch_id": batch_id,
-            "panels": [_panel_dict(s, p) for p in panels],
+            "panels": [_panel_dict(s, p, _ctx=ctx) for p in panels],
             "imported_files": len(entries),
             "skipped": skipped[:20],
             "skipped_count": len(skipped),
+        }
+
+
+# ── Direct-to-R2 upload (browser PUTs straight to storage, no 100MB CF limit) ──
+
+
+@router.get("/upload-config")
+def upload_config(user=Depends(get_optional_user)):
+    """How the client should upload. ``r2_direct`` → ask for presigned urls and
+    PUT files straight to R2 (no 100MB Cloudflare limit); else the browser falls
+    back to the multipart ``/import`` on this hostname."""
+    return {"r2_direct": r2.is_configured(), "max_files": _MAX_FILES}
+
+
+class PresignItem(BaseModel):
+    filename: str
+    mime: str
+
+
+@router.post("/batches/{batch_id}/import-urls")
+def import_urls(batch_id: int, body: list[PresignItem], user=Depends(get_optional_user)):
+    """One presigned PUT url per file so the browser uploads them straight to R2.
+    Guarded like the folder import. Files with an unsupported mime come back
+    marked ``skip`` so the client leaves them out."""
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, _series_of_batch(s, batch_id), "batch.import")
+    if not r2.is_configured():
+        raise HTTPException(400, "direct-to-storage upload is not configured")
+    if len(body) > _MAX_FILES:
+        raise HTTPException(400, f"{len(body)} files is too many — limit is {_MAX_FILES}")
+    out = []
+    for it in body:
+        mime = (it.mime or "").lower().split(";")[0].strip()
+        if mime not in _ALLOWED_MIME:
+            out.append({"filename": it.filename, "skip": True})
+            continue
+        media_id = str(uuid.uuid4())
+        key = r2.upload_key(media_id, _EXT_FOR.get(mime, ".bin"))
+        out.append({
+            "filename": it.filename,
+            "media_id": media_id,
+            "put_url": r2.presign_put(key),
+            "public_url": r2.public_url_for(key),
+            "mime": mime,
+        })
+    return {"uploads": out}
+
+
+class RegisterItem(BaseModel):
+    media_id: str
+    rel_path: str
+    public_url: str
+    mime: str
+
+
+@router.post("/batches/{batch_id}/import-register")
+def import_register(
+    batch_id: int,
+    body: list[RegisterItem],
+    append: bool = False,
+    user=Depends(get_optional_user),
+):
+    """After the browser has PUT every file to R2, record them as panels. No file
+    bytes cross this server — only the R2 urls the panels are served from. The
+    response matches ``/import`` so the frontend handles both the same way."""
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, _series_of_batch(s, batch_id), "batch.import")
+    entries = [(it.rel_path, it.media_id) for it in body]
+    asset_items = [(it.media_id, it.public_url, it.mime) for it in body]
+    with get_session() as s:
+        try:
+            media_service.register_url_assets(s, asset_items)
+            panels = ps.import_panels(s, batch_id, entries=entries, append=append)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+        batch = ps.get_batch(s, batch_id)
+        chapter = ps.get_chapter(s, batch.chapter_id)
+        pids = [p.id for p in panels]
+        ctx = {
+            "batch": batch,
+            "chapter": chapter,
+            "assignee_name": _user_name(batch.assignee_user_id),
+            "raws": ps.panel_images_bulk(s, pids, role="raw"),
+            "generated": ps.panel_images_bulk(s, pids, role="generated"),
+            "unresolved": ps.unresolved_counts_bulk(s, pids),
+        }
+        logger.info(
+            "flowpanels: registered %d R2 upload(s) as %d panel(s) on batch %s",
+            len(entries), len(panels), batch_id,
+        )
+        return {
+            "batch_id": batch_id,
+            "panels": [_panel_dict(s, p, _ctx=ctx) for p in panels],
+            "imported_files": len(entries),
+            "skipped": [],
+            "skipped_count": 0,
         }
 
 
@@ -517,12 +639,33 @@ def _guard(session, user, series_id, capability: str) -> str:
     return fp.require(session, user, series_id, capability)
 
 
-def _panel_dict(session, panel, *, with_images: bool = False) -> dict:
-    raws = ps.panel_images(session, panel.id, role="raw")
-    latest = ps.latest_generated(session, panel.id)
-    shown = ps.delivered(session, panel.id)
-    batch = ps.get_batch(session, panel.batch_id)
-    chapter = ps.get_chapter(session, batch.chapter_id)
+def _panel_dict(session, panel, *, with_images: bool = False, _ctx: Optional[dict] = None) -> dict:
+    # `_ctx` carries data pre-fetched in BULK for a page of panels (see the
+    # folder import) so this builds one dict without a query per panel. Without
+    # it, the per-panel path runs — but note it now fetches `generated` ONCE and
+    # derives both `latest` and `delivered` from it, rather than querying twice.
+    if _ctx is not None:
+        raws = _ctx["raws"].get(panel.id, [])
+        generated = _ctx["generated"].get(panel.id, [])
+        batch = _ctx["batch"]
+        chapter = _ctx["chapter"]
+        assignee_name = _ctx["assignee_name"]
+        unresolved = _ctx["unresolved"].get(panel.id, 0)
+    else:
+        raws = ps.panel_images(session, panel.id, role="raw")
+        generated = ps.panel_images(session, panel.id, role="generated")
+        batch = ps.get_batch(session, panel.batch_id)
+        chapter = ps.get_chapter(session, batch.chapter_id)
+        assignee_name = _user_name(batch.assignee_user_id)
+        unresolved = ps.unresolved_count(session, panel.id)
+    latest = generated[-1] if generated else None
+    # delivered(): the submitted pick if it is set and present, else the most
+    # recent generated. Replicated here to reuse the single `generated` fetch.
+    shown = None
+    if panel.final_media_id:
+        shown = next((r for r in generated if r.media_id == panel.final_media_id), None)
+    if shown is None:
+        shown = generated[-1] if generated else None
     d = {
         "id": panel.id,
         "batch_id": panel.batch_id,
@@ -536,7 +679,7 @@ def _panel_dict(session, panel, *, with_images: bool = False) -> dict:
         # Who works on this comes from the BATCH — the panel has no assignee of
         # its own, so there is one place this fact lives.
         "assignee_user_id": str(batch.assignee_user_id) if batch.assignee_user_id else None,
-        "assignee_name": _user_name(batch.assignee_user_id),
+        "assignee_name": assignee_name,
         # The grid shows original and result side by side — that pairing is the
         # whole point of the board this replaces.
         "raw_media_id": raws[0].media_id if raws else None,
@@ -551,7 +694,7 @@ def _panel_dict(session, panel, *, with_images: bool = False) -> dict:
         #: always has a value once anything has been generated.
         "final_media_id": panel.final_media_id,
         "version_count": latest.version if latest else 0,
-        "unresolved_notes": ps.unresolved_count(session, panel.id),
+        "unresolved_notes": unresolved,
         "updated_at": panel.updated_at.isoformat() if panel.updated_at else None,
     }
     if with_images:
@@ -566,7 +709,7 @@ def _panel_dict(session, panel, *, with_images: bool = False) -> dict:
                 "model_used": i.model_used,
                 "created_at": i.created_at.isoformat() if i.created_at else None,
             }
-            for i in ps.panel_images(session, panel.id, role="generated")
+            for i in generated
         ]
         d["notes"] = [
             {
@@ -591,6 +734,69 @@ def list_panels(batch_id: int, user=Depends(get_optional_user)):
         except ps.PanelError as exc:
             raise _fail(exc)
         return [_panel_dict(s, p) for p in ps.list_panels(s, batch_id)]
+
+
+class PanelCreate(BaseModel):
+    #: Full panel code, e.g. ``AURA-THE-SIX-TOWERS_CHAP06_P035-2``. An insert
+    #: suffix ("-2") lands right after P035 in reading order — chapter order is
+    #: by code, not by when the panel was added.
+    code: str = Field(min_length=1, max_length=200)
+    #: Optional raw image (already cached). Omitted → the panel starts empty for
+    #: the artist to generate into.
+    media_id: Optional[str] = None
+
+
+@router.post("/batches/{batch_id}/panels")
+def create_panel(batch_id: int, body: PanelCreate, user=Depends(get_optional_user)):
+    """Add ONE panel to a batch by hand — a missed page, or an insert like
+    ``…P035-2``. Producer+ on the comic."""
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, _series_of_batch(s, batch_id), "batch.manage")
+        try:
+            p = ps.add_panel(s, batch_id, body.code, media_id=body.media_id)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+        return _panel_dict(s, p, with_images=True)
+
+
+@router.delete("/panels/{panel_id}")
+def delete_panel(panel_id: int, user=Depends(get_optional_user)):
+    """Delete one panel (and its images/notes). Producer+ on the comic."""
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, _series_of_panel(s, panel_id), "batch.manage")
+        try:
+            ps.delete_panel(s, panel_id)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+        return {"deleted": panel_id}
+
+
+@router.post("/panels/{panel_id}/pass-through")
+def pass_through(panel_id: int, user=Depends(get_optional_user)):
+    """Mark a panel done with NO processing — its raw art goes straight to
+    Giantstudio. A completion decision, so producer+ like an approval. Delivers
+    to GS immediately, exactly like the approve route."""
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, _series_of_panel(s, panel_id), "panel.review")
+        try:
+            p = ps.pass_through_panel(s, panel_id, actor_user_id=(user.id if user else None))
+        except ps.PanelError as exc:
+            raise _fail(exc)
+        out = _panel_dict(s, p, with_images=True)
+        try:
+            handed = fd.deliver_panel(s, panel_id)
+        except fd.DeliveryError as exc:
+            out["delivery_error"] = str(exc)
+        else:
+            if handed is not None:
+                out["delivered"] = {
+                    "sequence_id": str(handed.shot_id),
+                    "episode_id": str(handed.scene_id),
+                }
+        return out
 
 
 # ── Batches ─────────────────────────────────────────────────────────────────
@@ -728,11 +934,13 @@ def assignable_users(user=Depends(get_optional_user)):
     """
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-    return [
-        {"user_id": str(u.id), "name": (u.display_name or u.username)}
-        for u in user_service.list_users()
-        if getattr(u, "status", "active") == "active"
-    ]
+    active = [u for u in user_service.list_users() if getattr(u, "status", "active") == "active"]
+    # Prefer people marked as Giantflow staff (`flow_role` set) — that's the pool
+    # a PM builds ahead of time. Fall back to everyone while nobody is marked yet,
+    # so assignment never dead-ends on an empty picker.
+    designated = [u for u in active if getattr(u, "flow_role", None)]
+    pool = designated or active
+    return [{"user_id": str(u.id), "name": (u.display_name or u.username)} for u in pool]
 
 
 # ── Export ──────────────────────────────────────────────────────────────────

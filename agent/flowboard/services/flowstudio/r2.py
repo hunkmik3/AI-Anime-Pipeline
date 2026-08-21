@@ -235,3 +235,33 @@ def delete_media(media_id: str) -> None:
     finally:
         with _lock:
             _uploaded.discard(key)
+
+
+# ── Direct browser upload (presigned PUT) ────────────────────────────────────
+# Panels are uploaded straight from the browser to R2 via a presigned PUT URL,
+# which hits the R2 S3 endpoint directly and so is NOT subject to the 100MB
+# Cloudflare proxy limit on the app's own hostname. A dedicated key prefix keeps
+# these apart from the auto-deleted Atrium inputs ("media/") and the result CDN
+# copies ("results/") — panel uploads are permanent, never cleaned up.
+_UPLOAD_PREFIX = "flowpanels"
+
+
+def upload_key(media_id: str, ext: str) -> str:
+    """Bucket key for a directly-uploaded panel image."""
+    return f"{_UPLOAD_PREFIX}/{media_id}{ext if ext.startswith('.') else '.' + ext}"
+
+
+def presign_put(key: str, expires: int = 3600) -> str:
+    """A presigned S3 PUT URL the browser uploads ONE file to directly. Content
+    type is left unsigned so the browser can PUT the raw bytes without matching a
+    header exactly; the app records the real mime at register time."""
+    return _get_client().generate_presigned_url(
+        "put_object",
+        Params={"Bucket": _env("R2_BUCKET"), "Key": key},
+        ExpiresIn=expires,
+    )
+
+
+def public_url_for(key: str) -> str:
+    """The public r2.dev URL the app fetches a directly-uploaded panel from."""
+    return f"{public_base()}/{key}"

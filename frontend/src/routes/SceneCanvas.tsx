@@ -29,6 +29,7 @@ import { useShotWorkflowStore, type FlowNode, type NodeType } from "../store/sho
 import { useReferencesStore } from "../store/references";
 import { toast } from "../store/toast";
 import { confirmPanelDelete } from "../canvas/confirmPanelDelete";
+import { useRevalidate } from "../hooks/useRevalidate";
 
 const edgeTypes = { default: VariantEdge };
 
@@ -252,6 +253,12 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
     void selectScene(sceneId);
     void loadSceneCanvas(sceneId);
   }, [sceneId, selectScene, loadSceneCanvas]);
+
+  // Came back to the tab, or a generation finished in another tab / the page was
+  // reloaded mid-gen — re-pull the canvas so results and upstream-added
+  // sequences appear without an F5. Focus/visibility only (no interval) so it
+  // never re-seeds the graph while you're dragging.
+  useRevalidate(() => void loadSceneCanvas(sceneId));
 
   // One-time auto-migrate when an existing scene has no shot_groups yet.
   useEffect(() => {
@@ -612,6 +619,16 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
       {migrating && (
         <div className="scene-canvas__banner" role="status">
           ⏳ Migrating to multi-sequence canvas…
+        </div>
+      )}
+
+      {currentScene?.frozen && (
+        <div
+          className="scene-canvas__banner"
+          role="status"
+          style={{ background: "#4a2c0a", color: "#fcd9a8", borderColor: "#a16207" }}
+        >
+          🔒 Archived — view only. Xem lại được các lần gen cũ, nhưng không tạo/sửa mới.
         </div>
       )}
 

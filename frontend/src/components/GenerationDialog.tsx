@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useGenerationStore } from "../store/generation";
 import { useShotWorkflowStore } from "../store/shotWorkflow";
 import { useProjectStore } from "../store/project";
+import { useSceneStore } from "../store/scene";
 import { VideoNodeSettings } from "./VideoNodeSettings";
 import { VideoRefsPanel, type CustomRef } from "./VideoRefsPanel";
 import {
@@ -216,6 +217,9 @@ export function GenerationDialog() {
   const rfId = openDialog.rfId;
   const node = nodes.find((n) => n.id === rfId);
   const boardName = useProjectStore((s) => s.currentProject?.name ?? "");
+  // Archived (frozen) series are view-only: block generation from the dialog too,
+  // so the button is visibly disabled rather than erroring with a 423 on submit.
+  const sceneFrozen = useSceneStore((s) => s.currentScene?.frozen ?? false);
   const nodeCount = nodes.length;
   const edges = useShotWorkflowStore((s) => s.edges);
 
@@ -746,15 +750,17 @@ export function GenerationDialog() {
   // Manual video (Phase 8.1) sends the pasted prompt verbatim with no synth,
   // so it requires a non-empty prompt instead; ref/audio/source presence is
   // validated at dispatch (r2v shots legitimately have no source frame).
-  const canGenerate = isCharacter
-    ? charPromptMode === "custom"
-      ? prompt.trim().length > 0
-      : charGender !== null || charCountry !== null || charExtras.trim().length > 0
-    : isManualVideo
-    ? prompt.trim().length > 0 && !isWorking
-    : isVideo
-    ? (selectedSourceIdx.size > 0 || customRefs.length > 0) && !isWorking
-    : !isWorking;
+  const canGenerate =
+    !sceneFrozen &&
+    (isCharacter
+      ? charPromptMode === "custom"
+        ? prompt.trim().length > 0
+        : charGender !== null || charCountry !== null || charExtras.trim().length > 0
+      : isManualVideo
+      ? prompt.trim().length > 0 && !isWorking
+      : isVideo
+      ? (selectedSourceIdx.size > 0 || customRefs.length > 0) && !isWorking
+      : !isWorking);
 
   return (
     <div
@@ -1373,13 +1379,20 @@ export function GenerationDialog() {
           <span className="gen-dialog__board-ctx">
             {boardName} · {nodeCount} node{nodeCount !== 1 ? "s" : ""}
           </span>
+          {sceneFrozen && (
+            <span style={{ color: "#d97706", fontWeight: 600, marginRight: 8 }}>
+              🔒 Archived — view only
+            </span>
+          )}
           <button
             className="gen-dialog__cta"
             type="button"
             onClick={handleSubmit}
             disabled={!canGenerate}
             title={
-              nodeLLMBusy && !autoBuilding
+              sceneFrozen
+                ? "This series is archived (view-only) — generation is disabled"
+                : nodeLLMBusy && !autoBuilding
                 ? "Backend is still composing — try again in a moment"
                 : undefined
             }

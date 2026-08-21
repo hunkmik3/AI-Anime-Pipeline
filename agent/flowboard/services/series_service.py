@@ -241,6 +241,7 @@ def update_series(
     unit_label: Optional[str] = None,
     order_index: Optional[int] = None,
     production: Optional[dict[str, Any]] = None,
+    frozen: Optional[bool] = None,
 ) -> Series:
     row = get_series(session, series_id)
     if name is not None:
@@ -251,6 +252,8 @@ def update_series(
         row.unit_label = normalize_unit_label(unit_label)
     if order_index is not None:
         row.order_index = order_index
+    if frozen is not None:
+        row.frozen = frozen
     if production is not None:
         # patch merged over the existing bag (unset keys untouched)
         row.production = merge_production(

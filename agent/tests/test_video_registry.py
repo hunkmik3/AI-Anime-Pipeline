@@ -39,6 +39,7 @@ def test_models_registered_at_boot():
         "seedance-2-0",
         "dreamina-seedance-2-0-fast",
         "dreamina-seedance-2-0-mini",
+        "dreamina-seedance-2-5",
     }
     assert {m.provider_name for m in list_video_models()} == {"avis"}
 
@@ -70,10 +71,28 @@ def test_seedance_2_0_routes_through_avis():
     assert entry.capabilities.max_refs >= 1
     assert entry.capabilities.supports_audio_toggle is True
     assert entry.capabilities.supports_audio_ref is True
-    # Person-driven (KYC) supported on Avis Seedance 2.0; not on the byteplus path.
+    # Person-driven (KYC) + B2B unmoderated on Avis Seedance 2.0.
     assert entry.capabilities.supports_kyc is True
+    assert entry.capabilities.supports_b2b_unmoderated is True
 
 
+def test_seedance_2_5_capabilities():
+    entry = get_video_model("dreamina-seedance-2-5")
+    assert entry.provider_name == "avis"
+    assert entry.upstream_model_id == "dreamina-seedance-2-5"
+    assert entry.capabilities.supports_multi_ref is True
+    assert entry.capabilities.max_refs == 30
+    assert entry.capabilities.resolutions == ("480p", "720p")
+    assert entry.capabilities.durations == tuple(range(4, 31))
+    assert entry.capabilities.supports_kyc is True
+    assert entry.capabilities.supports_audio_ref is True
+    assert entry.capabilities.supports_video_ref is True
+    assert entry.capabilities.supports_b2b_unmoderated is True
+
+
+def test_i2v_models_do_not_advertise_b2b():
+    entry = get_video_model("seedance-1-5-pro")
+    assert entry.capabilities.supports_b2b_unmoderated is False
 
 
 def test_capability_is_frozen_dataclass():

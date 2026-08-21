@@ -145,6 +145,7 @@ def register_defaults() -> None:
     from .avis import (
         AvisVideoProvider,
         AVIS_SEEDANCE_2_0_CAPABILITY,
+        AVIS_SEEDANCE_2_5_CAPABILITY,
         AVIS_SEEDANCE_I2V_CAPABILITY,
     )
 
@@ -166,6 +167,7 @@ def register_defaults() -> None:
         ("seedance-1-5-pro", "Seedance 1.5 Pro (Avis · i2v)", AVIS_SEEDANCE_I2V_CAPABILITY),
         ("dreamina-seedance-2-0-fast", "Seedance 2.0 Fast (Avis · r2v)", AVIS_SEEDANCE_2_0_CAPABILITY),
         ("dreamina-seedance-2-0-mini", "Seedance 2.0 Mini (Avis · r2v)", AVIS_SEEDANCE_2_0_CAPABILITY),
+        ("dreamina-seedance-2-5", "Seedance 2.5 (Avis · r2v)", AVIS_SEEDANCE_2_5_CAPABILITY),
         ("seedance-1-0-pro", "Seedance 1.0 Pro (Avis · i2v)", AVIS_SEEDANCE_I2V_CAPABILITY),
         ("seedance-1-0-pro-fast", "Seedance 1.0 Pro Fast (Avis · i2v)", AVIS_SEEDANCE_I2V_CAPABILITY),
     ):

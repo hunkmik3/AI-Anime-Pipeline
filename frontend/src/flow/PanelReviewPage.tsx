@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 
 import {
   addPanelNote,
+  mediaUrl,
   resolvePanelNote,
   reviewPanel,
   reviewQueue,
@@ -12,7 +14,6 @@ import {
 } from "../api/client";
 import { relativeTime } from "../components/activity/activity-meta";
 import { PageHeader } from "../components/shell/PageHeader";
-import { useFlowStudioStore } from "../store/flowStudio";
 import { useGiantflowRole } from "../store/giantflowRole";
 import { FlowViewer } from "./FlowViewer";
 import { GiantflowNav } from "./GiantflowNav";
@@ -32,11 +33,54 @@ import { toast } from "../store/toast";
  * buttons are here, so a panel is judged and cleared without ever opening it;
  * the code links through for the times you need the whole history.
  */
+// How the queue is ordered. "order" = as the server returns it (oldest waiting
+// first); the rest are client-side re-sorts.
+type SortMode = "order" | "name" | "member" | "date";
+
+const SORT_OPTIONS: [SortMode, string][] = [
+  ["order", "Default"],
+  ["name", "Panel name"],
+  ["member", "Member"],
+  ["date", "Date"],
+];
+
+const _codeCmp = (a: QueuePanel, b: QueuePanel) =>
+  (a.code ?? "").localeCompare(b.code ?? "", undefined, { numeric: true, sensitivity: "base" });
+
+/** When the panel was handed in — the last "submitted" event, else its last
+ *  update. Millisecond epoch (0 when unknown) for a stable numeric sort. */
+function submittedAt(p: QueuePanel): number {
+  const subs = (p.history ?? []).filter((e) => e.kind === "submitted");
+  const t = (subs.length ? subs[subs.length - 1].created_at : null) ?? p.updated_at;
+  return t ? Date.parse(t) : 0;
+}
+
+function sortPanels(rows: QueuePanel[], mode: SortMode): QueuePanel[] {
+  if (mode === "order") return rows;
+  const out = [...rows];
+  if (mode === "name") out.sort(_codeCmp);
+  else if (mode === "member")
+    // Group by member (A→Z), then panel name inside each member.
+    out.sort(
+      (a, b) =>
+        (a.assignee_name ?? "Unassigned").localeCompare(
+          b.assignee_name ?? "Unassigned",
+          undefined,
+          { sensitivity: "base" },
+        ) || _codeCmp(a, b),
+    );
+  else if (mode === "date") out.sort((a, b) => submittedAt(b) - submittedAt(a)); // newest first
+  return out;
+}
+
 export function PanelReviewPage() {
   const { can } = useGiantflowRole();
   const [rows, setRows] = useState<QueuePanel[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [artist, setArtist] = useState<string>("all");
+  // Compare-zoom lightbox (raw beside generated) + how the queue is ordered.
+  const [zoom, setZoom] = useState<QueuePanel | null>(null);
+  const [sort, setSort] = useState<SortMode>("order");
 
   const load = useCallback(async () => {
     try {
@@ -60,7 +104,9 @@ export function PanelReviewPage() {
 
   const all = rows ?? [];
   const artists = [...new Set(all.map((p) => p.assignee_name ?? "Unassigned"))].sort();
-  const shown = artist === "all" ? all : all.filter((p) => (p.assignee_name ?? "Unassigned") === artist);
+  const filtered =
+    artist === "all" ? all : all.filter((p) => (p.assignee_name ?? "Unassigned") === artist);
+  const shown = sortPanels(filtered, sort);
 
   // The page itself, not just its buttons: an artist who lands here by URL
   // should be told where their own work is, not shown a pile they cannot act on.
@@ -93,22 +139,45 @@ export function PanelReviewPage() {
       {error ? <p className="inbox__err">{error}</p> : null}
       {rows === null ? <p className="rfoot">Loading…</p> : null}
 
-      {all.length > 1 && artists.length > 1 ? (
+      {all.length > 0 ? (
         <div className="pn__filters">
-          <div className="seg">
-            <button
-              className={`seg__btn${artist === "all" ? " is-on" : ""}`}
-              onClick={() => setArtist("all")}
-            >
-              Everyone {all.length}
-            </button>
-            {artists.map((a) => (
+          {artists.length > 1 ? (
+            <div className="seg">
               <button
-                key={a}
-                className={`seg__btn${artist === a ? " is-on" : ""}`}
-                onClick={() => setArtist(a)}
+                className={`seg__btn${artist === "all" ? " is-on" : ""}`}
+                onClick={() => setArtist("all")}
               >
-                {a} {all.filter((p) => (p.assignee_name ?? "Unassigned") === a).length}
+                Everyone {all.length}
+              </button>
+              {artists.map((a) => (
+                <button
+                  key={a}
+                  className={`seg__btn${artist === a ? " is-on" : ""}`}
+                  onClick={() => setArtist(a)}
+                >
+                  {a} {all.filter((p) => (p.assignee_name ?? "Unassigned") === a).length}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="seg pn__sortseg">
+            <span className="pn__sortlbl">↕ Sort</span>
+            {SORT_OPTIONS.map(([m, label]) => (
+              <button
+                key={m}
+                className={`seg__btn${sort === m ? " is-on" : ""}`}
+                title={
+                  m === "date"
+                    ? "Newest submission first"
+                    : m === "member"
+                      ? "Group by member, then panel name"
+                      : m === "name"
+                        ? "Panel name (…P039, P040…)"
+                        : "Submission order (oldest waiting first)"
+                }
+                onClick={() => setSort(m)}
+              >
+                {label}
               </button>
             ))}
           </div>
@@ -124,9 +193,11 @@ export function PanelReviewPage() {
 
       <ul className="pn__queue">
         {shown.map((p) => (
-          <ReviewRow key={p.id} panel={p} onDone={load} />
+          <ReviewRow key={p.id} panel={p} onDone={load} onZoom={() => setZoom(p)} />
         ))}
       </ul>
+
+      {zoom ? <ReviewLightbox panel={zoom} onClose={() => setZoom(null)} /> : null}
 
       {/* Look only: this page is for ruling on work, not making it. */}
       <FlowViewer viewOnly />
@@ -134,11 +205,18 @@ export function PanelReviewPage() {
   );
 }
 
-function ReviewRow({ panel, onDone }: { panel: QueuePanel; onDone: () => Promise<void> }) {
+function ReviewRow({
+  panel,
+  onDone,
+  onZoom,
+}: {
+  panel: QueuePanel;
+  onDone: () => Promise<void>;
+  onZoom: () => void;
+}) {
   const [note, setNote] = useState("");
   const [showHistory, setShowHistory] = useState(false);
   const [busy, setBusy] = useState(false);
-  const select = useFlowStudioStore((s) => s.select);
 
   async function run(fn: () => Promise<unknown>, ok: string) {
     setBusy(true);
@@ -166,11 +244,11 @@ function ReviewRow({ panel, onDone }: { panel: QueuePanel; onDone: () => Promise
           it cannot be made from the result alone. Both open full size: a border
           that is "slightly off" is not judgeable at 200px. */}
       <div className="pn__qshots">
-        <Shot mediaId={panel.raw_media_id} label="original" onOpen={select} />
+        <Shot mediaId={panel.raw_media_id} label="original" onOpen={onZoom} />
         <Shot
           mediaId={panel.delivered_media_id}
           label={`v${panel.delivered_version}`}
-          onOpen={select}
+          onOpen={onZoom}
         />
       </div>
 
@@ -279,7 +357,7 @@ function ReviewRow({ panel, onDone }: { panel: QueuePanel; onDone: () => Promise
   );
 }
 
-/** One picture, click to open full size in the studio viewer. */
+/** One picture, click to open the compare-zoom lightbox (raw beside generated). */
 function Shot({
   mediaId,
   label,
@@ -287,19 +365,120 @@ function Shot({
 }: {
   mediaId: string | null;
   label: string;
-  onOpen: (id: string) => void;
+  onOpen: () => void;
 }) {
   if (!mediaId) return <span className="pn__qshot" />;
   return (
     <button
       type="button"
       className="pn__qshot"
-      title="Open full size — scroll to zoom, drag to pan"
-      onClick={() => onOpen(mediaId)}
+      title="Open big — original beside generated · scroll to zoom, drag to pan"
+      onClick={onOpen}
     >
       <img src={thumbUrl(mediaId, 520)} alt="" loading="lazy" />
       <em>{label}</em>
     </button>
+  );
+}
+
+/** A single zoom/pan surface. Wheel zooms toward the cursor (unbounded, up to
+ *  60×), drag pans, double-click resets. The wheel listener is attached natively
+ *  and non-passive so preventDefault actually stops the page from scrolling. */
+function ZoomPane({ mediaId, label }: { mediaId: string | null; label: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [tf, setTf] = useState({ s: 1, x: 0, y: 0 });
+  const drag = useRef<{ px: number; py: number; x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const r = el.getBoundingClientRect();
+      const cx = e.clientX - r.left - r.width / 2;
+      const cy = e.clientY - r.top - r.height / 2;
+      const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+      setTf((p) => {
+        const s = Math.min(60, Math.max(0.2, p.s * factor));
+        const k = s / p.s; // keep the point under the cursor fixed while zooming
+        return { s, x: cx - (cx - p.x) * k, y: cy - (cy - p.y) * k };
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  if (!mediaId) {
+    return (
+      <div className="rlb__pane rlb__pane--empty">
+        <span>no image</span>
+        <em className="rlb__tag">{label}</em>
+      </div>
+    );
+  }
+  return (
+    <div
+      className="rlb__pane"
+      ref={ref}
+      onDoubleClick={() => setTf({ s: 1, x: 0, y: 0 })}
+      onPointerDown={(e) => {
+        (e.target as HTMLElement).setPointerCapture(e.pointerId);
+        drag.current = { px: e.clientX, py: e.clientY, x: tf.x, y: tf.y };
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (!d) return;
+        setTf((p) => ({ ...p, x: d.x + (e.clientX - d.px), y: d.y + (e.clientY - d.py) }));
+      }}
+      onPointerUp={() => (drag.current = null)}
+      onPointerLeave={() => (drag.current = null)}
+    >
+      <img
+        src={mediaUrl(mediaId)}
+        alt={label}
+        draggable={false}
+        style={{ transform: `translate(${tf.x}px, ${tf.y}px) scale(${tf.s})` }}
+      />
+      <em className="rlb__tag">{label}</em>
+    </div>
+  );
+}
+
+/** Full-screen compare view: original (left) beside the generated version
+ *  (right), each independently zoom/pannable. Esc or a click on the backdrop
+ *  closes it. */
+function ReviewLightbox({ panel, onClose }: { panel: QueuePanel; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      className="rlb"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Compare ${panel.code}`}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="rlb__bar">
+        <span className="rlb__code">{panel.code}</span>
+        <span className="rlb__hint">Scroll = zoom · Drag = pan · Double-click = reset</span>
+        <button type="button" className="rlb__close" onClick={onClose} aria-label="Close">
+          ✕
+        </button>
+      </div>
+      <div className="rlb__panes">
+        <ZoomPane mediaId={panel.raw_media_id} label="original" />
+        <ZoomPane mediaId={panel.delivered_media_id} label={`v${panel.delivered_version}`} />
+      </div>
+    </div>,
+    document.body,
   );
 }
 

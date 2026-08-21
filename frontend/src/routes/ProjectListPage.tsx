@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
+import { useRevalidate } from "../hooks/useRevalidate";
+
 import { thumbUrl, setProjectCover, uploadImage } from "../api/client";
 import { BreakableName } from "../components/BreakableName";
 import { useProjectStore } from "../store/project";
@@ -44,6 +46,10 @@ export function ProjectListPage() {
   useEffect(() => {
     void loadProjects();
   }, [loadProjects]);
+
+  // A project created/removed by someone else should appear on return without a
+  // reload. Focus-only (no interval) so the list never flickers its loader.
+  useRevalidate(() => void loadProjects());
 
   async function handleCover(projectId: string, file: File) {
     setCoverBusy(projectId);

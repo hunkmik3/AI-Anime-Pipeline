@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+
+import { useRevalidate } from "../../hooks/useRevalidate";
 
 import {
   getKpiOverview,
@@ -217,20 +219,19 @@ export function TrackerTab() {
   const [data, setData] = useState<KpiOverviewDTO | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const out = await getKpiOverview();
-        if (alive) setData(out);
-      } catch (e) {
-        if (alive) setError(e instanceof Error ? e.message : String(e));
-      }
-    })();
-    return () => {
-      alive = false;
-    };
+  const load = useCallback(async () => {
+    try {
+      setData(await getKpiOverview());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useRevalidate(() => void load(), { intervalMs: 20000 });
 
   if (error) return <p className="rfoot">Couldn’t load the tracker: {error}</p>;
   if (!data) return <p className="rfoot">Loading…</p>;

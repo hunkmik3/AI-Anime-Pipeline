@@ -107,6 +107,10 @@ def materials(
                 "created_at": req.created_at.isoformat() if req.created_at else None,
                 "duration_seconds": (req.params or {}).get("duration_seconds"),
                 "resolution": (req.params or {}).get("resolution"),
+                # Aspect the clip was generated at (e.g. "9:16"). A hint the UI
+                # uses to size the inline player before the file's own metadata
+                # loads; the file's real dimensions win once they arrive.
+                "aspect_ratio": (req.params or {}).get("aspect_ratio"),
             })
 
     shots_by_scene: dict[uuid.UUID, list[Shot]] = {}

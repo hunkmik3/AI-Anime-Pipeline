@@ -8,7 +8,7 @@ def test_lists_all_registered_models(client):
     body = resp.json()
     assert body["default_model_id"] == "seedance-2-0"
     ids = {m["model_id"] for m in body["models"]}
-    assert {"seedance-1-5-pro", "seedance-2-0"} <= ids
+    assert {"seedance-1-5-pro", "seedance-2-0", "dreamina-seedance-2-5"} <= ids
 
 
 def test_capability_block_is_present(client):
@@ -23,8 +23,15 @@ def test_capability_block_is_present(client):
             "aspect_ratios",
             "resolutions",
             "durations",
+            "supports_b2b_unmoderated",
         ):
             assert key in cap, f"{m['model_id']} missing capability key {key}"
+    by_id = {m["model_id"]: m["capabilities"] for m in body["models"]}
+    assert by_id["dreamina-seedance-2-5"]["supports_b2b_unmoderated"] is True
+    assert by_id["dreamina-seedance-2-5"]["durations"] == list(range(4, 31))
+    assert by_id["dreamina-seedance-2-5"]["resolutions"] == ["480p", "720p"]
+    assert by_id["dreamina-seedance-2-5"]["max_refs"] == 30
+    assert by_id["seedance-1-5-pro"]["supports_b2b_unmoderated"] is False
 
 
 def test_project_settings_rejects_unknown_model(client):

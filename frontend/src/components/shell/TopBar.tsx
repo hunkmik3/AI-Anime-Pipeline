@@ -3,6 +3,7 @@ import { Link, NavLink, useLocation } from "react-router-dom";
 import { useAuthStore } from "../../store/auth";
 import { useInboxStore } from "../../store/inbox";
 import { useProjectStore } from "../../store/project";
+import { useRevalidate } from "../../hooks/useRevalidate";
 import { NotificationBell } from "../NotificationBell";
 import { Brand } from "./Brand";
 
@@ -30,7 +31,21 @@ export function TopBar() {
   const logout = useAuthStore((s) => s.logout);
   const currentProjectId = useProjectStore((s) => s.currentProjectId);
   const { myWork, toReview } = useInboxStore();
+  const refreshMe = useAuthStore((s) => s.refreshMe);
+  const refreshInbox = useInboxStore((s) => s.refresh);
   const { pathname } = useLocation();
+
+  // Keep the always-present header live: the budget readout and the work/review
+  // badges came off stores fetched once at boot/mount, so they froze until an
+  // F5. Revalidate on focus + a light interval, from the one bar every signed-in
+  // page shows — so any spend, grant, submit or approval surfaces app-wide.
+  useRevalidate(
+    () => {
+      void refreshMe();
+      void refreshInbox();
+    },
+    { intervalMs: 20000, enabled: !!user },
+  );
   // Everything that is not the other product is this one. Stated as an
   // exclusion rather than a list of studio prefixes, so a route added tomorrow
   // is claimed by default instead of leaving the bar looking unselected.

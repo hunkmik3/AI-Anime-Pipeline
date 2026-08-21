@@ -36,6 +36,7 @@ from flowboard.db.models import (
     FlowSeries,
     FlowSeriesMember,
     PANEL_STATUSES,
+    Request,
 )
 
 
@@ -711,6 +712,7 @@ def import_panels(
     batch_id: int,
     *,
     entries: list[tuple[str, str]],
+    append: bool = False,
 ) -> list[FlowPanel]:
     """Create panels from an imported raw-material folder.
 
@@ -730,10 +732,12 @@ def import_panels(
     silently interleaving two numbering schemes is not recoverable by hand.
     """
     get_batch(session, batch_id)
-    existing = session.exec(
-        select(FlowPanel).where(FlowPanel.batch_id == batch_id).limit(1)
-    ).first()
-    if existing is not None:
+    existing_rows = session.exec(
+        select(FlowPanel).where(FlowPanel.batch_id == batch_id)
+    ).all()
+    if existing_rows and not append:
+        # Fresh import: a second folder almost always means "new series", and
+        # interleaving two numbering schemes is unrecoverable by hand.
         raise PanelError(
             "closed",
             "this batch already has panels — import into a new batch instead, "
@@ -742,11 +746,17 @@ def import_panels(
     if not entries:
         raise PanelError("bad_input", "no image files found in that folder")
 
+    # Append mode tops up a batch that was already imported: continue the order
+    # after the last panel, and never touch a code that already existed before
+    # this call (that would duplicate/interleave an existing panel) — skip it.
+    existing_codes = {(p.code or "").strip() for p in existing_rows}
     panels: dict[str, FlowPanel] = {}
-    order = 0
+    order = max((p.order_index for p in existing_rows), default=-1) + 1
     for rel_path, media_id in sorted(entries, key=lambda e: natural_key(e[0])):
         code = panel_code_from_path(rel_path)
         if not code or not media_id:
+            continue
+        if append and code in existing_codes:
             continue
         panel = panels.get(code)
         if panel is None:
@@ -772,9 +782,102 @@ def import_panels(
             )
         )
     if not panels:
-        raise PanelError("bad_input", "no usable image files in that folder")
+        raise PanelError(
+            "bad_input",
+            "every panel code in that folder already exists in this batch"
+            if append and existing_codes
+            else "no usable image files in that folder",
+        )
     session.commit()
+    # Append: return only what this call created (so the UI can report "added N").
+    if append:
+        return list(panels.values())
     return list_panels(session, batch_id)
+
+
+def add_panel(
+    session: Session, batch_id: int, code: str, *, media_id: Optional[str] = None
+) -> FlowPanel:
+    """Add ONE panel to a batch by hand — e.g. an insert like ``…_P035-2``.
+
+    Chapter reading order comes from the CODE (see ``flow_delivery``), so a
+    manual insert lands in its right place by name (``P035-2`` right after
+    ``P035``) regardless of when it was added or which batch holds it. Optionally
+    attaches a raw image; otherwise the panel starts empty for the artist to
+    generate into.
+    """
+    get_batch(session, batch_id)
+    code = (code or "").strip()
+    if not code:
+        raise PanelError("bad_input", "panel code is required")
+    existing = session.exec(select(FlowPanel).where(FlowPanel.batch_id == batch_id)).all()
+    if any((p.code or "").strip() == code for p in existing):
+        raise PanelError("closed", f"a panel '{code}' already exists in this batch")
+    order = max((p.order_index for p in existing), default=-1) + 1
+    panel = FlowPanel(batch_id=batch_id, code=code, order_index=order)
+    session.add(panel)
+    session.flush()
+    if media_id:
+        session.add(
+            FlowPanelImage(panel_id=panel.id, role="raw", version=1, media_id=media_id)
+        )
+    session.commit()
+    session.refresh(panel)
+    return panel
+
+
+def delete_panel(session: Session, panel_id: int) -> None:
+    """Delete one panel + its images/notes/events (FK cascade). Generation
+    requests point at it with a NO-ACTION FK, so detach those first (keeps their
+    billing/history) rather than letting the delete fail."""
+    panel = get_panel(session, panel_id)
+    for r in session.exec(select(Request).where(Request.flow_panel_id == panel_id)).all():
+        r.flow_panel_id = None
+        session.add(r)
+    session.delete(panel)
+    session.commit()
+
+
+def pass_through_panel(
+    session: Session, panel_id: int, *, actor_user_id: Optional[uuid.UUID] = None
+) -> FlowPanel:
+    """Mark a panel done with NO generation — its raw art passes straight through
+    to Giantstudio.
+
+    ``delivered()`` only looks at ``generated`` rows, so the raw is recorded AS a
+    generated version, set as the final pick, and the panel approved. From there
+    it delivers to GS exactly like any approved panel. Idempotent on an already-
+    approved panel.
+    """
+    panel = get_panel(session, panel_id)
+    if panel.status == "approved":
+        return panel
+    raw = panel_images(session, panel_id, role="raw")
+    if not raw:
+        raise PanelError(
+            "bad_input", "this panel has no raw image to pass through — nothing to deliver"
+        )
+    raw_media = raw[-1].media_id
+    session.add(
+        FlowPanelImage(
+            panel_id=panel_id,
+            role="generated",
+            version=len(panel_images(session, panel_id, role="generated")) + 1,
+            media_id=raw_media,
+        )
+    )
+    panel.final_media_id = raw_media
+    panel.status = "approved"
+    panel.updated_at = _utcnow()
+    session.add(panel)
+    session.commit()
+    session.refresh(panel)
+    record_event(
+        session, panel_id, "approved",
+        actor_user_id=actor_user_id, media_id=raw_media,
+        body="pass-through (no processing)",
+    )
+    return panel
 
 
 def renumber_panels(session: Session, batch_id: int) -> int:
@@ -904,6 +1007,39 @@ def panel_images(
     if role:
         stmt = stmt.where(FlowPanelImage.role == role)
     return list(session.exec(stmt.order_by(FlowPanelImage.version, FlowPanelImage.id)).all())
+
+
+def panel_images_bulk(
+    session: Session, panel_ids: list[int], *, role: Optional[str] = None
+) -> dict[int, list[FlowPanelImage]]:
+    """Images for many panels in ONE query, grouped by panel id — each list in
+    the same (version, id) order ``panel_images`` returns. Lets a caller building
+    a dict per panel (an import response, a grid) avoid a query-per-panel."""
+    if not panel_ids:
+        return {}
+    stmt = select(FlowPanelImage).where(FlowPanelImage.panel_id.in_(panel_ids))
+    if role:
+        stmt = stmt.where(FlowPanelImage.role == role)
+    out: dict[int, list[FlowPanelImage]] = {}
+    for img in session.exec(stmt.order_by(FlowPanelImage.version, FlowPanelImage.id)).all():
+        out.setdefault(img.panel_id, []).append(img)
+    return out
+
+
+def unresolved_counts_bulk(session: Session, panel_ids: list[int]) -> dict[int, int]:
+    """Unresolved-note count for many panels in ONE query (0 when absent)."""
+    if not panel_ids:
+        return {}
+    rows = session.exec(
+        select(FlowPanelNote.panel_id).where(
+            FlowPanelNote.panel_id.in_(panel_ids),
+            FlowPanelNote.resolved == False,  # noqa: E712
+        )
+    ).all()
+    out: dict[int, int] = {}
+    for pid in rows:
+        out[pid] = out.get(pid, 0) + 1
+    return out
 
 
 def latest_generated(session: Session, panel_id: int) -> Optional[FlowPanelImage]:

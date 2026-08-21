@@ -137,3 +137,63 @@ def verify_token(token: str) -> Optional[str]:
     should use ``decode_token`` to also read ``tv`` for revocation checks."""
     data = decode_token(token)
     return data["uid"] if data else None
+
+
+# ── download tokens (short-lived, resource-scoped) ───────────────────────
+# A plain ``<a href>`` file download can't carry the Bearer header, so a
+# big-file route accepts one of these in ``?dl=`` instead. Minted only by an
+# authenticated request, bound to ONE resource, expiring in minutes — so it
+# grants nothing beyond that single download and is inert once it lapses, even
+# if the URL lingers in history or a proxy log. Signed in a SEPARATE HMAC
+# domain (``dl:`` prefix) so a download token can never be replayed as a
+# session token, nor a session token as a download token.
+DOWNLOAD_TOKEN_TTL_SECONDS = int(os.getenv("FLOWBOARD_DL_TOKEN_TTL_S", "300"))  # 5m
+
+
+def make_download_token(
+    user_id: str,
+    resource: str,
+    token_version: int = 0,
+    *,
+    ttl_seconds: int = DOWNLOAD_TOKEN_TTL_SECONDS,
+) -> str:
+    """Issue ``<payload>.<sig>`` for a download link. ``res`` binds the token to
+    exactly one resource (e.g. ``series:<id>:materials``); ``tv`` mirrors the
+    account's ``token_version`` so a logout-everywhere revokes it too."""
+    payload = _b64u(
+        json.dumps(
+            {
+                "uid": user_id,
+                "tv": int(token_version),
+                "res": resource,
+                "exp": int(time.time()) + ttl_seconds,
+            }
+        ).encode()
+    )
+    sig = _b64u(
+        hmac.new(_server_secret(), b"dl:" + payload.encode("ascii"), hashlib.sha256).digest()
+    )
+    return f"{payload}.{sig}"
+
+
+def decode_download_token(token: str, *, resource: str) -> Optional[dict]:
+    """Verify a download token: signature (in the ``dl:`` domain), expiry, and
+    that it was minted for exactly ``resource``. Returns ``{uid, tv}`` or None."""
+    try:
+        payload, sig = token.split(".", 1)
+        expected = _b64u(
+            hmac.new(_server_secret(), b"dl:" + payload.encode("ascii"), hashlib.sha256).digest()
+        )
+        if not hmac.compare_digest(sig, expected):
+            return None
+        data = json.loads(_b64u_decode(payload))
+        if int(data.get("exp", 0)) < int(time.time()):
+            return None
+        if data.get("res") != resource:
+            return None
+        uid = data.get("uid")
+        if not isinstance(uid, str) or not uid:
+            return None
+        return {"uid": uid, "tv": int(data.get("tv", 0))}
+    except (ValueError, AttributeError, TypeError, json.JSONDecodeError):
+        return None

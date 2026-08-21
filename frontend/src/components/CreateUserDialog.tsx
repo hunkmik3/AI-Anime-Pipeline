@@ -82,6 +82,7 @@ export function CreateUserDialog({
           <span>Role</span>
           <select value={role} onChange={(e) => setRole(e.target.value)}>
             <option value="user">user</option>
+            <option value="manager">manager</option>
             <option value="admin">admin</option>
           </select>
         </label>

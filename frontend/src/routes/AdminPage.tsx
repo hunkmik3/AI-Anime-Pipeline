@@ -8,6 +8,7 @@ import { parseServerTimeMs } from "../utils/serverTime";
 import { ConfirmDialog, PromptDialog } from "../components/Modals";
 import { KebabMenu } from "../components/KebabMenu";
 import { CreateUserDialog, type NewUser } from "../components/CreateUserDialog";
+import { EmployeeDetailsDialog } from "../components/EmployeeDetailsDialog";
 import { toast } from "../store/toast";
 import {
   OverviewTab,
@@ -38,6 +39,14 @@ interface AdminUser {
   budget_usd?: number;
   spent_usd?: number;
   available_usd?: number;
+  studio_roles?: string[];   // distinct GS project-roles held
+  flow_roles?: string[];     // distinct GF comic-roles held
+  // HR / employee-directory fields (staff spreadsheet).
+  employee_code?: string | null;
+  staff_category?: string | null;
+  job_title?: string | null;
+  rank?: string | null;
+  employment_status?: string | null; // active | resigned | terminated
 }
 
 interface ActivityItem {
@@ -115,6 +124,24 @@ function relTime(iso?: string | null): string {
   const d = Math.floor(h / 24);
   if (d < 30) return `${d}d ago`;
   return new Date(ms).toLocaleDateString();
+}
+
+/** Local YYYY-MM-DD (for <input type="date"> defaults) — not UTC, so the
+ *  picker matches the admin's own calendar day. */
+function ymdLocal(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+const ROLE_SHORT: Record<string, string> = {
+  producer: "PM",
+  artist: "Artist",
+  editor: "Editor",
+  viewer: "Viewer",
+};
+/** A project-role tagged with its side, so GS and GF roles never read alike. */
+function roleTag(role: string, side: "GS" | "GF"): string {
+  return `${ROLE_SHORT[role] ?? role}·${side}`;
 }
 
 function initials(u: { display_name?: string | null; username: string }): string {
@@ -235,6 +262,15 @@ export function AdminPage() {
   const [activityError, setActivityError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
+  // activity → export-to-CSV date range (defaults: last 30 days → today)
+  const [exportFrom, setExportFrom] = useState<string>(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return ymdLocal(d);
+  });
+  const [exportTo, setExportTo] = useState<string>(() => ymdLocal(new Date()));
+  const [exporting, setExporting] = useState(false);
+
   // which tab is showing
   // The section lives in the URL, so leaving to look at a project and pressing
   // Back returns to the tab you were on rather than resetting to the first one —
@@ -286,7 +322,7 @@ export function AdminPage() {
 
   // Which action modal is open (replaces window.prompt / confirm).
   const [modal, setModal] = useState<
-    { kind: "password" | "budget" | "delete"; user: AdminUser } | null
+    { kind: "password" | "budget" | "delete" | "details"; user: AdminUser } | null
   >(null);
 
 
@@ -319,6 +355,39 @@ export function AdminPage() {
     setActivity(null);
     setActivityError(null);
     setExpanded(new Set());
+  }
+
+  // Download this user's generation history in [exportFrom, exportTo] as CSV.
+  // The global fetch interceptor attaches the Bearer token, so we fetch the
+  // blob and save it client-side (a plain <a href> couldn't send auth).
+  async function exportActivity() {
+    if (!activityUser || exporting) return;
+    setExporting(true);
+    try {
+      const tz = -new Date().getTimezoneOffset(); // minutes to add to UTC → local
+      const params = new URLSearchParams();
+      if (exportFrom) params.set("from", new Date(`${exportFrom}T00:00:00`).toISOString());
+      if (exportTo) params.set("to", new Date(`${exportTo}T23:59:59.999`).toISOString());
+      params.set("tz", String(tz));
+      const res = await fetch(
+        `/api/admin/users/${activityUser.id}/activity/export?${params.toString()}`,
+      );
+      if (!res.ok) throw new Error(`${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `activity-${activityUser.username}-${exportFrom || "all"}_${exportTo || "all"}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast("Đã xuất file hoạt động (.csv)");
+    } catch (e) {
+      toast(`Export lỗi: ${e instanceof Error ? e.message : "failed"}`, "error");
+    } finally {
+      setExporting(false);
+    }
   }
 
   // `quiet` = background refresh (focus / poll): don't toggle the spinner or
@@ -443,13 +512,24 @@ export function AdminPage() {
 
   // Derived: search filter + summary stats.
   const q = search.trim().toLowerCase();
-  const shown = users.filter(
-    (u) =>
-      !q ||
-      u.username.toLowerCase().includes(q) ||
-      (u.display_name ?? "").toLowerCase().includes(q) ||
-      (u.email ?? "").toLowerCase().includes(q),
-  );
+  const shown = users
+    .filter(
+      (u) =>
+        !q ||
+        u.username.toLowerCase().includes(q) ||
+        (u.display_name ?? "").toLowerCase().includes(q) ||
+        (u.email ?? "").toLowerCase().includes(q),
+    )
+    // Sort by employee ID (RME001, RME002… then RMX001…). Rows without a
+    // code yet sink to the bottom. Numeric-aware so RME2 < RME10.
+    .sort((a, b) => {
+      const ca = a.employee_code ?? "";
+      const cb = b.employee_code ?? "";
+      if (!ca && !cb) return 0;
+      if (!ca) return 1;
+      if (!cb) return -1;
+      return ca.localeCompare(cb, undefined, { numeric: true, sensitivity: "base" });
+    });
   const totalAvailable = users.reduce((s, u) => s + (u.available_usd ?? 0), 0);
   const activeCount = users.filter((u) => u.status === "active").length;
   const suspendedCount = users.length - activeCount;
@@ -459,7 +539,7 @@ export function AdminPage() {
     {
       title: "People",
       items: [
-        ["members", "Members", "members"],
+        ["members", "Employees", "members"],
         ["approvals", "Approvals", "signups"],
       ],
     },
@@ -488,7 +568,7 @@ export function AdminPage() {
   ];
   const SUBTITLES: Record<string, string> = {
     spend: "Money and delivery in one place — the pool, what each project spent, who delivered, and every billed generation.",
-    members: "Provision accounts, budgets and roles for your team.",
+    members: "Your team directory — accounts, budgets, and each person's Giant Studio (·GS) / Giantflow (·GF) roles.",
     approvals:
       "Everything waiting on a decision: credit top-ups, submitted deliverables and account sign-ups.",
     projects: "Create a project and assign an owner (producer). They build the Series → Episodes → Sequences themselves inside it.",
@@ -587,7 +667,7 @@ export function AdminPage() {
           <div className="dash__topbar-actions">
             {tab === "members" ? (
               <button className="btn2 btn2--primary" onClick={() => setCreateOpen(true)}>
-                + Add member
+                + Add employee
               </button>
             ) : null}
           </div>
@@ -697,7 +777,7 @@ export function AdminPage() {
         <>
           <section className="admin2__stats">
             <div className="stat">
-              <span className="stat__label">Members</span>
+              <span className="stat__label">Employees</span>
               <span className="stat__value">{users.length}</span>
             </div>
             <div className="stat">
@@ -745,11 +825,17 @@ export function AdminPage() {
               <table className="admin2__table admin2__table--cards">
                 <thead>
                   <tr>
-                    <th>Member</th>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Staff category</th>
+                    <th>Job</th>
+                    <th>Rank</th>
+                    <th>Email</th>
                     <th>Role</th>
-                    <th>Status</th>
+                    <th>Project roles</th>
                     <th>Budget</th>
                     <th>Last login</th>
+                    <th>Status</th>
                     <th className="admin2__th-actions" aria-label="Actions" />
                   </tr>
                 </thead>
@@ -765,28 +851,63 @@ export function AdminPage() {
                         key={u.id}
                         className={u.status === "suspended" ? "is-suspended" : undefined}
                       >
-                        <td>
+                        <td data-label="ID" style={{ fontFamily: "ui-monospace, monospace" }}>
+                          {u.employee_code || <span className="admin2__muted">—</span>}
+                        </td>
+                        <td data-label="Name">
                           <div className="admin2__user">
                             <span className="admin2__avatar" aria-hidden="true">
                               {initials(u)}
                             </span>
-                            <span className="admin2__user-txt">
-                              <span className="admin2__name">
-                                {u.display_name || u.username}
-                                {isMe ? <span className="admin2__you">you</span> : null}
-                              </span>
-                              <span className="admin2__email">{u.email || u.username}</span>
+                            <span className="admin2__name">
+                              {u.display_name || u.username}
+                              {isMe ? <span className="admin2__you">you</span> : null}
                             </span>
                           </div>
+                        </td>
+                        <td data-label="Staff category">
+                          {u.staff_category || <span className="admin2__muted">—</span>}
+                        </td>
+                        <td data-label="Job">
+                          {u.job_title || <span className="admin2__muted">—</span>}
+                        </td>
+                        <td data-label="Rank">
+                          {u.rank || <span className="admin2__muted">—</span>}
+                        </td>
+                        <td data-label="Email" className="admin2__muted">
+                          {u.email || u.username}
                         </td>
                         <td data-label="Role">
                           <span className={`chip chip--role-${u.role}`}>{u.role}</span>
                           {isSso ? <span className="chip chip--google">Google</span> : null}
                         </td>
-                        <td data-label="Status">
-                          <span className={`chip chip--${u.status}`}>
-                            {u.status === "active" ? "Active" : "Suspended"}
-                          </span>
+                        <td data-label="Project roles">
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                            {(u.studio_roles ?? []).map((r) => (
+                              <span
+                                key={`gs-${r}`}
+                                className="chip"
+                                style={{ background: "#e6ebf8", color: "#33499f" }}
+                                title="Giant Studio role"
+                              >
+                                {roleTag(r, "GS")}
+                              </span>
+                            ))}
+                            {(u.flow_roles ?? []).map((r) => (
+                              <span
+                                key={`gf-${r}`}
+                                className="chip"
+                                style={{ background: "#f3e8fb", color: "#7a3fb0" }}
+                                title="Giantflow role"
+                              >
+                                {roleTag(r, "GF")}
+                              </span>
+                            ))}
+                            {(u.studio_roles?.length ?? 0) === 0 &&
+                            (u.flow_roles?.length ?? 0) === 0 ? (
+                              <span className="admin2__muted">—</span>
+                            ) : null}
+                          </div>
                         </td>
                         <td data-label="Budget">
                           <div className="admin2__budget">
@@ -799,12 +920,42 @@ export function AdminPage() {
                           </div>
                         </td>
                         <td className="admin2__muted" data-label="Last login">{relTime(u.last_login)}</td>
+                        <td data-label="Status">
+                          {(() => {
+                            const emp = (u.employment_status || "active").toLowerCase();
+                            // Employment state wins; if still "employed" but the
+                            // account is auth-suspended, surface that instead.
+                            const view =
+                              emp === "resigned" || emp === "terminated"
+                                ? emp
+                                : u.status === "suspended"
+                                  ? "suspended"
+                                  : "active";
+                            const style: Record<string, React.CSSProperties> = {
+                              active: { background: "#d8f3e3", color: "#1c7a48" },
+                              resigned: { background: "#3a444e", color: "#cfd8e0" },
+                              terminated: { background: "#f6d2d2", color: "#b02525" },
+                              suspended: { background: "#fbe6c4", color: "#8a5a12" },
+                            };
+                            const label =
+                              view.charAt(0).toUpperCase() + view.slice(1);
+                            return (
+                              <span className="chip" style={style[view]}>
+                                {label}
+                              </span>
+                            );
+                          })()}
+                        </td>
                         <td className="admin2__row-actions">
                           <KebabMenu
                             items={[
                               { label: "View activity", onSelect: () => void openActivity(u) },
                               {
-                                label: "Project roles",
+                                label: "Edit details",
+                                onSelect: () => setModal({ kind: "details", user: u }),
+                              },
+                              {
+                                label: "Manage roles",
                                 onSelect: () => setRolesUserId(u.id),
                               },
                               {
@@ -827,16 +978,6 @@ export function AdminPage() {
                                           u.status === "active"
                                             ? `Suspended "${u.username}"`
                                             : `Reactivated "${u.username}"`,
-                                        ),
-                                    },
-                                    {
-                                      label:
-                                        u.role === "admin" ? "Demote to user" : "Promote to admin",
-                                      onSelect: () =>
-                                        void patchUser(
-                                          u.id,
-                                          { role: u.role === "admin" ? "user" : "admin" },
-                                          `Changed role for "${u.username}"`,
                                         ),
                                     },
                                     {
@@ -962,9 +1103,34 @@ export function AdminPage() {
           onClose={() => setModal(null)}
         />
       )}
+      {modal?.kind === "details" && (
+        <EmployeeDetailsDialog
+          name={modal.user.display_name || modal.user.username}
+          initial={{
+            employee_code: modal.user.employee_code ?? "",
+            staff_category: modal.user.staff_category ?? "",
+            job_title: modal.user.job_title ?? "",
+            rank: modal.user.rank ?? "",
+            employment_status: modal.user.employment_status ?? "active",
+          }}
+          onSubmit={(d) => {
+            void patchUser(
+              modal.user.id,
+              d as unknown as Record<string, unknown>,
+              `Updated details for "${modal.user.username}"`,
+            );
+            setModal(null);
+          }}
+          onClose={() => setModal(null)}
+        />
+      )}
 
       {rolesUserId && (
-        <UserRolesDrawer userId={rolesUserId} onClose={() => setRolesUserId(null)} />
+        <UserRolesDrawer
+          userId={rolesUserId}
+          onClose={() => setRolesUserId(null)}
+          onChanged={() => void refresh()}
+        />
       )}
 
       {activityUser && (
@@ -995,6 +1161,43 @@ export function AdminPage() {
               <div className="admin-error">{activityError}</div>
             ) : activity ? (
               <>
+                <div
+                  className="admin-activity__export"
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                    gap: 8,
+                    margin: "0 0 12px",
+                    fontSize: 13,
+                  }}
+                >
+                  <span style={{ opacity: 0.7 }}>Xuất sheet — từ</span>
+                  <input
+                    type="date"
+                    value={exportFrom}
+                    max={exportTo || undefined}
+                    onChange={(e) => setExportFrom(e.target.value)}
+                    style={{ padding: "4px 6px", borderRadius: 6 }}
+                  />
+                  <span style={{ opacity: 0.7 }}>đến</span>
+                  <input
+                    type="date"
+                    value={exportTo}
+                    min={exportFrom || undefined}
+                    onChange={(e) => setExportTo(e.target.value)}
+                    style={{ padding: "4px 6px", borderRadius: 6 }}
+                  />
+                  <button
+                    className="btn2 btn2--primary"
+                    onClick={() => void exportActivity()}
+                    disabled={exporting}
+                    title="Xuất lịch sử gen trong khoảng ngày ra file CSV (mở bằng Excel/Google Sheets)"
+                  >
+                    {exporting ? "Đang xuất…" : "⭳ Export CSV"}
+                  </button>
+                </div>
+
                 <div className="admin-activity__summary">
                   <div>
                     <span>Budget</span>

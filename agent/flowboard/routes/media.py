@@ -126,7 +126,9 @@ async def get_media_bytes(
         return FileResponse(
             path=str(cached),
             media_type=media_service._mime_from_ext(cached.suffix),
-            headers=_download_headers(media_id, cached.suffix, filename) if as_download else None,
+            headers=_download_headers(media_id, cached.suffix, filename)
+            if as_download
+            else {"Cache-Control": _IMMUTABLE_CACHE},
         )
 
     # Cache miss — try one fetch through the stored URL.
@@ -138,7 +140,9 @@ async def get_media_bytes(
     return FileResponse(
         path=str(path),
         media_type=mime,
-        headers=_download_headers(media_id, path.suffix, filename) if as_download else None,
+        headers=_download_headers(media_id, path.suffix, filename)
+        if as_download
+        else {"Cache-Control": _IMMUTABLE_CACHE},
     )
 
 
@@ -156,6 +160,14 @@ def get_media_status(media_id: str):
 # Extensions we treat as video → the thumbnail is the first frame (ffmpeg),
 # not a direct image decode. Everything else goes through PIL.
 _VIDEO_THUMB_EXTS = {".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv"}
+
+# Media is addressed by immutable content id (UUID) and a thumbnail by
+# (id, width) — the bytes for a given URL never change. So they can be cached
+# forever by the browser AND at the CDN edge. Without this header every image on
+# an image-heavy page (review queue, panel grid, galleries) is a fresh round-trip
+# over the tunnel, which is the difference between an instant page and a ~seconds
+# one. `immutable` also stops the browser from firing revalidation requests.
+_IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
 
 
 def _build_thumb(src, thumb_path, w: int) -> bool:
@@ -221,9 +233,10 @@ async def get_media_thumb(media_id: str, w: int = 256):
         raise HTTPException(status_code=400, detail="invalid media_id")
     w = max(48, min(int(w), 2048))
 
+    _thumb_headers = {"Cache-Control": _IMMUTABLE_CACHE}
     thumb_path = media_service.MEDIA_CACHE_DIR / f"thumb_{w}_{media_id}.jpg"
     if thumb_path.exists():
-        return FileResponse(str(thumb_path), media_type="image/jpeg")
+        return FileResponse(str(thumb_path), media_type="image/jpeg", headers=_thumb_headers)
 
     src = media_service.cached_path(media_id)
     if src is None:
@@ -236,8 +249,10 @@ async def get_media_thumb(media_id: str, w: int = 256):
 
     ok = await run_in_threadpool(_build_thumb, src, thumb_path, w)
     if ok:
-        return FileResponse(str(thumb_path), media_type="image/jpeg")
-    return FileResponse(str(src), media_type=media_service._mime_from_ext(src.suffix))
+        return FileResponse(str(thumb_path), media_type="image/jpeg", headers=_thumb_headers)
+    return FileResponse(
+        str(src), media_type=media_service._mime_from_ext(src.suffix), headers=_thumb_headers
+    )
 
 
 class ExtractFrameBody(BaseModel):

@@ -281,22 +281,49 @@ def _slot_for(session: Session, scene: Scene, panel: FlowPanel, chapter: FlowCha
     )
 
 
+import re as _re
+
+# The panel number in a code: "P035", plus an optional insert suffix "P035-2"
+# (a panel added between 035 and 036). Matches every P<n> in the code; the LAST
+# one is the panel's own (e.g. "CHAP06" also contains "P06" — that's not it).
+_PANEL_NUM_RE = _re.compile(r"[Pp](\d+)(?:[-_.](\d+))?")
+
+
+def _panel_order_key(p: FlowPanel) -> tuple:
+    """Reading-order key from the panel CODE. The studio numbers panels
+    sequentially across the whole chapter (``…_CHAP06_P001``, ``_P002`` …), so
+    the code is the true order — independent of which batch (artist) holds the
+    panel or its within-batch order_index.
+
+    Handles inserts: ``P035-2`` sorts as (35, 2) — right AFTER ``P035`` (35, 0)
+    and BEFORE ``P036`` (36, 0) — so a panel added between two others lands where
+    its name says. Panels with no P-number sort last, stably by code then id.
+    """
+    code = getattr(p, "code", None) or ""
+    matches = _PANEL_NUM_RE.findall(code)
+    if matches:
+        main, sub = matches[-1]
+        return (int(main), int(sub) if sub else 0, code, p.id or 0)
+    return (10**9, 0, code, p.id or 0)
+
+
 def _chapter_panels(session: Session, chapter: FlowChapter) -> list[FlowPanel]:
-    """Every panel of the chapter in reading order — batches in their order,
-    panels in theirs. A batch is one artist's share, not a tier, so its
-    boundaries do not interrupt the numbering."""
-    out: list[FlowPanel] = []
+    """Every panel of the chapter in reading order.
+
+    Ordered by the sequential number in each panel's CODE, NOT by batch +
+    order_index. A batch is one artist's share of a chapter and often holds
+    panels out of chapter order — but the studio names every panel with its
+    chapter position (``…_P001``), so the code carries the real sequence. This is
+    what decides the sequence order when the chapter is delivered to Giantstudio.
+    """
+    panels: list[FlowPanel] = []
     for b in session.exec(
-        select(FlowBatch)
-        .where(FlowBatch.chapter_id == chapter.id)
-        .order_by(FlowBatch.order_index, FlowBatch.id)
+        select(FlowBatch).where(FlowBatch.chapter_id == chapter.id)
     ).all():
-        out += session.exec(
-            select(FlowPanel)
-            .where(FlowPanel.batch_id == b.id)
-            .order_by(FlowPanel.order_index, FlowPanel.id)
+        panels += session.exec(
+            select(FlowPanel).where(FlowPanel.batch_id == b.id)
         ).all()
-    return out
+    return sorted(panels, key=_panel_order_key)
 
 
 def _chapter_position(session: Session, panel: FlowPanel, chapter: FlowChapter) -> int:

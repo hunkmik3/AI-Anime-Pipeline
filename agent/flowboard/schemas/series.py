@@ -32,6 +32,8 @@ class SeriesUpdate(BaseModel):
     order_index: Optional[int] = Field(default=None, ge=0)
     # Patch merged over the existing bag; "" / null clears a key.
     production: Optional[dict[str, Any]] = None
+    # View-only archive lock. True freezes the series (read-only), False lifts it.
+    frozen: Optional[bool] = None
 
 
 class SeriesRead(BaseModel):
@@ -41,6 +43,7 @@ class SeriesRead(BaseModel):
     code: str
     unit_label: str
     order_index: int
+    frozen: bool = False
     production: dict[str, Any] = Field(default_factory=dict)
     created_at: Optional[datetime] = None
 

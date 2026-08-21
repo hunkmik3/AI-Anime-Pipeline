@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { thumbUrl, type ReferenceItem } from "../api/client";
 import { useShotWorkflowStore } from "../store/shotWorkflow";
 import { filterReferences, useReferencesStore } from "../store/references";
+import { useRevalidate } from "../hooks/useRevalidate";
 
 /**
  * Right-side collapsible reference library.
@@ -28,6 +29,11 @@ export function ReferencesPanel() {
   const remove = useReferencesStore((s) => s.remove);
   const rename = useReferencesStore((s) => s.rename);
   const togglePin = useReferencesStore((s) => s.togglePin);
+  const reloadRefs = useReferencesStore((s) => s.load);
+
+  // Library edits made in another tab appear on return — refetch the current
+  // scope on focus (no interval; the library changes rarely).
+  useRevalidate(() => void reloadRefs());
 
   const filtered = useMemo(() => filterReferences(items, query), [items, query]);
 

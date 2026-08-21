@@ -218,6 +218,20 @@ async def _auth_gate(request: FastAPIRequest, call_next):
                 if authz.lower().startswith("bearer ")
                 else None
             )
+            # A big-file download link is a plain <a href> navigation, which
+            # can't send the Bearer header — so this one route also accepts a
+            # short-lived, series-scoped signed token in ?dl=. It's minted by an
+            # authenticated request (see /materials-token) and grants nothing
+            # but that one series' zip, so the invariant "state.user is a real,
+            # active account" below still holds.
+            if user is None and path.endswith("/materials.zip"):
+                dl = request.query_params.get("dl")
+                parts = path.split("/")
+                # /api/series/<sid>/materials.zip → parts = ['','api','series',<sid>,'materials.zip']
+                if dl and len(parts) == 5 and parts[2] == "series":
+                    user = _user_service.authenticate_download_token(
+                        dl, resource=f"series:{parts[3]}:materials"
+                    )
             if user is None:
                 return _JSONResponse({"detail": "authentication required"}, status_code=401)
             request.state.user = user  # reused by the per-route dependencies

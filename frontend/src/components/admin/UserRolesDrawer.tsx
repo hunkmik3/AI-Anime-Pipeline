@@ -1,31 +1,33 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 /**
- * One person's standing across both products, in one place.
+ * One person's roles across both products, in one panel.
  *
- * The roles the studio talks about — "PM giantflow", "artist giantstudio" —
- * were always expressible: a producer row on a comic, an artist row on a
- * project. What was missing was anywhere to SEE them. Membership could only be
- * asked per project and per comic, so answering "what does this person have"
- * meant opening every project and every comic in turn, and granting meant
- * walking to each one's own page.
- *
- * The two products stay visually separate here for the same reason they are
- * separate in the backend: they are different tables with different guards, and
- * a grant that landed on the wrong one would look right on the screen it was
- * made from.
+ * Company-wide role (user / manager / admin), plus ONE Giant Studio role and ONE
+ * Giantflow role. Simple model: a person holds the same role across every GS
+ * project / every GF comic — picking a role applies it everywhere on that side,
+ * "(none)" removes it. Admin & manager already rule everywhere, so the per-side
+ * roles only matter for a `user`.
  */
 
-type Role = "producer" | "artist" | "viewer";
+type Role = "producer" | "artist" | "editor" | "viewer";
 
-/** Shown in the studio's own words. "Producer" is what the code calls it and
- *  "PM" is what everybody says out loud; the dropdown should say the second. */
+/** "Producer" is the code word; "PM" is what everyone says. Tagged ·GS/·GF so a
+ *  Giant Studio role never reads the same as a Giantflow one. */
 const ROLE_LABEL: Record<Role, string> = {
   producer: "PM",
   artist: "Artist",
+  editor: "Editor",
   viewer: "Viewer",
 };
-const ROLES: Role[] = ["producer", "artist", "viewer"];
+// Giant Studio has an editor (pulls raw material, hands a cut back); Giantflow
+// does not — so the two sides offer different role sets.
+const STUDIO_ROLES: Role[] = ["producer", "artist", "editor", "viewer"];
+const FLOW_ROLES: Role[] = ["producer", "artist", "viewer"];
+
+// Rank so a representative role can be shown when older per-project grants are
+// not yet uniform. Highest wins.
+const RANK: Record<Role, number> = { producer: 4, artist: 3, editor: 2, viewer: 1 };
 
 type StudioGrant = { project_id: string; name: string; role: Role; is_owner: boolean };
 type FlowGrant = { series_id: number; name: string; role: Role };
@@ -37,9 +39,15 @@ type Roles = {
   system_role: string;
   studio: StudioGrant[];
   flow: FlowGrant[];
+  /** How many targets a one-role-per-side grant would apply to. 0 = nothing to
+   *  assign (e.g. no comics yet), so the dropdown is disabled instead of
+   *  flashing and reverting. */
+  studio_assignable?: number;
+  flow_comics?: number;
+  /** The GF designation on the account (producer|artist|viewer|null) — works
+   *  even with zero comics; this is what the GF dropdown reads/sets. */
+  flow_role?: string | null;
 };
-
-type Option = { id: string; name: string };
 
 async function json<T>(r: Response): Promise<T> {
   if (!r.ok) {
@@ -49,16 +57,23 @@ async function json<T>(r: Response): Promise<T> {
   return r.json() as Promise<T>;
 }
 
+/** The one role to show for a side, from however many grants exist. */
+function topRole(grants: { role: Role }[]): Role | "" {
+  if (grants.length === 0) return "";
+  return grants.map((g) => g.role).sort((a, b) => RANK[b] - RANK[a])[0];
+}
+
 export function UserRolesDrawer({
   userId,
   onClose,
+  onChanged,
 }: {
   userId: string;
   onClose: () => void;
+  /** Fired after any role change so the Employees table can refetch. */
+  onChanged?: () => void;
 }) {
   const [roles, setRoles] = useState<Roles | null>(null);
-  const [projects, setProjects] = useState<Option[]>([]);
-  const [comics, setComics] = useState<Option[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -75,35 +90,12 @@ export function UserRolesDrawer({
     void load();
   }, [load]);
 
-  // The things a grant can be made ON. Loaded once and independently of the
-  // grants themselves: a failure to list comics should not blank out the roles
-  // the person already holds.
-  useEffect(() => {
-    void (async () => {
-      try {
-        const rows = await json<{ id: string; name: string }[]>(
-          await fetch("/api/projects"),
-        );
-        setProjects(rows.map((p) => ({ id: p.id, name: p.name })));
-      } catch {
-        /* the picker stays empty; the list above still renders */
-      }
-      try {
-        const rows = await json<{ id: number; name: string }[]>(
-          await fetch("/api/flowstudio/series"),
-        );
-        setComics(rows.map((c) => ({ id: String(c.id), name: c.name })));
-      } catch {
-        /* same */
-      }
-    })();
-  }, []);
-
   async function run(fn: () => Promise<Response>) {
     setBusy(true);
     setError(null);
     try {
       setRoles(await json<Roles>(await fn()));
+      onChanged?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : "That did not work");
     } finally {
@@ -111,22 +103,53 @@ export function UserRolesDrawer({
     }
   }
 
-  const grant = (side: "studio" | "flow", id: string, role: Role) =>
-    run(() =>
-      fetch(`/api/admin/users/${userId}/roles/${side}/${id}`, {
-        method: "PUT",
+  // The one company-wide role. The PATCH endpoint returns the user, not the
+  // roles payload, so it can't go through `run`.
+  async function setSystemRole(nextRole: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/admin/users/${userId}`, {
+        method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ role }),
-      }),
-    );
+        body: JSON.stringify({ role: nextRole }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.detail ?? `${res.status}`);
+      }
+      setRoles((prev) => (prev ? { ...prev, system_role: nextRole } : prev));
+      onChanged?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not change the role");
+    } finally {
+      setBusy(false);
+    }
+  }
 
-  const revoke = (side: "studio" | "flow", id: string) =>
-    run(() =>
-      fetch(`/api/admin/users/${userId}/roles/${side}/${id}`, { method: "DELETE" }),
+  // One role for a whole side: picking applies it to every project/comic,
+  // "(none)" clears it everywhere.
+  const setSide = (side: "studio" | "flow", role: string) => {
+    const url = `/api/admin/users/${userId}/roles/${side}-all`;
+    return run(() =>
+      role
+        ? fetch(url, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ role }),
+          })
+        : fetch(url, { method: "DELETE" }),
     );
+  };
 
-  const heldStudio = new Set(roles?.studio.map((g) => g.project_id) ?? []);
-  const heldFlow = new Set(roles?.flow.map((g) => String(g.series_id)) ?? []);
+  // Ignore the owner-implicit producer (from OWNING a project) — the dropdown is
+  // for the assigned role, and an owner's producer-ship can't be set here anyway.
+  // Without this, owning one project pins the dropdown to PM·GS no matter what
+  // you pick, so a change looks like it did nothing.
+  const studioRole = roles ? topRole(roles.studio.filter((g) => !g.is_owner)) : "";
+  // GF is a per-account designation (works with 0 comics), not derived from
+  // comic memberships — read it straight off the account.
+  const flowRole = roles ? (roles.flow_role ?? "") : "";
 
   return (
     <div
@@ -136,11 +159,9 @@ export function UserRolesDrawer({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="admin-activity" role="dialog" aria-label="Project roles">
+      <div className="admin-activity" role="dialog" aria-label="Manage roles">
         <div className="admin-activity__head">
-          <h2>
-            Project roles — {roles?.display_name || roles?.username || "…"}
-          </h2>
+          <h2>Manage roles — {roles?.display_name || roles?.username || "…"}</h2>
           <button className="admin-activity__close" onClick={onClose} aria-label="Close">
             ×
           </button>
@@ -150,48 +171,55 @@ export function UserRolesDrawer({
         {roles === null && !error ? <div className="admin-loading">Loading…</div> : null}
 
         {roles ? (
-          <div className="roles">
-            <p className="roles__note">
-              Company-wide role is <b>{roles.system_role}</b>. What follows is
-              per project — someone can be PM of one comic and an artist on
-              another.
+          <div className="roles" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <RoleRow label="Company-wide role" value={roles.system_role} busy={busy} onChange={setSystemRole}>
+              <option value="user">user</option>
+              <option value="manager">manager</option>
+              <option value="admin">admin</option>
+            </RoleRow>
+
+            <p className="roles__note" style={{ margin: 0 }}>
+              Below is one role per product — it applies across every project /
+              comic on that side. Admin &amp; manager already rule everywhere, so
+              these only matter for a <b>user</b>.
             </p>
 
-            <RoleSection
-              title="Giant Studio"
+            <RoleRow
+              label="Giant Studio"
               tone="studio"
-              blurb="Dựng video — MoguTV, và panel đã duyệt chuyển sang từ Giantflow."
-              rows={roles.studio.map((g) => ({
-                id: g.project_id,
-                name: g.name,
-                role: g.role,
-                // An owner is a producer implicitly, with no member row to
-                // delete. Offering the button would be offering nothing.
-                locked: g.is_owner ? "Owner" : null,
-              }))}
-              options={projects.filter((p) => !heldStudio.has(p.id))}
+              value={studioRole}
               busy={busy}
-              onGrant={(id, role) => void grant("studio", id, role)}
-              onRevoke={(id) => void revoke("studio", id)}
-              addLabel="Add project"
-            />
+              disabled={(roles.studio_assignable ?? 0) === 0}
+              hint={
+                (roles.studio_assignable ?? 0) === 0
+                  ? "Chưa có project nào để gán (họ chỉ đang sở hữu project, hoặc chưa có project)."
+                  : undefined
+              }
+              onChange={(r) => void setSide("studio", r)}
+            >
+              <option value="">(none)</option>
+              {STUDIO_ROLES.map((x) => (
+                <option key={x} value={x}>
+                  {ROLE_LABEL[x]}·GS
+                </option>
+              ))}
+            </RoleRow>
 
-            <RoleSection
-              title="Giantflow"
+            <RoleRow
+              label="Giantflow"
               tone="flow"
-              blurb="Chuyển thể truyện tranh theo panel."
-              rows={roles.flow.map((g) => ({
-                id: String(g.series_id),
-                name: g.name,
-                role: g.role,
-                locked: null,
-              }))}
-              options={comics.filter((c) => !heldFlow.has(c.id))}
+              value={flowRole}
               busy={busy}
-              onGrant={(id, role) => void grant("flow", id, role)}
-              onRevoke={(id) => void revoke("flow", id)}
-              addLabel="Add comic"
-            />
+              hint="Nhãn GF trên tài khoản — người được đánh dấu sẽ hiện ở danh sách giao batch (khi giao batch họ thành artist của comic đó)."
+              onChange={(r) => void setSide("flow", r)}
+            >
+              <option value="">(none)</option>
+              {FLOW_ROLES.map((x) => (
+                <option key={x} value={x}>
+                  {ROLE_LABEL[x]}·GF
+                </option>
+              ))}
+            </RoleRow>
           </div>
         ) : null}
       </div>
@@ -199,130 +227,42 @@ export function UserRolesDrawer({
   );
 }
 
-type Row = { id: string; name: string; role: Role; locked: string | null };
-
-function RoleSection({
-  title,
+function RoleRow({
+  label,
   tone,
-  blurb,
-  rows,
-  options,
+  value,
   busy,
-  onGrant,
-  onRevoke,
-  addLabel,
+  disabled,
+  hint,
+  onChange,
+  children,
 }: {
-  title: string;
-  tone: "studio" | "flow";
-  blurb: string;
-  rows: Row[];
-  options: Option[];
+  label: string;
+  tone?: "studio" | "flow";
+  value: string;
   busy: boolean;
-  onGrant: (id: string, role: Role) => void;
-  onRevoke: (id: string) => void;
-  addLabel: string;
+  disabled?: boolean;
+  hint?: string;
+  onChange: (v: string) => void;
+  children: ReactNode;
 }) {
-  const [adding, setAdding] = useState(false);
-  const [pick, setPick] = useState("");
-  const [role, setRole] = useState<Role>("artist");
-
+  const color = tone === "studio" ? "#4bd6a4" : tone === "flow" ? "#e0a24a" : undefined;
   return (
-    <section className={`roles__sec is-${tone}`}>
-      <h3 className="roles__h">{title}</h3>
-      <p className="roles__blurb">{blurb}</p>
-
-      {rows.length === 0 ? (
-        <p className="roles__empty">Chưa có vai nào ở đây.</p>
-      ) : (
-        <ul className="roles__list">
-          {rows.map((r) => (
-            <li key={r.id} className="roles__row">
-              <span className="roles__name" title={r.name}>
-                {r.name}
-              </span>
-              {r.locked ? (
-                <span className="roles__locked" title="Chủ project — đổi chủ trước rồi mới gỡ được">
-                  {r.locked}
-                </span>
-              ) : (
-                <>
-                  <select
-                    className="roles__select"
-                    value={r.role}
-                    disabled={busy}
-                    onChange={(e) => onGrant(r.id, e.target.value as Role)}
-                  >
-                    {ROLES.map((x) => (
-                      <option key={x} value={x}>
-                        {ROLE_LABEL[x]}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    className="roles__x"
-                    disabled={busy}
-                    title="Gỡ khỏi đây"
-                    onClick={() => onRevoke(r.id)}
-                  >
-                    ✕
-                  </button>
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {adding ? (
-        <div className="roles__add">
-          <select
-            className="roles__select roles__select--wide"
-            value={pick}
-            onChange={(e) => setPick(e.target.value)}
-          >
-            <option value="">— chọn —</option>
-            {options.map((o) => (
-              <option key={o.id} value={o.id}>
-                {o.name}
-              </option>
-            ))}
-          </select>
-          <select
-            className="roles__select"
-            value={role}
-            onChange={(e) => setRole(e.target.value as Role)}
-          >
-            {ROLES.map((x) => (
-              <option key={x} value={x}>
-                {ROLE_LABEL[x]}
-              </option>
-            ))}
-          </select>
-          <button
-            className="roles__go"
-            disabled={busy || !pick}
-            onClick={() => {
-              onGrant(pick, role);
-              setPick("");
-              setAdding(false);
-            }}
-          >
-            Cấp
-          </button>
-          <button className="roles__cancel" onClick={() => setAdding(false)}>
-            Huỷ
-          </button>
-        </div>
-      ) : (
-        <button
-          className="roles__addbtn"
-          disabled={options.length === 0}
-          title={options.length === 0 ? "Đã có vai ở tất cả" : undefined}
-          onClick={() => setAdding(true)}
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <label style={{ display: "flex", alignItems: "center", gap: 12, fontWeight: 600 }}>
+        <span style={{ minWidth: 130, color }}>{label}</span>
+        <select
+          className="roles__select"
+          value={value}
+          disabled={busy || disabled}
+          onChange={(e) => onChange(e.target.value)}
         >
-          + {addLabel}
-        </button>
-      )}
-    </section>
+          {children}
+        </select>
+      </label>
+      {hint ? (
+        <span style={{ marginLeft: 142, fontSize: 12, opacity: 0.7 }}>{hint}</span>
+      ) : null}
+    </div>
   );
 }

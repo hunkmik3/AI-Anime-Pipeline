@@ -1,10 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
+import { useRevalidate } from "../hooks/useRevalidate";
+
 import {
+  createPanel,
+  deletePanel,
+  passThroughPanel,
   downloadPanel,
   exportBatch,
   getBatch,
+  importPanelFolder,
   listPanels,
   thumbUrl,
   type Panel,
@@ -14,6 +20,7 @@ import {
 import { GiantflowNav } from "./GiantflowNav";
 import { PanelHero } from "./PanelHero";
 import { toast } from "../store/toast";
+import { useGiantflowRole } from "../store/giantflowRole";
 
 /**
  * The panel grid — what replaces the Miro board.
@@ -48,6 +55,10 @@ export function PanelGridPage() {
   const [batch, setBatch] = useState<PanelBatch | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<PanelStatus | "all">("all");
+  // Bulk-upload a whole folder of raw art as new panels (same import path the
+  // batch card uses), so a PM can top up a batch that was already imported.
+  const [importing, setImporting] = useState<string | null>(null);
+  const folderRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     try {
@@ -63,6 +74,16 @@ export function PanelGridPage() {
     void load();
   }, [load]);
 
+  // A submit/review done in the Workspace, or switching the previewed role,
+  // changes this grid's statuses/version counts — refetch on role-switch, focus
+  // and a light interval so it never needs a reload.
+  useEffect(() => {
+    const onSwitch = () => void load();
+    window.addEventListener("flowboard:view-as-changed", onSwitch);
+    return () => window.removeEventListener("flowboard:view-as-changed", onSwitch);
+  }, [load]);
+  useRevalidate(() => void load(), { intervalMs: 15000 });
+
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
     for (const p of panels ?? []) c[p.status] = (c[p.status] ?? 0) + 1;
@@ -74,13 +95,86 @@ export function PanelGridPage() {
     [panels, status],
   );
 
+  // Add/delete a panel by hand is a PM job (batch.manage).
+  const { can } = useGiantflowRole();
+  const canManage = can("batch.manage");
+  const canImport = can("batch.import");
+
+  async function addPanel() {
+    const last = (panels ?? [])[(panels ?? []).length - 1]?.code ?? "";
+    // eslint-disable-next-line no-alert
+    const code = window.prompt(
+      "Mã panel mới (sửa số cuối; chèn “…_P035-2” để nằm ngay sau P035):",
+      last,
+    );
+    if (!code || !code.trim()) return;
+    try {
+      await createPanel(bid, code.trim());
+      await load();
+      toast(`Đã thêm panel “${code.trim()}”`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Thêm panel lỗi", "error");
+    }
+  }
+
+  async function onPickFolder(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    const list = Array.from(files);
+    setImporting(`Uploading 0/${list.length}…`);
+    try {
+      const r = await importPanelFolder(
+        bid,
+        list,
+        (sent, total) => {
+          setImporting(sent >= total ? "Saving…" : `Uploading ${sent}/${total}…`);
+        },
+        true, // append: batch already has panels — add new ones, skip existing codes
+      );
+      await load();
+      toast(
+        `Đã thêm ${r.panels.length} panel.` +
+          (r.skipped_count ? ` ${r.skipped_count} file bị bỏ (không phải ảnh).` : ""),
+      );
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Upload folder lỗi", "error");
+    } finally {
+      setImporting(null);
+      if (folderRef.current) folderRef.current.value = "";
+    }
+  }
+
+  async function removePanel(p: Panel) {
+    // eslint-disable-next-line no-alert
+    if (!window.confirm(`Xóa panel “${p.code}”? Không hoàn tác.`)) return;
+    try {
+      await deletePanel(p.id);
+      await load();
+      toast(`Đã xóa panel “${p.code}”`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Xóa panel lỗi", "error");
+    }
+  }
+
+  async function passPanel(p: Panel) {
+    // eslint-disable-next-line no-alert
+    if (!window.confirm(`“${p.code}” không cần xử lý — dùng ảnh raw, đánh dấu xong & ném thẳng sang GS?`))
+      return;
+    try {
+      await passThroughPanel(p.id);
+      await load();
+      toast(`“${p.code}” đã xong (raw → GS)`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Lỗi", "error");
+    }
+  }
+
   return (
     <div className="shellpage pn__wide pn__page">
       <GiantflowNav />
       <PanelHero
         crumb={
           batch ? (
-            <Link to={`/giantflow/${batch.project_id}`}>← Batches</Link>
+            <Link to={`/giantflow/c/${batch.chapter_id}`}>← Batches</Link>
           ) : (
             <Link to="/giantflow">← Project</Link>
           )
@@ -90,6 +184,38 @@ export function PanelGridPage() {
         counts={counts}
         total={panels?.length ?? 0}
         actions={
+          <>
+            {canManage ? (
+              <button
+                className="btn2"
+                title="Thêm 1 panel thủ công (vd chèn …_P035-2 để nằm sau P035)"
+                onClick={() => void addPanel()}
+              >
+                + Add panel
+              </button>
+            ) : null}
+            {canImport ? (
+              <>
+                <input
+                  ref={folderRef}
+                  type="file"
+                  // Non-standard, but the only way to pick a FOLDER; each file's
+                  // path/name inside it is what names the panel.
+                  {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+                  multiple
+                  hidden
+                  onChange={(e) => void onPickFolder(e.target.files)}
+                />
+                <button
+                  className="btn2"
+                  disabled={!!importing}
+                  title="Upload cả folder ảnh raw thành nhiều panel mới (thêm vào batch đã import)"
+                  onClick={() => folderRef.current?.click()}
+                >
+                  {importing ?? "⬆ Upload folder"}
+                </button>
+              </>
+            ) : null}
             <button
               className="btn2"
               disabled={!counts.approved}
@@ -112,6 +238,7 @@ export function PanelGridPage() {
             >
               ↓ Export approved{counts.approved ? ` (${counts.approved})` : ""}
             </button>
+          </>
         }
         facts={[
           `${panels?.length ?? 0} panel${(panels?.length ?? 0) === 1 ? "" : "s"}`,
@@ -156,7 +283,12 @@ export function PanelGridPage() {
 
           <ul className="pn__grid">
             {shown.map((p) => (
-              <PanelCard key={p.id} panel={p} />
+              <PanelCard
+                key={p.id}
+                panel={p}
+                onDelete={canManage ? () => void removePanel(p) : undefined}
+                onPassThrough={canManage ? () => void passPanel(p) : undefined}
+              />
             ))}
           </ul>
           {shown.length === 0 ? (
@@ -168,7 +300,15 @@ export function PanelGridPage() {
   );
 }
 
-function PanelCard({ panel }: { panel: Panel }) {
+function PanelCard({
+  panel,
+  onDelete,
+  onPassThrough,
+}: {
+  panel: Panel;
+  onDelete?: () => void;
+  onPassThrough?: () => void;
+}) {
   return (
     <li className={`pn__card pn__card--${panel.status}`}>
       {/* Original and result side by side — the pairing every PM note is about
@@ -224,6 +364,34 @@ function PanelCard({ panel }: { panel: Panel }) {
           <span className="pn__notes" title="Unresolved notes">
             {panel.unresolved_notes} note{panel.unresolved_notes === 1 ? "" : "s"}
           </span>
+        ) : null}
+        {onPassThrough && panel.status !== "approved" && panel.raw_media_id ? (
+          <button
+            type="button"
+            className="pn__dl"
+            title="Không xử lý — dùng ảnh raw, đánh dấu xong & ném thẳng sang GS"
+            style={{ marginLeft: "auto", color: "#4bd6a4" }}
+            onClick={(e) => {
+              e.preventDefault();
+              onPassThrough();
+            }}
+          >
+            ⏭
+          </button>
+        ) : null}
+        {onDelete ? (
+          <button
+            type="button"
+            className="pn__dl"
+            title="Xóa panel này"
+            style={{ marginLeft: "auto", color: "#ff6b6b" }}
+            onClick={(e) => {
+              e.preventDefault();
+              onDelete();
+            }}
+          >
+            ✕
+          </button>
         ) : null}
       </div>
     </li>

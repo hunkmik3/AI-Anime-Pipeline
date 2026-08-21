@@ -156,6 +156,16 @@ export function SceneView() {
   // Unfiled episodes only belong on the full (unfiltered) view.
   const unfiled = selectedSeriesId ? [] : scenesBySeries.get("__unfiled__") ?? [];
 
+  // Scene ids of the selected series → scope the video gallery to it. Null when
+  // no series is selected, so the gallery shows the whole project.
+  const gallerySceneIds = useMemo(
+    () =>
+      selectedSeriesId
+        ? new Set((scenesBySeries.get(selectedSeriesId) ?? []).map((sc) => sc.id))
+        : null,
+    [selectedSeriesId, scenesBySeries],
+  );
+
   async function handleSceneCover(sceneId: string, file: File) {
     if (!projectId) return;
     setCoverBusy(sceneId);
@@ -461,7 +471,9 @@ export function SceneView() {
             </section>
           )}
 
-          {projectId ? <ProjectVideoGallery projectId={projectId} /> : null}
+          {projectId ? (
+            <ProjectVideoGallery projectId={projectId} sceneIds={gallerySceneIds} />
+          ) : null}
         </section>
       </div>
 

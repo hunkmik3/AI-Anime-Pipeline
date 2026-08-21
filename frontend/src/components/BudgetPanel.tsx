@@ -9,6 +9,7 @@ import {
   type BudgetScope,
   type BudgetSummaryDTO,
 } from "../api/client";
+import { useRevalidate } from "../hooks/useRevalidate";
 import { toast } from "../store/toast";
 
 /**
@@ -154,19 +155,26 @@ export function BudgetPanel({
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (initial = false) => {
     try {
       const r = await getBudget(scope, scopeId);
       setB(r);
-      setBaseDraft(r.base_usd ? String(r.base_usd) : "");
+      // Only seed the editable base field on the first load — a background
+      // revalidation must not overwrite what the admin is mid-typing.
+      if (initial) setBaseDraft(r.base_usd ? String(r.base_usd) : "");
     } catch (e) {
-      toast(e instanceof Error ? e.message : "could not load the budget", "error");
+      if (initial) toast(e instanceof Error ? e.message : "could not load the budget", "error");
     }
   }, [scope, scopeId]);
 
   useEffect(() => {
-    void load();
+    void load(true);
   }, [load]);
+
+  // Budget moves under you — generation spend, an admin grant, a PM top-up
+  // approved elsewhere. Revalidate on focus + interval so the chip/bar/meta
+  // reflect it without a reload.
+  useRevalidate(() => void load(false), { intervalMs: 20000 });
 
   async function saveBase() {
     const v = Math.max(0, parseFloat(baseDraft) || 0);

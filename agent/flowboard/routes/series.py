@@ -59,6 +59,7 @@ def _series_dict(
         "code": row.code or "",
         "unit_label": row.unit_label or "Episode",
         "order_index": row.order_index,
+        "frozen": bool(getattr(row, "frozen", False)),
         "production": dict(row.production or {}),
         # Phase 11: the Series Producer — first reviewer in the approver chain.
         # Exposed here so the structure UI can show and change who nominates.
@@ -177,6 +178,7 @@ def update_series(
                 "code": row.code,
                 "unit_label": row.unit_label,
                 "order_index": row.order_index,
+                "frozen": row.frozen,
             }
             before_prod = dict(row.production or {})
             row = ses.update_series(
@@ -187,6 +189,7 @@ def update_series(
                 unit_label=body.unit_label,
                 order_index=body.order_index,
                 production=body.production,
+                frozen=body.frozen,
             )
         except ses.SeriesNotFound:
             raise HTTPException(404, "series not found")

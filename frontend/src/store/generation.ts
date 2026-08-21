@@ -464,7 +464,20 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         // path; surface them unconditionally so the UI doesn't need to
         // know the provider mapping.
         const videoSettings = (nodeForModel?.data as Record<string, unknown> | undefined) ?? {};
-        if (videoSettings.duration_seconds) videoParams.duration_seconds = videoSettings.duration_seconds;
+        // Duration: always send the EFFECTIVE value — the user's pick, or the
+        // model's shown default (5s when offered, else the first option) — so an
+        // untouched dropdown still records the duration that actually generated.
+        // (Same fix as `resolution` below; before, leaving it at the default sent
+        // nothing → the request stored no duration and the admin saw it blank.)
+        {
+          const vmodel = useVideoModelsStore
+            .getState()
+            .models.find((m) => m.model_id === resolvedModelId);
+          const durOpts = vmodel?.capabilities?.durations ?? [];
+          const defaultDur = durOpts.includes(5) ? 5 : durOpts[0];
+          const effDur = (videoSettings.duration_seconds as number | undefined) ?? defaultDur;
+          if (effDur) videoParams.duration_seconds = effDur;
+        }
         // Resolution: always send the EFFECTIVE value — the user's pick, or the
         // model's shown default (720p when offered, else the first option) — so
         // "what the dropdown shows is what actually gets generated", and so the
@@ -484,6 +497,11 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         // Person-driven (KYC): backend turns the wired image/audio/video refs
         // into Avis KYC assets and dispatches portrait→video / lip-sync / video-ref.
         if (videoSettings.kycMode === true) videoParams.kyc_mode = true;
+        // B2B unmoderated: dedicated /api/v1/b2b/* endpoints (no flag sent
+        // upstream). Worker rejects this on models outside Seedance 2.0/2.5.
+        if (videoSettings.contentFilterDisabled === true) {
+          videoParams.content_filter_disabled = true;
+        }
         // References for r2v. Phase 8.1.5d: the legacy manual multi-ref list
         // (VideoNodeSettings text input) was removed — canvas-wired ref nodes
         // (Character/VisualAsset/MasterShot) are the single source, each

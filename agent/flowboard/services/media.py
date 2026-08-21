@@ -39,7 +39,22 @@ _ALLOWED_URL_PREFIXES: tuple[str, ...] = (
 
 
 def _url_allowed(url: str) -> bool:
-    return isinstance(url, str) and any(url.startswith(p) for p in _ALLOWED_URL_PREFIXES)
+    if not isinstance(url, str):
+        return False
+    if any(url.startswith(p) for p in _ALLOWED_URL_PREFIXES):
+        return True
+    # Flow Studio panels uploaded straight to R2 are served back from the
+    # configured public bucket — allow that exact base (our own storage), read
+    # dynamically so it tracks whatever bucket the deploy points at.
+    try:
+        from flowboard.services.flowstudio import r2
+
+        if r2.is_configured():
+            base = r2.public_base().rstrip("/")
+            return bool(base) and url.startswith(base + "/")
+    except Exception:  # noqa: BLE001 — never let the allowlist itself error
+        pass
+    return False
 
 _EXT_BY_MIME = {
     "image/jpeg": ".jpg",
@@ -120,6 +135,73 @@ def ingest_urls(urls: list[dict[str, Any]]) -> int:
     return touched
 
 
+def write_inline_cache(media_id: str, data: bytes, *, mime: str = "video/mp4") -> Optional[Path]:
+    """Write pre-fetched bytes to the media cache WITHOUT touching the DB.
+
+    The file-only half of ``ingest_inline_bytes``, split out so a bulk importer
+    (the panel folder import) can write many files and then register all their
+    Assets in one transaction, rather than open a session and commit per file.
+    Returns the cache path, or ``None`` if the id is invalid or the write fails.
+    """
+    if not is_valid_media_id(media_id) or not data:
+        return None
+    ext = _EXT_BY_MIME.get(mime, ".mp4")
+    path = MEDIA_CACHE_DIR / f"{media_id}{ext}"
+    try:
+        path.write_bytes(data)
+    except OSError as exc:
+        logger.error("failed to write inline cache %s: %s", path, exc)
+        return None
+    return path
+
+
+def register_inline_assets(session, items: list[tuple[str, str, str]]) -> None:
+    """Record already-cached files as image Assets in ``session`` (no commit).
+
+    ``items`` is ``[(media_id, local_path, mime), …]``. One INSERT set for the
+    whole folder instead of a session+commit per file; the caller's transaction
+    (``import_panels``) commits it alongside the panel rows.
+    """
+    if not items:
+        return
+    have = {
+        a.uuid_media_id: a
+        for a in session.exec(
+            select(Asset).where(Asset.uuid_media_id.in_([m for m, _, _ in items]))
+        ).all()
+    }
+    for media_id, path, mime in items:
+        row = have.get(media_id) or Asset(uuid_media_id=media_id, url=None, kind="image")
+        row.local_path = path
+        row.mime = mime
+        if not row.kind:
+            row.kind = "image"
+        session.add(row)
+
+
+def register_url_assets(session, items: list[tuple[str, str, str]]) -> None:
+    """Record R2-hosted files as image Assets in ``session`` (no commit), with
+    ``url`` set and no local file yet. ``items`` = ``[(media_id, url, mime), …]``.
+    ``/media/<id>`` fetches + caches from ``url`` on first access (see
+    ``fetch_and_cache``) — used by the panel direct-to-R2 upload, where the bytes
+    never pass through this server at all."""
+    if not items:
+        return
+    have = {
+        a.uuid_media_id: a
+        for a in session.exec(
+            select(Asset).where(Asset.uuid_media_id.in_([m for m, _, _ in items]))
+        ).all()
+    }
+    for media_id, url, mime in items:
+        row = have.get(media_id) or Asset(uuid_media_id=media_id, kind="image")
+        row.url = url
+        row.mime = mime
+        if not row.kind:
+            row.kind = "image"
+        session.add(row)
+
+
 def ingest_inline_bytes(
     media_id: str, data: bytes, *, kind: str = "video", mime: str = "video/mp4"
 ) -> bool:
@@ -130,14 +212,8 @@ def ingest_inline_bytes(
     URL. The bytes never traverse ``fetch_and_cache`` so we plant them here
     and the existing ``/media/<id>`` route serves them like any other asset.
     """
-    if not is_valid_media_id(media_id) or not data:
-        return False
-    ext = _EXT_BY_MIME.get(mime, ".mp4")
-    path = MEDIA_CACHE_DIR / f"{media_id}{ext}"
-    try:
-        path.write_bytes(data)
-    except OSError as exc:
-        logger.error("failed to write inline cache %s: %s", path, exc)
+    path = write_inline_cache(media_id, data, mime=mime)
+    if path is None:
         return False
     with get_session() as s:
         row = s.exec(

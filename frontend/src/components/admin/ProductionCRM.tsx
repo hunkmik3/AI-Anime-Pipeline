@@ -1,5 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 
+import { useRevalidate } from "../../hooks/useRevalidate";
+
 import {
   createScene,
   createSeries,
@@ -183,15 +185,21 @@ function EpisodeTable({
       .catch(() => setPeople([]));
   }, [projectId]);
 
-  useEffect(() => {
-    let alive = true;
-    void listSeriesEpisodes(seriesId)
-      .then((r) => alive && setRows(r))
-      .catch(() => alive && setRows([]));
-    return () => {
-      alive = false;
-    };
+  const loadRows = useCallback(async () => {
+    try {
+      setRows(await listSeriesEpisodes(seriesId));
+    } catch {
+      setRows((cur) => cur ?? []); // keep what we have on a transient failure
+    }
   }, [seriesId]);
+
+  useEffect(() => {
+    void loadRows();
+  }, [loadRows]);
+
+  // Episode rows carry server-derived status/progress that a fire-and-forget
+  // patch (or another PM) can change — keep them live without a reload.
+  useRevalidate(() => void loadRows(), { intervalMs: 20000 });
 
   /** Add ONE extra episode beyond the plan (e.g. a late bonus episode), and
    *  raise Planned episodes to match so the plan never lags reality. */
@@ -584,6 +592,8 @@ function SeriesForm({
 
   const [name, setName] = useState((draft0?.name as string) ?? editing?.name ?? "");
   const [code, setCode] = useState((draft0?.code as string) ?? editing?.code ?? "");
+  // Archive lock. Not draft-persisted — it is a state, not typed content.
+  const [frozen, setFrozen] = useState<boolean>(editing?.frozen ?? false);
   const [f, setF] = useState<Record<string, string>>(() => {
     if (draft0?.f && typeof draft0.f === "object") return draft0.f as Record<string, string>;
     const init: Record<string, string> = {};
@@ -638,7 +648,7 @@ function SeriesForm({
       const production = { ...f, assignee: chosen?.name ?? "" };
       let seriesId: string;
       if (editing) {
-        await patchSeries(editing.id, { name: name.trim(), code: code.trim(), production });
+        await patchSeries(editing.id, { name: name.trim(), code: code.trim(), production, frozen });
         seriesId = editing.id;
       } else {
         const created = await createSeries(projectId, {
@@ -797,6 +807,20 @@ function SeriesForm({
                       {s}
                     </option>
                   ))}
+                </select>
+              </label>
+              {/* Archive lock. Freezing makes the series + all its episodes
+                  view-only (no editing/gen); this is what "archive" set. Flip it
+                  back to Open to reopen a previously-archived series. */}
+              <label className="crm-field">
+                <span>Khoá archive</span>
+                <select
+                  className="crm-field__input"
+                  value={frozen ? "1" : "0"}
+                  onChange={(e) => setFrozen(e.target.value === "1")}
+                >
+                  <option value="0">Mở — chỉnh sửa / gen được</option>
+                  <option value="1">Khoá (archived) — chỉ xem</option>
                 </select>
               </label>
             </div>

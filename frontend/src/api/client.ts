@@ -1163,6 +1163,8 @@ export interface SeriesDTO {
   assignee_name?: string | null;
   /** Live per-status episode rollup (list/detail only). */
   stats?: SeriesStats;
+  /** Archive lock — the series is view-only (no editing or generation) when true. */
+  frozen?: boolean;
   /** Phase 11.1: credit-budget rollup (list only). */
   budget?: BudgetSummaryDTO;
   created_at: string | null;
@@ -1221,6 +1223,8 @@ export interface SceneDTO {
   project_id: string;
   /** Phase 10: the Series this Episode/Chapter belongs to (null on legacy rows). */
   series_id?: string | null;
+  /** Archived/view-only: the parent series is frozen — no editing or generation. */
+  frozen?: boolean;
   name: string;
   /** Phase 10: human code within the series — "EP007", "CH012". */
   code?: string;
@@ -1425,6 +1429,8 @@ export function patchSeries(
     unit_label?: UnitLabel;
     order_index?: number;
     production?: Record<string, string | number | null>;
+    /** Archive lock: true = view-only (archived), false = reopen (editable). */
+    frozen?: boolean;
   },
 ): Promise<SeriesDTO> {
   return api<SeriesDTO>(`/api/series/${id}`, {
@@ -1669,8 +1675,10 @@ export interface VideoModelCapability {
   resolutions: string[];
   durations: number[];
   // Person-driven (KYC) inputs — portrait→video / lip-sync / video-ref.
-  // Only the Avis Seedance 2.0 model; the gen dialog shows the KYC toggle.
+  // Only the Avis Seedance 2.0/2.5 models; the gen dialog shows the KYC toggle.
   supports_kyc?: boolean;
+  // DanceSee /api/v1/b2b/* unmoderated path (Seedance 2.0/2.5, B2B account).
+  supports_b2b_unmoderated?: boolean;
 }
 
 export interface VideoModelDTO {
@@ -1838,7 +1846,8 @@ export interface MaterialsDTO {
     sequences: {
       shot_id: string; code: string; take_count: number;
       clips: { media_id: string; take: number; filename: string;
-               duration_seconds?: number | null; resolution?: string | null }[];
+               duration_seconds?: number | null; resolution?: string | null;
+               aspect_ratio?: string | null }[];
     }[];
   }[];
 }
@@ -1907,9 +1916,19 @@ export function listSeriesMaterials(seriesId: string): Promise<MaterialsDTO> {
 }
 
 /** A plain URL, not a fetch: the browser's own downloader handles a 2 GB file,
- *  a progress bar and a resume, none of which is worth rebuilding here. */
-export function materialsZipUrl(seriesId: string): string {
-  return `/api/series/${seriesId}/materials.zip`;
+ *  a progress bar and a resume, none of which is worth rebuilding here. The
+ *  `dl` token authenticates the navigation — an `<a href>` can't send the
+ *  Bearer header — so mint one with materialsToken() right before the click. */
+export function materialsZipUrl(seriesId: string, token?: string): string {
+  const q = token ? `?dl=${encodeURIComponent(token)}` : "";
+  return `/api/series/${seriesId}/materials.zip${q}`;
+}
+
+/** Short-lived, series-scoped download token for materialsZipUrl(). Fetched via
+ *  `api` (which attaches the Bearer header) immediately before the download,
+ *  since it expires in minutes and must not sit in a rendered href. */
+export function materialsToken(seriesId: string): Promise<{ token: string }> {
+  return api(`/api/series/${seriesId}/materials-token`);
 }
 
 /** The series the signed-in employee has to hand in ("My work"). */
@@ -2594,6 +2613,7 @@ export interface PanelSeries {
 export interface PanelBatch {
   id: number;
   project_id: number;
+  chapter_id: number;
   name: string;
   assignee_user_id: string | null;
   assignee_name: string | null;
@@ -2726,6 +2746,25 @@ export function deletePanelSeries(id: number): Promise<{ deleted: number }> {
   });
 }
 
+/** Add ONE panel to a batch by hand (e.g. an insert like "…_P035-2" — chapter
+ *  order is by code, so it lands right after P035). */
+export function createPanel(batchId: number, code: string, mediaId?: string): Promise<Panel> {
+  return api<Panel>(`/api/flowstudio/batches/${batchId}/panels`, {
+    method: "POST",
+    body: JSON.stringify({ code, media_id: mediaId ?? null }),
+  });
+}
+
+export function deletePanel(panelId: number): Promise<{ deleted: number }> {
+  return api<{ deleted: number }>(`/api/flowstudio/panels/${panelId}`, { method: "DELETE" });
+}
+
+/** Mark a panel done with NO processing — its raw art passes straight through
+ *  to Giantstudio (approved + delivered immediately). */
+export function passThroughPanel(panelId: number): Promise<Panel> {
+  return api<Panel>(`/api/flowstudio/panels/${panelId}/pass-through`, { method: "POST" });
+}
+
 export interface ImportResult {
   batch_id: number;
   panels: Panel[];
@@ -2749,16 +2788,36 @@ export async function importPanelFolder(
   batchId: number,
   files: File[],
   onProgress?: (sent: number, total: number) => void,
+  // append=true tops up a batch that was already imported (adds new panels,
+  // skips codes that already exist) instead of the default fresh-import which
+  // refuses when the batch is non-empty.
+  append = false,
 ): Promise<ImportResult> {
+  // The path inside the chosen folder identifies the panel ("PANEL008/a.png" →
+  // PANEL008); strip the top folder the user actually picked.
+  const relOf = (f: File): string => {
+    const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath;
+    return rel && rel.includes("/") ? rel.slice(rel.indexOf("/") + 1) : f.name;
+  };
+
+  // Prefer direct-to-R2 when the server offers it: the browser PUTs each file
+  // straight to storage, bypassing the 100MB Cloudflare limit on this hostname.
+  let r2Direct = false;
+  try {
+    const cfg = await api<{ r2_direct?: boolean }>(`/api/flowstudio/upload-config`);
+    r2Direct = !!cfg.r2_direct;
+  } catch {
+    /* fall back to multipart below */
+  }
+  if (r2Direct) return importPanelFolderViaR2(batchId, files, relOf, onProgress, append);
+
+  // Fallback: one multipart POST (subject to the 100MB Cloudflare limit).
   const form = new FormData();
   for (const f of files) {
-    const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath;
     form.append("files", f);
-    // Strip the top-level folder the user picked: the panel code is relative to
-    // it, so "MyChapter/PANEL008/a.png" must read as "PANEL008/a.png".
-    const path = rel && rel.includes("/") ? rel.slice(rel.indexOf("/") + 1) : f.name;
-    form.append("paths", path);
+    form.append("paths", relOf(f));
   }
+  form.append("append", append ? "true" : "false");
   onProgress?.(0, files.length);
   const res = await fetch(`/api/flowstudio/batches/${batchId}/import`, {
     method: "POST",
@@ -2767,6 +2826,85 @@ export async function importPanelFolder(
   if (!res.ok) throw new Error(await errorMessage(res));
   onProgress?.(files.length, files.length);
   return res.json() as Promise<ImportResult>;
+}
+
+interface PresignSlot {
+  filename: string;
+  media_id?: string;
+  put_url?: string;
+  public_url?: string;
+  mime?: string;
+  skip?: boolean;
+}
+
+/**
+ * Direct-to-R2 import: ask the server for one presigned PUT url per file, PUT
+ * each file straight to R2 (parallel, no 100MB Cloudflare limit), then register
+ * the uploaded set as panels. The auth token is never sent to R2 — authFetch
+ * only attaches it to same-origin `/api` calls, and these PUTs are cross-origin.
+ */
+async function importPanelFolderViaR2(
+  batchId: number,
+  files: File[],
+  relOf: (f: File) => string,
+  onProgress?: (sent: number, total: number) => void,
+  append = false,
+): Promise<ImportResult> {
+  onProgress?.(0, files.length);
+  const { uploads } = await api<{ uploads: PresignSlot[] }>(
+    `/api/flowstudio/batches/${batchId}/import-urls`,
+    {
+      method: "POST",
+      body: JSON.stringify(
+        files.map((f) => ({ filename: f.name, mime: f.type || "application/octet-stream" })),
+      ),
+    },
+  );
+
+  const slots = uploads
+    .map((u, i) => ({ ...u, file: files[i], rel: relOf(files[i]) }))
+    .filter((s) => !s.skip && s.put_url && s.media_id && s.file);
+
+  const registered: { media_id: string; rel_path: string; public_url: string; mime: string }[] = [];
+  let done = 0;
+  const queue = slots.slice();
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const s = queue.shift();
+      if (!s) return;
+      try {
+        // Raw fetch (not `api`): cross-origin to R2, so no auth header and no
+        // JSON content-type — just the file bytes to the presigned url.
+        const put = await fetch(s.put_url as string, { method: "PUT", body: s.file });
+        if (put.ok) {
+          registered.push({
+            media_id: s.media_id as string,
+            rel_path: s.rel,
+            public_url: s.public_url as string,
+            mime: s.mime || s.file.type || "",
+          });
+        }
+      } catch {
+        /* a failed PUT (CORS / network) just doesn't get registered */
+      }
+      done += 1;
+      onProgress?.(done, files.length);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(6, slots.length || 1) }, worker));
+
+  if (registered.length === 0) {
+    throw new Error(
+      "No files reached storage — check the bucket's CORS policy allows PUT from this site.",
+    );
+  }
+  return api<ImportResult>(
+    `/api/flowstudio/batches/${batchId}/import-register${append ? "?append=true" : ""}`,
+    {
+      method: "POST",
+      body: JSON.stringify(registered),
+    },
+  );
 }
 
 /** Who a panel can be handed to. Narrows to project members once giantflow has

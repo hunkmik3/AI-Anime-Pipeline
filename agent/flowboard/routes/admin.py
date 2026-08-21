@@ -4,15 +4,20 @@ You (the owner/admin) provision accounts here — there is no open signup.
 """
 from __future__ import annotations
 
+import csv
+import io
 import logging
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
+from sqlmodel import select
 
 from flowboard.db import get_session
-from flowboard.db.models import Project
+from flowboard.db.models import Project, User
 from flowboard.routes.deps import require_admin, require_staff
 from flowboard.services import (
     audit_service,
@@ -71,6 +76,13 @@ class UpdateUserBody(BaseModel):
     must_change_password: Optional[bool] = None
     budget_usd: Optional[float] = None       # set absolute $ budget
     add_budget_usd: Optional[float] = None   # top-up (+/-) $ budget
+    # HR / employee-directory fields (Employees tab). Informational except
+    # employment_status, which also suspends/reactivates the login account.
+    employee_code: Optional[str] = None
+    staff_category: Optional[str] = None
+    job_title: Optional[str] = None
+    rank: Optional[str] = None
+    employment_status: Optional[str] = None  # active | resigned | terminated
 
 
 def _user_with_budget(u) -> dict:
@@ -84,7 +96,22 @@ def _user_with_budget(u) -> dict:
 
 @router.get("/users")
 def list_users() -> list[dict]:
-    return [_user_with_budget(u) for u in user_service.list_users()]
+    with get_session() as s:
+        out = []
+        for u in user_service.list_users():
+            d = _user_with_budget(u)
+            # Compact per-side role summary for the Employees table: the distinct
+            # project-roles this person holds on Giant Studio and on Giantflow.
+            # Exclude the owner-implicit producer role: it comes from OWNING a
+            # project, not from an assignment, and the role dropdown can't change
+            # it — surfacing it there just masks the role the admin actually set.
+            d["studio_roles"] = sorted(
+                {role for _p, role, is_owner in ps.projects_for_user(s, u.id) if not is_owner}
+            )
+            # GF role is a designation on the account (works with 0 comics).
+            d["flow_roles"] = [u.flow_role] if u.flow_role else []
+            out.append(d)
+        return out
 
 
 @router.post("/users")
@@ -262,6 +289,88 @@ def user_activity(user_id: str, limit: int = 100) -> dict:
     return data
 
 
+def _parse_bound(v: Optional[str]) -> Optional[datetime]:
+    """Parse an ISO date/datetime query param into a tz-aware UTC datetime.
+    Accepts ``2026-08-01`` or a full ISO string (with/without ``Z``)."""
+    if not v:
+        return None
+    s = v.strip().replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"invalid date: {v}")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+@router.get("/users/{user_id}/activity/export")
+def user_activity_export(
+    user_id: str,
+    from_: Optional[str] = Query(None, alias="from"),
+    to: Optional[str] = Query(None),
+    tz: int = Query(0),
+) -> Response:
+    """Export a user's generation history in [from, to] as a CSV spreadsheet.
+
+    ``from``/``to`` are ISO bounds (tz-aware); ``tz`` is the minutes to add to
+    UTC to render timestamps in the admin's local time (JS
+    ``-getTimezoneOffset()``). Admin-only via the router dependency.
+    """
+    u = user_service.get_by_id(user_id)
+    if u is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    df = _parse_bound(from_)
+    dt_to = _parse_bound(to)
+    data = budget_service.user_activity_export(user_id, date_from=df, date_to=dt_to)
+    if data is None:
+        raise HTTPException(status_code=404, detail="user not found")
+
+    def _fmt(dtv) -> str:
+        if not dtv:
+            return ""
+        if dtv.tzinfo is None:
+            dtv = dtv.replace(tzinfo=timezone.utc)
+        loc = dtv.astimezone(timezone.utc) + timedelta(minutes=tz)
+        # HH:MM:SS D/M/YYYY (day/month not zero-padded), e.g. 03:08:54 12/8/2026
+        return f"{loc:%H:%M:%S} {loc.day}/{loc.month}/{loc.year}"
+
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    # Columns mirror the on-screen activity table exactly.
+    w.writerow(["Time", "Type / Model", "Params", "Cost", "Status"])
+    for it in data["items"]:
+        type_model = it.get("request_type") or it.get("kind") or ""
+        model = it.get("model")
+        if model:
+            type_model = f"{type_model} / {model}" if type_model else str(model)
+        # Params mirror the on-screen table: "{duration or —} · {resolution}".
+        dur = it.get("duration_seconds")
+        res = it.get("resolution")
+        params = f"{dur}s" if dur else "—"
+        if res:
+            params = f"{params} · {res}"
+        cost = it.get("cost_usd")
+        w.writerow([
+            _fmt(it.get("created_at")),
+            type_model,
+            params,
+            "" if cost is None else f"${cost:.2f}",
+            it.get("request_status") or "",
+        ])
+
+    # BOM so Excel opens the UTF-8 (Vietnamese prompts) correctly.
+    body = ("﻿" + buf.getvalue()).encode("utf-8")
+    lo = (from_ or "all").strip()[:10] or "all"
+    hi = (to or "all").strip()[:10] or "all"
+    fname = f"activity-{data['username']}-{lo}_{hi}.csv"
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
 @router.delete("/users/{user_id}")
 def delete_user(user_id: str, request: Request, caller=Depends(require_staff)) -> dict:
     """Delete an account. Guards: can't delete yourself or the last admin.
@@ -321,6 +430,23 @@ def update_user(user_id: str, body: UpdateUserBody, request: Request, caller=Dep
         if body.add_budget_usd is not None:
             user_service.add_budget(user_id, body.add_budget_usd)
             _log("user.budget", f"add=${body.add_budget_usd}")
+        # HR / employee-directory fields. Only forward the keys the client sent
+        # (None = leave untouched; "" = clear that field).
+        if any(
+            v is not None
+            for v in (body.employee_code, body.staff_category, body.job_title, body.rank)
+        ):
+            user_service.set_employee_fields(
+                user_id,
+                employee_code=body.employee_code,
+                staff_category=body.staff_category,
+                job_title=body.job_title,
+                rank=body.rank,
+            )
+            _log("user.details")
+        if body.employment_status is not None:
+            user_service.set_employment_status(user_id, body.employment_status)
+            _log("user.employment", f"status={body.employment_status}")
         refreshed = user_service.get_by_id(user_id)
         return _user_with_budget(refreshed)
     except user_service.UserNotFound:
@@ -456,27 +582,36 @@ class GrantBody(BaseModel):
 
 
 def _roles_payload(session, user) -> dict:
+    studio = [
+        {
+            "project_id": str(p.id),
+            "name": p.name,
+            "role": role,
+            # An owner is a producer implicitly and has no member row, so their
+            # grant can't be revoked here — say so rather than offering a no-op.
+            "is_owner": is_owner,
+        }
+        for p, role, is_owner in ps.projects_for_user(session, user.id)
+    ]
+    flow = [
+        {"series_id": comic.id, "name": comic.name, "role": role}
+        for comic, role in panel_service.series_for_user(session, user.id)
+    ]
+    # How many targets a "one role per side" grant would actually apply to, so
+    # the UI can disable a side that has nothing to assign (e.g. no comics yet)
+    # instead of letting the dropdown flash and silently revert.
+    total_projects = len(session.exec(select(Project)).all())
+    owned = sum(1 for g in studio if g["is_owner"])
     return {
         "user_id": str(user.id),
         "username": user.username,
         "display_name": user.display_name,
         "system_role": user.role,
-        "studio": [
-            {
-                "project_id": str(p.id),
-                "name": p.name,
-                "role": role,
-                # An owner is a producer implicitly and has no member row, so
-                # their grant cannot be revoked here — say so rather than
-                # offering a button that does nothing.
-                "is_owner": is_owner,
-            }
-            for p, role, is_owner in ps.projects_for_user(session, user.id)
-        ],
-        "flow": [
-            {"series_id": comic.id, "name": comic.name, "role": role}
-            for comic, role in panel_service.series_for_user(session, user.id)
-        ],
+        "flow_role": user.flow_role,   # the GF designation (works with 0 comics)
+        "studio": studio,
+        "flow": flow,
+        "studio_assignable": total_projects - owned,
+        "flow_comics": len(panel_service.list_series(session)),
     }
 
 
@@ -568,6 +703,93 @@ def revoke_flow_role(
             ip=audit_service.client_ip(request), detail=str(series_id),
         )
         return _roles_payload(s, u)
+
+
+# ── one role across a whole side (the simple Employees model) ───────────────
+
+
+@router.put("/users/{user_id}/roles/studio-all")
+def set_studio_role_all(
+    user_id: str, body: GrantBody, request: Request, caller=Depends(require_staff),
+) -> dict:
+    """Give ONE Giant Studio role across every project — a person holds the same
+    GS role everywhere. Projects they OWN keep their implicit producer and are
+    left alone."""
+    u = user_service.get_by_id(user_id)
+    if u is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    with get_session() as s:
+        for p in s.exec(select(Project)).all():
+            if p.owner_user_id == u.id:
+                continue
+            ps.set_project_member(s, p.id, u.id, body.role)
+        audit_service.record(
+            "project.role_granted_all", actor=caller, target=u,
+            ip=audit_service.client_ip(request), detail=f"all = {body.role}",
+        )
+        return _roles_payload(s, u)
+
+
+@router.delete("/users/{user_id}/roles/studio-all")
+def clear_studio_role_all(
+    user_id: str, request: Request, caller=Depends(require_staff),
+) -> dict:
+    """Remove this person from every Giant Studio project (owned ones excepted)."""
+    u = user_service.get_by_id(user_id)
+    if u is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    with get_session() as s:
+        for p in s.exec(select(Project)).all():
+            if p.owner_user_id == u.id:
+                continue
+            ps.remove_project_member(s, p.id, u.id)
+        audit_service.record(
+            "project.role_revoked_all", actor=caller, target=u,
+            ip=audit_service.client_ip(request), detail="all",
+        )
+        return _roles_payload(s, u)
+
+
+@router.put("/users/{user_id}/roles/flow-all")
+def set_flow_role_all(
+    user_id: str, body: GrantBody, request: Request, caller=Depends(require_staff),
+) -> dict:
+    """Mark this person with ONE Giantflow role (the designation lives on the
+    account, so it works even with zero comics) and apply it to any comics that
+    already exist. New comics pick it up on creation."""
+    u = user_service.get_by_id(user_id)
+    if u is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    with get_session() as s:
+        db_u = s.get(User, u.id)
+        db_u.flow_role = body.role
+        s.add(db_u)
+        s.commit()
+        audit_service.record(
+            "comic.role_designated", actor=caller, target=u,
+            ip=audit_service.client_ip(request), detail=f"flow_role = {body.role}",
+        )
+        return _roles_payload(s, db_u)
+
+
+@router.delete("/users/{user_id}/roles/flow-all")
+def clear_flow_role_all(
+    user_id: str, request: Request, caller=Depends(require_staff),
+) -> dict:
+    """Clear the Giantflow designation and remove them from every comic."""
+    u = user_service.get_by_id(user_id)
+    if u is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    with get_session() as s:
+        db_u = s.get(User, u.id)
+        db_u.flow_role = None
+        s.add(db_u)
+        s.commit()
+        audit_service.record(
+            "comic.role_undesignated", actor=caller, target=u,
+            ip=audit_service.client_ip(request), detail="cleared",
+        )
+        return _roles_payload(s, db_u)
 
 
 @router.get("/registrations")

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import {
   getBudget,
@@ -6,6 +6,7 @@ import {
   type BudgetScope,
   type BudgetSummaryDTO,
 } from "../api/client";
+import { useRevalidate } from "../hooks/useRevalidate";
 
 /**
  * The credit ceiling on one node of the hierarchy.
@@ -42,23 +43,27 @@ export function QuotaField({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let alive = true;
-    (async () => {
+  const load = useCallback(
+    async (initial = false) => {
       try {
         const b = await getBudget(scope, id);
-        if (!alive) return;
         setBudget(b);
-        setDraft(b.unlimited ? "" : String(b.base_usd));
+        // Seed the editable field once; a revalidation must not clobber a draft.
+        if (initial) setDraft(b.unlimited ? "" : String(b.base_usd));
       } catch {
         // A budget the caller may not read renders as empty; failing loudly here
         // would take out the whole row it sits in.
       }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [scope, id]);
+    },
+    [scope, id],
+  );
+
+  useEffect(() => {
+    void load(true);
+  }, [load]);
+
+  // Spend and grants land elsewhere — keep the remaining/used numbers live.
+  useRevalidate(() => void load(false), { intervalMs: 20000 });
 
   async function commit() {
     const text = draft.trim();

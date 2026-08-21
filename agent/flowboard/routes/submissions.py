@@ -42,6 +42,7 @@ from flowboard.db.models import (
 from flowboard.routes.deps import get_optional_user
 from flowboard.services import (
     audit_service,
+    auth,
     drive,
     drive_cache,
     permissions,
@@ -847,6 +848,37 @@ def list_materials(
         if not permissions.can_see_series(s, user, series.project_id, series_id):
             raise HTTPException(404, "series not found")
         return es.materials(s, series_id, all_takes=all_takes)
+
+
+@router.get("/api/series/{series_id}/materials-token")
+def materials_download_token(
+    series_id: uuid.UUID, user=Depends(get_optional_user)
+):
+    """Mint a short-lived, series-scoped token so the browser's native
+    downloader can fetch the (up to 2 GB) zip via a plain link — an ``<a href>``
+    can't carry the Bearer header. Gated by the SAME permission as the download
+    itself, so this leaks no access the caller doesn't already have.
+
+    No-auth single-user mode has no account to bind a token to; it also has no
+    auth gate to satisfy, so the empty token simply falls back to the plain URL.
+    """
+    with get_session() as s:
+        series = s.get(Series, series_id)
+        if series is None:
+            raise HTTPException(404, "series not found")
+        permissions.require(s, user, series.project_id, "material.pull")
+        if not permissions.can_see_series(s, user, series.project_id, series_id):
+            raise HTTPException(404, "series not found")
+        token = (
+            auth.make_download_token(
+                str(user.id),
+                f"series:{series_id}:materials",
+                token_version=int(user.token_version or 0),
+            )
+            if user is not None
+            else ""
+        )
+    return {"token": token}
 
 
 @router.get("/api/series/{series_id}/materials.zip")

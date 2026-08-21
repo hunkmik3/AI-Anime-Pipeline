@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
+import { useRevalidate } from "../../hooks/useRevalidate";
+
 import {
   approveCreditRequest,
   listPendingCreditRequests,
@@ -234,23 +236,23 @@ function DeliverableQueue({ onCount }: { onCount: (n: number) => void }) {
     { submission: SubmissionDTO; series: DeliverableSeriesDTO | null }[] | null
   >(null);
 
-  useEffect(() => {
-    let alive = true;
-    void listReviewQueue()
-      .then((r) => {
-        if (!alive) return;
-        setItems(r.items);
-        onCount(r.items.length);
-      })
-      .catch(() => {
-        if (!alive) return;
-        setItems([]);
-        onCount(0);
-      });
-    return () => {
-      alive = false;
-    };
+  const load = useCallback(async () => {
+    try {
+      const r = await listReviewQueue();
+      setItems(r.items);
+      onCount(r.items.length);
+    } catch {
+      setItems((cur) => cur ?? []);
+      onCount(0);
+    }
   }, [onCount]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // A cut approved/sent-back on /review must leave this queue without a reload.
+  useRevalidate(() => void load(), { intervalMs: 20000 });
 
   if (items === null) return <div style={S.empty}>Loading…</div>;
   if (items.length === 0) return <div style={S.empty}>Nothing waiting on a review.</div>;

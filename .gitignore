@@ -58,3 +58,13 @@ drive-token.json
 agent/drive-token.json
 drive-sa.json
 agent/drive-sa.json
+
+# Local secret backups, DB dumps, logs, patches, superseded copies — never commit.
+# (.env is already ignored above; .env.full-keys.bak holds REAL keys.)
+*.bak
+.env.full-keys.bak
+*.dump
+*.log
+logs/
+*.patch
+frontend/_superseded-*/

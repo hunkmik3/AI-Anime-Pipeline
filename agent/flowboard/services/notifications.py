@@ -11,6 +11,33 @@ from __future__ import annotations
 
 _RELEASES: list[dict] = [
     {
+        "version": "v3.0.0",
+        "date": "2026-08-19",
+        "changes": [
+            {"audience": "all", "text": "Comic → Studio delivery is smarter — approved Giantflow "
+             "panels now cross to Giant Studio in the correct reading order (by panel name, "
+             "P001…P035), and an insert like “…P035-2” lands right after P035."},
+            {"audience": "all", "text": "In a batch you can now add or delete a panel by hand, and a "
+             "new “no-processing” (⏭) button sends a panel’s raw art straight to the studio without "
+             "a generation step."},
+            {"audience": "all", "text": "New video model: Seedance 2.5 — clips up to 30 seconds, "
+             "480p / 720p, up to 30 reference images."},
+            {"audience": "all", "text": "Skip content filter (B2B) on Seedance 2.0 / 2.5 — uses the "
+             "DanceSee B2B path when the studio account is userType=B2B."},
+            {"audience": "all", "text": "No more manual refresh — budgets, credits, work/review "
+             "badges, the video gallery and admin views update live as things change."},
+            {"audience": "all", "text": "A project’s “Generated videos” now filters to the series "
+             "you select instead of showing the whole project."},
+            {"audience": "admin", "text": "Employees & roles — one “Manage roles” panel per person: "
+             "a company-wide role (user / manager / admin) plus a Giant Studio and a Giantflow role. "
+             "The batch-assignee pool is built from your marked Giantflow staff."},
+            {"audience": "admin", "text": "Archive control — freeze a series to view-only, or reopen "
+             "an archived one, from Series & episodes."},
+            {"audience": "admin", "text": "Export a person’s generation history to a spreadsheet "
+             "(CSV) over any date range, from their activity view."},
+        ],
+    },
+    {
         "version": "v1.0.2",
         "date": "2026-07-20",
         "changes": [

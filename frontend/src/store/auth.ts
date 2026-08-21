@@ -37,6 +37,7 @@ interface AuthState {
   changePassword(currentPassword: string, newPassword: string): Promise<void>;
   logout(): void;
   loadMe(): Promise<void>;
+  refreshMe(): Promise<void>;
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
@@ -108,6 +109,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
     } catch {
       set({ ready: true }); // network hiccup — keep token, retry on next nav
+    }
+  },
+
+  // Quiet re-fetch of the signed-in account (budget / credits / products)
+  // without touching `ready` or dropping the token on a hiccup. Drives the
+  // focus/interval revalidation so the top-bar budget stays live all session
+  // instead of freezing at the boot value until an F5.
+  async refreshMe() {
+    if (!getToken()) return;
+    try {
+      const res = await fetch("/api/account/me");
+      if (res.ok) set({ user: (await res.json()) as AuthUser });
+    } catch {
+      /* keep the last-known user on a network hiccup */
     }
   },
 }));

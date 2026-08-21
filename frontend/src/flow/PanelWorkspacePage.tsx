@@ -75,9 +75,17 @@ export function PanelWorkspacePage() {
   const removeAsset = useFlowStudioStore((s) => s.remove);
   const inFlight = genJobs.length;
 
+  // Guards against out-of-order refetches: several gens finishing close together
+  // each fire load(), and an earlier (fewer-versions) snapshot resolving LAST
+  // would otherwise overwrite a newer one and "swallow" versions on screen. Only
+  // the latest-started refetch (always the one with the most versions) applies.
+  const loadSeq = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     try {
-      return setPanel(await getPanel(pid));
+      const p = await getPanel(pid);
+      if (seq === loadSeq.current) setPanel(p);
+      return p;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -105,7 +113,11 @@ export function PanelWorkspacePage() {
 
   const prevInFlight = useRef(0);
   useEffect(() => {
-    if (prevInFlight.current > 0 && inFlight === 0) {
+    // Refetch every time a generation FINISHES (the in-flight count dropped), so
+    // each variant appears the MOMENT it lands — not only once the whole batch is
+    // done. Each gen is its own request and files its version as it completes, so
+    // a mid-batch refetch shows exactly the variants ready so far.
+    if (inFlight < prevInFlight.current) {
       void load();
       void loadPanelAssets(pid);
     }

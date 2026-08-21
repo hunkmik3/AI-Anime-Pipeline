@@ -195,6 +195,66 @@ def set_email(user_id, email: Optional[str]) -> None:
         s.commit()
 
 
+# ── HR / employee-directory fields ───────────────────────────────────────────
+
+#: Employment states shown in the Employees table. "active" is the working
+#: state; the other two are offboarding states that also block login.
+EMPLOYMENT_STATES = ("active", "resigned", "terminated")
+
+
+def set_employee_fields(
+    user_id,
+    *,
+    employee_code: Optional[str] = None,
+    staff_category: Optional[str] = None,
+    job_title: Optional[str] = None,
+    rank: Optional[str] = None,
+) -> None:
+    """Set the informational HR fields. Each arg, when provided, is written as
+    given (empty string → NULL). Pass ``None`` to leave a field untouched — the
+    route only forwards the keys the client actually sent."""
+    uid = _coerce_uuid(user_id)
+    with get_session() as s:
+        u = s.get(User, uid) if uid else None
+        if u is None:
+            raise UserNotFound(str(user_id))
+        if employee_code is not None:
+            u.employee_code = (employee_code.strip() or None)
+        if staff_category is not None:
+            u.staff_category = (staff_category.strip() or None)
+        if job_title is not None:
+            u.job_title = (job_title.strip() or None)
+        if rank is not None:
+            u.rank = (rank.strip() or None)
+        s.add(u)
+        s.commit()
+
+
+def set_employment_status(user_id, status: str) -> None:
+    """Set employment_status and keep the auth account in sync: resigned or
+    terminated suspend the login (and revoke outstanding tokens), active
+    restores it. This is the single place offboarding is enforced."""
+    status = (status or "").strip().lower()
+    if status not in EMPLOYMENT_STATES:
+        raise UserError(f"bad employment_status: {status!r}")
+    uid = _coerce_uuid(user_id)
+    with get_session() as s:
+        u = s.get(User, uid) if uid else None
+        if u is None:
+            raise UserNotFound(str(user_id))
+        u.employment_status = status
+        if status in ("resigned", "terminated"):
+            # Offboarding — block login and kill any live session.
+            u.status = "suspended"
+            u.token_version = int(u.token_version or 0) + 1
+        else:  # active — allow login again, clear any lockout
+            u.status = "active"
+            u.failed_attempts = 0
+            u.locked_until = None
+        s.add(u)
+        s.commit()
+
+
 def set_must_change_password(user_id, value: bool) -> None:
     uid = _coerce_uuid(user_id)
     with get_session() as s:
@@ -234,6 +294,22 @@ def authenticate_token(token: str) -> Optional[User]:
     per-route dependencies, so suspend/delete/password-change take effect on
     the very next request across every route."""
     data = auth.decode_token(token)
+    if not data:
+        return None
+    user = get_by_id(data["uid"])
+    if user is None or user.status != "active":
+        return None
+    if int(data.get("tv", 0)) != int(user.token_version or 0):
+        return None
+    return user
+
+
+def authenticate_download_token(token: str, *, resource: str) -> Optional[User]:
+    """Like ``authenticate_token``, but for a short-lived, resource-scoped
+    download token (used where a plain ``<a href>`` can't carry the Bearer
+    header). Same account checks — active + matching ``token_version`` — plus
+    the token must have been minted for exactly ``resource``."""
+    data = auth.decode_download_token(token, resource=resource)
     if not data:
         return None
     user = get_by_id(data["uid"])
@@ -440,4 +516,10 @@ def public_dict(u: User) -> dict:
         # False for Google-SSO accounts — the UI must not offer "change password"
         # to someone who has none.
         "has_password": u.password_hash != SSO_PASSWORD_SENTINEL,
+        # HR / employee-directory fields (Employees tab).
+        "employee_code": getattr(u, "employee_code", None),
+        "staff_category": getattr(u, "staff_category", None),
+        "job_title": getattr(u, "job_title", None),
+        "rank": getattr(u, "rank", None),
+        "employment_status": getattr(u, "employment_status", None) or "active",
     }

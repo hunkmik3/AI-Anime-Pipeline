@@ -1,6 +1,8 @@
 import { Link } from "react-router-dom";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 
+import { useRevalidate } from "../../hooks/useRevalidate";
+
 import {
   thumbUrl,
   listProjectImages,
@@ -40,20 +42,23 @@ function useFetch<T>(url: string) {
   const [data, setData] = useState<T | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
     try {
       setData(await getJson<T>(url));
       setErr(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "load failed");
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, [url]);
   useEffect(() => {
     void load();
   }, [load]);
+  // Every useFetch-backed admin view refreshes the same way: quietly (no
+  // Skeleton flash) on focus + a light interval, so stats/audit/cost stay live.
+  useRevalidate(() => void load(true), { intervalMs: 20000 });
   return { data, err, loading, reload: load };
 }
 

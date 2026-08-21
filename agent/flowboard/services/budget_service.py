@@ -400,6 +400,87 @@ def user_activity(user_id, *, limit: int = 200) -> Optional[dict]:
         return {"summary": summary, "items": items}
 
 
+def user_activity_export(user_id, *, date_from=None, date_to=None) -> Optional[dict]:
+    """All of a user's generations within [date_from, date_to] for CSV export.
+
+    Same attribution as :func:`user_activity` (project ownership + metered
+    ledger), but date-filtered in SQL and with no display limit. ``date_from`` /
+    ``date_to`` are tz-aware UTC datetimes (either may be None = unbounded).
+    Rows come back oldest-first (chronological, nicer in a spreadsheet).
+    Returns None when the user doesn't exist.
+    """
+    uid = _uuid(user_id)
+    if uid is None:
+        return None
+    with get_session() as s:
+        u = s.get(User, uid)
+        if u is None:
+            return None
+
+        cost_by_rid: dict[int, UsageRecord] = {}
+        for r in s.exec(select(UsageRecord).where(UsageRecord.user_id == uid)).all():
+            if r.request_id is not None:
+                cost_by_rid[r.request_id] = r
+
+        def _dated(stmt):
+            if date_from is not None:
+                stmt = stmt.where(Request.created_at >= date_from)
+            if date_to is not None:
+                stmt = stmt.where(Request.created_at <= date_to)
+            return stmt
+
+        owned = list(s.exec(select(Project.id).where(Project.owner_user_id == uid)).all())
+        reqs: list[Request] = []
+        seen: set[int] = set()
+        if owned:
+            stmt = _dated(
+                select(Request)
+                .join(Node, Node.id == Request.node_id)
+                .join(Shot, Shot.id == Node.shot_id)
+                .join(Scene, Scene.id == Shot.scene_id)
+                .where(Scene.project_id.in_(owned), Request.type.in_(_GEN_TYPES))
+            ).order_by(Request.created_at.desc()).limit(_ACTIVITY_FETCH_CAP)
+            for req in s.exec(stmt).all():
+                if req.id is not None and req.id not in seen:
+                    reqs.append(req)
+                    seen.add(req.id)
+
+        # Safety net: metered requests unreachable via the project join.
+        missing = [rid for rid in cost_by_rid if rid not in seen]
+        if missing:
+            stmt = _dated(select(Request).where(Request.id.in_(missing)))
+            for req in s.exec(stmt).all():
+                if req.id is not None and req.id not in seen:
+                    reqs.append(req)
+                    seen.add(req.id)
+
+        reqs.sort(key=lambda r: r.created_at)  # oldest-first for the sheet
+
+        # Some gens don't persist the duration in the request params — the value
+        # lives on the source node instead. Back-fill from node.data so the
+        # export shows the duration the user actually chose.
+        need = [r.node_id for r in reqs
+                if r.node_id and not (r.params or {}).get("duration_seconds")]
+        node_dur: dict = {}
+        if need:
+            for nd in s.exec(select(Node).where(Node.id.in_(need))).all():
+                d = (nd.data or {}).get("duration_seconds")
+                if d:
+                    node_dur[nd.id] = d
+
+        items = []
+        for req in reqs:
+            it = _activity_item(req, cost_by_rid.get(req.id))
+            if it.get("duration_seconds") is None and req.node_id in node_dur:
+                it["duration_seconds"] = node_dur[req.node_id]
+            items.append(it)
+        return {
+            "user_label": (u.display_name or u.username),
+            "username": u.username,
+            "items": items,
+        }
+
+
 def has_reservation(request_id: int) -> bool:
     with get_session() as s:
         return (

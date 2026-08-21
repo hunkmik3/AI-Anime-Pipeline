@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
+import { useRevalidate } from "../hooks/useRevalidate";
+
 import {
   createBatches,
   deleteBatch,
@@ -60,6 +62,15 @@ export function PanelBatchesPage() {
     void load();
     void listPanelAssignees().then(setPeople).catch(() => setPeople([]));
   }, [load]);
+
+  // Rolled-up status_counts go stale on a role switch or when a batch changes
+  // elsewhere — refetch on role-switch, focus and a light interval.
+  useEffect(() => {
+    const onSwitch = () => void load();
+    window.addEventListener("flowboard:view-as-changed", onSwitch);
+    return () => window.removeEventListener("flowboard:view-as-changed", onSwitch);
+  }, [load]);
+  useRevalidate(() => void load(), { intervalMs: 15000 });
 
   const { list, dragProps } = useDragOrder(batches ?? [], async (ids) => {
     await reorderBatches(pid, ids);
@@ -374,9 +385,13 @@ function BatchCard({
   async function onPick(files: FileList | null) {
     if (!files || files.length === 0) return;
     const list = Array.from(files);
-    setImporting(`Uploading ${list.length}…`);
+    setImporting(`Uploading 0/${list.length}…`);
     try {
-      const r = await importPanelFolder(batch.id, list);
+      const r = await importPanelFolder(batch.id, list, (sent, total) => {
+        // Live progress on the button so a big upload never looks stuck: count
+        // up as each file lands, then "Saving…" while the panels are recorded.
+        setImporting(sent >= total ? "Saving…" : `Uploading ${sent}/${total}…`);
+      });
       await onChanged();
       toast(
         `${r.panels.length} panels imported.` +

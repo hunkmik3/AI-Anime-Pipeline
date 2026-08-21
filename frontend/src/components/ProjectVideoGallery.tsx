@@ -164,7 +164,15 @@ function GenViewer({ gen, onClose }: { gen: Gen; onClose: () => void }) {
   );
 }
 
-export function ProjectVideoGallery({ projectId }: { projectId: string }) {
+export function ProjectVideoGallery({
+  projectId,
+  sceneIds = null,
+}: {
+  projectId: string;
+  /** When set, show only clips from these episodes — i.e. the selected series.
+   *  Null = the whole project (the default). */
+  sceneIds?: Set<string> | null;
+}) {
   const [data, setData] = useState<GalleryData | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [viewer, setViewer] = useState<Gen | null>(null);
@@ -185,13 +193,22 @@ export function ProjectVideoGallery({ projectId }: { projectId: string }) {
     };
   }, [projectId]);
 
+  // Scope to the selected series when one is set: keep only its episodes and
+  // recount, so the header total matches what's shown.
+  const episodes =
+    data && sceneIds ? data.episodes.filter((ep) => sceneIds.has(ep.scene_id)) : data?.episodes ?? [];
+  const total =
+    data && sceneIds
+      ? episodes.reduce((n, ep) => n + ep.sequences.reduce((m, sq) => m + sq.gens.length, 0), 0)
+      : data?.total ?? 0;
+
   return (
     <section className="pvg">
       <header className="dashboard-section__header">
-        <h2>Generated videos{data ? ` · ${data.total}` : ""}</h2>
+        <h2>Generated videos{data ? ` · ${total}` : ""}</h2>
         <p className="dashboard-section__hint">
-          Every clip generated in this project, by episode &amp; sequence. Tap a clip to play it
-          and see its prompt &amp; settings.
+          Every clip generated in {sceneIds ? "this series" : "this project"}, by episode &amp;
+          sequence. Tap a clip to play it and see its prompt &amp; settings.
         </p>
       </header>
 
@@ -199,11 +216,13 @@ export function ProjectVideoGallery({ projectId }: { projectId: string }) {
         <div className="page-empty">Couldn't load the gallery: {err}</div>
       ) : data === null ? (
         <div className="page-empty">Loading…</div>
-      ) : data.total === 0 ? (
-        <div className="page-empty">No videos generated in this project yet.</div>
+      ) : total === 0 ? (
+        <div className="page-empty">
+          No videos generated in {sceneIds ? "this series" : "this project"} yet.
+        </div>
       ) : (
         <div className="pvg__episodes">
-          {data.episodes.map((ep) => (
+          {episodes.map((ep) => (
             <div key={ep.scene_id} className="pvg__ep">
               <h3 className="pvg__ep-title">{ep.name}</h3>
               {ep.sequences.map((seq) => (

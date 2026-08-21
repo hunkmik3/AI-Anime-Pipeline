@@ -61,10 +61,14 @@ def _scene_dict(session, scene, status: str | None = None) -> dict:
         status = ss.effective_status(session, scene)
     prod = dict(scene.production or {})
     prod["status"] = status
+    from flowboard.db.models import Series
+    _series = session.get(Series, scene.series_id) if scene.series_id else None
     return {
         "id": str(scene.id),
         "project_id": str(scene.project_id),
         "series_id": str(scene.series_id) if scene.series_id else None,
+        # Archived/view-only: parent series is frozen — no editing or generation.
+        "frozen": bool(getattr(_series, "frozen", False)) if _series else False,
         "name": scene.name,
         "code": scene.code or "",
         "order_index": scene.order_index,

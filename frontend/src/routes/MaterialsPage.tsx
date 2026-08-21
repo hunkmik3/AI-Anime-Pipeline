@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type MouseEvent } from "react";
 
 import {
   listMyMaterials,
   listSeriesMaterials,
+  materialsToken,
   materialsZipUrl,
   type MaterialSeriesDTO,
   type MaterialsDTO,
@@ -86,6 +87,32 @@ function SeriesCard({
 }) {
   const [detail, setDetail] = useState<MaterialsDTO | null>(null);
   const [busy, setBusy] = useState(false);
+  const [grabbing, setGrabbing] = useState(false);
+
+  // The zip route needs auth, but a plain <a href> navigation can't send the
+  // Bearer header. So intercept the click, mint a short-lived series-scoped
+  // token (this fetch DOES carry the header), then fire the native download
+  // with the token in ?dl=. The href stays as a no-JS fallback only.
+  const grab = useCallback(
+    async (e: MouseEvent<HTMLAnchorElement>) => {
+      e.preventDefault();
+      if (grabbing) return;
+      setGrabbing(true);
+      try {
+        const { token } = await materialsToken(s.id);
+        const a = document.createElement("a");
+        a.href = materialsZipUrl(s.id, token);
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } catch (err) {
+        console.error("materials download failed", err);
+      } finally {
+        setGrabbing(false);
+      }
+    },
+    [grabbing, s.id],
+  );
 
   useEffect(() => {
     if (!open || detail) return;
@@ -118,12 +145,19 @@ function SeriesCard({
       {/* The one control this page exists for. A plain link, not a fetch: the
           browser's own downloader handles a 2 GB file, a progress bar and a
           resume, none of which is worth rebuilding in JavaScript. */}
-      <a className="mat__grab" href={materialsZipUrl(s.id)}>
+      <a
+        className="mat__grab"
+        href={materialsZipUrl(s.id)}
+        onClick={grab}
+        aria-busy={grabbing}
+      >
         <span className="mat__grab-icon" aria-hidden>
           ⬇
         </span>
         <span>
-          <span className="mat__grab-t">Tải tất cả raw material</span>
+          <span className="mat__grab-t">
+            {grabbing ? "Đang chuẩn bị tải…" : "Tải tất cả raw material"}
+          </span>
           <span className="mat__grab-sub">
             {s.clip_count} clip · {s.episode_count} tập · .zip
           </span>
@@ -144,29 +178,12 @@ function SeriesCard({
                 <div className="mat__clips">
                   {ep.sequences.flatMap((sq) =>
                     sq.clips.map((c) => (
-                      <a
+                      <ClipTile
                         key={c.media_id}
-                        className="mat__clip"
-                        href={`/media/${c.media_id}`}
-                        download={c.filename}
-                        title={c.filename}
-                      >
-                        <span className="mat__thumb" />
-                        <span className="mat__clipf">
-                          {/* The sequence code alone: the card already sits under
-                              its episode heading, so repeating the episode in
-                              every tile spends the width on what is already
-                              known. The full filename is the title attribute and
-                              is what the download is called. */}
-                          <b>{(sq.code || "—").split("_").pop()}</b>
-                          <span>
-                            v{c.take}
-                            {/* The take count only earns its place when there is
-                                more than one — otherwise it is noise on every row. */}
-                            {sq.take_count > 1 ? ` / ${sq.take_count}` : ""}
-                          </span>
-                        </span>
-                      </a>
+                        clip={c}
+                        code={sq.code}
+                        takeCount={sq.take_count}
+                      />
                     )),
                   )}
                 </div>
@@ -179,5 +196,79 @@ function SeriesCard({
         )
       ) : null}
     </section>
+  );
+}
+
+type Clip = MaterialsDTO["episodes"][number]["sequences"][number]["clips"][number];
+
+/** "9:16" → 0.5625. Anything that isn't a clean W:H returns undefined so the
+ *  caller falls back to the file's own dimensions. */
+function parseAspect(a?: string | null): number | undefined {
+  if (!a) return undefined;
+  const m = /^(\d+)\s*:\s*(\d+)$/.exec(a.trim());
+  if (!m) return undefined;
+  const w = Number(m[1]);
+  const h = Number(m[2]);
+  return w > 0 && h > 0 ? w / h : undefined;
+}
+
+/**
+ * One clip, playable in place at its real aspect ratio — not a placeholder box.
+ *
+ * The tile is sized from the aspect the shot was generated at so the row
+ * doesn't reflow as it loads, then snapped to the file's true dimensions once
+ * `loadedmetadata` fires: the param is a hint, the file is the authority.
+ * `preload="metadata"` keeps a page of clips cheap (moov atom only, first frame
+ * via the `#t=0.1` seek), and the ⬇ keeps the single-clip download the tile
+ * used to be.
+ */
+function ClipTile({
+  clip,
+  code,
+  takeCount,
+}: {
+  clip: Clip;
+  code: string;
+  takeCount: number;
+}) {
+  const [ratio, setRatio] = useState<number | undefined>(() =>
+    parseAspect(clip.aspect_ratio),
+  );
+  return (
+    <div className="mat__clip" title={clip.filename}>
+      <video
+        className="mat__clipvid"
+        src={`/media/${clip.media_id}#t=0.1`}
+        controls
+        preload="metadata"
+        playsInline
+        style={ratio ? { aspectRatio: String(ratio) } : undefined}
+        onLoadedMetadata={(e) => {
+          const v = e.currentTarget;
+          if (v.videoWidth && v.videoHeight) setRatio(v.videoWidth / v.videoHeight);
+        }}
+      />
+      <span className="mat__clipf">
+        {/* The sequence code alone — the card already sits under its episode
+            heading, so repeating the episode on every tile spends width on what
+            is already known. */}
+        <b>{(code || "—").split("_").pop()}</b>
+        <span className="mat__cliprow">
+          <span>
+            v{clip.take}
+            {/* The take count only earns its place when there is more than one. */}
+            {takeCount > 1 ? ` / ${takeCount}` : ""}
+          </span>
+          <a
+            className="mat__cliplink"
+            href={`/media/${clip.media_id}`}
+            download={clip.filename}
+            title="Tải clip này"
+          >
+            ⬇
+          </a>
+        </span>
+      </span>
+    </div>
   );
 }

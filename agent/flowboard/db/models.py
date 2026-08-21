@@ -132,6 +132,11 @@ class Series(SQLModel, table=True):
     # in: one finished cut for the whole thing, reviewed once. A rejection returns
     # it to `draft` and the Submission row keeps the reason.
     deliverable_status: str = Field(default="draft", index=True)
+    # A frozen series is view-only: its episodes/sequences cannot be edited or
+    # generated into — every write capability is refused (423) in
+    # permissions.require_scene. Used to archive/cancel a series while keeping it
+    # readable. Independent of deliverable_status and the CRM production.status.
+    frozen: bool = Field(default=False, index=True)
     order_index: int = 0
     settings: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
     # Phase 10 CRM: production-tracking bag mirroring the Series_Master sheet
@@ -795,6 +800,22 @@ class User(SQLModel, table=True):
     email: Optional[str] = Field(default=None, index=True)
     must_change_password: bool = Field(default=False)
     created_at: datetime = Field(default_factory=_utcnow)
+    #: Default Giantflow role designation ("this person is a GF artist"),
+    #: independent of any comic — so a team can be marked before comics exist and
+    #: the batch-assignee picker can offer just the GF people. producer|artist|viewer|None.
+    flow_role: Optional[str] = None
+
+    # ── HR / employee-directory fields (Phase E) ────────────────────────────
+    # Mirror the studio's staff spreadsheet. Admin-managed from the Employees
+    # tab. All are informational EXCEPT employment_status: setting it to
+    # "resigned"/"terminated" also suspends the login account (offboarding),
+    # and setting it back to "active" re-activates — see
+    # user_service.set_employment_status.
+    employee_code: Optional[str] = Field(default=None, index=True)  # e.g. "RME001"
+    staff_category: Optional[str] = None   # Full-time | Freelancer | Probation | Intern
+    job_title: Optional[str] = None        # free text: "AI Creator", "Compositor"…
+    rank: Optional[str] = None             # free text grade/level
+    employment_status: str = Field(default="active")  # active | resigned | terminated
 
 
 class UsageRecord(SQLModel, table=True):

@@ -419,4 +419,22 @@ def require_scene(
     role = require(session, user, project_id, capability)
     if not can_see_scene(session, user, project_id, scene_id):
         raise HTTPException(404, "episode not found")
+    # A frozen (archived) series is view-only: reads pass, every write is refused
+    # — canvas edits, generation, sequence/episode changes alike. Unfreezing is a
+    # series-level action (goes through ``require``, not here), so an admin can
+    # still lift it. 423 Locked, matching the sequence-lock gate the UI knows.
+    if capability != "canvas.read":
+        from flowboard.db.models import Scene, Series
+
+        scene = session.get(Scene, scene_id)
+        if scene is not None and scene.series_id is not None:
+            series = session.get(Series, scene.series_id)
+            if series is not None and getattr(series, "frozen", False):
+                raise HTTPException(
+                    423,
+                    detail={
+                        "error": "This series is archived (view-only). Unfreeze it to make changes.",
+                        "series_frozen": True,
+                    },
+                )
     return role
