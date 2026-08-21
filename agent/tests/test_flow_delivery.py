@@ -664,3 +664,219 @@ def test_a_vietnamese_title_keeps_its_letters(client):
     assert comic["name"].endswith("DUONG-VE-NHA")
     state = client.get(f"/api/flowstudio/series/{comic['id']}/delivery").json()
     assert state["studio_series_name"] == "DUONG-VE-NHA"
+
+
+# ── the PM crosses with the comic ───────────────────────────────────────────
+#
+# The counterpart is built by the app, so nobody was standing on it: an
+# auto-created project had no owner and an auto-created series no producer. The
+# handover worked and was invisible — only an admin could open any of it. These
+# pin the half that makes it reachable, and the two edges that make it safe:
+# never demoting somebody the production side already trusted, and never leaving
+# a review pointed at somebody who is off the comic.
+
+
+def _pm(client, w, username="pm_one", role="producer"):
+    """Give somebody the comic, through the route the PM actually uses."""
+    u = user_service.create_user(username, "pw123456", role="user")
+    r = client.put(
+        f"/api/flowstudio/series/{w['comic_id']}/members",
+        json={"user_id": str(u.id), "role": role},
+        headers=w["h"],
+    )
+    assert r.status_code == 200, r.text
+    return u
+
+
+def _studio_role(project_id, user_id):
+    """What this account may do on the production project — None if it is not on
+    it at all, which is the failure this whole section is about."""
+    from flowboard.db.models import ProjectMember
+
+    with get_session() as s:
+        row = s.exec(
+            select(ProjectMember).where(
+                ProjectMember.project_id == project_id,
+                ProjectMember.user_id == user_id,
+            )
+        ).first()
+        return row.role if row else None
+
+
+def _producer_of(series_id):
+    from flowboard.db.models import Series
+
+    with get_session() as s:
+        return s.get(Series, series_id).producer_user_id
+
+
+def test_naming_a_pm_on_the_comic_puts_them_on_the_production_series(client):
+    w = _world(client, chapters=1, panels=1)
+    _link(client, w)
+    pm = _pm(client, w)
+    assert _producer_of(w["studio_series_id"]) == pm.id
+
+
+def test_the_pm_can_open_the_production_project_they_deliver_into(client):
+    """The bug this fixes: the comic handed over correctly into a project its own
+    PM could not see, so the episode and its sequences existed for nobody."""
+    w = _world(client, chapters=1, panels=1)
+    _link(client, w)
+    pm = _pm(client, w)
+    ids = [p["id"] for p in client.get("/api/projects", headers=_login(client, "pm_one")).json()]
+    assert str(w["project_id"]) in ids
+
+
+def test_the_pm_arrives_able_to_staff_the_project(client):
+    """Option A: only the PM crosses, so the PM has to be able to hand the
+    episode to whoever generates it. A row that cannot do that is decoration."""
+    from flowboard.services import permissions as sp
+
+    w = _world(client, chapters=1, panels=1)
+    _link(client, w)
+    pm = _pm(client, w)
+    assert sp.role_allows(_studio_role(w["project_id"], pm.id), "member.manage")
+
+
+def test_an_artist_on_the_comic_does_not_cross(client):
+    """Who animates a panel is a different job from who drew it. Carrying the
+    panel artist over would hand them an episode nobody gave them."""
+    w = _world(client, chapters=1, panels=1)
+    _link(client, w)
+    drawer = _pm(client, w, username="drawer", role="artist")
+    assert _studio_role(w["project_id"], drawer.id) is None
+    assert _producer_of(w["studio_series_id"]) != drawer.id
+
+
+def test_a_pm_named_before_the_link_still_crosses_when_it_is_made(client):
+    """The comic is usually staffed first and pointed at a series afterwards, so
+    the link has to carry whoever is already on it — not just future edits."""
+    w = _world(client, chapters=1, panels=1)
+    pm = _pm(client, w)
+    assert _studio_role(w["project_id"], pm.id) is None, "nothing to cross yet"
+    _link(client, w)
+    assert _producer_of(w["studio_series_id"]) == pm.id
+
+
+def test_the_first_pm_named_is_the_series_producer(client):
+    """Two PMs on a comic, one producer field. Ordered by when they were named
+    rather than by name, so a rename does not silently reroute reviews."""
+    w = _world(client, chapters=1, panels=1)
+    _link(client, w)
+    first = _pm(client, w, username="pm_first")
+    _pm(client, w, username="pm_second")
+    assert _producer_of(w["studio_series_id"]) == first.id
+
+
+def test_both_pms_can_open_the_project_even_though_one_holds_the_series(client):
+    w = _world(client, chapters=1, panels=1)
+    _link(client, w)
+    _pm(client, w, username="pm_first")
+    second = _pm(client, w, username="pm_second")
+    assert _studio_role(w["project_id"], second.id) is not None
+
+
+def test_a_comic_edit_never_demotes_somebody_the_studio_trusts(client):
+    """The mirror grants; it does not rank people. Somebody already trusted with
+    more on the production side keeps it."""
+    from flowboard.db.models import ProjectMember
+    from flowboard.services import permissions as sp
+
+    w = _world(client, chapters=1, panels=1)
+    _link(client, w)
+    u = user_service.create_user("already_here", "pw123456", role="user")
+    with get_session() as s:
+        s.add(ProjectMember(project_id=w["project_id"], user_id=u.id, role=sp.PRODUCER))
+        s.commit()
+    client.put(
+        f"/api/flowstudio/series/{w['comic_id']}/members",
+        json={"user_id": str(u.id), "role": "producer"},
+        headers=w["h"],
+    )
+    assert _studio_role(w["project_id"], u.id) == sp.PRODUCER
+
+
+def test_an_editor_on_the_project_is_raised_not_replaced(client):
+    """An editor row cannot staff a project, so a PM landing on top of one has to
+    be raised — and must not lose the ability to pull material and hand a cut
+    back, which producer rank already carries."""
+    from flowboard.db.models import ProjectMember
+    from flowboard.services import permissions as sp
+
+    w = _world(client, chapters=1, panels=1)
+    _link(client, w)
+    u = user_service.create_user("cutter_pm", "pw123456", role="user")
+    with get_session() as s:
+        s.add(ProjectMember(project_id=w["project_id"], user_id=u.id, role=sp.EDITOR))
+        s.commit()
+    client.put(
+        f"/api/flowstudio/series/{w['comic_id']}/members",
+        json={"user_id": str(u.id), "role": "producer"},
+        headers=w["h"],
+    )
+    role = _studio_role(w["project_id"], u.id)
+    assert sp.role_allows(role, "member.manage")
+    assert sp.role_allows(role, "cut.submit")
+
+
+def test_dropping_the_pm_releases_the_series_producer(client):
+    """That field routes a review. Left pointing at somebody off the comic, every
+    future cut goes to them and nobody else can answer it."""
+    w = _world(client, chapters=1, panels=1)
+    _link(client, w)
+    pm = _pm(client, w)
+    r = client.delete(
+        f"/api/flowstudio/series/{w['comic_id']}/members/{pm.id}", headers=w["h"]
+    )
+    assert r.status_code == 200, r.text
+    assert _producer_of(w["studio_series_id"]) is None
+
+
+def test_dropping_one_of_two_pms_hands_the_series_to_the_other(client):
+    w = _world(client, chapters=1, panels=1)
+    _link(client, w)
+    first = _pm(client, w, username="pm_first")
+    second = _pm(client, w, username="pm_second")
+    client.delete(
+        f"/api/flowstudio/series/{w['comic_id']}/members/{first.id}", headers=w["h"]
+    )
+    assert _producer_of(w["studio_series_id"]) == second.id
+
+
+def test_dropping_a_pm_leaves_their_project_row_alone(client):
+    """Deliberate: a membership row is also how somebody keeps reach into work
+    they have already done. Removing it is a decision for the production project,
+    not a side effect of a comic-side edit."""
+    w = _world(client, chapters=1, panels=1)
+    _link(client, w)
+    pm = _pm(client, w)
+    client.delete(
+        f"/api/flowstudio/series/{w['comic_id']}/members/{pm.id}", headers=w["h"]
+    )
+    assert _studio_role(w["project_id"], pm.id) is not None
+
+
+def test_an_unlinked_comic_carries_nobody_across(client):
+    """A comic being adapted for print has no production side to appear on."""
+    w = _world(client, chapters=1, panels=1)
+    pm = _pm(client, w)
+    assert _studio_role(w["project_id"], pm.id) is None
+
+
+def test_syncing_people_twice_makes_one_row(client):
+    """Runs on every membership edit and on every link, so the common case has to
+    be idempotent rather than additive."""
+    from flowboard.db.models import FlowSeries, ProjectMember
+
+    w = _world(client, chapters=1, panels=1)
+    _link(client, w)
+    pm = _pm(client, w)
+    with get_session() as s:
+        fd.sync_people(s, s.get(FlowSeries, w["comic_id"]))
+        rows = s.exec(
+            select(ProjectMember).where(
+                ProjectMember.project_id == w["project_id"],
+                ProjectMember.user_id == pm.id,
+            )
+        ).all()
+    assert len(rows) == 1

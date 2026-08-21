@@ -45,8 +45,10 @@ from flowboard.db.models import (
     FlowChapter,
     FlowPanel,
     FlowProject,
+    FlowSeriesMember,
     Node,
     Project,
+    ProjectMember,
     Scene,
     Series,
     Shot,
@@ -95,6 +97,11 @@ def link_series(session: Session, flow_series_id: int, studio_series_id: Optiona
     session.add(comic)
     session.commit()
     session.refresh(comic)
+    # The link is what makes the people on this comic mean anything on the other
+    # side, so it is the moment to carry them over — and the only one that covers
+    # both routes in, the automatic counterpart and a PM re-pointing a comic by
+    # hand.
+    sync_people(session, comic)
     return comic
 
 
@@ -136,6 +143,9 @@ def ensure_counterpart(session: Session, comic) -> Series:
     if comic.studio_series_id is not None:
         existing = session.get(Series, comic.studio_series_id)
         if existing is not None:
+            # A repair run on a comic that has since been given its PMs: the
+            # series is already there, the people may not be.
+            sync_people(session, comic)
             return existing
 
     slate = session.get(FlowProject, comic.project_id)
@@ -163,6 +173,95 @@ def ensure_counterpart(session: Session, comic) -> Series:
     )
     link_series(session, comic.id, series.id)
     return series
+
+
+def _comic_pms(session: Session, comic) -> list[uuid.UUID]:
+    """The comic's PMs, in the order they were given it.
+
+    Ordered by row id, not by name: when a comic has two PMs, one of them has to
+    be the production series' producer, and "whoever was named first" is the only
+    answer that does not change under a rename.
+    """
+    from flowboard.services import flow_permissions as fp
+
+    rows = session.exec(
+        select(FlowSeriesMember)
+        .where(FlowSeriesMember.series_id == comic.id)
+        .order_by(FlowSeriesMember.id)  # type: ignore[arg-type]
+    ).all()
+    return [r.user_id for r in rows if fp.normalize_member_role(r.role) == fp.PRODUCER]
+
+
+def sync_people(session: Session, comic, *, dropped: Optional[uuid.UUID] = None) -> None:
+    """Carry the comic's PMs across to the production side.
+
+    The counterpart is made by the app rather than by a person, so nobody was on
+    it: an auto-created project has no owner and an auto-created series no
+    producer. Every row landed correctly and **only an admin could see any of
+    it** — the comic handed over into a project its own PM could not open, the
+    artist never saw the episode, and the editor never saw the series on Raw
+    material. This is the half that makes the handover reachable.
+
+    **Only the PM crosses.** Who animates a panel is a different job from who
+    drew it and usually a different person, so guessing would hand somebody an
+    episode nobody gave them. The PM arrives holding ``member.manage`` and staffs
+    the rest themselves, exactly as on a project with no comic behind it.
+
+    **Grants only, never revokes.** A membership row is also how somebody keeps
+    reach into work they have already done, and the production side may have
+    added them for reasons this side cannot see. So dropping a PM from the comic
+    leaves their project row alone — but it does release the *series producer*,
+    because that field is what routes a review, and leaving it pointed at
+    somebody who is no longer on the comic sends every future cut to them.
+    """
+    if comic.studio_series_id is None:
+        return
+    series = session.get(Series, comic.studio_series_id)
+    if series is None:
+        return
+
+    from flowboard.services import permissions as sp
+
+    pms = _comic_pms(session, comic)
+    project = session.get(Project, series.project_id)
+    owner = project.owner_user_id if project is not None else None
+
+    changed = False
+    for uid in pms:
+        if uid == owner:
+            continue  # the owner is implicitly a producer and needs no row
+        row = session.exec(
+            select(ProjectMember).where(
+                ProjectMember.project_id == series.project_id,
+                ProjectMember.user_id == uid,
+            )
+        ).first()
+        if row is None:
+            session.add(
+                ProjectMember(
+                    project_id=series.project_id, user_id=uid, role=sp.PRODUCER
+                )
+            )
+            changed = True
+        elif not sp.role_allows(row.role, "member.manage"):
+            # Raise, never lower. Asked as a capability rather than by comparing
+            # ranks because that is the thing being granted — a PM who cannot
+            # staff the project is a PM in name only.
+            row.role = sp.PRODUCER
+            session.add(row)
+            changed = True
+
+    if pms and series.producer_user_id not in pms:
+        series.producer_user_id = pms[0]
+        session.add(series)
+        changed = True
+    elif not pms and dropped is not None and series.producer_user_id == dropped:
+        series.producer_user_id = None
+        session.add(series)
+        changed = True
+
+    if changed:
+        session.commit()
 
 
 def linked_series(session: Session, flow_series_id: int) -> Optional[Series]:

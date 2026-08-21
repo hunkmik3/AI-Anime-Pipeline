@@ -498,7 +498,16 @@ async def import_folder(
 def upload_config(user=Depends(get_optional_user)):
     """How the client should upload. ``r2_direct`` → ask for presigned urls and
     PUT files straight to R2 (no 100MB Cloudflare limit); else the browser falls
-    back to the multipart ``/import`` on this hostname."""
+    back to the multipart ``/import`` on this hostname.
+
+    Signed-in only, like every other route on this router. It answers with
+    infrastructure shape rather than anybody's data, so the exposure is small —
+    but `test_route_authorization.py` enumerates every live route and fails the
+    build on one that authorises nothing, precisely so "small" never has to be
+    argued case by case.
+    """
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
     return {"r2_direct": r2.is_configured(), "max_files": _MAX_FILES}
 
 
@@ -1148,6 +1157,11 @@ def put_member(series_id: int, body: MemberBody, user=Depends(get_optional_user)
         if body.role not in fp.FLOW_ROLES:
             raise HTTPException(400, f"role must be one of {list(fp.FLOW_ROLES)}")
         m = ps.set_member(s, series_id, body.user_id, body.role)
+        # Naming a PM here is what gives them standing on the production side too.
+        # Not wrapped in a try: unlike creating the counterpart, there is no half
+        # of this worth keeping — a PM recorded on the comic and invisible on the
+        # series is the exact state this exists to prevent.
+        fd.sync_people(s, ps.get_series(s, series_id))
         return {"user_id": str(m.user_id), "name": _user_name(m.user_id), "role": m.role}
 
 
@@ -1157,6 +1171,10 @@ def delete_member(series_id: int, user_id: uuid.UUID, user=Depends(get_optional_
         resource_guard.require_signed_in(s, user)
         _guard(s, user, series_id, "member.manage")
         ps.remove_member(s, series_id, user_id)
+        # Releases the production series' producer if this was them — that field
+        # routes reviews, so leaving it pointed at somebody off the comic would
+        # send every future cut to them.
+        fd.sync_people(s, ps.get_series(s, series_id), dropped=user_id)
         return {"ok": True}
 
 
