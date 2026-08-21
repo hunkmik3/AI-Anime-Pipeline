@@ -68,3 +68,13 @@ agent/drive-sa.json
 logs/
 *.patch
 frontend/_superseded-*/
+
+# `*.bak` above does not catch a backup named `.env.bak-before-db-switch` — the
+# name ends in the suffix, not in `.bak`. Two such files were sitting untracked
+# with real Avis / BytePlus / Atrium / R2 / SSO / SMTP credentials in them, so
+# the pattern is widened rather than trusted to the extension.
+.env.bak*
+*.bak-before-*
+
+# Scratch space used while working: logs, screenshots, tokens, rollback copies.
+scratchpad/
