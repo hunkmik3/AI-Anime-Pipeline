@@ -304,6 +304,18 @@ interface ShotWorkflowState {
     },
     position: { x: number; y: number },
   ): Promise<string | null>;
+  /** Drop an uploaded file onto the canvas → spawn the matching node:
+   *  image → visual_asset, audio → audio_ref, video → video_ref. The media is
+   *  already uploaded (caller has the media_id); this only records the node. */
+  addUploadedMediaNode(
+    kind: "image" | "audio" | "video",
+    mediaId: string,
+    position: { x: number; y: number },
+    title?: string,
+    // Explicit target shot — required on the episode canvas (SceneCanvas), where
+    // there is no single "current" shot; omit on the single-sequence canvas.
+    shotId?: string,
+  ): Promise<string | null>;
   persistNodePosition(rfId: string, position: { x: number; y: number }): Promise<void>;
   deleteNodeByRfId(rfId: string): Promise<void>;
   addEdgeFromConnection(source: string, target: string): Promise<void>;
@@ -626,6 +638,51 @@ export const useShotWorkflowStore = create<ShotWorkflowState>((set, get) => ({
       return node.id;
     } catch {
       // ignore
+    }
+    return null;
+  },
+
+  async addUploadedMediaNode(kind, mediaId, position, title, shotId) {
+    // Explicit shot (episode canvas) or the current single-sequence canvas.
+    const explicit = shotId != null;
+    const targetShot = shotId ?? get().shotId;
+    if (!targetShot) return null;
+    const type: NodeType =
+      kind === "audio" ? "audio_ref" : kind === "video" ? "video_ref" : "visual_asset";
+    const label = title || (kind === "audio" ? "Audio" : kind === "video" ? "Video" : "Reference");
+    // Each node type reads its media off a different key (see collectUpstream*
+    // in the generation store and the *Node components).
+    const data: Record<string, unknown> =
+      kind === "image"
+        ? { type, title: label, mediaId, status: "done", renderedAt: new Date().toISOString() }
+        : kind === "audio"
+          ? { type, title: label, audioMediaId: mediaId, status: "done" }
+          : { type, title: label, videoRefMediaId: mediaId, status: "done" };
+    try {
+      const dto = await createNode({
+        shot_id: targetShot,
+        type,
+        x: Math.round(position.x),
+        y: Math.round(position.y),
+        data,
+      });
+      // Guard against a stale single-sequence canvas only when using the current
+      // shot; an explicit target (episode canvas) has no "current shot" to check.
+      if (!explicit && get().shotId !== targetShot) return null;
+      const node: FlowNode = {
+        id: String(dto.id),
+        type: dto.type,
+        position: { x: dto.x, y: dto.y },
+        // shotId tags the node for SceneCanvas group parenting (see groupChildren).
+        data: { ...data, type: dto.type, shortId: dto.short_id, shotId: targetShot } as FlowboardNodeData,
+      };
+      set((s) => ({ nodes: [...s.nodes, node] }));
+      // createNode always starts "idle"; persist "done" so a reload keeps the
+      // media showing rather than an empty placeholder.
+      patchNode(dto.id, { status: "done" }).catch(() => {});
+      return node.id;
+    } catch {
+      // surfaced by the caller
     }
     return null;
   },

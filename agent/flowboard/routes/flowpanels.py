@@ -13,10 +13,13 @@ read as protection that isn't there.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import re
 import uuid
 from datetime import date
+from pathlib import Path
 from typing import Optional
 
 from fastapi import (
@@ -29,11 +32,14 @@ from fastapi import (
     Response,
     UploadFile,
 )
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 from sqlmodel import select
 
 from flowboard.db import get_session
 from flowboard.routes.deps import get_optional_user
+from flowboard.services import auth
 from flowboard.services import media as media_service
 from flowboard.db.models import PANEL_STATUSES
 from flowboard.services import flow_delivery as fd
@@ -792,10 +798,7 @@ def pass_through(panel_id: int, user=Depends(get_optional_user)):
             out["delivery_error"] = str(exc)
         else:
             if handed is not None:
-                out["delivered"] = {
-                    "sequence_id": str(handed.shot_id),
-                    "episode_id": str(handed.scene_id),
-                }
+                out["delivered"] = {"episode_id": str(handed.scene_id)}
         return out
 
 
@@ -992,13 +995,25 @@ async def download_panel(panel_id: int, user=Depends(get_optional_user)):
     )
 
 
-async def _zip_panels(session, panels: list, *, folders: bool) -> tuple[bytes, int, int]:
-    """Zip each panel's delivered image. Returns (bytes, written, skipped).
+# Bound concurrent exports: each one streams a possibly-huge zip (a chapter of
+# 4K panels is ~800 MB), and building several at once is what OOM'd the agent
+# when a stuck download got click-spammed. 2 is plenty for a studio.
+_EXPORT_SEM = asyncio.Semaphore(int(os.getenv("FLOWBOARD_PANEL_EXPORT_CONCURRENCY", "2")))
 
-    Skips rather than fails on an unreadable image: one broken file must not cost
-    a producer the other two hundred.
+
+async def _zip_panels_to_file(session, panels: list, *, folders: bool) -> tuple[Path, int, int]:
+    """Zip each panel's delivered image to a TEMP FILE on disk; return
+    (path, written, skipped). The caller streams it with FileResponse and
+    deletes it afterwards (BackgroundTask).
+
+    Written to disk, not an in-memory BytesIO: a full chapter of 4K panels is
+    ~800 MB, and holding that (times a few concurrent requests) in RAM is what
+    took the agent down. Peak memory here is ~one image at a time. ZIP_STORED,
+    not DEFLATED: PNGs are already compressed, so deflate burns ~20 s of CPU to
+    save nothing. Skips (not fails) an unreadable image — one broken file must
+    not cost the producer the other two hundred.
     """
-    import io
+    import tempfile
     import zipfile
 
     picked = []
@@ -1009,19 +1024,33 @@ async def _zip_panels(session, panels: list, *, folders: bool) -> tuple[bytes, i
         batch = ps.get_batch(session, panel.batch_id)
         picked.append((panel.code, batch.name, img.media_id))
 
-    buf = io.BytesIO()
+    fd, tmp = tempfile.mkstemp(suffix=".zip", prefix="export_", dir=str(media_service.MEDIA_CACHE_DIR))
+    os.close(fd)
+    tmp_path = Path(tmp)
     written = skipped = 0
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for code, batch_name, media_id in picked:
-            got = await _image_bytes(media_id)
-            if got is None:
-                skipped += 1
-                continue
-            data, ext = got
-            name = f"{batch_name}/{code}.{ext}" if folders else f"{code}.{ext}"
-            zf.writestr(name, data)
-            written += 1
-    return buf.getvalue(), written, skipped
+    async with _EXPORT_SEM:
+        with zipfile.ZipFile(str(tmp_path), "w", zipfile.ZIP_STORED) as zf:
+            for code, batch_name, media_id in picked:
+                got = await _image_bytes(media_id)
+                if got is None:
+                    skipped += 1
+                    continue
+                data, ext = got
+                name = f"{batch_name}/{code}.{ext}" if folders else f"{code}.{ext}"
+                zf.writestr(name, data)
+                written += 1
+    return tmp_path, written, skipped
+
+
+def _zip_file_response(path: Path, filename: str, written: int, skipped: int) -> FileResponse:
+    """Stream a temp export zip off disk and delete it once the response is sent."""
+    return FileResponse(
+        str(path),
+        media_type="application/zip",
+        filename=filename,
+        headers={"X-Export-Written": str(written), "X-Export-Skipped": str(skipped)},
+        background=BackgroundTask(lambda: path.unlink(missing_ok=True)),
+    )
 
 
 @router.get("/batches/{batch_id}/export")
@@ -1037,19 +1066,30 @@ async def export_batch(batch_id: int, user=Depends(get_optional_user)):
         panels = [p for p in ps.list_panels(s, batch_id) if p.status == "approved"]
         if not panels:
             raise HTTPException(404, "no approved panels in this batch yet")
-        data, written, skipped = await _zip_panels(s, panels, folders=False)
+        path, written, skipped = await _zip_panels_to_file(s, panels, folders=False)
         name = _safe_filename(batch.name)
-    return Response(
-        content=data,
-        media_type="application/zip",
-        headers={
-            "Content-Disposition": f'attachment; filename="{name}_approved.zip"',
-            # Surfaced as a header so the client can say "3 files could not be
-            # read" instead of silently handing over a short zip.
-            "X-Export-Written": str(written),
-            "X-Export-Skipped": str(skipped),
-        },
+    return _zip_file_response(path, f"{name}_approved.zip", written, skipped)
+
+
+def _export_token(user, resource: str) -> dict:
+    """Short-lived signed token so the browser's NATIVE downloader can pull a big
+    export zip via a plain link (an <a href> can't carry the Bearer header, and a
+    ~800 MB zip must not be buffered into a JS blob). Minted only after the caller
+    passed the same read-guard as the download itself."""
+    tok = (
+        auth.make_download_token(str(user.id), resource, token_version=int(user.token_version or 0))
+        if user is not None
+        else ""
     )
+    return {"token": tok}
+
+
+@router.get("/batches/{batch_id}/export-token")
+def export_batch_token(batch_id: int, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard_batch_read(s, user, batch_id)
+    return _export_token(user, f"flowbatch:{batch_id}:export")
 
 
 @router.get("/series/{series_id}/export")
@@ -1067,17 +1107,17 @@ async def export_project(series_id: int, user=Depends(get_optional_user)):
         ]
         if not panels:
             raise HTTPException(404, "no approved panels in this project yet")
-        data, written, skipped = await _zip_panels(s, panels, folders=True)
+        path, written, skipped = await _zip_panels_to_file(s, panels, folders=True)
         name = _safe_filename(project.name)
-    return Response(
-        content=data,
-        media_type="application/zip",
-        headers={
-            "Content-Disposition": f'attachment; filename="{name}_approved.zip"',
-            "X-Export-Written": str(written),
-            "X-Export-Skipped": str(skipped),
-        },
-    )
+    return _zip_file_response(path, f"{name}_approved.zip", written, skipped)
+
+
+@router.get("/series/{series_id}/export-token")
+def export_series_token(series_id: int, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, series_id, "panel.read")
+    return _export_token(user, f"flowseries:{series_id}:export")
 
 
 def _safe_filename(name: str) -> str:
@@ -1518,17 +1558,17 @@ async def export_chapter(chapter_id: int, user=Depends(get_optional_user)):
         panels = [p for p in ps.list_chapter_panels(s, chapter_id) if p.status == "approved"]
         if not panels:
             raise HTTPException(404, "no approved panels in this chapter yet")
-        data, written, skipped = await _zip_panels(s, panels, folders=True)
+        path, written, skipped = await _zip_panels_to_file(s, panels, folders=True)
         name = _safe_filename(chapter.name)
-    return Response(
-        content=data,
-        media_type="application/zip",
-        headers={
-            "Content-Disposition": f'attachment; filename="{name}_approved.zip"',
-            "X-Export-Written": str(written),
-            "X-Export-Skipped": str(skipped),
-        },
-    )
+    return _zip_file_response(path, f"{name}_approved.zip", written, skipped)
+
+
+@router.get("/chapters/{chapter_id}/export-token")
+def export_chapter_token(chapter_id: int, user=Depends(get_optional_user)):
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, _series_of_chapter(s, chapter_id), "panel.read")
+    return _export_token(user, f"flowchapter:{chapter_id}:export")
 
 
 # ── The panel's own asset library ────────────────────────────────────────────
@@ -1882,8 +1922,8 @@ def review(panel_id: int, body: ReviewBody, user=Depends(get_optional_user)):
                 out["delivery_error"] = str(exc)
             else:
                 if handed is not None:
+                    # Chapter→episode only; sequences are built by hand now.
                     out["delivered"] = {
-                        "sequence_id": str(handed.shot_id),
                         "episode_id": str(handed.scene_id),
                         "created": handed.created,
                     }

@@ -124,11 +124,8 @@ export function PanelBatchesPage() {
               }
               onClick={async () => {
                   try {
-                    const r = await exportChapter(pid);
-                    toast(
-                      `${r.written} approved panel(s) downloaded.` +
-                        (r.skipped ? ` ${r.skipped} could not be read.` : ""),
-                    );
+                    await exportChapter(pid);
+                    toast(`Đang tải ${counts.approved} panel approved… (kiểm tra thư mục Downloads)`);
                   } catch (e) {
                     toast(e instanceof Error ? e.message : "Export failed");
                   }

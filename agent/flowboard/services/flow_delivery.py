@@ -70,11 +70,15 @@ class DeliveryError(Exception):
 
 @dataclass
 class Delivered:
-    """What the handover produced, for the caller to report."""
+    """The episode this panel's chapter maps to.
 
-    shot_id: uuid.UUID
+    The panel→sequence handover was removed (2026-08): a finished panel no longer
+    becomes a sequence. The bridge now stops at chapter→episode — a PM exports the
+    approved panels and the animator builds the sequences by hand in the episode.
+    """
+
     scene_id: uuid.UUID
-    #: False when this panel had already been delivered and we found it again.
+    #: True when THIS call created the episode (first approved panel of a chapter).
     created: bool
 
 
@@ -176,11 +180,17 @@ def linked_series(session: Session, flow_series_id: int) -> Optional[Series]:
 
 
 def deliver_panel(session: Session, panel_id: int) -> Optional[Delivered]:
-    """Hand one approved panel over as a sequence.
+    """Ensure the panel's CHAPTER has its Giant Studio EPISODE — and stop there.
 
-    Returns ``None`` when there is nothing to do — the comic is not linked, or
-    the panel is not approved. Silence rather than an error: most comics never
-    deliver, and a verdict on one of those is not a failure.
+    The panel→sequence handover was removed (2026-08): a finished panel no longer
+    becomes a sequence. A PM exports the approved panels and the animator builds
+    the sequences by hand inside the episode. So this maps chapter→episode
+    (creating the episode on the first approved panel of a chapter) and creates
+    NO sequence and NO source node.
+
+    Returns ``None`` when there is nothing to do — the comic is not linked, or the
+    panel is not approved. Idempotent: the second approved panel of a chapter
+    finds the episode and does nothing.
     """
     panel = ps.get_panel(session, panel_id)
     if panel.status != "approved":
@@ -194,36 +204,14 @@ def deliver_panel(session: Session, panel_id: int) -> Optional[Delivered]:
     studio_series = session.get(Series, comic.studio_series_id)
     if studio_series is None:
         # The production series was deleted out from under the link. Refuse
-        # loudly: silently dropping the handover would lose finished work.
+        # loudly: silently dropping the mapping would confuse the animator.
         raise DeliveryError(
             "not_found",
             f"“{comic.name}” is linked to a production series that no longer exists",
         )
 
-    # Resolve the episode FIRST, before the already-delivered shortcut below.
-    # It is what repairs the skeleton, and putting the shortcut ahead of it
-    # meant a comic whose panels had all been delivered could never gain the
-    # empty slots — re-running sync returned "already done" without ever
-    # looking at the episode. The repair has to sit on the path that runs every
-    # time, not the one that runs once.
-    scene = _episode_for(session, chapter, studio_series)
-
-    # Already handed over — a reopen-and-re-approve, or a retried request.
-    if panel.studio_shot_id is not None:
-        existing = session.get(Shot, panel.studio_shot_id)
-        if existing is not None:
-            return Delivered(shot_id=existing.id, scene_id=existing.scene_id, created=False)
-        # The sequence was deleted downstream. Clear the stale pointer and make
-        # a new one: the panel is still approved, so it still owes a sequence.
-        panel.studio_shot_id = None
-
-    shot = _slot_for(session, scene, panel, chapter)
-    _record_source(session, panel, shot)
-
-    panel.studio_shot_id = shot.id
-    session.add(panel)
-    session.commit()
-    return Delivered(shot_id=shot.id, scene_id=scene.id, created=True)
+    scene, created = _episode_for(session, chapter, studio_series)
+    return Delivered(scene_id=scene.id, created=created)
 
 
 def _skeleton(session: Session, scene: Scene, chapter: FlowChapter) -> None:
@@ -346,34 +334,32 @@ def _chapter_position(session: Session, panel: FlowPanel, chapter: FlowChapter) 
     return len(_chapter_panels(session, chapter))
 
 
-def _episode_for(session: Session, chapter: FlowChapter, studio_series: Series) -> Scene:
-    """The episode this chapter became, making it on first use.
+def _episode_for(
+    session: Session, chapter: FlowChapter, studio_series: Series
+) -> tuple[Scene, bool]:
+    """The episode this chapter maps to, making it on first use. Returns
+    ``(scene, created)`` where ``created`` is True only when this call made it.
 
-    The skeleton is rebuilt on EVERY call, not only when the episode is created.
-    It is idempotent by code, so the cost is one query — and running it only at
-    creation left two holes: an episode made before this existed would never get
-    its empty slots, and a chapter that gains a batch afterwards would never get
-    the new ones. Self-healing beats a one-shot backfill nobody remembers to run.
+    No sequences are created — the bridge stops at chapter→episode now, and the
+    animator builds the sequences by hand. Idempotent: an existing episode is
+    returned untouched.
     """
-    scene = None
     if chapter.studio_scene_id is not None:
-        scene = session.get(Scene, chapter.studio_scene_id)
-        # None here means it was deleted downstream; fall through and make
-        # another rather than fail.
+        existing = session.get(Scene, chapter.studio_scene_id)
+        # None means it was deleted downstream; fall through and make another.
+        if existing is not None:
+            return existing, False
 
-    if scene is None:
-        scene = scene_service.create_scene(
-            session,
-            studio_series.project_id,
-            name=chapter.name,
-            series_id=studio_series.id,
-        )
-        chapter.studio_scene_id = scene.id
-        session.add(chapter)
-        session.commit()
-
-    _skeleton(session, scene, chapter)
-    return scene
+    scene = scene_service.create_scene(
+        session,
+        studio_series.project_id,
+        name=chapter.name,
+        series_id=studio_series.id,
+    )
+    chapter.studio_scene_id = scene.id
+    session.add(chapter)
+    session.commit()
+    return scene, True
 
 
 def _record_source(session: Session, panel: FlowPanel, shot: Shot) -> None:

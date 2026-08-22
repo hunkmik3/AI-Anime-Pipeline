@@ -226,11 +226,8 @@ export function PanelGridPage() {
               }
               onClick={async () => {
                 try {
-                  const r = await exportBatch(bid);
-                  toast(
-                    `${r.written} approved panel(s) downloaded.` +
-                      (r.skipped ? ` ${r.skipped} could not be read.` : ""),
-                  );
+                  await exportBatch(bid);
+                  toast(`Đang tải ${counts.approved} panel approved… (kiểm tra thư mục Downloads)`);
                 } catch (e) {
                   toast(e instanceof Error ? e.message : "Export failed");
                 }

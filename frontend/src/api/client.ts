@@ -2537,7 +2537,7 @@ export function reorderChapters(seriesId: number, ids: number[]): Promise<{ ok: 
 
 /** Every approved panel in one chapter, foldered by batch. */
 export function exportChapter(chapterId: number) {
-  return download(`/api/flowstudio/chapters/${chapterId}/export`);
+  return exportZipViaLink("chapters", chapterId);
 }
 
 /** The slate — the container every comic hangs off. */
@@ -3090,14 +3090,39 @@ export function downloadPanel(panelId: number) {
   return download(`/api/flowstudio/panels/${panelId}/download`);
 }
 
+/**
+ * Download an approved-panel export zip via NATIVE browser download.
+ *
+ * A chapter of 4K panels is ~800 MB. The old path (`download()`) fetched the whole
+ * zip into a JS blob in memory before saving — which stalled/failed in the browser
+ * and, when click-spammed, OOM'd the agent. Instead mint a short-lived signed token
+ * and hand the browser a plain link: its native downloader streams straight to
+ * disk (no blob, progress bar, resumable), exactly like the materials-zip download.
+ */
+async function exportZipViaLink(
+  kind: "batches" | "chapters" | "series",
+  id: number,
+): Promise<void> {
+  const { token } = await api<{ token: string }>(`/api/flowstudio/${kind}/${id}/export-token`);
+  const url = `/api/flowstudio/${kind}/${id}/export${token ? `?dl=${encodeURIComponent(token)}` : ""}`;
+  // Content-Disposition: attachment on the response makes this download without
+  // navigating the page away.
+  const a = document.createElement("a");
+  a.href = url;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 /** Every approved panel in one artist's batch, as a zip. */
 export function exportBatch(batchId: number) {
-  return download(`/api/flowstudio/batches/${batchId}/export`);
+  return exportZipViaLink("batches", batchId);
 }
 
 /** Every approved panel in the comic, foldered by batch. */
 export function exportSeries(seriesId: number) {
-  return download(`/api/flowstudio/series/${seriesId}/export`);
+  return exportZipViaLink("series", seriesId);
 }
 
 /** What the signed-in account may do in giantflow. Advisory — every capability

@@ -232,6 +232,21 @@ async def _auth_gate(request: FastAPIRequest, call_next):
                     user = _user_service.authenticate_download_token(
                         dl, resource=f"series:{parts[3]}:materials"
                     )
+            # Giantflow panel export zips are big (a chapter of 4K panels ~800 MB),
+            # so the client downloads them by NATIVE navigation with a ?dl= token
+            # too (same rationale as materials.zip). Paths:
+            #   /api/flowstudio/{batches|chapters|series}/<id>/export
+            if user is None and path.endswith("/export") and "/flowstudio/" in path:
+                dl = request.query_params.get("dl")
+                parts = path.split("/")
+                _res = {"batches": "flowbatch", "chapters": "flowchapter", "series": "flowseries"}
+                if (
+                    dl and len(parts) == 6 and parts[2] == "flowstudio"
+                    and parts[3] in _res
+                ):
+                    user = _user_service.authenticate_download_token(
+                        dl, resource=f"{_res[parts[3]]}:{parts[4]}:export"
+                    )
             if user is None:
                 return _JSONResponse({"detail": "authentication required"}, status_code=401)
             request.state.user = user  # reused by the per-route dependencies

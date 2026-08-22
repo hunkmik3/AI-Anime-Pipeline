@@ -24,6 +24,17 @@ import { nodeTypes } from "./nodes";
 import { VariantEdge } from "./VariantEdge";
 import { useGenerationStore } from "../store/generation";
 import { confirmPanelDelete } from "./confirmPanelDelete";
+import { uploadImage, uploadAudio, uploadVideo } from "../api/client";
+import { toast } from "../store/toast";
+
+/** image / audio / video, or null for anything we don't turn into a node. */
+function fileKind(file: File): "image" | "audio" | "video" | null {
+  const t = (file.type || "").toLowerCase();
+  if (t.startsWith("image/")) return "image";
+  if (t.startsWith("audio/")) return "audio";
+  if (t.startsWith("video/")) return "video";
+  return null;
+}
 
 // Single edge type used for everything — VariantEdge renders the
 // default bezier line and additionally surfaces a `v{N}` chip when the
@@ -130,14 +141,67 @@ export function ShotCanvas() {
   // requires onDragOver to call preventDefault() or the onDrop never
   // fires on this element.
   const onCanvasDragOver = useCallback((e: React.DragEvent) => {
-    if (e.dataTransfer.types.includes("application/x-flowboard-reference")) {
+    const t = e.dataTransfer.types;
+    // Accept both a saved reference card AND raw files dragged from the OS —
+    // the browser only fires onDrop if onDragOver called preventDefault.
+    if (t.includes("application/x-flowboard-reference") || t.includes("Files")) {
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
     }
   }, []);
 
+  // Drop image/audio/video FILES straight onto the canvas → upload each and
+  // spawn the matching node (image→visual_asset, audio→audio_ref, video→
+  // video_ref) at the drop point. Multiple files fan out so they don't stack.
+  const onFilesDrop = useCallback(
+    async (files: File[], clientX: number, clientY: number) => {
+      const base = screenToFlowPosition({ x: clientX, y: clientY });
+      const projectId = await useGenerationStore.getState().ensureProjectId();
+      if (!projectId) {
+        toast("Chưa sẵn sàng project để nhận file — thử lại sau giây lát.", "error");
+        return;
+      }
+      let i = 0;
+      for (const file of files) {
+        const kind = fileKind(file);
+        if (!kind) {
+          toast(`Bỏ qua “${file.name}” — chỉ nhận ảnh, audio hoặc video.`, "error");
+          continue;
+        }
+        const pos = { x: base.x + i * 40, y: base.y + i * 40 };
+        try {
+          const resp =
+            kind === "image"
+              ? await uploadImage(file, projectId)
+              : kind === "audio"
+                ? await uploadAudio(file, projectId)
+                : await uploadVideo(file, projectId);
+          await useShotWorkflowStore
+            .getState()
+            .addUploadedMediaNode(kind, resp.media_id, pos, file.name);
+          i += 1;
+        } catch (err) {
+          toast(
+            `Tải “${file.name}” lỗi: ${err instanceof Error ? err.message : "unknown"}`,
+            "error",
+          );
+        }
+      }
+      if (i > 0) toast(`Đã thêm ${i} node từ file thả vào.`);
+    },
+    [screenToFlowPosition],
+  );
+
   const onCanvasDrop = useCallback(
     (e: React.DragEvent) => {
+      // Raw OS files first — drop an image/audio/video and it becomes a node.
+      const files = Array.from(e.dataTransfer.files || []);
+      if (files.length > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        void onFilesDrop(files, e.clientX, e.clientY);
+        return;
+      }
       const raw = e.dataTransfer.getData("application/x-flowboard-reference");
       if (!raw) return;
       e.preventDefault();
@@ -156,7 +220,7 @@ export function ShotCanvas() {
         console.warn("Failed to parse reference drop payload", err);
       }
     },
-    [screenToFlowPosition],
+    [screenToFlowPosition, onFilesDrop],
   );
 
   const onNodesChange = useCallback(

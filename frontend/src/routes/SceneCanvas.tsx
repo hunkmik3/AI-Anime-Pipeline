@@ -17,7 +17,14 @@ import {
   type OnNodeDrag,
 } from "@xyflow/react";
 
-import { autoMigrateScene, deleteShot as deleteShotApi, patchShotGroup } from "../api/client";
+import {
+  autoMigrateScene,
+  deleteShot as deleteShotApi,
+  patchShotGroup,
+  uploadImage,
+  uploadAudio,
+  uploadVideo,
+} from "../api/client";
 import { nodeTypes } from "../canvas/nodes";
 import { SceneCanvasToolbar, SCENE_NODE_TYPES } from "../canvas/SceneCanvasToolbar";
 import { VariantEdge } from "../canvas/VariantEdge";
@@ -32,6 +39,15 @@ import { confirmPanelDelete } from "../canvas/confirmPanelDelete";
 import { useRevalidate } from "../hooks/useRevalidate";
 
 const edgeTypes = { default: VariantEdge };
+
+/** Drop-to-node: image / audio / video, or null for anything else. */
+function fileKind(file: File): "image" | "audio" | "video" | null {
+  const t = (file.type || "").toLowerCase();
+  if (t.startsWith("image/")) return "image";
+  if (t.startsWith("audio/")) return "audio";
+  if (t.startsWith("video/")) return "video";
+  return null;
+}
 
 // Group-frame sizing (auto-fit to child bbox; min sizes keep empty shots usable).
 const NODE_W = 260;
@@ -218,6 +234,71 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
         .addNodeToShot(hit.shotId, type, { x: fx - hit.position.x, y: fy - hit.position.y });
     },
     [getShotAtFlow],
+  );
+
+  // Drop image/audio/video FILES onto a sequence frame → upload each and spawn
+  // the matching node (image→visual_asset, audio→audio_ref, video→video_ref)
+  // inside that sequence. Must land inside a frame — that's the target shot.
+  const onSceneFilesDrop = useCallback(
+    async (files: File[], clientX: number, clientY: number) => {
+      const f = screenToFlowPosition({ x: clientX, y: clientY });
+      const hit = getShotAtFlow(f.x, f.y);
+      if (!hit) {
+        toast("Thả file vào bên trong khung 1 sequence để tạo node.", "error");
+        return;
+      }
+      const projectId = await useGenerationStore.getState().ensureProjectId();
+      if (!projectId) {
+        toast("Chưa sẵn sàng project để nhận file — thử lại sau giây lát.", "error");
+        return;
+      }
+      let i = 0;
+      for (const file of files) {
+        const kind = fileKind(file);
+        if (!kind) {
+          toast(`Bỏ qua “${file.name}” — chỉ nhận ảnh, audio hoặc video.`, "error");
+          continue;
+        }
+        const pos = { x: f.x - hit.position.x + i * 36, y: f.y - hit.position.y + i * 36 };
+        try {
+          const resp =
+            kind === "image"
+              ? await uploadImage(file, projectId)
+              : kind === "audio"
+                ? await uploadAudio(file, projectId)
+                : await uploadVideo(file, projectId);
+          await useShotWorkflowStore
+            .getState()
+            .addUploadedMediaNode(kind, resp.media_id, pos, file.name, hit.shotId);
+          i += 1;
+        } catch (err) {
+          toast(
+            `Tải “${file.name}” lỗi: ${err instanceof Error ? err.message : "unknown"}`,
+            "error",
+          );
+        }
+      }
+      if (i > 0) toast(`Đã thêm ${i} node từ file thả vào.`);
+    },
+    [screenToFlowPosition, getShotAtFlow],
+  );
+
+  const onSceneDragOver = useCallback((e: React.DragEvent) => {
+    if ((e.dataTransfer.types || []).includes("Files")) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    }
+  }, []);
+
+  const onSceneDrop = useCallback(
+    (e: React.DragEvent) => {
+      const files = Array.from(e.dataTransfer.files || []);
+      if (files.length === 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void onSceneFilesDrop(files, e.clientX, e.clientY);
+    },
+    [onSceneFilesDrop],
   );
 
   // Cmd/Ctrl+K → open the jump-to-shot palette.
@@ -666,7 +747,12 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
         </div>
       )}
 
-      <div className="scene-canvas__flow" onContextMenu={onWrapperContextMenu}>
+      <div
+        className="scene-canvas__flow"
+        onContextMenu={onWrapperContextMenu}
+        onDragOver={onSceneDragOver}
+        onDrop={onSceneDrop}
+      >
         {!loading && !migrating && shotGroups.length === 0 && (
           <div className="scene-canvas__empty">
             {canCreateSequence ? (
