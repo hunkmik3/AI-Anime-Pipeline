@@ -1679,6 +1679,12 @@ export interface VideoModelCapability {
   supports_kyc?: boolean;
   // DanceSee /api/v1/b2b/* unmoderated path (Seedance 2.0/2.5, B2B account).
   supports_b2b_unmoderated?: boolean;
+  // Output container choice — Seedance 2.5 only, ["mp4", "mov"]. EMPTY on every
+  // other model, and that is load-bearing: Avis answers a stray `outputFormat`
+  // with 400, so the control is drawn only when this has entries.
+  output_formats?: string[];
+  // Seedance 2.5's omni reference-to-video family (reference / edit / extend).
+  supports_omni_reference?: boolean;
 }
 
 export interface VideoModelDTO {

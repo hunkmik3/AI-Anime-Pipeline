@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import time
@@ -68,6 +69,11 @@ logger = logging.getLogger(__name__)
 
 
 BASE_URL = "https://api.avis.xyz/api/v1"
+
+#: The three subtasks behind Seedance 2.5's single omni reference-to-video
+#: endpoint, plus `auto`. Naming one lets Avis check that subtask's constraints
+#: while the request is still synchronous instead of failing the task later.
+OMNI_TASK_TYPES = ("auto", "reference", "edit", "extend")
 
 # B2B unmoderated (content-filter-disabled) lives on a separate host + path
 # prefix — not a flag on the regular KYC/video endpoints. Production traffic
@@ -170,9 +176,21 @@ AVIS_SEEDANCE_2_0_CAPABILITY = VideoProviderCapability(
 # Seedance 2.5 (upstream ``dreamina-seedance-2-5``). Same r2v + audio + KYC
 # surface as 2.0 — KYC-part acceptance was confirmed against the live Avis API
 # (a kyc* part on 2.5 fails only on asset lookup, exactly like 2.0, not on a
-# model check). Two real capability differences per GET /ai/models: duration
-# goes up to 30s (vs 15s on 2.0), and resolution tops out at 720p — 1080p/4k
-# are NOT offered on 2.5.
+# model check).
+#
+# Every value below is read from ``GET /ai/models`` for this model, re-checked
+# 21 Aug 2026 after the 20 Aug release, and it is worth saying why: Avis's PROSE
+# documentation and its live capability payload disagree about 2.5 in three
+# places. The prose says audio input, the kyc* parts and `generateAudio` are
+# "Seedance 2.0 series only"; the live payload reports `audio accepted=True`,
+# `kycAsset accepted=True` and a `generateAudio` bool for 2.5. The payload is
+# what the API enforces, so the flags below follow it — do not "correct" them
+# against the written docs.
+#
+# What the 20 Aug release actually changed for 2.5:
+#   · 1080p, where this used to top out at 720p
+#   · outputFormat mp4 | mov
+#   · omniReferenceTaskType, the reference / edit / extend subtask hint
 AVIS_SEEDANCE_2_5_CAPABILITY = VideoProviderCapability(
     supports_multi_ref=True,
     supports_last_frame=True,
@@ -181,11 +199,16 @@ AVIS_SEEDANCE_2_5_CAPABILITY = VideoProviderCapability(
     supports_video_ref=True,
     supports_kyc=True,
     supports_b2b_unmoderated=True,
+    supports_omni_reference=True,
+    output_formats=("mp4", "mov"),
     # 2.5 accepts up to 30 reference images (Avis /ai/models inputs.image.max=30);
     # 2.0 is curated at 9. Capping at 9 here silently truncated multi-ref gens.
     max_refs=30,
-    aspect_ratios=("1:1", "16:9", "9:16", "4:3"),
-    resolutions=("480p", "720p"),
+    # `adaptive` is not a shape — it means "follow the source", and it is
+    # REQUIRED by the edit and extend subtasks. 3:4 and 21:9 came with the same
+    # release. Still no 4k.
+    aspect_ratios=("1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "adaptive"),
+    resolutions=("480p", "720p", "1080p"),
     durations=tuple(range(4, 31)),
 )
 
@@ -890,8 +913,168 @@ class AvisVideoProvider:
         }
         if generate_audio is not None:
             body["generateAudio"] = bool(generate_audio)
+        self._apply_25_options(body, params, warnings, has_keyframe=(mode == "i2v"))
 
         return await self._post_generation(body, headers, warnings, unmoderated=unmoderated)
+
+    def _apply_25_options(
+        self,
+        body: dict,
+        params: VideoGenSubmitParams,
+        warnings: list[str],
+        *,
+        has_keyframe: bool,
+    ) -> None:
+        """Attach the Seedance 2.5-only fields, and refuse what Avis would.
+
+        Both fields 400 on any other model, so each is gated on the capability
+        rather than on the model id — a future model that gains them needs no
+        change here.
+
+        The two `edit` / `extend` rules are checked LOCALLY on purpose. Avis
+        validates them too, and that is the whole point of the parameter: it
+        moves the failure from "the task died four minutes in" to "the request
+        was refused". Doing it here as well moves it one step earlier again, to
+        before the money is reserved, and lets the message name the field.
+        """
+        # 2.5 SILENTLY drops `ratio` when a first/last frame is present — the
+        # output follows that image and the value is never stored. Say so, or the
+        # recorded settings claim a ratio the clip does not have. Keyed on the
+        # omni capability because that flag IS "this is the 2.5 family"; 2.0 has
+        # no such rule and still honours an explicit ratio beside a keyframe.
+        if has_keyframe and self.capabilities.supports_omni_reference and body.get("ratio"):
+            warnings.append(
+                "Aspect ratio ignored: with a first/last frame, Seedance 2.5 "
+                "takes the ratio from that image."
+            )
+
+        fmt = params.get("output_format")
+        if fmt:
+            if not self.capabilities.output_formats:
+                warnings.append(
+                    f"Ignored output_format: {self.entry.display_name} has no "
+                    f"container choice (mp4 only)."
+                )
+            elif fmt not in self.capabilities.output_formats:
+                allowed = ", ".join(self.capabilities.output_formats)
+                raise VideoError(
+                    "bad_input", f"output_format={fmt!r} not supported (allowed: {allowed})"
+                )
+            else:
+                body["outputFormat"] = fmt
+
+        task_type = params.get("omni_reference_task_type")
+        if not task_type:
+            return
+        if not self.capabilities.supports_omni_reference:
+            warnings.append(
+                f"Ignored omni_reference_task_type: {self.entry.display_name} "
+                f"has no omni reference-to-video mode."
+            )
+            return
+        if task_type not in OMNI_TASK_TYPES:
+            allowed = ", ".join(OMNI_TASK_TYPES)
+            raise VideoError(
+                "bad_input",
+                f"omni_reference_task_type={task_type!r} not supported (allowed: {allowed})",
+            )
+
+        if task_type in ("edit", "extend"):
+            has_video = any(
+                c.get("type") in ("videoUrl", "videoBase64", "videoAssetId")
+                for c in body.get("content", [])
+            )
+            if not has_video:
+                raise VideoError(
+                    "bad_input",
+                    f"omni_reference_task_type={task_type!r} needs a reference video "
+                    f"(4–30s) — attach one before generating.",
+                )
+            if body.get("ratio") != "adaptive":
+                raise VideoError(
+                    "bad_input",
+                    f"omni_reference_task_type={task_type!r} requires aspect_ratio "
+                    f"'adaptive': the output follows the source clip, so a fixed "
+                    f"ratio would be a contradiction rather than a crop.",
+                )
+
+        if task_type == "edit":
+            # An edit REWRITES the source clip, so its length is the source's
+            # length and `duration` carries no caller intent. BytePlus takes
+            # `-1` as the sentinel for exactly that, and Avis documents it:
+            # "When set to `edit`, `content` must contain at least one
+            # `reference_video`, the video must be 4-30 seconds long, `ratio`
+            # must be `adaptive`, and `duration` must be `-1`."
+            #
+            # Derive it rather than asking: any positive number the caller
+            # picks is refused, and leaving the field out is worse — the
+            # gateway substitutes its own default of 5 and the model rejects
+            # that, after the task has been created.
+            #
+            # (Avis only began accepting -1 on 22 Aug 2026; before that the
+            # gateway refused it as "must be a positive number" while the model
+            # demanded it, and no edit could be submitted at all. Verified
+            # working again after their fix — task cgt-20260822114311-972hs
+            # returned a 4.736s cut of a 5.000s source, at the source's ratio.)
+            previous = body.get("duration")
+            body["duration"] = -1
+            if isinstance(previous, int) and previous > 0:
+                warnings.append(
+                    f"Duration ({previous}s) ignored: an edit keeps the source "
+                    f"clip's length."
+                )
+
+        # Avis refuses the field outright on anything that is not a multimodal
+        # reference request: "This parameter is only supported in the multimodal
+        # reference scenario, and is not applicable to text-to-video generation
+        # or first-frame / first-last-frame generation." A lone reference image
+        # becomes a START FRAME here (r2v needs two images, a video, or audio),
+        # so the field has to come off or the whole generation 400s with a
+        # message that reads like the model lacks the feature.
+        #
+        # Only `auto` and `reference` reach this: edit and extend already
+        # demanded a video reference above, which forces r2v.
+        if has_keyframe:
+            warnings.append(
+                "Ignored omni_reference_task_type: it applies only to a "
+                "multimodal reference request. Attach at least two reference "
+                "images, or a reference video, instead of a start frame."
+            )
+            return
+
+        body["omniReferenceTaskType"] = task_type
+
+    async def estimate_body(self, body: dict, *, unmoderated: bool = False) -> Optional[float]:
+        """Ask Avis what a built body would cost, in USD.
+
+        ``POST /video/estimate`` takes the exact generation body, deducts no
+        credit and persists nothing, so it is also the only way to exercise a
+        request shape — a new field, a new subtask — without paying for a clip.
+
+        Returns ``None`` rather than raising when the endpoint is unavailable or
+        answers oddly: a price preview must never be the reason a generation
+        cannot be submitted. Avis's own note applies — the figure is indicative,
+        and the real charge is known only once the clip finishes.
+        """
+        _create, _get, video_base = _b2b_urls(unmoderated)
+        try:
+            async with _http_client_factory() as client:
+                resp = await client.post(
+                    f"{video_base}/video/estimate", json=body, headers=self._headers()
+                )
+        except httpx.HTTPError as exc:
+            logger.warning("avis estimate transport error: %s", exc)
+            return None
+        if resp.status_code >= 400:
+            # Worth a log line: a 400 here is the estimate refusing the exact
+            # body the submit is about to send, which is a real signal.
+            logger.warning("avis estimate HTTP %s: %s", resp.status_code, resp.text[:300])
+            return None
+        try:
+            cost = (resp.json().get("data") or {}).get("estimatedUserCost")
+            return float(cost) if cost is not None else None
+        except (ValueError, AttributeError):
+            return None
 
     async def _post_generation(
         self, body: dict, headers: dict, warnings: list[str], *, unmoderated: bool = False
@@ -927,6 +1110,19 @@ class AvisVideoProvider:
             _CONCURRENCY_SEM.release()
 
         if resp.status_code >= 400:
+            # Log WHAT WE SENT beside the refusal. Avis's messages name a
+            # parameter ("the parameter duration ... is not valid") without
+            # echoing the request, so without this there is no way to tell "we
+            # sent a bad field" apart from "the field is absent and the
+            # complaint is about something else" — you have to reconstruct the
+            # body by hand and hope the reconstruction matches. Base64 payloads
+            # collapse to their length: the shape is what matters and the bytes
+            # would bury the log.
+            logger.warning(
+                "avis submit %d — body we sent: %s",
+                resp.status_code,
+                json.dumps(_redact_body_for_log(body), ensure_ascii=False)[:2000],
+            )
             raise _classify_avis_http_error(resp)
         data = _unwrap(resp)
         task_id = data.get("taskId")
@@ -990,6 +1186,9 @@ class AvisVideoProvider:
         generate_audio = params.get("generate_audio")
         if generate_audio is not None and self.capabilities.supports_audio_toggle:
             body["generateAudio"] = bool(generate_audio)
+        # A person-driven gen carries no first/last frame, so the 2.5 ratio-drop
+        # rule cannot apply here.
+        self._apply_25_options(body, params, warnings, has_keyframe=False)
         return await self._post_generation(body, headers, warnings, unmoderated=unmoderated)
 
     # ── poll ──────────────────────────────────────────────────────────
@@ -1214,6 +1413,34 @@ def _safe_json(resp: httpx.Response) -> dict:
         return data if isinstance(data, dict) else {"raw": data}
     except (ValueError, AttributeError):
         return {"text": resp.text[:500]}
+
+
+def _redact_body_for_log(body: dict) -> dict:
+    """A generation body with the base64 blobs swapped for their size.
+
+    Keeps every key and every content part, so the log answers "what shape did
+    we actually send" — which field was present, which role each part carried —
+    without dumping megabytes of image data into it.
+    """
+    out: dict = {}
+    for k, v in body.items():
+        if k != "content" or not isinstance(v, list):
+            out[k] = v
+            continue
+        parts = []
+        for c in v:
+            if not isinstance(c, dict):
+                parts.append(c)
+                continue
+            part = {}
+            for ck, cv in c.items():
+                if isinstance(cv, str) and len(cv) > 120:
+                    part[ck] = f"<{len(cv)} chars>"
+                else:
+                    part[ck] = cv
+            parts.append(part)
+        out[k] = parts
+    return out
 
 
 def _classify_avis_http_error(resp: httpx.Response) -> VideoError:

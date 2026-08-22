@@ -84,6 +84,18 @@ class VideoProviderCapability:
     # Dedicated DanceSee /api/v1/b2b/* path (content-filter disabled). Only
     # Seedance 2.0/2.5; the account behind AVIS_API_KEY must be userType=B2B.
     supports_b2b_unmoderated: bool = False
+    # Output container. An EMPTY tuple means the model has no `outputFormat`
+    # param at all and sending one is a 400 — so the field is only ever emitted
+    # when this is non-empty. Seedance 2.5 (Avis, 20 Aug 2026): mp4 | mov, where
+    # mov keeps higher colour precision and is what edit/extend want.
+    output_formats: tuple[str, ...] = ()
+    # Seedance 2.5's omni reference-to-video family. One endpoint covers three
+    # subtasks with DIFFERENT constraints — plain reference-to-video, editing an
+    # existing clip, and extending one — and naming which you mean lets Avis
+    # check that subtask's rules while the request is still synchronous. Without
+    # it a bad edit/extend is accepted, queued, and fails minutes later with the
+    # reservation already taken.
+    supports_omni_reference: bool = False
 
 
 class VideoGenSubmitParams(TypedDict, total=False):
@@ -121,9 +133,21 @@ class VideoGenSubmitParams(TypedDict, total=False):
     reference_videos: list[str]
     motion_prompt: str
     duration_seconds: int
-    aspect_ratio: str          # "1:1" | "16:9" | "9:16"
+    aspect_ratio: str          # "1:1" | "16:9" | "9:16" | … | "adaptive"
     resolution: str            # "720p" | "1080p"
     generate_audio: bool
+    # Output container — "mp4" | "mov". Only honored on models declaring
+    # ``capabilities.output_formats``; dropped-with-warning otherwise.
+    output_format: Optional[str]
+    # Which omni reference-to-video subtask this is: "auto" | "reference" |
+    # "edit" | "extend". Only honored when ``capabilities.supports_omni_reference``.
+    #
+    # `edit` and `extend` both operate ON an existing clip, so both require a
+    # video reference and an adaptive ratio — the output follows the source, and
+    # asking for 16:9 on a 9:16 source is a contradiction rather than a crop.
+    # Those two rules are checked here so the caller is told at submit time
+    # instead of by a task that fails minutes later.
+    omni_reference_task_type: Optional[str]
     # Person-driven (KYC) — Avis Seedance 2.0 only. Already-resolved Avis KYC
     # assetIds (the worker creates/caches them from media_ids before dispatch).
     # When any is set the provider emits kyc*AssetId content parts and skips the

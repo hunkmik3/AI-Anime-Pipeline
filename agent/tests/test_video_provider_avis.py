@@ -683,8 +683,13 @@ async def test_submit_kyc_multiple_image_identities():
 
 
 @pytest.mark.asyncio
-async def test_seedance_2_5_accepts_30s_and_rejects_1080p():
-    """2.5: duration 4–30s, resolution 480p/720p only."""
+async def test_seedance_2_5_accepts_30s_and_1080p():
+    """2.5: duration 4–30s, and 1080p since the 20 Aug 2026 Avis release.
+
+    This test asserted the opposite until then — 1080p was genuinely refused.
+    `GET /ai/models` now reports resolution enum 480p/720p/1080p for
+    dreamina-seedance-2-5, so refusing it here would be the app inventing a
+    limit the provider does not have."""
     seen: list[dict] = []
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -704,16 +709,26 @@ async def test_seedance_2_5_accepts_30s_and_rejects_1080p():
     assert seen[0]["model"] == "dreamina-seedance-2-5"
     assert seen[0]["duration"] == 30
 
+    await provider.submit({
+        "first_frame_url": "https://e/frame.png",
+        "motion_prompt": "sharp",
+        "duration_seconds": 8,
+        "aspect_ratio": "16:9",
+        "resolution": "1080p",
+    })
+    assert seen[1]["resolution"] == "1080p"
+
+    # 4k is still not offered on 2.5, so it must still be refused here.
     with pytest.raises(VideoError) as exc:
         await provider.submit({
             "first_frame_url": "https://e/frame.png",
             "motion_prompt": "too sharp",
             "duration_seconds": 8,
             "aspect_ratio": "16:9",
-            "resolution": "1080p",
+            "resolution": "4k",
         })
     assert exc.value.code == "bad_input"
-    assert "1080p" in str(exc.value)
+    assert "4k" in str(exc.value)
 
 
 # ── B2B unmoderated (DanceSee /api/v1/b2b/*) ─────────────────────────────
@@ -976,3 +991,254 @@ async def test_worker_rejects_b2b_on_unsupported_model():
     assert err is not None
     assert err.startswith("bad_input:")
     assert result["code"] == "bad_input"
+
+
+# ── Seedance 2.5, 20 Aug 2026 release ────────────────────────────────────
+#
+# Three additions: 1080p (covered above), an mp4/mov container choice, and
+# `omniReferenceTaskType` — the hint that tells Avis WHICH of the three omni
+# reference-to-video subtasks a request is, so it can check that subtask's
+# constraints synchronously instead of failing the task minutes later.
+#
+# The edit/extend rules are checked locally as well as by Avis, so these tests
+# assert the refusal happens before anything is posted.
+
+
+def _seen_handler(seen: list, task_id: str = "cgt-25"):
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(req.content))
+        return httpx.Response(200, json={"data": {"taskId": task_id}, "success": True})
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_output_format_mov_is_sent_on_25():
+    seen: list[dict] = []
+    avis.set_http_client_factory(_factory(_seen_handler(seen)))
+    await get_video_provider("dreamina-seedance-2-5").submit({
+        "first_frame_url": "https://e/f.png", "motion_prompt": "x",
+        "duration_seconds": 5, "aspect_ratio": "16:9", "resolution": "1080p",
+        "output_format": "mov",
+    })
+    assert seen[0]["outputFormat"] == "mov"
+
+
+@pytest.mark.asyncio
+async def test_output_format_is_dropped_with_a_warning_on_20():
+    """2.0 has no container param and 400s on one. Drop it and SAY so — a
+    silently ignored setting is how somebody ships a whole series in the wrong
+    format and finds out in the edit."""
+    seen: list[dict] = []
+    avis.set_http_client_factory(_factory(_seen_handler(seen)))
+    res = await get_video_provider("seedance-2-0").submit({
+        "first_frame_url": "https://e/f.png", "motion_prompt": "x",
+        "duration_seconds": 5, "aspect_ratio": "16:9", "resolution": "720p",
+        "output_format": "mov",
+    })
+    assert "outputFormat" not in seen[0]
+    assert any("output_format" in w for w in res["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_unknown_output_format_is_refused():
+    avis.set_http_client_factory(_factory(_seen_handler([])))
+    with pytest.raises(VideoError) as exc:
+        await get_video_provider("dreamina-seedance-2-5").submit({
+            "first_frame_url": "https://e/f.png", "motion_prompt": "x",
+            "duration_seconds": 5, "aspect_ratio": "16:9", "resolution": "720p",
+            "output_format": "webm",
+        })
+    assert exc.value.code == "bad_input" and "webm" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_omni_reference_task_type_is_sent_camelcase():
+    """The changelog writes `omni_reference_task_type`; the API takes
+    `omniReferenceTaskType`. Sending snake_case is ignored in silence, so the
+    casing is worth pinning."""
+    seen: list[dict] = []
+    avis.set_http_client_factory(_factory(_seen_handler(seen)))
+    await get_video_provider("dreamina-seedance-2-5").submit({
+        # TWO refs — one lone image is a start frame, which Avis refuses the
+        # field on. See test_omni_task_type_dropped_on_a_start_frame.
+        "reference_images": ["https://e/a.png", "https://e/b.png"],
+        "motion_prompt": "waves at camera",
+        "duration_seconds": 5, "aspect_ratio": "16:9", "resolution": "1080p",
+        "omni_reference_task_type": "reference",
+    })
+    assert seen[0]["omniReferenceTaskType"] == "reference"
+    assert "omni_reference_task_type" not in seen[0]
+
+
+@pytest.mark.asyncio
+async def test_omni_task_type_dropped_with_warning_on_20():
+    seen: list[dict] = []
+    avis.set_http_client_factory(_factory(_seen_handler(seen)))
+    res = await get_video_provider("seedance-2-0").submit({
+        "reference_images": ["https://e/a.png", "https://e/b.png"], "motion_prompt": "x",
+        "duration_seconds": 5, "aspect_ratio": "16:9", "resolution": "720p",
+        "omni_reference_task_type": "reference",
+    })
+    assert "omniReferenceTaskType" not in seen[0]
+    assert any("omni_reference_task_type" in w for w in res["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_edit_without_a_video_reference_is_refused_before_posting():
+    seen: list[dict] = []
+    avis.set_http_client_factory(_factory(_seen_handler(seen)))
+    with pytest.raises(VideoError) as exc:
+        await get_video_provider("dreamina-seedance-2-5").submit({
+            "reference_images": ["https://e/a.png"], "motion_prompt": "recolour it",
+            "duration_seconds": 5, "aspect_ratio": "adaptive", "resolution": "720p",
+            "omni_reference_task_type": "edit",
+        })
+    assert exc.value.code == "bad_input"
+    assert "reference video" in str(exc.value)
+    assert seen == []          # nothing was posted, so nothing was reserved
+
+
+@pytest.mark.asyncio
+async def test_extend_requires_adaptive_ratio():
+    seen: list[dict] = []
+    avis.set_http_client_factory(_factory(_seen_handler(seen)))
+    with pytest.raises(VideoError) as exc:
+        await get_video_provider("dreamina-seedance-2-5").submit({
+            "reference_videos": ["https://e/clip.mp4"], "motion_prompt": "keep going",
+            "duration_seconds": 5, "aspect_ratio": "16:9", "resolution": "720p",
+            "omni_reference_task_type": "extend",
+        })
+    assert exc.value.code == "bad_input" and "adaptive" in str(exc.value)
+    assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_extend_with_a_video_and_adaptive_ratio_goes_through():
+    seen: list[dict] = []
+    avis.set_http_client_factory(_factory(_seen_handler(seen)))
+    await get_video_provider("dreamina-seedance-2-5").submit({
+        "reference_videos": ["https://e/clip.mp4"], "motion_prompt": "keep going",
+        "duration_seconds": 5, "aspect_ratio": "adaptive", "resolution": "1080p",
+        "omni_reference_task_type": "extend", "output_format": "mov",
+    })
+    assert seen[0]["omniReferenceTaskType"] == "extend"
+    assert seen[0]["ratio"] == "adaptive"
+    assert seen[0]["outputFormat"] == "mov"
+
+
+@pytest.mark.asyncio
+async def test_keyframe_on_25_warns_that_the_ratio_is_ignored():
+    """2.5 silently drops `ratio` when a first/last frame is present — the output
+    follows that image. Without this warning the recorded settings claim a ratio
+    the clip does not have."""
+    seen: list[dict] = []
+    avis.set_http_client_factory(_factory(_seen_handler(seen)))
+    res = await get_video_provider("dreamina-seedance-2-5").submit({
+        "first_frame_url": "https://e/f.png", "motion_prompt": "x",
+        "duration_seconds": 5, "aspect_ratio": "16:9", "resolution": "1080p",
+        "omni_reference_task_type": "auto",
+    })
+    assert any("ratio" in w.lower() for w in res["warnings"])
+    # 2.0 has no such rule and must stay quiet.
+    res20 = await get_video_provider("seedance-2-0").submit({
+        "first_frame_url": "https://e/f.png", "motion_prompt": "x",
+        "duration_seconds": 5, "aspect_ratio": "16:9", "resolution": "720p",
+    })
+    assert not any("ratio" in w.lower() for w in res20["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_omni_task_type_dropped_on_a_start_frame():
+    """Learned from the live API, not the docs: Avis refuses
+    `omni_reference_task_type` on anything that is not a multimodal reference
+    request — "not applicable to text-to-video generation or first-frame /
+    first-last-frame generation".
+
+    A single reference image becomes a START FRAME here (r2v needs two images or
+    a video), so the field has to come off or the whole generation 400s with a
+    message that reads like the model lacks the feature."""
+    seen: list[dict] = []
+    avis.set_http_client_factory(_factory(_seen_handler(seen)))
+    res = await get_video_provider("dreamina-seedance-2-5").submit({
+        "reference_images": ["https://e/only-one.png"],
+        "motion_prompt": "she smiles",
+        "duration_seconds": 4, "aspect_ratio": "16:9", "resolution": "480p",
+        "omni_reference_task_type": "reference",
+    })
+    assert [c.get("role") for c in seen[0]["content"] if "role" in c] == ["firstFrame"]
+    assert "omniReferenceTaskType" not in seen[0]
+    assert any("multimodal reference" in w for w in res["warnings"])
+
+
+def test_worker_forwards_only_what_was_chosen():
+    """The worker passes the two 2.5 knobs through untouched, and adds NOTHING
+    when the caller did not choose. That second half matters: a default here
+    would append `outputFormat` to every Seedance 2.0 payload, and Avis answers
+    that with 400 rather than ignoring it."""
+    from flowboard.worker.processor import _forward_seedance_25
+
+    pp: dict = {}
+    _forward_seedance_25({"output_format": "mov", "omni_reference_task_type": "edit"}, pp)
+    assert pp == {"output_format": "mov", "omni_reference_task_type": "edit"}
+
+    untouched: dict = {}
+    _forward_seedance_25({"resolution": "1080p"}, untouched)
+    assert untouched == {}
+
+    # Empty strings are a "no choice" from a cleared <select>, not a value.
+    blank: dict = {}
+    _forward_seedance_25({"output_format": "", "omni_reference_task_type": None}, blank)
+    assert blank == {}
+
+
+# ── edit: duration is the -1 sentinel ─────────────────────────────────────
+#
+# Per Avis's docs: "When set to `edit`, `content` must contain at least one
+# `reference_video`, the video must be 4-30 seconds long, `ratio` must be
+# `adaptive`, and `duration` must be `-1`." Verified live 22 Aug 2026.
+
+
+@pytest.mark.asyncio
+async def test_edit_sends_the_minus_one_duration_sentinel():
+    seen: list[dict] = []
+    avis.set_http_client_factory(_factory(_seen_handler(seen)))
+    res = await get_video_provider("dreamina-seedance-2-5").submit({
+        "reference_videos": ["https://e/clip.mp4"],
+        "reference_images": ["https://e/a.png", "https://e/b.png"],
+        "motion_prompt": "replace the cast", "duration_seconds": 28,
+        "aspect_ratio": "adaptive", "resolution": "1080p",
+        "omni_reference_task_type": "edit",
+    })
+    assert seen[0]["duration"] == -1, seen[0]
+    assert seen[0]["omniReferenceTaskType"] == "edit"
+    assert seen[0]["ratio"] == "adaptive"
+    # The caller's 28s is overridden, so say so rather than silently ignoring it.
+    assert any("28" in w for w in res["warnings"]), res["warnings"]
+
+
+@pytest.mark.asyncio
+async def test_edit_still_requires_a_reference_video():
+    avis.set_http_client_factory(_factory(_seen_handler([])))
+    with pytest.raises(VideoError) as exc:
+        await get_video_provider("dreamina-seedance-2-5").submit({
+            "reference_images": ["https://e/a.png", "https://e/b.png"],
+            "motion_prompt": "x", "duration_seconds": 5,
+            "aspect_ratio": "adaptive", "resolution": "720p",
+            "omni_reference_task_type": "edit",
+        })
+    assert exc.value.code == "bad_input"
+
+
+@pytest.mark.asyncio
+async def test_extend_keeps_its_real_duration():
+    # Extend is the opposite case: there the duration IS the intent, and the
+    # docs place no -1 constraint on it.
+    seen: list[dict] = []
+    avis.set_http_client_factory(_factory(_seen_handler(seen)))
+    await get_video_provider("dreamina-seedance-2-5").submit({
+        "reference_videos": ["https://e/clip.mp4"], "motion_prompt": "keep going",
+        "duration_seconds": 10, "aspect_ratio": "adaptive", "resolution": "1080p",
+        "omni_reference_task_type": "extend",
+    })
+    assert seen[0]["omniReferenceTaskType"] == "extend"
+    assert seen[0]["duration"] == 10

@@ -82,7 +82,13 @@ def test_seedance_2_5_capabilities():
     assert entry.upstream_model_id == "dreamina-seedance-2-5"
     assert entry.capabilities.supports_multi_ref is True
     assert entry.capabilities.max_refs == 30
-    assert entry.capabilities.resolutions == ("480p", "720p")
+    # 1080p arrived with the 20 Aug 2026 Avis release; 4k is still not offered.
+    assert entry.capabilities.resolutions == ("480p", "720p", "1080p")
+    assert "4k" not in entry.capabilities.resolutions
+    # Same release: the container choice and the omni subtask hint.
+    assert entry.capabilities.output_formats == ("mp4", "mov")
+    assert entry.capabilities.supports_omni_reference is True
+    assert "adaptive" in entry.capabilities.aspect_ratios
     assert entry.capabilities.durations == tuple(range(4, 31))
     assert entry.capabilities.supports_kyc is True
     assert entry.capabilities.supports_audio_ref is True

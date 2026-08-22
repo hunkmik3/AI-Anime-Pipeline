@@ -225,6 +225,13 @@ export function GenerationDialog() {
 
   const targetType = node?.data.type ?? "image";
   const isVideo = targetType === "video";
+  // Seedance 2.5's edit/extend subtasks take the output shape from the source
+  // clip, and the store forces `adaptive` on dispatch. Leaving the chip row
+  // live would show "16:9 landscape" highlighted while something else is sent
+  // — a control that lies about what it does is worse than no control.
+  const omniTask = (node?.data as Record<string, unknown> | undefined)
+    ?.omni_reference_task_type as string | undefined;
+  const aspectFromSource = isVideo && (omniTask === "edit" || omniTask === "extend");
   const isCharacter = targetType === "character";
   const isStoryboard = targetType === "storyboard";
   // Prompt nodes are text-only — clicking Generate runs auto_prompt
@@ -1264,18 +1271,26 @@ export function GenerationDialog() {
         {!isPrompt && (
           <div className="gen-dialog__field">
             <span className="gen-dialog__label">Aspect ratio</span>
-            <div className="aspect-chip-row">
-              {(isVideo ? VIDEO_ASPECT_RATIOS : IMAGE_ASPECT_RATIOS).map((ar) => (
-                <button
-                  key={ar.key}
-                  className={`aspect-chip${aspectRatio === ar.key ? " aspect-chip--active" : ""}`}
-                  onClick={() => setAspectRatio(ar.key)}
-                  type="button"
-                >
-                  {ar.label}
-                </button>
-              ))}
-            </div>
+            {aspectFromSource ? (
+              <div className="aspect-chip-row">
+                <span className="aspect-chip aspect-chip--derived">
+                  adaptive — follows the reference video
+                </span>
+              </div>
+            ) : (
+              <div className="aspect-chip-row">
+                {(isVideo ? VIDEO_ASPECT_RATIOS : IMAGE_ASPECT_RATIOS).map((ar) => (
+                  <button
+                    key={ar.key}
+                    className={`aspect-chip${aspectRatio === ar.key ? " aspect-chip--active" : ""}`}
+                    onClick={() => setAspectRatio(ar.key)}
+                    type="button"
+                  >
+                    {ar.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

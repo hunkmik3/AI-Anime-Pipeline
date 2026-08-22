@@ -29,7 +29,15 @@ def test_capability_block_is_present(client):
     by_id = {m["model_id"]: m["capabilities"] for m in body["models"]}
     assert by_id["dreamina-seedance-2-5"]["supports_b2b_unmoderated"] is True
     assert by_id["dreamina-seedance-2-5"]["durations"] == list(range(4, 31))
-    assert by_id["dreamina-seedance-2-5"]["resolutions"] == ["480p", "720p"]
+    assert by_id["dreamina-seedance-2-5"]["resolutions"] == ["480p", "720p", "1080p"]
+    # The 20 Aug 2026 fields reach the canvas through asdict() with no route
+    # change — this asserts that contract, not just the values.
+    assert by_id["dreamina-seedance-2-5"]["output_formats"] == ["mp4", "mov"]
+    assert by_id["dreamina-seedance-2-5"]["supports_omni_reference"] is True
+    assert "adaptive" in by_id["dreamina-seedance-2-5"]["aspect_ratios"]
+    # 2.0 must NOT advertise either, or the UI offers a field that 400s.
+    assert by_id["seedance-2-0"]["output_formats"] == []
+    assert by_id["seedance-2-0"]["supports_omni_reference"] is False
     assert by_id["dreamina-seedance-2-5"]["max_refs"] == 30
     assert by_id["seedance-1-5-pro"]["supports_b2b_unmoderated"] is False
 

@@ -152,6 +152,20 @@ VIDEO_POLL_INTERVAL_S = 10.0
 VIDEO_POLL_MAX_CYCLES = 42
 
 
+def _forward_seedance_25(params: dict, provider_params: dict) -> None:
+    """Pass through the Seedance 2.5-only knobs, when the caller set them.
+
+    Deliberately NOT defaulted here. Both fields are refused with a 400 by any
+    other model, and the provider already drops-or-refuses them per capability —
+    so forwarding only what was explicitly chosen keeps every existing payload
+    byte-identical to what it was before these existed.
+    """
+    for key in ("output_format", "omni_reference_task_type"):
+        val = params.get(key)
+        if isinstance(val, str) and val:
+            provider_params[key] = val
+
+
 async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
     """Thin dispatcher: resolve model → run provider → translate result.
 
@@ -174,6 +188,11 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
     is preserved verbatim on the Flow path so the existing test suite
     and frontend continue to work.
     """
+    # Warnings raised by the WORKER itself, as opposed to by the provider. They
+    # share the provider's destination (Request.result["warnings"]) because from
+    # the canvas there is no difference: something you attached did not make it
+    # into the generation, and you are owed the reason either way.
+    worker_warnings: list[str] = []
     from flowboard.services.video import (
         VideoError,
         get_default_model_id,
@@ -285,6 +304,7 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
         })
         if "generate_audio" in params:
             provider_params["generate_audio"] = bool(params["generate_audio"])
+        _forward_seedance_25(params, provider_params)
     elif entry.provider_name == "flow":
         # Flow keeps the broader legacy param surface. start_media_ids
         # (batch) is forwarded through a private knob so the provider
@@ -396,7 +416,16 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
             try:
                 resolved_videos.append(_resolve_video(v))
             except VideoError as exc:
+                # A dropped video reference used to leave NO trace the user could
+                # see: a log line here, and the clip generated without it. From
+                # the canvas that is indistinguishable from the feature not
+                # working — you wired a video in, it cost money, and the result
+                # ignored it. Carry the reason out to the request instead.
                 logger.warning("video: skipped unreachable video ref: %s", exc)
+                worker_warnings.append(
+                    f"Reference video dropped — it could not be made reachable "
+                    f"for the provider ({exc})."
+                )
 
         # first_frame is optional in reference-media (r2v / r2v+audio) modes;
         # the provider derives mode from refs/audio/video and validates per-mode.
@@ -427,6 +456,7 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
         })
         if "generate_audio" in params:
             provider_params["generate_audio"] = bool(params["generate_audio"])
+        _forward_seedance_25(params, provider_params)
 
     try:
         submit_result, poll_result = await provider.run_to_completion(provider_params)
@@ -443,7 +473,7 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
     raw.setdefault("external_job_id", submit_result.get("external_job_id"))
     raw.setdefault("model_id", model_id)
     raw.setdefault("provider", entry.provider_name)
-    warnings = list(submit_result.get("warnings") or [])
+    warnings = worker_warnings + list(submit_result.get("warnings") or [])
     if warnings:
         raw["warnings"] = warnings
     if poll_result.get("cost_usd") is not None:
