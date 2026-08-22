@@ -102,6 +102,12 @@ export function VideoNodeSettings({ rfId }: Props) {
     (caps.resolutions.includes("720p") ? "720p" : caps.resolutions[0]);
   const generateAudio =
     typeof data.generate_audio === "boolean" ? (data.generate_audio as boolean) : true;
+  // Seedance 2.5 (Avis, 20 Aug 2026). Defaults match the provider's: mp4 is the
+  // container everything plays, and `auto` lets Avis pick the subtask so an
+  // ordinary reference generation needs no decision from the artist.
+  const outputFormat =
+    (data.output_format as string | undefined) ?? caps.output_formats?.[0] ?? "mp4";
+  const omniTask = (data.omni_reference_task_type as string | undefined) ?? "auto";
   // Person-driven (KYC): when on, the wired image/audio/video refs are sent as
   // identity-verified KYC assets (portrait→video / lip-sync / video-reference).
   const kycMode = typeof data.kycMode === "boolean" ? (data.kycMode as boolean) : false;
@@ -141,9 +147,15 @@ export function VideoNodeSettings({ rfId }: Props) {
         ) : null}
       </label>
 
-      <div className="video-settings-row">
+      {/* Same reasoning as the aspect-ratio chips in GenerationDialog: an edit
+          sends duration=-1 and takes the length from the source clip, so a
+          live slider here would set a number that is never used. Show the
+          value as derived instead of pretending it is a choice. */}
+      <div className={`video-settings-row${omniTask === "edit" ? " video-settings-row--disabled" : ""}`}>
         <label className="video-settings-label" htmlFor={`vs-dur-${rfId}`}>
-          Duration{durIsRange ? `: ${duration}s` : ""}
+          {omniTask === "edit"
+            ? "Duration: from source"
+            : `Duration${durIsRange ? `: ${duration}s` : ""}`}
         </label>
         {durIsRange ? (
           <input
@@ -154,6 +166,7 @@ export function VideoNodeSettings({ rfId }: Props) {
             step={1}
             value={duration}
             onChange={(e) => persist({ duration_seconds: parseInt(e.target.value, 10) })}
+            disabled={omniTask === "edit"}
             className="video-settings-slider"
             aria-label={`Duration ${duration} seconds`}
           />
@@ -162,6 +175,7 @@ export function VideoNodeSettings({ rfId }: Props) {
             id={`vs-dur-${rfId}`}
             value={duration}
             onChange={(e) => persist({ duration_seconds: parseInt(e.target.value, 10) })}
+            disabled={omniTask === "edit"}
             className="video-settings-select"
           >
             {caps.durations.map((d) => (
@@ -190,14 +204,118 @@ export function VideoNodeSettings({ rfId }: Props) {
         </select>
       </div>
 
+      {/* ── Seedance 2.5 only (Avis, 20 Aug 2026) ─────────────────────────
+          Both are rendered ONLY when the model advertises them, because Avis
+          returns 400 — 'Model "…" does not support: outputFormat' — rather than
+          ignoring an unknown field. A control that is always visible would be a
+          control that breaks every generation on 2.0. */}
+      {caps.output_formats && caps.output_formats.length > 1 ? (
+        <div className="video-settings-row">
+          <label className="video-settings-label" htmlFor={`vs-fmt-${rfId}`}>
+            Format
+          </label>
+          <select
+            id={`vs-fmt-${rfId}`}
+            value={outputFormat}
+            onChange={(e) => persist({ output_format: e.target.value })}
+            className="video-settings-select"
+          >
+            {caps.output_formats.map((f) => (
+              <option key={f} value={f}>
+                {f}
+              </option>
+            ))}
+          </select>
+          <span className="video-settings-hint">
+            {outputFormat === "mov" ? "higher colour precision" : "plays anywhere"}
+          </span>
+        </div>
+      ) : null}
+
+      {caps.supports_omni_reference ? (
+        <div className="video-settings-row">
+          <label className="video-settings-label" htmlFor={`vs-omni-${rfId}`}>
+            Task
+          </label>
+          <select
+            id={`vs-omni-${rfId}`}
+            value={omniTask}
+            onChange={(e) => persist({ omni_reference_task_type: e.target.value })}
+            className="video-settings-select"
+          >
+            <option value="auto">Auto — let Avis decide</option>
+            <option value="reference">Reference → video</option>
+            <option value="edit">Edit an existing clip</option>
+            <option value="extend">Extend an existing clip</option>
+          </select>
+        </div>
+      ) : null}
+
+      {/* Say the constraint where the choice is made. Both rules come from the
+          provider: edit/extend operate ON a clip, so they need one attached and
+          the output follows its shape — and the whole point of naming the
+          subtask is to fail early, which only helps if the person is told what
+          "early" means. */}
+      {caps.supports_omni_reference && omniTask === "edit" ? (
+        <div className="video-settings-row video-settings-note">
+          <span className="video-settings-hint">
+            Editing rewrites a <strong>reference video</strong> (4–30s) wired
+            into this node. The output keeps that clip's{" "}
+            <strong>length and shape</strong> — Duration below is ignored, and
+            the aspect ratio follows the source.
+          </span>
+        </div>
+      ) : null}
+
+      {caps.supports_omni_reference && omniTask === "extend" ? (
+        <div className="video-settings-row video-settings-note">
+          <span className="video-settings-hint">
+            Extending needs a <strong>reference video</strong> (4–30s) wired
+            into this node, and the aspect ratio is forced to{" "}
+            <strong>adaptive</strong> so the output keeps that clip's shape.
+            <strong> Duration</strong> is the length of the result.
+          </span>
+        </div>
+      ) : null}
+
+      {/* The other half of the same lesson, learned from a refused generation:
+          a lone reference image is sent as a START FRAME, and Avis refuses the
+          subtask hint on those outright. */}
+      {caps.supports_omni_reference && omniTask === "reference" ? (
+        <div className="video-settings-row video-settings-note">
+          <span className="video-settings-hint">
+            Needs <strong>two or more</strong> reference images, or a reference
+            video — a single image is treated as a start frame.
+          </span>
+        </div>
+      ) : null}
+
       {/* Estimated cost before generating (calibrated to real Avis usdCost;
           the exact charge is settled after the clip finishes). */}
+      {/* An edit bills by the SOURCE clip's length, which this dialog has no
+          way to know — the slider's value is not it. Quoting a total from the
+          slider understated a 28s source at 720p as $0.90 against roughly $5,
+          so quote the rate instead and say what multiplies it. A wrong number
+          is worse than an honest formula. */}
       <div className="video-settings-row" style={{ alignItems: "baseline" }}>
         <span className="video-settings-label">Est. cost</span>
-        <span style={{ fontWeight: 600 }}>
-          ≈ ${estimateVideoUsd(duration, resolution).toFixed(2)}
-        </span>
-        <span className="video-settings-hint">final billed after gen</span>
+        {omniTask === "edit" ? (
+          <>
+            <span style={{ fontWeight: 600 }}>
+              ≈ ${(USD_PER_SEC[resolution] ?? 0.42).toFixed(2)}/s
+            </span>
+            <span className="video-settings-hint">
+              × the reference video's length
+            </span>
+          </>
+        ) : (
+          <>
+            <span style={{ fontWeight: 600 }}>
+              ≈ ${estimateVideoUsd(duration, resolution).toFixed(2)}
+            </span>
+            <span className="video-settings-hint">final billed after gen</span>
+          </>
+        )}
       </div>
 
       {/* Phase 8.1.5d: the legacy manual multi-ref editor (media_id / URL

@@ -7324,6 +7324,20 @@ button:disabled {
   gap: 8px;
   flex-wrap: wrap;
 }
+/* A control the provider derives for us — shown so the value is legible,
+   dimmed so it does not read as a choice. */
+.video-settings-row--disabled {
+  opacity: 0.5;
+}
+/* A hint that is a blocker, not a tip — it has to out-read the ordinary
+   grey hints beside it. */
+/* A derived value shown in the chip row's place — reads as information,
+   not as an unselected option. */
+.aspect-chip--derived {
+  opacity: 0.75;
+  font-style: italic;
+  cursor: default;
+}
 .video-settings-row--toggle {
   cursor: pointer;
   font-size: 13px;

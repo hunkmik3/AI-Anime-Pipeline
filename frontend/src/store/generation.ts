@@ -502,6 +502,30 @@ export const useGenerationStore = create<GenerationState>((set, get) => ({
         if (videoSettings.contentFilterDisabled === true) {
           videoParams.content_filter_disabled = true;
         }
+        // Seedance 2.5 (Avis, 20 Aug 2026). Sent only when the node actually
+        // carries a choice — the provider drops or refuses either field on a
+        // model that has no such parameter, but not sending a default at all
+        // keeps 2.0 payloads byte-identical to what they were.
+        if (typeof videoSettings.output_format === "string") {
+          videoParams.output_format = videoSettings.output_format;
+        }
+        // `auto` is the provider's own default, so there is nothing to say.
+        if (
+          typeof videoSettings.omni_reference_task_type === "string" &&
+          videoSettings.omni_reference_task_type !== "auto"
+        ) {
+          const task = videoSettings.omni_reference_task_type;
+          videoParams.omni_reference_task_type = task;
+          // `edit` and `extend` work ON the source clip, so the provider
+          // REQUIRES ratio `adaptive` and refuses anything else outright.
+          // Nothing in the UI sets that — the default here is "16:9" — so
+          // choosing Edit could never have produced a clip, only a
+          // bad_input. It is a consequence of the subtask, not a separate
+          // preference, so derive it rather than asking for it.
+          if (task === "edit" || task === "extend") {
+            videoParams.aspect_ratio = "adaptive";
+          }
+        }
         // References for r2v. Phase 8.1.5d: the legacy manual multi-ref list
         // (VideoNodeSettings text input) was removed — canvas-wired ref nodes
         // (Character/VisualAsset/MasterShot) are the single source, each
