@@ -105,77 +105,25 @@ def test_an_unlinked_comic_delivers_nothing(client):
         assert s.exec(select(Scene).where(Scene.series_id == w["studio_series_id"])).all() == []
 
 
-def test_approving_a_linked_comic_creates_the_sequence(client):
+def test_approving_a_linked_comic_creates_the_episode(client):
+    """The bridge stops at chapter→episode. Approving the first panel of a
+    chapter makes that chapter's episode and NOTHING below it — the animator
+    builds the sequences by hand from the exported panels."""
     w = _world(client)
     _link(client, w)
-    got = _approve(client, w, w["panels"][w["chapters"][0]][0])
+    got = _approve(client, w, w["panels"][w["chapters"][0]][0])["delivered"]
 
-    assert got["delivered"]["created"] is True
-    pid = w["panels"][w["chapters"][0]][0]
+    assert got["created"] is True
     with get_session() as s:
-        shot = s.get(Shot, got["delivered"]["sequence_id"])
-        assert shot is not None
-        assert shot.code == "C0P0"
-        # The sequence says what it is a picture OF, not just that it exists.
-        assert shot.production["source_panel"]["media_id"] == f"gen-{pid}"
+        assert s.get(Scene, got["episode_id"]) is not None
+    # The half that was removed. Without this line the test passes just as
+    # happily if panel→sequence delivery comes back by accident.
+    assert _shots(got["episode_id"]) == [], "the bridge created a sequence"
 
 
-def test_the_panel_arrives_on_the_canvas_not_just_in_a_column(client):
-    """The failure the first cut shipped: the media id was recorded on the shot
-    and NOTHING read it, so the animator opened an empty box and had to go find
-    the panel they had just been handed. A record nobody reads is not a handover.
-    """
-    from flowboard.db.models import Node
-
-    w = _world(client)
-    _link(client, w)
-    pid = w["panels"][w["chapters"][0]][0]
-    got = _approve(client, w, pid)["delivered"]
-
-    with get_session() as s:
-        nodes = s.exec(
-            select(Node).where(Node.shot_id == got["sequence_id"])
-        ).all()
-    assert len(nodes) == 1, "the sequence opened empty"
-    node = nodes[0]
-    # The SAME node the library's click-to-spawn makes — anything else would be
-    # a second kind of image node for every consumer to learn.
-    assert node.type == "visual_asset"
-    assert node.data["mediaId"] == f"gen-{pid}"
-    assert node.data["status"] == "done"
-    assert node.data["title"] == "C0P0"
-    assert node.data["sourcePanelId"] == pid
-    assert node.short_id, "a node with no short id cannot be wired to anything"
-
-
-def test_delivering_twice_does_not_leave_two_copies_on_the_canvas(client):
-    """The idempotency check has to cover the node too — a second approval that
-    re-ran only this part would stack panels on top of each other."""
-    from flowboard.db.models import Node
-
-    w = _world(client)
-    _link(client, w)
-    pid = w["panels"][w["chapters"][0]][0]
-    got = _approve(client, w, pid)["delivered"]
-
-    client.post(f"/api/flowstudio/panels/{pid}/reopen", headers=w["h"])
-    with get_session() as s:
-        ps.submit_panel(s, pid)
-    client.post(
-        f"/api/flowstudio/panels/{pid}/review", json={"approve": True}, headers=w["h"]
-    )
-
-    with get_session() as s:
-        nodes = s.exec(select(Node).where(Node.shot_id == got["sequence_id"])).all()
-    assert len(nodes) == 1
-
-
-# ── the quiet failure: delivering twice ─────────────────────────────────────
-
-
-def test_reopening_and_approving_again_does_not_make_a_second_sequence(client):
+def test_reopening_and_approving_again_does_not_make_a_second_episode(client):
     """The one that shows up only as a count. A PM who mis-clicks Approve,
-    reopens and approves again must leave one sequence behind, not two."""
+    reopens and approves again must leave one episode behind, not two."""
     w = _world(client)
     _link(client, w)
     pid = w["panels"][w["chapters"][0]][0]
@@ -190,22 +138,18 @@ def test_reopening_and_approving_again_does_not_make_a_second_sequence(client):
         f"/api/flowstudio/panels/{pid}/review", json={"approve": True}, headers=w["h"]
     ).json()["delivered"]
 
-    assert second["sequence_id"] == first["sequence_id"]
+    assert second["episode_id"] == first["episode_id"]
     assert second["created"] is False
-    # Two panels in this chapter, so two slots — and exactly ONE of them is
-    # this panel's. Counting shots alone would not catch a duplicate now that
-    # the empty slots are real rows too.
     with get_session() as s:
-        mine = [
-            sh for sh in _shots(second["episode_id"])
-            if (sh.production or {}).get("source_panel", {}).get("panel_id") == pid
-        ]
-    assert len(mine) == 1
+        episodes = s.exec(
+            select(Scene).where(Scene.series_id == w["studio_series_id"])
+        ).all()
+    assert len(episodes) == 1
 
 
 def test_a_second_panel_joins_the_same_episode(client):
-    """One sequence each, both in their chapter's episode — not one episode per
-    panel, which is what a naive "make the episode" would do."""
+    """Both panels land in their chapter's episode — not one episode per panel,
+    which is what a naive "make the episode" would do."""
     w = _world(client)
     _link(client, w)
     ch = w["chapters"][0]
@@ -213,10 +157,8 @@ def test_a_second_panel_joins_the_same_episode(client):
     b = _approve(client, w, w["panels"][ch][1])["delivered"]
 
     assert a["episode_id"] == b["episode_id"]
-    assert len(_shots(a["episode_id"])) == 2
-
-
-# ── the quiet failure: the wrong episode ────────────────────────────────────
+    assert b["created"] is False
+    assert _shots(a["episode_id"]) == []
 
 
 def test_each_chapter_becomes_its_own_episode(client):
@@ -260,9 +202,11 @@ def test_sync_carries_over_panels_approved_before_the_comic_was_linked(client):
 
     r = client.post(f"/api/flowstudio/series/{w['comic_id']}/delivery/sync", headers=w["h"])
     assert r.status_code == 200, r.text
-    # `created` is what THIS run made; `delivered` is the running total. They
-    # were the same key once, and the total quietly overwrote the count.
-    assert r.json()["created"] == 2
+    # `created` is what THIS run made — one episode, for the one chapter those
+    # two panels share. `delivered` is the running total of panels that have
+    # crossed. They were the same key once, and the total quietly overwrote the
+    # count.
+    assert r.json()["created"] == 1
     assert r.json()["delivered"] == 2
     assert r.json()["approved"] == 2
 
@@ -303,7 +247,7 @@ def test_only_approved_panels_cross_over(client):
 
 
 def test_unlinking_leaves_delivered_work_alone(client):
-    """Sequences that exist are work someone may have started. Withdrawing them
+    """An episode that exists is work someone may have started. Withdrawing it
     because a routing decision changed would destroy it."""
     w = _world(client)
     _link(client, w)
@@ -317,7 +261,7 @@ def test_unlinking_leaves_delivered_work_alone(client):
     assert r.status_code == 200
     assert r.json()["linked"] is False
     with get_session() as s:
-        assert s.get(Shot, got["sequence_id"]) is not None
+        assert s.get(Scene, got["episode_id"]) is not None
 
 
 def test_linking_to_a_series_that_does_not_exist_is_refused(client):
@@ -350,24 +294,6 @@ def test_the_delivery_state_counts_what_has_crossed(client):
 
 
 # ── the survivable failures ─────────────────────────────────────────────────
-
-
-def test_deleting_the_sequence_downstream_lets_the_panel_deliver_again(client):
-    """The pointer goes stale rather than the panel becoming undeliverable. It
-    is still approved, so it still owes a sequence."""
-    w = _world(client)
-    _link(client, w)
-    pid = w["panels"][w["chapters"][0]][0]
-    first = _approve(client, w, pid)["delivered"]
-
-    with get_session() as s:
-        from flowboard.services import shot_service
-        shot_service.delete_shot(s, first["sequence_id"])
-
-    with get_session() as s:
-        again = fd.deliver_panel(s, pid)
-    assert again is not None and again.created is True
-    assert str(again.shot_id) != first["sequence_id"]
 
 
 def test_a_production_series_holding_delivered_work_cannot_be_deleted(client):
@@ -413,199 +339,6 @@ def test_deleting_an_EMPTY_production_series_just_unlinks_the_comic(client):
 
 
 # ── position ────────────────────────────────────────────────────────────────
-
-
-def test_a_panel_keeps_its_position_however_late_it_is_approved(client):
-    """The failure this is here to stop: panels are approved in whatever order
-    the PM gets to them, so arrival order would make the LAST panel Sequence 1
-    whenever it happened to be reviewed first — and every number would then
-    shuffle as the rest caught up."""
-    w = _world(client, chapters=1, panels=4)
-    _link(client, w)
-    ch = w["chapters"][0]
-
-    # Approve backwards: the 4th panel first.
-    last = _approve(client, w, w["panels"][ch][3])["delivered"]
-    first = _approve(client, w, w["panels"][ch][0])["delivered"]
-
-    with get_session() as s:
-        assert s.get(Shot, last["sequence_id"]).order_index == 3, (
-            "the last panel took the first slot"
-        )
-        assert s.get(Shot, first["sequence_id"]).order_index == 0
-
-
-def test_every_panel_has_a_slot_and_the_unapproved_ones_are_empty(client):
-    """The whole chapter's shape is standing there from the first delivery.
-
-    Before this, only approved panels had a sequence, so the episode read
-    "Sequence 2, Sequence 5, Sequence 8" with nothing between them — the numbers
-    were right and the shape was unreadable. An episode IS the chapter, and the
-    chapter's length is known the moment the panels are imported, so those gaps
-    are not unknowns. They are work that has not arrived.
-    """
-    from flowboard.db.models import Node
-
-    w = _world(client, chapters=1, panels=4)
-    _link(client, w)
-    ch = w["chapters"][0]
-    _approve(client, w, w["panels"][ch][0])
-    got = _approve(client, w, w["panels"][ch][3])["delivered"]
-
-    with get_session() as s:
-        shots = sorted(
-            s.exec(select(Shot).where(Shot.scene_id == got["episode_id"])).all(),
-            key=lambda x: x.order_index,
-        )
-        # Four panels, four slots, no holes.
-        assert [x.order_index for x in shots] == [0, 1, 2, 3]
-        # Each slot names the panel it is for, so an empty one is not a blank box.
-        assert [x.code for x in shots] == ["C0P0", "C0P1", "C0P2", "C0P3"]
-
-        filled, empty = [], []
-        for sh in shots:
-            nodes = s.exec(select(Node).where(Node.shot_id == sh.id)).all()
-            (filled if nodes else empty).append(sh.order_index)
-    assert filled == [0, 3], "the wrong slots carry artwork"
-    assert empty == [1, 2], "a slot with no approved panel is not empty"
-
-
-def test_a_panel_approved_later_fills_its_waiting_slot(client):
-    """It must land in the row already standing there, not append a second one
-    beside it."""
-    w = _world(client, chapters=1, panels=4)
-    _link(client, w)
-    ch = w["chapters"][0]
-    got = _approve(client, w, w["panels"][ch][0])["delivered"]
-
-    with get_session() as s:
-        before = len(s.exec(select(Shot).where(Shot.scene_id == got["episode_id"])).all())
-    later = _approve(client, w, w["panels"][ch][2])["delivered"]
-    with get_session() as s:
-        after = s.exec(select(Shot).where(Shot.scene_id == got["episode_id"])).all()
-
-    assert len(after) == before == 4, "delivering added a row instead of filling one"
-    with get_session() as s:
-        assert s.get(Shot, later["sequence_id"]).order_index == 2
-
-
-def test_position_is_measured_in_the_CHAPTER_not_the_batch(client):
-    """A batch is one artist's share of a chapter, so a chapter split three ways
-    holds three panels all numbered 0. Using `panel.order_index` directly would
-    stack them all in slot 1."""
-    t = _world(client, chapters=1, panels=0)
-    _link(client, t)
-    ch = t["chapters"][0]
-    with get_session() as s:
-        made = []
-        for k in range(2):
-            b = ps.create_batch(s, ch, f"artist-{k}")
-            made += ps.import_panels(
-                s, b.id, entries=[(f"B{k}P{i}.png", f"raw-{k}-{i}") for i in range(3)]
-            )
-        ids = [p.id for p in made]
-        # Both batches number their panels 0,1,2 — the collision this guards.
-        assert [p.order_index for p in made] == [0, 1, 2, 0, 1, 2]
-
-    seen = []
-    for pid in ids:
-        seen.append(_approve(client, t, pid)["delivered"]["sequence_id"])
-
-    with get_session() as s:
-        got = sorted(s.get(Shot, sid).order_index for sid in seen)
-    assert got == [0, 1, 2, 3, 4, 5], f"batch positions collided: {got}"
-
-
-def test_the_skeleton_repairs_itself_for_an_episode_that_predates_it(client):
-    """Building the slots only at episode-creation left two holes: an episode
-    made before this feature existed never got them, and a chapter that gains a
-    batch afterwards never got the new ones. Rebuilding on every delivery is
-    idempotent and needs no backfill anybody has to remember."""
-    w = _world(client, chapters=1, panels=2)
-    _link(client, w)
-    ch = w["chapters"][0]
-    got = _approve(client, w, w["panels"][ch][0])["delivered"]
-
-    # A second batch arrives in the same chapter, after the episode exists.
-    with get_session() as s:
-        b = ps.create_batch(s, ch, "late-arrival")
-        extra = ps.import_panels(
-            s, b.id, entries=[(f"LATE{i}.png", f"raw-late-{i}") for i in range(2)]
-        )
-        extra_ids = [p.id for p in extra]
-
-    _approve(client, w, extra_ids[0])
-    with get_session() as s:
-        shots = s.exec(select(Shot).where(Shot.scene_id == got["episode_id"])).all()
-    assert len(shots) == 4, "the late batch got no slots"
-    assert sorted(x.code for x in shots) == ["C0P0", "C0P1", "LATE0", "LATE1"]
-
-
-def test_a_fully_delivered_comic_still_gains_its_empty_slots(client):
-    """The bug the demo caught: `deliver_panel` short-circuited on
-    already-delivered BEFORE resolving the episode, so re-running sync on a
-    comic whose approved panels had all crossed returned "already done" without
-    ever looking at the episode — and the repair never ran."""
-    w = _world(client, chapters=1, panels=4)
-    _link(client, w)
-    ch = w["chapters"][0]
-    got = _approve(client, w, w["panels"][ch][1])["delivered"]
-
-    # Strip the episode back to only the delivered slot, as an episode created
-    # before the skeleton existed would look.
-    with get_session() as s:
-        for sh in s.exec(select(Shot).where(Shot.scene_id == got["episode_id"])).all():
-            if sh.id != uuid.UUID(got["sequence_id"]):
-                s.delete(sh)
-        s.commit()
-        assert len(s.exec(select(Shot).where(Shot.scene_id == got["episode_id"])).all()) == 1
-
-    r = client.post(f"/api/flowstudio/series/{w['comic_id']}/delivery/sync", headers=w["h"])
-    assert r.status_code == 200
-    assert r.json()["created"] == 0, "it re-delivered instead of repairing"
-
-    with get_session() as s:
-        shots = s.exec(select(Shot).where(Shot.scene_id == got["episode_id"])).all()
-    assert len(shots) == 4, "the empty slots were never rebuilt"
-
-
-def test_a_delivered_sequence_keeps_the_panel_code_not_a_positional_one(client):
-    """The code is how a panel finds its slot, so it is not free to be prettier.
-
-    Giant Studio names its own sequences positionally — S1_EP01_SQ01 — and
-    applying that here looks like tidying up. It is not: `_slot_for` matches a
-    panel to the sequence waiting for it BY CODE, so restamping them means the
-    next approval finds nothing and appends a duplicate instead of filling the
-    slot. (I did exactly this by hand to a demo database and broke all 34.)
-
-    Position is not lost by keeping the panel code — `order_index` carries it,
-    and the canvas label is built from that.
-    """
-    from flowboard.db.models import FlowPanel
-
-    w = _world(client, chapters=1, panels=3)
-    _link(client, w)
-    ch = w["chapters"][0]
-    got = _approve(client, w, w["panels"][ch][0])["delivered"]
-
-    with get_session() as s:
-        codes = {
-            sh.code
-            for sh in s.exec(select(Shot).where(Shot.scene_id == got["episode_id"])).all()
-        }
-        panels = {
-            s.get(FlowPanel, pid).code for pid in w["panels"][ch]
-        }
-    assert codes == panels, "a sequence stopped naming the panel it is for"
-
-    # And the matching still works: approving another fills its slot rather
-    # than appending beside it.
-    before = len(_shots(got["episode_id"]))
-    _approve(client, w, w["panels"][ch][2])
-    assert len(_shots(got["episode_id"])) == before
-
-
-# ── every comic gets its counterpart ────────────────────────────────────────
 
 
 def test_creating_a_comic_creates_and_links_its_production_series(client):
