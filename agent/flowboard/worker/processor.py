@@ -361,9 +361,20 @@ async def _handle_gen_video(params: dict) -> tuple[dict, Optional[str]]:
         ref_inputs = [r for r in (params.get("reference_images") or []) if isinstance(r, str) and r]
         raw_labels = params.get("reference_labels")
         if isinstance(raw_labels, list) and ref_inputs:
-            from flowboard.services.video.ref_ordering import order_refs_by_label
+            from flowboard.services.video.ref_ordering import (
+                check_label_binding,
+                order_refs_by_label,
+            )
 
             labels = [(lbl if isinstance(lbl, str) else None) for lbl in raw_labels]
+            # Refuse a numbering that cannot mean what it says. Duplicates and
+            # gaps silently bind @imageN to the wrong picture, and the only
+            # symptom is a finished clip with the wrong characters in it — paid
+            # for, and easy to misread as the model ignoring the prompt. Cheap
+            # to catch here, expensive to discover afterwards.
+            problem = check_label_binding(labels[: len(ref_inputs)])
+            if problem:
+                return {"error": problem, "code": "bad_input"}, f"bad_input:{problem}"
             ref_inputs = order_refs_by_label(ref_inputs, labels)
 
         resolved_refs: list[str] = []

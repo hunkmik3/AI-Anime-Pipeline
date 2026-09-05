@@ -270,3 +270,84 @@ def test_mov_serves_video_quicktime_mime():
     from flowboard.services import media as m
     assert m._mime_from_ext(".mov") == "video/quicktime"
     assert m._mime_from_ext(".mp4") == "video/mp4"
+
+
+
+# ── @N labels must be able to mean what they say ──────────────────────────
+#
+# Binding is positional, so the labelled digits have to run 1..K exactly. A
+# duplicate or a gap silently rebinds every later reference — with 20-odd refs
+# set by hand that is easy to hit and impossible to see in the result except as
+# "the model used the wrong characters".
+
+
+def _no_submit_handler(seen: list[dict]):
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.method == "POST" and req.url.path.endswith("/video/generations"):
+            seen.append(json.loads(req.content))
+            return httpx.Response(200, json={"data": {"taskId": "cgt-l"}, "success": True})
+        if req.method == "GET" and "/video/tasks/" in req.url.path:
+            return httpx.Response(200, json={"success": True, "data": {
+                "taskId": "cgt-l", "status": "succeeded",
+                "videoUrl": "https://signed.example/c.mp4",
+                "duration": 5, "resolution": "720p", "ratio": "16:9"}})
+        if req.url.host == "signed.example":
+            return httpx.Response(200, content=b"MP4" * 40)
+        return httpx.Response(500, json={"error": "x"})
+    return handler
+
+
+async def _gen_with_labels(labels):
+    seen: list[dict] = []
+    avis.set_http_client_factory(_factory(_no_submit_handler(seen)))
+    result, err = await proc._handle_gen_video({
+        "model_id": "dreamina-seedance-2-5",
+        "motion_prompt": "@image1 @image2 @image3",
+        "reference_images": [f"https://e/{i}.png" for i in range(len(labels))],
+        "reference_labels": labels,
+        "duration_seconds": 5, "aspect_ratio": "16:9", "resolution": "720p",
+        "project_id": "8b62385c-4916-4abd-b01f-b28173d8eb04",
+    })
+    return result, err, seen
+
+
+@pytest.mark.asyncio
+async def test_duplicate_ref_label_is_refused_before_submit(_avis_env):
+    result, err, seen = await _gen_with_labels(["@image1", "@image2", "@image2"])
+    assert err and err.startswith("bad_input:"), (err, result)
+    assert "#2" in err, err
+    assert seen == [], "a refusal that still submits is not a refusal"
+
+
+@pytest.mark.asyncio
+async def test_gap_in_ref_labels_is_refused_before_submit(_avis_env):
+    # The classic 22-ref mistake: a couple left unnumbered in the middle. Those
+    # get appended at the END, so the numbered ones slide up into their slots.
+    result, err, seen = await _gen_with_labels(["@image1", None, "@image3"])
+    assert err and err.startswith("bad_input:"), (err, result)
+    assert "#2" in err, err
+    assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_contiguous_labels_pass_through(_avis_env):
+    result, err, seen = await _gen_with_labels(["@image1", "@image2", "@image3"])
+    assert err is None, result
+    imgs = [b for b in seen[0]["content"] if b.get("type") in ("imageUrl", "imageBase64")]
+    assert [b["url"] for b in imgs] == [f"https://e/{i}.png" for i in range(3)]
+
+
+@pytest.mark.asyncio
+async def test_all_unlabelled_refs_still_pass(_avis_env):
+    # No numbers means no promise about position — edge order stands.
+    result, err, seen = await _gen_with_labels([None, None, None])
+    assert err is None, result
+    assert len(seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_named_labels_without_digits_pass(_avis_env):
+    # "@kenji" carries no position, so it cannot contradict one.
+    result, err, seen = await _gen_with_labels(["@kenji", "@mai"])
+    assert err is None, result
+    assert len(seen) == 1

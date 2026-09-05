@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 
 import { useVideoModelsStore } from "../store/videoModels";
-import { useShotWorkflowStore } from "../store/shotWorkflow";
+import { PREFIX_BY_TYPE, useShotWorkflowStore } from "../store/shotWorkflow";
 import { useProjectStore } from "../store/project";
 import { patchNode } from "../api/client";
 
@@ -19,6 +19,64 @@ const USD_PER_SEC: Record<string, number> = {
 function estimateVideoUsd(duration: number, resolution: string): number {
   const rate = USD_PER_SEC[resolution] ?? 0.42;
   return Math.max(1, duration || 5) * rate;
+}
+
+
+/**
+ * Renumber the reference nodes feeding this Video node to a clean 1..N.
+ *
+ * Binding is positional, so the numbers must run 1..N with no gaps and no
+ * duplicates — and with twenty-odd references set one dropdown at a time, they
+ * routinely do not. Rather than make the artist audit the set by hand, rewrite
+ * it in the order they already implied: numbered references first, ascending;
+ * unnumbered ones after, in wiring order. That is the same order the backend
+ * derives, so what you see afterwards is what will be sent.
+ *
+ * Named labels ("@kenji") carry no position and are left alone.
+ */
+function renumberRefs(targetRfId: string): number {
+  const { nodes, edges, updateNodeData } = useShotWorkflowStore.getState();
+  const feeding = edges
+    .filter((e) => e.target === targetRfId)
+    .map((e) => nodes.find((n) => n.id === e.source))
+    .filter((n): n is NonNullable<typeof n> => !!n && !!PREFIX_BY_TYPE[n.data.type]);
+
+  const byPrefix = new Map<string, typeof feeding>();
+  for (const n of feeding) {
+    const p = PREFIX_BY_TYPE[n.data.type];
+    byPrefix.set(p, [...(byPrefix.get(p) ?? []), n]);
+  }
+
+  let changed = 0;
+  for (const [prefix, group] of byPrefix) {
+    const digitOf = (n: (typeof group)[number]) => {
+      const m = /\d+/.exec((n.data.reference_label as string | undefined) ?? "");
+      return m ? parseInt(m[0], 10) : null;
+    };
+    const named = group.filter(
+      (n) => digitOf(n) === null && ((n.data.reference_label as string) ?? "").trim(),
+    );
+    const ordered = group
+      .filter((n) => !named.includes(n))
+      .map((n, i) => ({ n, d: digitOf(n), i }))
+      // Numbered lead, ascending; unnumbered keep wiring order behind them.
+      .sort((a, b) => {
+        if (a.d === null && b.d === null) return a.i - b.i;
+        if (a.d === null) return 1;
+        if (b.d === null) return -1;
+        return a.d - b.d || a.i - b.i;
+      });
+    ordered.forEach(({ n }, idx) => {
+      const want = `${prefix}${idx + 1}`;
+      if (n.data.reference_label !== want) {
+        updateNodeData(n.id, { reference_label: want });
+        const dbId = parseInt(n.id, 10);
+        if (!isNaN(dbId)) patchNode(dbId, { data: { reference_label: want } }).catch(() => {});
+        changed += 1;
+      }
+    });
+  }
+  return changed;
 }
 
 /**
@@ -115,6 +173,31 @@ export function VideoNodeSettings({ rfId }: Props) {
     typeof data.contentFilterDisabled === "boolean"
       ? (data.contentFilterDisabled as boolean)
       : false;
+
+  // Mirror of the backend's check_label_binding, so the problem is visible
+  // BEFORE Generate rather than as a refusal after it. Positional binding
+  // means the numbers must run 1..N; a duplicate or a gap silently points
+  // @N at the wrong picture.
+  const refLabelProblem = (() => {
+    const { nodes: allNodes, edges } = useShotWorkflowStore.getState();
+    const digits: number[] = [];
+    let feeding = 0;
+    for (const e of edges) {
+      if (e.target !== rfId) continue;
+      const src = allNodes.find((n) => n.id === e.source);
+      if (!src || PREFIX_BY_TYPE[src.data.type] !== "@image") continue;
+      feeding += 1;
+      const m = /\d+/.exec((src.data.reference_label as string | undefined) ?? "");
+      if (m) digits.push(parseInt(m[0], 10));
+    }
+    if (feeding < 2 || digits.length === 0) return null;
+    const seen = new Set(digits);
+    if (seen.size !== digits.length) return "two references share a number";
+    for (let i = 1; i <= digits.length; i += 1) {
+      if (!seen.has(i)) return `numbering skips #${i}`;
+    }
+    return null;
+  })();
 
   function persist(patch: Record<string, unknown>) {
     updateNodeData(rfId, patch);
@@ -292,6 +375,22 @@ export function VideoNodeSettings({ rfId }: Props) {
 
       {/* Estimated cost before generating (calibrated to real Avis usdCost;
           the exact charge is settled after the clip finishes). */}
+      {refLabelProblem ? (
+        <div className="video-settings-row video-settings-note">
+          <span className="video-settings-hint video-settings-hint--warn">
+            Reference numbering is broken — {refLabelProblem}. @N binds by
+            POSITION, so everything past it points at the wrong picture.
+          </span>
+          <button
+            type="button"
+            className="video-settings-renumber"
+            onClick={() => renumberRefs(rfId)}
+          >
+            Renumber 1…N
+          </button>
+        </div>
+      ) : null}
+
       {/* An edit bills by the SOURCE clip's length, which this dialog has no
           way to know — the slider's value is not it. Quoting a total from the
           slider understated a 28s source at 720p as $0.90 against roughly $5,

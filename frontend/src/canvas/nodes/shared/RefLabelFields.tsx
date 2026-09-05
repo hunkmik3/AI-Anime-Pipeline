@@ -2,23 +2,12 @@ import { useEffect, useState } from "react";
 
 import { patchNode } from "../../../api/client";
 import {
+  PREFIX_BY_TYPE,
   useShotWorkflowStore,
   type FlowboardNodeData,
 } from "../../../store/shotWorkflow";
 
 const DESC_MAX = 300;
-
-/** Which @-stream a ref node feeds. Image refs share one numbering (@image1…N)
- *  regardless of their node type; audio and video have their own. */
-const PREFIX_BY_TYPE: Record<string, string> = {
-  character: "@image",
-  visual_asset: "@image",
-  master_shot: "@image",
-  image: "@image",
-  audio_ref: "@audio",
-  seed_audio: "@audio",
-  video_ref: "@video",
-};
 
 /**
  * Phase 8.1 — per-ref @image label + optional description, shown inline on

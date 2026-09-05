@@ -7358,6 +7358,23 @@ button:disabled {
 }
 /* A control the provider derives for us — shown so the value is legible,
    dimmed so it does not read as a choice. */
+/* Blocking hint — has to out-read the ordinary grey hints beside it. */
+.video-settings-hint--warn {
+  color: #fbbf24;
+}
+.video-settings-renumber {
+  background: rgba(251, 191, 36, 0.14);
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  color: #fbbf24;
+  padding: 3px 9px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.video-settings-renumber:hover {
+  background: rgba(251, 191, 36, 0.24);
+}
 .video-settings-row--disabled {
   opacity: 0.5;
 }

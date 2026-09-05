@@ -180,6 +180,51 @@ const TYPE_TITLE: Record<NodeType, string> = {
   seed_audio: "Audio Gen",
 };
 
+/** Which @-stream a ref node feeds. Image refs share one numbering (@image1…N)
+ *  regardless of their node type; audio and video have their own. */
+export const PREFIX_BY_TYPE: Record<string, string> = {
+  character: "@image",
+  visual_asset: "@image",
+  master_shot: "@image",
+  image: "@image",
+  audio_ref: "@audio",
+  seed_audio: "@audio",
+  video_ref: "@video",
+};
+
+/**
+ * The next free `@imageN` / `@audioN` / `@videoN` for a new reference node.
+ *
+ * Fills the LOWEST unused number rather than appending, so deleting a
+ * reference and adding another closes the hole instead of leaving one. That
+ * matters because binding is positional: the numbers have to stay contiguous
+ * from 1, or every reference past the gap binds to the wrong picture (the
+ * backend refuses such a set outright).
+ *
+ * Returns null for node types that carry no reference label.
+ */
+function nextRefLabel(
+  nodes: FlowNode[],
+  shotId: string,
+  type: NodeType,
+): string | null {
+  const prefix = PREFIX_BY_TYPE[type];
+  if (!prefix) return null;
+  const taken = new Set<number>();
+  for (const n of nodes) {
+    // Single-shot mode leaves `shotId` off node data entirely, so an absent
+    // one means "this shot" — comparing it straight against the store's id
+    // would match nothing and hand every new reference @image1.
+    if ((n.data.shotId ?? shotId) !== shotId) continue;
+    if (PREFIX_BY_TYPE[n.data.type] !== prefix) continue;
+    const m = /\d+/.exec(n.data.reference_label ?? "");
+    if (m) taken.add(parseInt(m[0], 10));
+  }
+  let i = 1;
+  while (taken.has(i)) i += 1;
+  return `${prefix}${i}`;
+}
+
 const positionTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function debouncePosition(rfId: string, fn: () => void, delay = 150) {
@@ -480,13 +525,19 @@ export const useShotWorkflowStore = create<ShotWorkflowState>((set, get) => ({
     const { shotId } = get();
     if (!shotId) return null;
     const title = TYPE_TITLE[type];
+    // Number the reference as it is created. Binding is positional, so the
+    // labels have to run 1..N with no gaps or duplicates — and left to a
+    // dropdown per node, twenty-odd references is bookkeeping nobody gets
+    // right by hand. The next free number is the answer every time, so take
+    // it rather than asking. The picker still allows changing it.
+    const autoLabel = nextRefLabel(get().nodes, shotId, type);
     try {
       const dto = await createNode({
         shot_id: shotId,
         type,
         x: Math.round(position.x),
         y: Math.round(position.y),
-        data: { title },
+        data: autoLabel ? { title, reference_label: autoLabel } : { title },
       });
       if (get().shotId !== shotId) return null;
       const node: FlowNode = {
@@ -498,6 +549,7 @@ export const useShotWorkflowStore = create<ShotWorkflowState>((set, get) => ({
           shortId: dto.short_id,
           title: (dto.data["title"] as string | undefined) ?? title,
           status: dto.status,
+          ...(autoLabel ? { reference_label: autoLabel } : {}),
         },
       };
       set((s) => ({ nodes: [...s.nodes, node] }));
@@ -510,13 +562,15 @@ export const useShotWorkflowStore = create<ShotWorkflowState>((set, get) => ({
 
   async addNodeToShot(shotId, type, position) {
     const title = TYPE_TITLE[type];
+    // Numbered against THIS shot's references — each shot is its own @-stream.
+    const autoLabel = nextRefLabel(get().nodes, shotId, type);
     try {
       const dto = await createNode({
         shot_id: shotId,
         type,
         x: Math.round(position.x),
         y: Math.round(position.y),
-        data: { title },
+        data: autoLabel ? { title, reference_label: autoLabel } : { title },
       });
       const node = nodeFromDto({
         id: dto.id,
@@ -544,6 +598,12 @@ export const useShotWorkflowStore = create<ShotWorkflowState>((set, get) => ({
     // drop shortId (the server mints a fresh one).
     const cloneData: Record<string, unknown> = { ...src.data };
     delete cloneData.shortId;
+    // A reference label is a POSITION, not a property of the picture — copying
+    // it would put two references in the same slot, which silently rebinds
+    // every later @N onto the wrong image. Give the copy the next free number.
+    const dupLabel = nextRefLabel(get().nodes, shotId, src.data.type);
+    if (dupLabel) cloneData.reference_label = dupLabel;
+    else delete cloneData.reference_label;
     try {
       const dto = await createNode({
         shot_id: shotId,

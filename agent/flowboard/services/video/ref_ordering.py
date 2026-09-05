@@ -97,3 +97,54 @@ def order_refs_by_label(
     # Stable across equal digits via the secondary edge-index key.
     labeled.sort(key=lambda t: (t[0], t[1]))
     return [ref for _, _, ref in labeled] + [ref for _, ref in unlabeled]
+
+
+def check_label_binding(labels: list[Optional[str]]) -> Optional[str]:
+    """Return a human-readable problem with the @N labels, or None if sound.
+
+    Reference binding is POSITIONAL: ``@imageN`` in the prompt maps to the Nth
+    reference block, and the Nth block is whatever ``order_refs_by_label`` put
+    there. So the labels only mean what they say when the labelled digits are
+    exactly ``1..K`` — no duplicates, no gaps. Two cases break that silently,
+    and both are easy to hit once there are twenty-odd refs to set by hand:
+
+    - **A duplicate** (two refs both ``@image5``) fills slots 5 AND 6 with
+      them, so ``@image6`` onward each point one ref too early.
+    - **A gap** (``1,2,3,7`` — because refs 4-6 were left unlabelled) is worse
+      than it looks: unlabelled refs are appended at the END, so the ref
+      labelled ``@image7`` actually lands in slot 4, and the three unlabelled
+      ones end up last. Every reference from the gap onward is bound to the
+      wrong picture.
+
+    Neither raises anywhere today — the clip just comes back with the wrong
+    characters in it, which costs money and reads like the model ignoring the
+    prompt. Detect it before submit and say exactly which label is at fault.
+    """
+    digits = [d for d in (_label_digit(lbl) for lbl in labels) if d is not None]
+    if not digits:
+        return None
+
+    seen: set[int] = set()
+    for d in sorted(digits):
+        if d in seen:
+            return (
+                f"two references are both labelled #{d} — they take slots {d} "
+                f"and {d + 1}, so every later @-reference binds to the wrong "
+                f"picture. Give each reference its own number."
+            )
+        seen.add(d)
+
+    expected = set(range(1, len(digits) + 1))
+    missing = sorted(expected - seen)
+    if missing:
+        extra = sorted(seen - expected)
+        gap = ", ".join(f"#{m}" for m in missing)
+        return (
+            f"the reference numbers skip {gap}"
+            + (f" while using {', '.join(f'#{e}' for e in extra)}" if extra else "")
+            + " — numbering must run 1.."
+            f"{len(digits)} with no gaps, because a reference binds by its "
+            f"POSITION. Unnumbered references are pushed to the end, which is "
+            f"what opens the gap."
+        )
+    return None
