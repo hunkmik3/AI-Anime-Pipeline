@@ -533,11 +533,25 @@ def delivery_state(session: Session, flow_series_id: int) -> dict:
     ).all()
     panels = ps.list_series_panels(session, flow_series_id)
     approved = [p for p in panels if p.status == "approved"]
+    # A panel has crossed over when its CHAPTER has an episode on the other
+    # side. It used to mean `panel.studio_shot_id` — the sequence the panel
+    # became — but the panel→sequence handover was removed in 2026-08 and
+    # nothing writes that field any more, so this number sat at 0 no matter
+    # how much work had actually crossed. Reading a field nobody writes is
+    # worse than not reporting at all: the PM sees "0 delivered" beside a full
+    # episode and concludes the bridge is broken.
+    crossed_chapters = {c.id for c in chapters if c.studio_scene_id}
+    batch_chapter = {
+        b.id: b.chapter_id
+        for b in session.exec(
+            select(FlowBatch).where(FlowBatch.chapter_id.in_(crossed_chapters))
+        ).all()
+    } if crossed_chapters else {}
     return {
         "linked": studio is not None,
         "studio_series_id": str(studio.id) if studio else None,
         "studio_series_name": studio.name if studio else None,
         "approved": len(approved),
-        "delivered": sum(1 for p in approved if p.studio_shot_id),
+        "delivered": sum(1 for p in approved if p.batch_id in batch_chapter),
         "episodes": sum(1 for c in chapters if c.studio_scene_id),
     }
