@@ -29,7 +29,7 @@ def test_capability_block_is_present(client):
     by_id = {m["model_id"]: m["capabilities"] for m in body["models"]}
     assert by_id["dreamina-seedance-2-5"]["supports_b2b_unmoderated"] is True
     assert by_id["dreamina-seedance-2-5"]["durations"] == list(range(4, 31))
-    assert by_id["dreamina-seedance-2-5"]["resolutions"] == ["480p", "720p", "1080p"]
+    assert by_id["dreamina-seedance-2-5"]["resolutions"] == ["480p", "720p"]
     # The 20 Aug 2026 fields reach the canvas through asdict() with no route
     # change — this asserts that contract, not just the values.
     assert by_id["dreamina-seedance-2-5"]["output_formats"] == ["mp4", "mov"]

@@ -83,7 +83,8 @@ def test_seedance_2_5_capabilities():
     assert entry.capabilities.supports_multi_ref is True
     assert entry.capabilities.max_refs == 30
     # 1080p arrived with the 20 Aug 2026 Avis release; 4k is still not offered.
-    assert entry.capabilities.resolutions == ("480p", "720p", "1080p")
+    # 1080p is available on Avis but deliberately not offered here (cost).
+    assert entry.capabilities.resolutions == ("480p", "720p")
     assert "4k" not in entry.capabilities.resolutions
     # Same release: the container choice and the omni subtask hint.
     assert entry.capabilities.output_formats == ("mp4", "mov")

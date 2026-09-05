@@ -100,7 +100,7 @@ async def test_submit_r2v_emits_reference_and_video_blocks():
         "motion_prompt": "they walk like the clip",
         "duration_seconds": 6,
         "aspect_ratio": "9:16",
-        "resolution": "1080p",
+        "resolution": "720p",
     })
 
     assert res["external_job_id"] == "cgt-r2v"
@@ -683,13 +683,14 @@ async def test_submit_kyc_multiple_image_identities():
 
 
 @pytest.mark.asyncio
-async def test_seedance_2_5_accepts_30s_and_1080p():
-    """2.5: duration 4–30s, and 1080p since the 20 Aug 2026 Avis release.
+async def test_seedance_2_5_accepts_30s_and_caps_at_720p():
+    """2.5: duration 4–30s, and 720p is the ceiling we offer.
 
-    This test asserted the opposite until then — 1080p was genuinely refused.
-    `GET /ai/models` now reports resolution enum 480p/720p/1080p for
-    dreamina-seedance-2-5, so refusing it here would be the app inventing a
-    limit the provider does not have."""
+    Avis itself allows 1080p on this model — the cap is OURS, taken on
+    2026-08-24 to keep the per-second cost in hand (1080p is ~2.3x 720p).
+    So 1080p is refused the same way 4k is: not because the provider lacks
+    it, but because this deployment does not offer it. Lift both lines in
+    AVIS_SEEDANCE_2_5_CAPABILITY together with this test if that changes."""
     seen: list[dict] = []
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -709,26 +710,21 @@ async def test_seedance_2_5_accepts_30s_and_1080p():
     assert seen[0]["model"] == "dreamina-seedance-2-5"
     assert seen[0]["duration"] == 30
 
-    await provider.submit({
-        "first_frame_url": "https://e/frame.png",
-        "motion_prompt": "sharp",
-        "duration_seconds": 8,
-        "aspect_ratio": "16:9",
-        "resolution": "1080p",
-    })
-    assert seen[1]["resolution"] == "1080p"
-
-    # 4k is still not offered on 2.5, so it must still be refused here.
-    with pytest.raises(VideoError) as exc:
-        await provider.submit({
-            "first_frame_url": "https://e/frame.png",
-            "motion_prompt": "too sharp",
-            "duration_seconds": 8,
-            "aspect_ratio": "16:9",
-            "resolution": "4k",
-        })
-    assert exc.value.code == "bad_input"
-    assert "4k" in str(exc.value)
+    # Neither 1080p nor 4k is offered on 2.5 here — both must be refused, and
+    # the message must name the resolutions that ARE available so the caller
+    # can act on it.
+    for refused in ("1080p", "4k"):
+        with pytest.raises(VideoError) as exc:
+            await provider.submit({
+                "first_frame_url": "https://e/frame.png",
+                "motion_prompt": "too sharp",
+                "duration_seconds": 8,
+                "aspect_ratio": "16:9",
+                "resolution": refused,
+            })
+        assert exc.value.code == "bad_input"
+        assert refused in str(exc.value)
+        assert "720p" in str(exc.value)
 
 
 # ── B2B unmoderated (DanceSee /api/v1/b2b/*) ─────────────────────────────
@@ -1017,7 +1013,7 @@ async def test_output_format_mov_is_sent_on_25():
     avis.set_http_client_factory(_factory(_seen_handler(seen)))
     await get_video_provider("dreamina-seedance-2-5").submit({
         "first_frame_url": "https://e/f.png", "motion_prompt": "x",
-        "duration_seconds": 5, "aspect_ratio": "16:9", "resolution": "1080p",
+        "duration_seconds": 5, "aspect_ratio": "16:9", "resolution": "720p",
         "output_format": "mov",
     })
     assert seen[0]["outputFormat"] == "mov"
@@ -1063,7 +1059,7 @@ async def test_omni_reference_task_type_is_sent_camelcase():
         # field on. See test_omni_task_type_dropped_on_a_start_frame.
         "reference_images": ["https://e/a.png", "https://e/b.png"],
         "motion_prompt": "waves at camera",
-        "duration_seconds": 5, "aspect_ratio": "16:9", "resolution": "1080p",
+        "duration_seconds": 5, "aspect_ratio": "16:9", "resolution": "720p",
         "omni_reference_task_type": "reference",
     })
     assert seen[0]["omniReferenceTaskType"] == "reference"
@@ -1118,7 +1114,7 @@ async def test_extend_with_a_video_and_adaptive_ratio_goes_through():
     avis.set_http_client_factory(_factory(_seen_handler(seen)))
     await get_video_provider("dreamina-seedance-2-5").submit({
         "reference_videos": ["https://e/clip.mp4"], "motion_prompt": "keep going",
-        "duration_seconds": 5, "aspect_ratio": "adaptive", "resolution": "1080p",
+        "duration_seconds": 5, "aspect_ratio": "adaptive", "resolution": "720p",
         "omni_reference_task_type": "extend", "output_format": "mov",
     })
     assert seen[0]["omniReferenceTaskType"] == "extend"
@@ -1135,7 +1131,7 @@ async def test_keyframe_on_25_warns_that_the_ratio_is_ignored():
     avis.set_http_client_factory(_factory(_seen_handler(seen)))
     res = await get_video_provider("dreamina-seedance-2-5").submit({
         "first_frame_url": "https://e/f.png", "motion_prompt": "x",
-        "duration_seconds": 5, "aspect_ratio": "16:9", "resolution": "1080p",
+        "duration_seconds": 5, "aspect_ratio": "16:9", "resolution": "720p",
         "omni_reference_task_type": "auto",
     })
     assert any("ratio" in w.lower() for w in res["warnings"])
@@ -1206,7 +1202,7 @@ async def test_edit_sends_the_minus_one_duration_sentinel():
         "reference_videos": ["https://e/clip.mp4"],
         "reference_images": ["https://e/a.png", "https://e/b.png"],
         "motion_prompt": "replace the cast", "duration_seconds": 28,
-        "aspect_ratio": "adaptive", "resolution": "1080p",
+        "aspect_ratio": "adaptive", "resolution": "720p",
         "omni_reference_task_type": "edit",
     })
     assert seen[0]["duration"] == -1, seen[0]
@@ -1237,7 +1233,7 @@ async def test_extend_keeps_its_real_duration():
     avis.set_http_client_factory(_factory(_seen_handler(seen)))
     await get_video_provider("dreamina-seedance-2-5").submit({
         "reference_videos": ["https://e/clip.mp4"], "motion_prompt": "keep going",
-        "duration_seconds": 10, "aspect_ratio": "adaptive", "resolution": "1080p",
+        "duration_seconds": 10, "aspect_ratio": "adaptive", "resolution": "720p",
         "omni_reference_task_type": "extend",
     })
     assert seen[0]["omniReferenceTaskType"] == "extend"
