@@ -545,3 +545,58 @@ def test_create_visual_asset_node(client):
     assert r.status_code == 200, r.text
     n = r.json()
     assert n["type"] == "visual_asset"
+
+
+# ── media mime fallback (Windows registry gap) ────────────────────────────
+#
+# Chrome on Windows reads File.type from the registry's per-extension
+# `Content Type` value. On plenty of machines that value is missing for .mov
+# (and sometimes .mp4), so a real clip arrives with an empty or
+# application/octet-stream type. We fall back to the extension there — but
+# only there: a type the browser states positively is still trusted.
+
+
+def test_upload_video_falls_back_to_extension_when_mime_is_generic(client):
+    for filename, sent_mime, expect in (
+        ("clip.mov", "application/octet-stream", "video/quicktime"),
+        ("clip.mp4", "", "video/mp4"),
+        ("clip.webm", "binary/octet-stream", "video/webm"),
+    ):
+        r = client.post(
+            "/api/upload-video",
+            data={"project_id": "abcd1234"},
+            files={"file": (filename, b"\x00\x01fake-video-bytes", sent_mime)},
+        )
+        assert r.status_code == 200, f"{filename}: {r.text}"
+        assert r.json()["mime"] == expect, filename
+
+
+def test_upload_video_still_rejects_a_stated_bad_mime(client):
+    # Named .mp4 but the browser positively says matroska — refuse on the
+    # stated type; the extension must not launder it through.
+    r = client.post(
+        "/api/upload-video",
+        data={"project_id": "abcd1234"},
+        files={"file": ("clip.mp4", b"\x00\x01fake", "video/x-matroska")},
+    )
+    assert r.status_code == 415, r.text
+
+
+def test_upload_video_rejects_generic_mime_with_unknown_extension(client):
+    # Nothing to fall back to — the generic type stands and is refused.
+    r = client.post(
+        "/api/upload-video",
+        data={"project_id": "abcd1234"},
+        files={"file": ("clip.mkv", b"\x00\x01fake", "application/octet-stream")},
+    )
+    assert r.status_code == 415, r.text
+
+
+def test_upload_audio_falls_back_to_extension_when_mime_is_generic(client):
+    r = client.post(
+        "/api/upload-audio",
+        data={"project_id": "abcd1234"},
+        files={"file": ("vo.mp3", b"\x00\x01fake-audio", "application/octet-stream")},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["mime"] == "audio/mpeg"

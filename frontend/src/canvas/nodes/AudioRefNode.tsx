@@ -85,6 +85,10 @@ function AudioRefBody({ rfId, data }: { rfId: string; data: FlowboardNodeData })
       }}
       style={dragOver ? { outline: "2px dashed var(--accent, #4ea1ff)", outlineOffset: 2, borderRadius: 8 } : undefined}
     >
+      {/* Same reasoning as VideoRefNode: `.node-body` clips overflow, so an
+          error rendered after the label fields never makes it onscreen. */}
+      {error && <p className="audio-ref__error" role="alert">{error}</p>}
+
       {audioMediaId ? (
         <div className="audio-ref__loaded">
           <audio
@@ -132,7 +136,6 @@ function AudioRefBody({ rfId, data }: { rfId: string; data: FlowboardNodeData })
           e.target.value = "";
         }}
       />
-      {error && <p className="audio-ref__error">{error}</p>}
     </div>
   );
 }

@@ -56,14 +56,25 @@ function VideoRefBody({ rfId, data }: { rfId: string; data: FlowboardNodeData })
   }
 
   // Drag-and-drop a video file straight onto the node (parity with the
-  // character/visual nodes). Accept only video/* drops.
+  // character/visual nodes).
+  //
+  // Accept on the extension as well as the mime, the way AudioRefNode always
+  // has. A dropped file's `type` is whatever the OS told the browser, and that
+  // is routinely empty — Chrome on Windows reads it from the registry, where
+  // the mapping for .mov (sometimes .mp4) is often simply missing. Testing
+  // `type` alone rejected a perfectly good clip as "Video files only", which
+  // was doubly confusing because that error used to be clipped out of view.
+  function isVideoFile(f: File) {
+    return f.type.startsWith("video/") || /\.(mp4|mov|webm|m4v)$/i.test(f.name);
+  }
+
   function onDrop(e: React.DragEvent) {
     e.preventDefault();
     e.stopPropagation();
     setDragOver(false);
     const f = e.dataTransfer.files?.[0];
-    if (f && f.type.startsWith("video/")) void upload(f);
-    else if (f) setError("Video files only");
+    if (f && isVideoFile(f)) void upload(f);
+    else if (f) setError(`Not a video file: ${f.name}`);
   }
   function onDragOver(e: React.DragEvent) {
     e.preventDefault();
@@ -76,24 +87,39 @@ function VideoRefBody({ rfId, data }: { rfId: string; data: FlowboardNodeData })
     setDragOver(false);
   }
 
+  // `nodrag` below is load-bearing, not cosmetic. React Flow starts a node
+  // drag on mousedown and preventDefault()s it, which swallows the click that
+  // would otherwise follow — so a <button> in here never fires its onClick,
+  // the file picker never opens, and there is no error to show for it either.
+  // React Flow exempts INPUT/SELECT/TEXTAREA by itself (which is why the label
+  // and description fields always worked), but NOT button. AudioRefNode has
+  // carried this class from the start; this node was missing it everywhere.
   return (
     <div
-      className="node-body node-body--video-ref"
+      className="node-body node-body--video-ref nodrag"
       onDrop={onDrop}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
     >
+      {/* FIRST, not last. `.node-body` is `overflow: hidden`, and this used to
+          render below the label + description fields — which already reach the
+          bottom of the card. So a failed upload set an error that was clipped
+          out of view, and the node just sat there looking like the button had
+          done nothing. An error is the one thing on a node that must never be
+          the part that gets cropped. */}
+      {error && <p className="video-ref__error" role="alert">{error}</p>}
+
       {videoMediaId ? (
         <div className="video-ref__loaded">
           <video
-            className="video-ref__player"
+            className="video-ref__player nodrag"
             controls
             preload="metadata"
             src={`/media/${videoMediaId}`}
           />
           <button
             type="button"
-            className="video-ref__action"
+            className="video-ref__action nodrag"
             onClick={() => fileInputRef.current?.click()}
             disabled={uploading}
           >
@@ -108,7 +134,7 @@ function VideoRefBody({ rfId, data }: { rfId: string; data: FlowboardNodeData })
             <>
               <button
                 type="button"
-                className="video-ref__action"
+                className="video-ref__action nodrag"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={uploading}
               >
@@ -132,7 +158,6 @@ function VideoRefBody({ rfId, data }: { rfId: string; data: FlowboardNodeData })
         }}
       />
       <RefLabelFields rfId={rfId} data={data} labelPlaceholder="@video1" />
-      {error && <p className="video-ref__error">{error}</p>}
     </div>
   );
 }

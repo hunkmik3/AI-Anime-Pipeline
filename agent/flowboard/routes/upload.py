@@ -20,6 +20,7 @@ import ipaddress
 import logging
 import socket
 import uuid
+from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -305,6 +306,16 @@ _AUDIO_EXT_BY_MIME = {
     "audio/aac": ".aac",
     "audio/ogg": ".ogg",
 }
+# Not the reverse of the map above — .wav has two spellings there, and .m4a
+# is the extension people actually have for audio/mp4.
+_AUDIO_MIME_BY_EXT = {
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".mp4": "audio/mp4",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+}
 
 
 @router.post("/upload-audio")
@@ -317,6 +328,8 @@ async def upload_audio(
         raise HTTPException(status_code=400, detail="invalid project_id")
 
     mime = (file.content_type or "").lower().split(";")[0].strip()
+    if mime in _GENERIC_UPLOAD_MIMES:  # see upload_video for why
+        mime = _AUDIO_MIME_BY_EXT.get(Path(file.filename or "").suffix.lower(), mime)
     if mime not in ALLOWED_AUDIO_MIMES:
         raise HTTPException(
             status_code=415,
@@ -369,6 +382,11 @@ _VIDEO_EXT_BY_MIME = {
     "video/quicktime": ".mov",
     "video/webm": ".webm",
 }
+_VIDEO_MIME_BY_EXT = {ext: mime for mime, ext in _VIDEO_EXT_BY_MIME.items()}
+# What a browser sends when it has no idea what the file is. Only these are
+# overridden by the extension — a mime the browser states positively is
+# trusted, so a .mp4-named matroska file is still refused on its real type.
+_GENERIC_UPLOAD_MIMES = {"", "application/octet-stream", "binary/octet-stream"}
 
 
 @router.post("/upload-video")
@@ -384,7 +402,28 @@ async def upload_video(
         raise HTTPException(status_code=400, detail="invalid project_id")
 
     mime = (file.content_type or "").lower().split(";")[0].strip()
+    if mime in _GENERIC_UPLOAD_MIMES:
+        # The browser did not recognize the file, so fall back to its
+        # extension. This is not a rare edge: on Windows, Chrome reads
+        # File.type from the registry's per-extension `Content Type` value,
+        # and on plenty of machines that value is simply absent for .mov (and
+        # sometimes .mp4) — so a perfectly good clip arrives as "" or
+        # application/octet-stream and used to be rejected as an unsupported
+        # mime. The extension is the only signal left, and it is the same
+        # signal the file picker's `accept` already matched on.
+        mime = _VIDEO_MIME_BY_EXT.get(Path(file.filename or "").suffix.lower(), mime)
     if mime not in ALLOWED_VIDEO_MIMES:
+        # Log the refusal, not just the acceptance. A rejected upload showed up
+        # in the access log as a bare 415 with no filename and no mime, which
+        # made "I picked a file and nothing happened" impossible to tell apart
+        # from "the request never arrived" — the two have completely different
+        # causes and the log is the only place that distinguishes them.
+        logger.warning(
+            "upload-video REFUSED mime: name=%r sent_mime=%r resolved=%r",
+            file.filename,
+            file.content_type,
+            mime,
+        )
         raise HTTPException(
             status_code=415,
             detail=f"unsupported video mime: {mime!r}; allowed: {sorted(ALLOWED_VIDEO_MIMES)}",
@@ -393,8 +432,15 @@ async def upload_video(
     raw = await file.read(MAX_VIDEO_UPLOAD_BYTES + 1)
     size = len(raw)
     if size == 0:
+        logger.warning("upload-video REFUSED empty: name=%r mime=%r", file.filename, mime)
         raise HTTPException(status_code=400, detail="empty file")
     if size > MAX_VIDEO_UPLOAD_BYTES:
+        logger.warning(
+            "upload-video REFUSED size: name=%r bytes=%d limit=%d",
+            file.filename,
+            size,
+            MAX_VIDEO_UPLOAD_BYTES,
+        )
         raise HTTPException(
             status_code=413,
             detail=f"file too large: {size} > {MAX_VIDEO_UPLOAD_BYTES}",
