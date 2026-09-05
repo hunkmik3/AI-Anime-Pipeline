@@ -23,10 +23,12 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+from sqlalchemy import and_, or_
 from sqlmodel import Session, select
 
 from flowboard.db.models import (
     FlowBatch,
+    FlowBatchWorker,
     FlowChapter,
     FlowPanel,
     FlowPanelImage,
@@ -666,6 +668,54 @@ def series_of_batch(session: Session, batch_id: int) -> FlowSeries:
     return series_of_chapter(session, get_batch(session, batch_id).chapter_id)
 
 
+# ── Shared batches: extra workers alongside the primary assignee ──────────────
+
+def batch_worker_ids(session: Session, batch_id: int) -> list[uuid.UUID]:
+    """The EXTRA workers on a batch (its primary assignee lives on the row)."""
+    return list(
+        session.exec(
+            select(FlowBatchWorker.user_id).where(FlowBatchWorker.batch_id == batch_id)
+        ).all()
+    )
+
+
+def user_worker_batch_ids(session: Session, user_id: Optional[uuid.UUID]) -> set[int]:
+    """Batch ids this user is an EXTRA worker on (assignee batches are separate)."""
+    if user_id is None:
+        return set()
+    return set(
+        session.exec(
+            select(FlowBatchWorker.batch_id).where(FlowBatchWorker.user_id == user_id)
+        ).all()
+    )
+
+
+def set_batch_workers(session: Session, batch_id: int, user_ids: list) -> list[uuid.UUID]:
+    """Replace the extra-worker set for a batch (idempotent). The primary
+    ``assignee`` stays on the batch row and is never duplicated here — a batch is
+    'shared' when it has workers ON TOP OF its assignee. Returns the new set."""
+    get_batch(session, batch_id)  # 404 if the batch is gone
+    want: set[uuid.UUID] = set()
+    for u in user_ids or []:
+        if not u:
+            continue
+        want.add(u if isinstance(u, uuid.UUID) else uuid.UUID(str(u)))
+    existing = {
+        w.user_id: w
+        for w in session.exec(
+            select(FlowBatchWorker).where(FlowBatchWorker.batch_id == batch_id)
+        ).all()
+    }
+    for uid, row in existing.items():
+        if uid not in want:
+            session.delete(row)
+    for uid in want:
+        if uid not in existing:
+            session.add(FlowBatchWorker(batch_id=batch_id, user_id=uid))
+    session.commit()
+    return sorted(want, key=str)
+
+
 # ── Import ──────────────────────────────────────────────────────────────────
 
 #: Panels arrive as a folder. A SUBFOLDER is one panel and every file in it is one
@@ -956,6 +1006,8 @@ def panels_by_status(
     statuses: list[str],
     *,
     assignee_user_id: Optional[uuid.UUID] = None,
+    batch_ids: Optional[set[int]] = None,
+    worker_user_id: Optional[uuid.UUID] = None,
     series_id: Optional[int] = None,
     limit: int = 500,
 ) -> list[FlowPanel]:
@@ -975,7 +1027,26 @@ def panels_by_status(
         .join(FlowBatch, FlowBatch.id == FlowPanel.batch_id)
         .where(FlowPanel.status.in_(statuses))
     )
-    if assignee_user_id is not None:
+    if worker_user_id is not None:
+        # My-work, per-panel aware: panels transferred to me directly, PLUS the
+        # un-transferred panels in my batches. A panel handed AWAY to someone else
+        # (its own assignee set) drops out of the batch owner's queue and appears
+        # only in the new person's.
+        stmt = stmt.where(
+            or_(
+                FlowPanel.assignee_user_id == worker_user_id,
+                and_(
+                    FlowPanel.assignee_user_id.is_(None),
+                    FlowPanel.batch_id.in_(batch_ids or set()),
+                ),
+            )
+        )
+    elif batch_ids is not None:
+        # Explicit batch set (e.g. my-work = assigned OR shared-worker batches).
+        if not batch_ids:
+            return []
+        stmt = stmt.where(FlowPanel.batch_id.in_(batch_ids))
+    elif assignee_user_id is not None:
         stmt = stmt.where(FlowBatch.assignee_user_id == assignee_user_id)
     if series_id is not None:
         stmt = stmt.join(FlowChapter, FlowChapter.id == FlowBatch.chapter_id).where(
@@ -983,6 +1054,27 @@ def panels_by_status(
         )
     stmt = stmt.order_by(FlowPanel.updated_at.desc(), FlowPanel.id.desc()).limit(limit)
     return list(session.exec(stmt).all())
+
+
+def set_panel_assignee(
+    session: Session, panel_id: int, user_id: Optional[uuid.UUID]
+) -> FlowPanel:
+    """Transfer ONE panel to a specific person, or clear it back to the batch.
+
+    ``user_id`` is None to remove the override (the panel follows its batch's
+    assignee again). Nothing about the panel's images, notes or history moves —
+    a transfer changes only who is responsible for it from here on, so every
+    record the previous person made stays theirs.
+    """
+    panel = session.get(FlowPanel, panel_id)
+    if panel is None:
+        raise PanelError("panel not found")
+    panel.assignee_user_id = user_id
+    panel.updated_at = _utcnow()
+    session.add(panel)
+    session.commit()
+    session.refresh(panel)
+    return panel
 
 
 def list_series_panels(session: Session, series_id: int) -> list[FlowPanel]:

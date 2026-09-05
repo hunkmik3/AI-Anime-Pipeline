@@ -291,6 +291,19 @@ interface ShotWorkflowState {
     type: NodeType,
     data: Record<string, unknown>,
   ): Promise<string | null>;
+  // Ctrl+C / Ctrl+V: stash the given nodes, then recreate them as full clones
+  // (every setting/media carried over). `copyNodes` resets the paste offset;
+  // `pasteNodes` returns the new node ids. Session clipboard.
+  copyNodes(
+    items: { type: NodeType; data: Record<string, unknown>; shotId?: string; position: { x: number; y: number } }[],
+  ): void;
+  // `computeDropY(shotId)` returns the Y to drop the pasted cluster at (below
+  // all existing nodes in that shot). `targetShotId` forces the whole clipboard
+  // into that sequence (copy-from-one, paste-into-another).
+  pasteNodes(
+    computeDropY?: (shotId: string) => number | null,
+    targetShotId?: string,
+  ): Promise<string[]>;
   // Clone every node + intra-shot edge of `srcShotId` into `destShotId` (used to
   // duplicate a whole sequence; caller reloads the canvas to render the frame).
   cloneShotContents(srcShotId: string, destShotId: string): Promise<void>;
@@ -347,6 +360,9 @@ interface ShotWorkflowState {
   clearError(): void;
 }
 
+type ClipNode = { type: NodeType; data: Record<string, unknown>; shotId?: string; position: { x: number; y: number } };
+let _clipboard: ClipNode[] = [];
+
 export const useShotWorkflowStore = create<ShotWorkflowState>((set, get) => ({
   shotId: null,
   sceneId: null,
@@ -357,11 +373,17 @@ export const useShotWorkflowStore = create<ShotWorkflowState>((set, get) => ({
   error: null,
 
   async loadShotWorkflow(shotId) {
-    // Always switch to the requested shot even if same id — the caller is
-    // signaling "refresh / take ownership". Clears prior state immediately
-    // so the canvas doesn't briefly render stale nodes from the previous
-    // shot mid-fetch (critical for "switch mid-generation" smoke test).
-    set({ shotId, nodes: [], edges: [], loading: true, error: null });
+    // Switching shots clears immediately so the canvas doesn't render stale
+    // nodes from the previous shot mid-fetch (the "switch mid-generation" smoke
+    // test). But a reload of the SAME shot is the live-refresh ("no-F5") path —
+    // keep the current graph on screen and swap it in once fetched, or the whole
+    // canvas blanks/flickers on every auto-refresh.
+    const sameShot = get().shotId === shotId;
+    if (sameShot) {
+      set({ shotId, error: null });
+    } else {
+      set({ shotId, nodes: [], edges: [], loading: true, error: null });
+    }
     try {
       const wf = await getShotWorkflow(shotId);
       // Guard against late responses after a subsequent switch — if the
@@ -382,7 +404,16 @@ export const useShotWorkflowStore = create<ShotWorkflowState>((set, get) => ({
     // Multi-shot mode: load the whole scene's graph (nodes across all shots)
     // + the shot_groups layout. shotId stays null so single-shot helpers
     // (addNodeOfType etc.) no-op; SceneCanvas drives group/position writes.
-    set({ sceneId, shotId: null, nodes: [], edges: [], shotGroups: [], loading: true, error: null });
+    // Switching scenes wipes immediately so stale nodes don't flash mid-fetch.
+    // A reload of the SAME scene is the live-refresh ("no-F5") path — keep the
+    // current graph visible and swap it in once fetched, so the canvas doesn't
+    // blank/flicker every few seconds while auto-refreshing.
+    const sameScene = get().sceneId === sceneId;
+    if (sameScene) {
+      set({ sceneId, shotId: null, error: null });
+    } else {
+      set({ sceneId, shotId: null, nodes: [], edges: [], shotGroups: [], loading: true, error: null });
+    }
     try {
       const canvas = await getSceneCanvas(sceneId);
       if (get().sceneId !== sceneId) return;
@@ -559,6 +590,55 @@ export const useShotWorkflowStore = create<ShotWorkflowState>((set, get) => ({
     } catch {
       return null;
     }
+  },
+
+  copyNodes(items) {
+    _clipboard = items.map((it) => {
+      const data: Record<string, unknown> = { ...it.data };
+      delete data.shortId; // the server mints a fresh short id on paste
+      return { type: it.type, data, shotId: it.shotId, position: { x: it.position.x, y: it.position.y } };
+    });
+  },
+
+  async pasteNodes(computeDropY, targetShotId) {
+    if (_clipboard.length === 0) return [];
+    const created: string[] = [];
+    const currentShot = get().shotId ?? undefined;
+    const byShot = new Map<string, ClipNode[]>();
+    for (const it of _clipboard) {
+      const shotId = targetShotId ?? it.shotId ?? currentShot;
+      if (!shotId) continue;
+      const arr = byShot.get(shotId);
+      if (arr) arr.push(it);
+      else byShot.set(shotId, [it]);
+    }
+    for (const [shotId, items] of byShot) {
+      const minY = Math.min(...items.map((i) => i.position.y));
+      const dropY = computeDropY ? computeDropY(shotId) : null;
+      const dy = dropY != null ? dropY - minY : 80;
+      for (const it of items) {
+        const px = Math.round(it.position.x);
+        const py = Math.round(it.position.y + dy);
+        try {
+          const dto = await createNode({ shot_id: shotId, type: it.type, x: px, y: py, data: it.data });
+          const node = nodeFromDto({
+            id: dto.id, short_id: dto.short_id, type: dto.type,
+            x: dto.x, y: dto.y, data: dto.data, status: dto.status,
+          });
+          node.data.shotId = shotId;
+          const st = it.data.status as typeof node.data.status;
+          if (st && st !== "idle") {
+            node.data.status = st;
+            patchNode(dto.id, { status: st }).catch(() => {});
+          }
+          set((s) => ({ nodes: [...s.nodes, node] }));
+          created.push(node.id);
+        } catch {
+          /* skip a node that fails to paste */
+        }
+      }
+    }
+    return created;
   },
 
   async cloneShotContents(srcShotId, destShotId) {

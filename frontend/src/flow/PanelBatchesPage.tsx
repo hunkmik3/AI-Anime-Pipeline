@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { useRevalidate } from "../hooks/useRevalidate";
@@ -14,6 +14,7 @@ import {
   exportChapter,
   removeFlowMember,
   reorderBatches,
+  setBatchWorkers,
   setFlowMember,
   thumbUrl,
   updateBatch,
@@ -132,6 +133,25 @@ export function PanelBatchesPage() {
                 }}
             >
               ↓ Export approved{counts.approved ? ` (${counts.approved})` : ""}
+            </button>
+            <button
+              className="btn2"
+              disabled={!counts.submitted}
+              title={
+                counts.submitted
+                  ? `Download ${counts.submitted} in-review panel(s) as a zip`
+                  : "Nothing in review yet — panels submitted for review are what gets exported"
+              }
+              onClick={async () => {
+                try {
+                  await exportChapter(pid, "submitted");
+                  toast(`Đang tải ${counts.submitted} panel in-review… (kiểm tra thư mục Downloads)`);
+                } catch (e) {
+                  toast(e instanceof Error ? e.message : "Export failed");
+                }
+              }}
+            >
+              ↓ Export in-review{counts.submitted ? ` (${counts.submitted})` : ""}
             </button>
           {can("batch.manage") ? (
             <>
@@ -488,6 +508,15 @@ function BatchCard({
               await onChanged();
             }}
           />
+          <WorkersPicker
+            batch={batch}
+            people={people}
+            manage={!!manage}
+            onChange={async (ids) => {
+              await setBatchWorkers(batch.id, ids);
+              await onChanged();
+            }}
+          />
           <span className="pn__batch-acts">
             {total === 0 && canImport ? (
               <>
@@ -687,4 +716,60 @@ const FLOW_ROLE_OPTIONS = [
   { id: "artist", label: "Artist" },
   { id: "viewer", label: "Viewer" },
 ];
+
+/** Extra people sharing a batch, on top of its assignee (the lead). A PM adds/
+ *  removes them; everyone else sees the list read-only. Each worker gets the same
+ *  batch access as the assignee — the per-version/per-event records still name who
+ *  actually did each piece, so sharing never blurs who did what. */
+function WorkersPicker({ batch, people, manage, onChange }: {
+  batch: PanelBatch;
+  people: { user_id: string; name: string }[];
+  manage: boolean;
+  onChange: (ids: string[]) => Promise<void>;
+}) {
+  const [saving, setSaving] = useState(false);
+  const ids = batch.worker_user_ids ?? [];
+  const names = batch.worker_names ?? [];
+  const nameOf = (id: string) =>
+    people.find((p) => p.user_id === id)?.name ?? names[ids.indexOf(id)] ?? "?";
+  const addable = people.filter((p) => p.user_id !== batch.assignee_user_id && !ids.includes(p.user_id));
+  async function set(next: string[]) {
+    setSaving(true);
+    try {
+      await onChange(next);
+    } finally {
+      setSaving(false);
+    }
+  }
+  const lblS: CSSProperties = { fontSize: 11.5, color: "#8b94a7" };
+  const chipS: CSSProperties = { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, background: "rgba(120,190,255,.14)", border: "1px solid rgba(120,190,255,.3)", borderRadius: 999, padding: "2px 6px 2px 9px", color: "#cfe0ff" };
+  if (!manage) {
+    if (!ids.length) return null;
+    return (
+      <div className="pn__batch-workers">
+        <span style={lblS}>Cùng làm:</span>
+        {ids.map((id) => <span key={id} style={chipS}>{nameOf(id)}</span>)}
+      </div>
+    );
+  }
+  return (
+    <div className="pn__batch-workers" title="Nhiều người có thể cùng làm chung batch này">
+      <span style={lblS}>Cùng làm:</span>
+      {ids.length === 0 ? <span style={{ fontSize: 11.5, color: "#6b7280" }}>— chỉ mình người phụ trách —</span> : null}
+      {ids.map((id) => (
+        <span key={id} style={chipS}>
+          {nameOf(id)}
+          <button disabled={saving} title="Bỏ khỏi batch" onClick={() => void set(ids.filter((x) => x !== id))}
+            style={{ border: "none", background: "none", color: "#9ab6e0", cursor: "pointer", fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
+        </span>
+      ))}
+      <select className="inbox__input" disabled={saving || addable.length === 0} value=""
+        onChange={(e) => { const v = e.target.value; e.currentTarget.value = ""; if (v) void set([...ids, v]); }}
+        style={{ fontSize: 12, padding: "3px 6px", maxWidth: 160 }}>
+        <option value="">＋ thêm người…</option>
+        {addable.map((p) => <option key={p.user_id} value={p.user_id}>{p.name}</option>)}
+      </select>
+    </div>
+  );
+}
 

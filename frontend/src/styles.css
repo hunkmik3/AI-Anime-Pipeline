@@ -2469,20 +2469,52 @@ button:disabled {
   background: var(--panel-high);
 }
 .react-flow__node-shotGroup.selected .shot-group,
-.react-flow__node-shotGroup:focus .shot-group {
+.react-flow__node-shotGroup:focus .shot-group,
+.react-flow__node-upscaleGroup.selected .shot-group,
+.react-flow__node-upscaleGroup:focus .shot-group,
+.react-flow__node-colorizeGroup.selected .shot-group,
+.react-flow__node-colorizeGroup:focus .shot-group {
   border-color: var(--accent);
   border-style: solid;
 }
 /* Phase 8.3b — group resize handles (visible when the group is selected). */
+/* Resize handles — bigger + a generous invisible grab margin so a sequence
+   frame is easy to resize. */
 .shot-group .react-flow__resize-control.handle {
-  width: 9px;
-  height: 9px;
-  border-radius: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
   background: var(--accent);
-  border: 1px solid var(--panel);
+  border: 2px solid var(--panel);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+.shot-group .react-flow__resize-control.handle::after {
+  content: "";
+  position: absolute;
+  inset: -7px;
 }
 .shot-group .react-flow__resize-control.line {
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  border-width: 3px;
+}
+/* Wide invisible grab strip on each edge — biased OUTWARD (12px outside, only
+   4px inside) so it's easy to catch without stealing clicks from the content. */
+.shot-group .react-flow__resize-control.line::after {
+  content: "";
+  position: absolute;
+  inset: -8px;
+}
+.shot-group .react-flow__resize-control.line.top::after {
+  inset: -12px 0 -4px 0;
+}
+.shot-group .react-flow__resize-control.line.bottom::after {
+  inset: -4px 0 -12px 0;
+}
+.shot-group .react-flow__resize-control.line.left::after {
+  inset: 0 -4px 0 -12px;
+}
+.shot-group .react-flow__resize-control.line.right::after {
+  inset: 0 -12px 0 -4px;
 }
 .shot-group__header {
   display: flex;

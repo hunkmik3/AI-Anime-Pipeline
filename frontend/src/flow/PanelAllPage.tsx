@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 
 import {
   allPanels,
+  downloadPanelsCsv,
   listPanelSeries,
   thumbUrl,
   type PanelSeries,
@@ -37,6 +38,12 @@ export function PanelAllPage() {
   const [project, setProject] = useState<number | "all">("all");
   const [artist, setArtist] = useState<string>("all");
   const [q, setQ] = useState("");
+  // Report export: a custom created/updated date window (both optional) + the
+  // current comic/status/search filters, downloaded as CSV.
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [dateField, setDateField] = useState<"created_at" | "updated_at">("created_at");
+  const [exporting, setExporting] = useState(false);
   // The studio's own viewer: full image, infinity zoom, pan, download. It only
   // needs a media id — the tools that act on a library row guard themselves.
   const select = useFlowStudioStore((s) => s.select);
@@ -55,6 +62,25 @@ export function PanelAllPage() {
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [project, q]);
+
+  const onExport = useCallback(async () => {
+    setExporting(true);
+    setError(null);
+    try {
+      await downloadPanelsCsv({
+        series_id: project === "all" ? undefined : project,
+        q,
+        status: status === "all" ? undefined : [status],
+        date_from: dateFrom || undefined,
+        date_to: dateTo || undefined,
+        date_field: dateField,
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExporting(false);
+    }
+  }, [project, q, status, dateFrom, dateTo, dateField]);
 
   useEffect(() => {
     void load();
@@ -133,6 +159,47 @@ export function PanelAllPage() {
             </option>
           ))}
         </select>
+
+        {/* Report export — a custom date window + the filters above, as CSV. */}
+        <span className="pn__exportgrp">
+          <label className="pn__datewrap" title="Report window — start date (inclusive)">
+            <span className="pn__dlabel">From</span>
+            <input
+              type="date"
+              className="inbox__input pn__date"
+              value={dateFrom}
+              max={dateTo || undefined}
+              onChange={(e) => setDateFrom(e.target.value)}
+            />
+          </label>
+          <label className="pn__datewrap" title="Report window — end date (inclusive)">
+            <span className="pn__dlabel">To</span>
+            <input
+              type="date"
+              className="inbox__input pn__date"
+              value={dateTo}
+              min={dateFrom || undefined}
+              onChange={(e) => setDateTo(e.target.value)}
+            />
+          </label>
+          <select
+            className="inbox__input pn__select"
+            value={dateField}
+            title="Which timestamp the date window filters on"
+            onChange={(e) => setDateField(e.target.value as "created_at" | "updated_at")}
+          >
+            <option value="created_at">by created</option>
+            <option value="updated_at">by updated</option>
+          </select>
+          <button
+            type="button"
+            className="pn__exportbtn"
+            onClick={() => void onExport()}
+            disabled={exporting}
+          >
+            {exporting ? "Exporting…" : "Export CSV"}
+          </button>
+        </span>
       </div>
 
       <div className="pn__filters">

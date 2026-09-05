@@ -987,6 +987,7 @@ def _ingest_pngs(pngs: list) -> list:
 
 
 from flowboard.worker import flowstudio as _flow_studio  # noqa: E402
+from flowboard.worker import colorize_jobs as _colorize  # noqa: E402
 
 _DEFAULT_HANDLERS: dict[str, Handler] = {
     "proxy": _handle_proxy,
@@ -999,6 +1000,12 @@ _DEFAULT_HANDLERS: dict[str, Handler] = {
     # Flow Studio (/giantflow). Its module imports _ingest_pngs from here
     # lazily, so this plain import is not a cycle.
     "flow_gen_image": _flow_studio.handle_flow_gen_image,
+    # Manga colorizer sequence (kind="colorize"). Stateless jobs — the sequence
+    # holds chapter state in Shot.workflow_metadata on the frontend.
+    "colorize_build_bible": _colorize.handle_build_bible,
+    "colorize_build_sheets": _colorize.handle_build_sheets,
+    "colorize_page": _colorize.handle_colorize_page,
+    "colorize_fix_region": _colorize.handle_fix_region,
 }
 
 

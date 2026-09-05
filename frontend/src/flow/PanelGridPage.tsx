@@ -19,6 +19,7 @@ import {
 } from "../api/client";
 import { GiantflowNav } from "./GiantflowNav";
 import { PanelHero } from "./PanelHero";
+import { ReassignControl } from "./ReassignControl";
 import { toast } from "../store/toast";
 import { useGiantflowRole } from "../store/giantflowRole";
 
@@ -285,6 +286,14 @@ export function PanelGridPage() {
                 panel={p}
                 onDelete={canManage ? () => void removePanel(p) : undefined}
                 onPassThrough={canManage ? () => void passPanel(p) : undefined}
+                onReassigned={
+                  canManage
+                    ? (up) =>
+                        setPanels((prev) =>
+                          prev ? prev.map((x) => (x.id === up.id ? up : x)) : prev,
+                        )
+                    : undefined
+                }
               />
             ))}
           </ul>
@@ -301,10 +310,13 @@ function PanelCard({
   panel,
   onDelete,
   onPassThrough,
+  onReassigned,
 }: {
   panel: Panel;
   onDelete?: () => void;
   onPassThrough?: () => void;
+  /** Provided (PM/admin) → the per-panel transfer control shows on the card. */
+  onReassigned?: (p: Panel) => void;
 }) {
   return (
     <li className={`pn__card pn__card--${panel.status}`}>
@@ -337,6 +349,9 @@ function PanelCard({
 
       <div className="pn__card-meta">
         <b>{panel.code}</b>
+        {onReassigned ? (
+          <ReassignControl panel={panel} onChanged={onReassigned} compact />
+        ) : null}
         {/* One panel, on its own: the common case is "the PM wants THIS one
             now", long before the batch is finished. */}
         {panel.delivered_media_id ? (
@@ -357,6 +372,11 @@ function PanelCard({
           </button>
         ) : null}
         <span className="pn__who">v{panel.version_count || 0}</span>
+        {panel.reassigned ? (
+          <span className="pn__card-reassigned" title={`Đã chuyển riêng cho ${panel.assignee_name ?? ""}`}>
+            → {panel.assignee_name}
+          </span>
+        ) : null}
         {panel.unresolved_notes > 0 ? (
           <span className="pn__notes" title="Unresolved notes">
             {panel.unresolved_notes} note{panel.unresolved_notes === 1 ? "" : "s"}

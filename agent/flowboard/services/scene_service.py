@@ -696,6 +696,12 @@ def _group_layout(scene: Scene, shots: list[Shot]) -> list[dict]:
                 "x": pos.get("x", _GROUP_STACK_X),
                 "y": pos.get("y", _next_y()),
             },
+            # Preserve fields the shot doesn't decide but the user/UI set: a
+            # manual resize (`size`) and the sequence kind ("upscale"). Without
+            # these the reconcile strips them — shrinking a hand-resized frame
+            # and turning an Upscale sequence back into a normal one.
+            **({"size": g["size"]} if isinstance(g.get("size"), dict) else {}),
+            **({"kind": g["kind"]} if isinstance(g.get("kind"), str) and g.get("kind") else {}),
         })
 
     # A stored layout where a frame sits on the one before it is not somebody's
@@ -710,16 +716,12 @@ def _group_layout(scene: Scene, shots: list[Shot]) -> list[dict]:
     # Re-flow the whole stack the moment one does not, using each frame's own
     # height so a stack of collapsed or hand-resized frames stays as tight as
     # its owner made it.
-    heights = [_implied_height(g) for g in out]
-    ys = [g["position"]["y"] for g in out]
-    clears = all(
-        ys[i + 1] >= ys[i] + heights[i] for i in range(len(out) - 1)
-    )
-    if not clears:
-        y = _GROUP_STACK_Y0
-        for g, h in zip(out, heights):
-            g["position"]["y"] = y
-            y += h + _GROUP_GAP
+    # FREE POSITIONING: keep each frame exactly where the user placed it — do
+    # NOT auto-reflow into a vertical stack when frames "don't clear". The old
+    # reflow fought manual placement: drag a sequence aside, then any reload
+    # (e.g. after uploading a ref into it) snapped it back into the column. New
+    # groups are still seeded at a free y above (via _next_y); existing ones are
+    # left untouched.
     return out
 
 
@@ -745,6 +747,7 @@ def update_shot_group(
     label: Optional[str] = None,
     order: Optional[int] = None,
     size: Optional[dict] = None,
+    kind: Optional[str] = None,
 ) -> dict[str, Any]:
     """Patch a single shot's group metadata in scene.canvas_state. Creates the
     group entry if it doesn't exist yet (e.g. a brand-new shot)."""
@@ -767,6 +770,8 @@ def update_shot_group(
         entry["order"] = order
     if size is not None:
         entry["size"] = size
+    if kind is not None:
+        entry["kind"] = kind
     state["shot_groups"] = groups
     scene.canvas_state = state
     # See auto_migrate_canvas: force the JSONB UPDATE for nested mutations.

@@ -10,6 +10,8 @@ import { ScriptNode } from "./ScriptNode";
 import { SeedAudioNode } from "./SeedAudioNode";
 import { StoryboardNode } from "./StoryboardNode";
 import { ShotGroupNode } from "./ShotGroupNode";
+import { UpscaleGroupNode } from "./UpscaleGroupNode";
+import { ColorizeGroupNode } from "./ColorizeGroupNode";
 import { VideoNode } from "./VideoNode";
 import { VideoRefNode } from "./VideoRefNode";
 import { VisualAssetNode } from "./VisualAssetNode";
@@ -17,6 +19,10 @@ import { VisualAssetNode } from "./VisualAssetNode";
 export const nodeTypes = {
   // Phase 8.3 — SceneCanvas shot-group container (parent/child frames).
   shotGroup: ShotGroupNode,
+  // A "sequence" whose kind is upscale → the embedded batch-4K panel.
+  upscaleGroup: UpscaleGroupNode,
+  // A "sequence" whose kind is colorize → the embedded manga-colorizer panel.
+  colorizeGroup: ColorizeGroupNode,
   character: CharacterNode,
   image: ImageNode,
   video: VideoNode,

@@ -21,7 +21,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/audio", tags=["audio"])
 
-_STATUS_BY_CODE = {"auth": 401, "bad_input": 400, "quota": 429, "internal": 502}
+# A provider "auth" failure (bad/expired Seed Audio credentials) is a SERVER /
+# upstream problem, NOT the user's own session — so DON'T return 401 here: the
+# frontend's global 401 handler would log the user out to /login. Map it to 502
+# (bad gateway) so the UI surfaces a real error instead.
+_STATUS_BY_CODE = {"auth": 502, "bad_input": 400, "quota": 429, "internal": 502}
 
 
 class SeedAudioRequest(BaseModel):

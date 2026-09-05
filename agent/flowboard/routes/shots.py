@@ -55,6 +55,9 @@ class ShotGroupPatch(BaseModel):
     # Phase 8.3b: manual group frame size {w, h}. When set, the frontend uses
     # it instead of auto-fitting to children.
     size: dict[str, float] | None = None
+    # Sequence kind: absent/"blank" = normal node canvas; "upscale" = the batch
+    # 4K upscale panel (rendered as a special group node, no child nodes).
+    kind: str | None = None
 
 
 def _shot_dict(shot) -> dict:
@@ -213,6 +216,7 @@ def update_shot_group(
             label=patch.get("label"),
             order=patch.get("order"),
             size=patch.get("size"),
+            kind=patch.get("kind"),
         )
 
 

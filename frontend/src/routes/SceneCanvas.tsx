@@ -9,6 +9,7 @@ import {
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
+  SelectionMode,
   applyNodeChanges,
   useReactFlow,
   type Connection,
@@ -69,12 +70,30 @@ const SHOT_DEFAULT_X = 100; // alignment x for the vertical shot stack
 const SHOT_VERTICAL_GAP = 100; // gap below the previous shot's bottom edge
 
 const GROUP_PREFIX = "group-";
+// An upscale "sequence" has no child nodes — it renders the batch-4K panel, so
+// it gets its own default frame size (resizable, min 640×420 per the node).
+const UPSCALE_DEFAULT_W = 1680;
+const UPSCALE_DEFAULT_H = 980;
+// A colorize "sequence" also renders a self-contained panel (INPUT→RESULT), so
+// it gets its own default frame size (resizable, min 780×520 per the node).
+const COLORIZE_DEFAULT_W = 1720;
+const COLORIZE_DEFAULT_H = 1020;
 
 type ShotGroup = ReturnType<typeof useShotWorkflowStore.getState>["shotGroups"][number];
 
 /** Group frame size: a manual size (user-resized) wins; otherwise auto-fit
  * to the child nodes' bbox. Both min-clamped. */
 function groupSize(g: ShotGroup, children: FlowNode[]): { w: number; h: number } {
+  if (g.kind === "upscale") {
+    return g.size
+      ? { w: Math.max(640, g.size.w), h: Math.max(420, g.size.h) }
+      : { w: UPSCALE_DEFAULT_W, h: UPSCALE_DEFAULT_H };
+  }
+  if (g.kind === "colorize") {
+    return g.size
+      ? { w: Math.max(780, g.size.w), h: Math.max(520, g.size.h) }
+      : { w: COLORIZE_DEFAULT_W, h: COLORIZE_DEFAULT_H };
+  }
   if (g.collapsed) return { w: COLLAPSED_W, h: COLLAPSED_H };
   // Hand-set size wins over auto-fit; MIN_* (not DEFAULT_*) is the floor here,
   // otherwise deliberately shrinking a frame would snap straight back.
@@ -117,6 +136,46 @@ function buildRfNodes(
   for (const g of ordered) {
     const children = byShot.get(g.shot_id) ?? [];
     const { w, h } = groupSize(g, children);
+    // Upscale sequence → a single self-contained panel node (no child graph).
+    if (g.kind === "upscale") {
+      out.push({
+        id: `${GROUP_PREFIX}${g.shot_id}`,
+        type: "upscaleGroup",
+        position: g.position,
+        draggable: true,
+        selectable: true,
+        deletable: false,
+        dragHandle: ".upscale-drag",
+        data: {
+          shotId: g.shot_id,
+          label: g.label,
+          onDelete: canDelete ? () => onDeleteShot(g.shot_id) : undefined,
+          onResize,
+        } as unknown as FlowNode["data"],
+        style: { width: w, height: h },
+      } as FlowNode);
+      continue;
+    }
+    // Colorize sequence → a single self-contained panel node (no child graph).
+    if (g.kind === "colorize") {
+      out.push({
+        id: `${GROUP_PREFIX}${g.shot_id}`,
+        type: "colorizeGroup",
+        position: g.position,
+        draggable: true,
+        selectable: true,
+        deletable: false,
+        dragHandle: ".colorize-drag",
+        data: {
+          shotId: g.shot_id,
+          label: g.label,
+          onDelete: canDelete ? () => onDeleteShot(g.shot_id) : undefined,
+          onResize,
+        } as unknown as FlowNode["data"],
+        style: { width: w, height: h },
+      } as FlowNode);
+      continue;
+    }
     out.push({
       id: `${GROUP_PREFIX}${g.shot_id}`,
       type: "shotGroup",
@@ -183,8 +242,10 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
   const setNodesInStore = useShotWorkflowStore((s) => s.setNodes);
   const deleteNodeByRfId = useShotWorkflowStore((s) => s.deleteNodeByRfId);
   const deleteEdgeByRfId = useShotWorkflowStore((s) => s.deleteEdgeByRfId);
+  const copyNodes = useShotWorkflowStore((s) => s.copyNodes);
+  const pasteNodes = useShotWorkflowStore((s) => s.pasteNodes);
 
-  const { setCenter, getZoom, screenToFlowPosition } = useReactFlow();
+  const { setCenter, getZoom, screenToFlowPosition, getNodes } = useReactFlow();
   const sceneLabel = currentScene?.name ?? "";
 
   const [migrating, setMigrating] = useState(false);
@@ -203,6 +264,27 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
     } | null
   >(null);
   const migrateAttempted = useRef<string | null>(null);
+  // Copy/paste clipboards + cursor (for Ctrl+C / Ctrl+V of sequences and nodes).
+  const seqClipboardRef = useRef<string[]>([]);
+  const mousePosRef = useRef<{ x: number; y: number } | null>(null);
+  const handleDuplicateShotRef = useRef<((shotId: string) => void | Promise<void>) | null>(null);
+  // Where to drop a pasted node cluster in a shot: below its existing nodes,
+  // using measured heights so the paste never overlaps and the frame grows down.
+  const dropYForShot = useCallback(
+    (shotId: string) => {
+      const kids = getNodes().filter(
+        (n) => n.parentId === `${GROUP_PREFIX}${shotId}` && !n.id.startsWith(GROUP_PREFIX),
+      );
+      if (!kids.length) return 48;
+      let bottom = 0;
+      for (const k of kids) {
+        const h = (k.measured?.height ?? (k as { height?: number }).height ?? NODE_H) as number;
+        bottom = Math.max(bottom, k.position.y + h);
+      }
+      return bottom + 48;
+    },
+    [getNodes],
+  );
 
   // Which shot frame (if any) contains a flow-space point — drives shot
   // assignment for toolbar placement + right-click add.
@@ -247,10 +329,30 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
         toast("Thả file vào bên trong khung 1 sequence để tạo node.", "error");
         return;
       }
+      // Upscale sequences have no node graph — their nodes wouldn't render.
+      const grp = useShotWorkflowStore.getState().shotGroups.find((x) => x.shot_id === hit.shotId);
+      if (grp?.kind === "upscale" || grp?.kind === "colorize") {
+        toast(
+          grp?.kind === "colorize"
+            ? "Sequence Colorize nhận trang qua nút ＋ Trang bên trong, không kéo-thả file."
+            : "Sequence Upscale nhận ảnh qua nút ＋ Add bên trong, không kéo-thả file.",
+          "error",
+        );
+        return;
+      }
       const projectId = await useGenerationStore.getState().ensureProjectId();
       if (!projectId) {
         toast("Chưa sẵn sàng project để nhận file — thử lại sau giây lát.", "error");
         return;
+      }
+      // Auto-tag each drop with the next sequential number, continuing the count
+      // of same-type nodes already in this sequence (image→visual_asset, etc.).
+      const nodeTypeOf = (k: "image" | "audio" | "video") =>
+        k === "audio" ? "audio_ref" : k === "video" ? "video_ref" : "visual_asset";
+      const tagCount: Record<string, number> = {};
+      for (const n of useShotWorkflowStore.getState().nodes) {
+        if ((n.data as { shotId?: string }).shotId !== hit.shotId) continue;
+        tagCount[n.type as string] = (tagCount[n.type as string] ?? 0) + 1;
       }
       let i = 0;
       for (const file of files) {
@@ -259,7 +361,14 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
           toast(`Bỏ qua “${file.name}” — chỉ nhận ảnh, audio hoặc video.`, "error");
           continue;
         }
-        const pos = { x: f.x - hit.position.x + i * 36, y: f.y - hit.position.y + i * 36 };
+        // Lay dropped files out in a grid (5 per row) instead of a cascade so
+        // they don't stack on top of each other. Positions are group-local.
+        const pos = {
+          x: f.x - hit.position.x + (i % 5) * (NODE_W + 40),
+          y: f.y - hit.position.y + Math.floor(i / 5) * (NODE_H + 80),
+        };
+        const nt = nodeTypeOf(kind);
+        const tag = String((tagCount[nt] ?? 0) + 1);
         try {
           const resp =
             kind === "image"
@@ -269,7 +378,8 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
                 : await uploadVideo(file, projectId);
           await useShotWorkflowStore
             .getState()
-            .addUploadedMediaNode(kind, resp.media_id, pos, file.name, hit.shotId);
+            .addUploadedMediaNode(kind, resp.media_id, pos, tag, hit.shotId);
+          tagCount[nt] = (tagCount[nt] ?? 0) + 1; // commit only on success (no gaps)
           i += 1;
         } catch (err) {
           toast(
@@ -339,7 +449,18 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
   // reloaded mid-gen — re-pull the canvas so results and upstream-added
   // sequences appear without an F5. Focus/visibility only (no interval) so it
   // never re-seeds the graph while you're dragging.
-  useRevalidate(() => void loadSceneCanvas(sceneId));
+  //
+  // A revalidate can fire just after you drop a sequence, before its new
+  // position has been saved (or from a stale read) — which would snap the frame
+  // back. We keep the just-moved positions in `dirtyGroupPos` and re-apply them
+  // after each reload; each entry clears a few seconds after its save confirms.
+  const dirtyGroupPos = useRef<Map<string, { x: number; y: number }>>(new Map());
+  useRevalidate(async () => {
+    await loadSceneCanvas(sceneId);
+    for (const [shotId, pos] of dirtyGroupPos.current) {
+      useShotWorkflowStore.getState().updateShotGroupLocal(shotId, { position: pos });
+    }
+  });
 
   // One-time auto-migrate when an existing scene has no shot_groups yet.
   useEffect(() => {
@@ -363,24 +484,14 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
   // every following group's y is recomputed = prev.y + prev.h + GAP.
   // Called after delete (shifts up), manual resize (shifts down/up), and
   // anywhere a height delta could open/close a gap.
-  const reflowStack = useCallback(() => {
-    const groups = useShotWorkflowStore.getState().shotGroups;
-    const nodes = useShotWorkflowStore.getState().nodes;
-    const byShot = groupChildren(nodes);
-    const ordered = [...groups].sort((a, b) => a.order - b.order);
-    if (ordered.length === 0) return;
-    const x = ordered[0].position.x ?? SHOT_DEFAULT_X;
-    let y = ordered[0].position.y ?? 100;
-    for (const g of ordered) {
-      const { h } = groupSize(g, byShot.get(g.shot_id) ?? []);
-      if (g.position.x !== x || g.position.y !== y) {
-        const pos = { x, y };
-        useShotWorkflowStore.getState().updateShotGroupLocal(g.shot_id, { position: pos });
-        void patchShotGroup(g.shot_id, { position: pos }).catch(() => {});
-      }
-      y += h + SHOT_VERTICAL_GAP;
-    }
-  }, []);
+  // FREE POSITIONING: sequences stay exactly where the user drops them — a drag
+  // persists the group's position (onNodeDragStop), and nothing re-arranges them
+  // afterwards. The old behaviour force-stacked every group into a single
+  // vertical column on load / resize / delete, which overrode manual placement
+  // and (the reported bug) snapped everything back to a column on F5. It is now
+  // a no-op, kept only so its existing call sites (resize callback, post-delete,
+  // on-load settle) are inert instead of needing to be unwired.
+  const reflowStack = useCallback(() => {}, []);
 
   // Group positions are PERSISTED, so any change to how tall a frame renders
   // (a new default, a child added) leaves the stored y's describing the old
@@ -522,19 +633,17 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
     if (node.id.startsWith(GROUP_PREFIX)) {
       const shotId = (node.data as { shotId: string }).shotId;
       useShotWorkflowStore.getState().updateShotGroupLocal(shotId, { position: node.position });
-      void patchShotGroup(shotId, { position: node.position }).catch(() => {});
-      // Reorder: keep the `order` field in sync with vertical position so a
-      // drag that moves a shot above/below another updates ordering too.
-      const groups = useShotWorkflowStore
-        .getState()
-        .shotGroups.slice()
-        .sort((a, b) => a.position.y - b.position.y);
-      groups.forEach((g, i) => {
-        if (g.order !== i) {
-          useShotWorkflowStore.getState().updateShotGroupLocal(g.shot_id, { order: i });
-          void patchShotGroup(g.shot_id, { order: i }).catch(() => {});
-        }
-      });
+      // Protect this position from a racing revalidate reload until it settles.
+      dirtyGroupPos.current.set(shotId, node.position);
+      void patchShotGroup(shotId, { position: node.position })
+        .then(() => setTimeout(() => dirtyGroupPos.current.delete(shotId), 5000))
+        .catch(() => {});
+      // NO reorder-by-y here. `patchShotGroup` is a read-modify-write of the
+      // whole canvas_state, so firing extra `order` patches concurrently with
+      // the position patch above raced it and CLOBBERED the position (an order
+      // patch read the pre-drag state and wrote it back) — the frame snapped
+      // back on reload. On review `order` is derived server-side from the shot's
+      // order (the reconcile), so a y-order patch is pointless anyway.
     } else {
       // Persist to backend AND mirror into the store so the next re-seed
       // keeps the moved position (otherwise it'd snap back to the loaded x,y).
@@ -543,6 +652,80 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
         useShotWorkflowStore
           .getState()
           .nodes.map((n) => (n.id === node.id ? { ...n, position: node.position } : n)),
+      );
+    }
+  }, [setNodesInStore]);
+
+  // Marquee refinement. Partial hit-testing means the box only has to TOUCH a
+  // target (no need to fully enclose it). We then keep the RIGHT kind based on
+  // where the box STARTED: a box begun inside a sequence frame selects that
+  // frame's child NODES (drop the frame itself); a box begun on open canvas
+  // selects whole SEQUENCES (drop any child nodes it grazed).
+  const selBoxStart = useRef<{ x: number; y: number } | null>(null);
+  const onSelectionStart = useCallback(
+    (e: React.MouseEvent) => {
+      selBoxStart.current = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+    },
+    [screenToFlowPosition],
+  );
+  const onSelectionEnd = useCallback(() => {
+    // Decide NODES-vs-SEQUENCES from WHAT the marquee actually caught, not from the
+    // exact box corners (that missed whenever the box strayed a little outside a
+    // frame — which is what broke "kéo chọn panel" and, with it, right-click-connect).
+    // A box drawn inside a sequence always also grabs that ONE frame, so:
+    //   • 2+ frames caught → the user means SEQUENCES → keep the frames.
+    //   • otherwise any child nodes caught → they mean the NODES → keep them and
+    //     drop the lone parent frame.
+    // Tiebreak for a single frame: a box begun on OPEN CANVAS (around a sequence)
+    // means the sequence itself; begun INSIDE means its nodes.
+    const start = selBoxStart.current;
+    const startedOutside = !(start && getShotAtFlow(start.x, start.y));
+    setRfNodes((prev) => {
+      const sel = prev.filter((n) => n.selected);
+      const groups = sel.filter((n) => n.id.startsWith(GROUP_PREFIX)).length;
+      const children = sel.length - groups;
+      const keepGroups = groups >= 2 || children === 0 || (groups === 1 && startedOutside);
+      let changed = false;
+      const next = prev.map((n) => {
+        if (!n.selected) return n;
+        const isGroup = n.id.startsWith(GROUP_PREFIX);
+        const keep = keepGroups ? isGroup : !isGroup;
+        if (!keep) {
+          changed = true;
+          return { ...n, selected: false };
+        }
+        return n;
+      });
+      return changed ? next : prev;
+    });
+  }, [getShotAtFlow]);
+
+  // Alt/Option + drag draws a marquee selection (see the ReactFlow props). When
+  // the whole selection is dragged, persist EVERY moved node — shot frames via
+  // patchShotGroup, child nodes via persistNodePosition — and mirror children
+  // into the store so a re-seed keeps them put.
+  const onSelectionDragStop = useCallback(async (_e: React.MouseEvent, nodes: FlowNode[]) => {
+    const movedChildren = new Map<string, { x: number; y: number }>();
+    for (const node of nodes) {
+      if (node.id.startsWith(GROUP_PREFIX)) {
+        const shotId = (node.data as { shotId?: string }).shotId;
+        if (!shotId) continue;
+        useShotWorkflowStore.getState().updateShotGroupLocal(shotId, { position: node.position });
+        dirtyGroupPos.current.set(shotId, node.position);
+        // SEQUENTIAL: patchShotGroup rewrites the whole canvas_state, so
+        // concurrent group writes lose each other's positions. Await each.
+        await patchShotGroup(shotId, { position: node.position }).catch(() => {});
+        setTimeout(() => dirtyGroupPos.current.delete(shotId), 5000);
+      } else {
+        void useShotWorkflowStore.getState().persistNodePosition(node.id, node.position);
+        movedChildren.set(node.id, node.position);
+      }
+    }
+    if (movedChildren.size) {
+      setNodesInStore(
+        useShotWorkflowStore
+          .getState()
+          .nodes.map((n) => (movedChildren.has(n.id) ? { ...n, position: movedChildren.get(n.id)! } : n)),
       );
     }
   }, [setNodesInStore]);
@@ -594,6 +777,35 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
     else s.openGenerationDialog(node.id, data.prompt ?? "");
   }, []);
 
+  // Right-click on a multi-selection → wire every selected ref/image/prompt node
+  // into ONE new Video node (placed to the right of the selection), instead of
+  // connecting them one by one.
+  const handleConnectSelectedToVideo = useCallback(async () => {
+    const sel = getNodes().filter((n) => n.selected && !n.id.startsWith(GROUP_PREFIX)) as FlowNode[];
+    const shotId = (sel[0]?.data as { shotId?: string } | undefined)?.shotId;
+    if (!shotId) return;
+    // Edges are shot-scoped: only wire nodes from the SAME sequence, and never
+    // feed a Video node into another Video node.
+    const sources = sel.filter(
+      (n) => (n.data as { shotId?: string }).shotId === shotId && n.type !== "video",
+    );
+    if (sources.length < 2) {
+      toast("Chọn ít nhất 2 node (cùng 1 sequence) rồi thử lại.", "error");
+      return;
+    }
+    const xs = sources.map((n) => n.position.x);
+    const ys = sources.map((n) => n.position.y);
+    const pos = { x: Math.max(...xs) + 340, y: (Math.min(...ys) + Math.max(...ys)) / 2 };
+    const store = useShotWorkflowStore.getState();
+    const videoId = await store.addNodeToShot(shotId, "video", pos);
+    if (!videoId) {
+      toast("Không tạo được node Video.", "error");
+      return;
+    }
+    for (const n of sources) await store.addSceneEdge(n.id, videoId);
+    toast(`Đã nối ${sources.length} node vào 1 node Video.`);
+  }, []);
+
   // ── Right-click context menu (on the flow wrapper) ──
   const onWrapperContextMenu = useCallback(
     (e: React.MouseEvent) => {
@@ -634,6 +846,81 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
     },
     [createShot, sceneId, loadSceneCanvas],
   );
+  // Ref so the once-registered keydown listener always calls the latest clone.
+  handleDuplicateShotRef.current = handleDuplicateShot;
+
+  // Ctrl/Cmd + C / V: copy-paste a selected SEQUENCE (frame → a new sequence
+  // clone in this episode) or selected NODES (→ full clones dropped into the
+  // sequence under the cursor). Skipped while typing so text copy/paste works.
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      mousePosRef.current = { x: e.clientX, y: e.clientY };
+    };
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const k = e.key.toLowerCase();
+      if (k === "c") {
+        const selected = getNodes().filter((n) => n.selected);
+        const frames = selected.filter((n) => n.id.startsWith(GROUP_PREFIX));
+        if (frames.length) {
+          seqClipboardRef.current = frames.map(
+            (n) => (n.data as { shotId?: string }).shotId ?? n.id.slice(GROUP_PREFIX.length),
+          );
+          const label = (frames[0].data as { label?: string }).label;
+          toast(
+            frames.length === 1
+              ? `Đã copy sequence${label ? ` "${label}"` : ""}`
+              : `Đã copy ${frames.length} sequence`,
+          );
+          e.preventDefault();
+          return;
+        }
+        const sel = selected.filter((n) => !n.id.startsWith(GROUP_PREFIX));
+        if (sel.length) {
+          seqClipboardRef.current = [];
+          copyNodes(
+            sel.map((n) => ({
+              type: (n.data as { type: NodeType }).type,
+              data: n.data as unknown as Record<string, unknown>,
+              shotId: (n.data as { shotId?: string }).shotId,
+              position: n.position,
+            })),
+          );
+          toast(`Đã copy ${sel.length} node`);
+          e.preventDefault();
+        }
+      } else if (k === "v") {
+        e.preventDefault();
+        if (seqClipboardRef.current.length) {
+          const ids = [...seqClipboardRef.current];
+          toast(ids.length === 1 ? "Đang dán sequence…" : `Đang dán ${ids.length} sequence…`);
+          void (async () => {
+            for (const sid of ids) await handleDuplicateShotRef.current?.(sid);
+            toast(ids.length === 1 ? "Đã dán sequence mới" : `Đã dán ${ids.length} sequence mới`);
+          })();
+          return;
+        }
+        let targetShotId: string | undefined;
+        const mp = mousePosRef.current;
+        if (mp) {
+          const f = screenToFlowPosition({ x: mp.x, y: mp.y });
+          targetShotId = getShotAtFlow(f.x, f.y)?.shotId;
+        }
+        void (async () => {
+          const created = await pasteNodes(dropYForShot, targetShotId);
+          if (created.length) toast(`Đã dán ${created.length} node`);
+        })();
+      }
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [copyNodes, pasteNodes, dropYForShot, screenToFlowPosition, getShotAtFlow]);
 
   // Close the context menu on any plain click.
   useEffect(() => {
@@ -675,6 +962,64 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
     }
   }
 
+  // Create an UPSCALE sequence: same as New Sequence but marked kind=upscale, so
+  // it renders the embedded batch-4K panel (UpscaleGroupNode) instead of a graph.
+  async function handleNewUpscaleShot() {
+    if (creatingShot) return;
+    setCreatingShot(true);
+    try {
+      const groups = useShotWorkflowStore.getState().shotGroups;
+      const nodes = useShotWorkflowStore.getState().nodes;
+      const pos = nextShotPosition(groups, nodes);
+      const shot = await createShot(sceneId);
+      if (!shot) {
+        const err = useShotStore.getState().error;
+        if (err) toast(err, "error");
+        return;
+      }
+      await patchShotGroup(shot.id, {
+        position: pos,
+        label: `Upscale ${groups.length + 1}`,
+        collapsed: false,
+        order: groups.length,
+        kind: "upscale",
+      }).catch(() => {});
+      await loadSceneCanvas(sceneId);
+      setCenter(pos.x + UPSCALE_DEFAULT_W / 2, pos.y + UPSCALE_DEFAULT_H / 2, { duration: 500, zoom: getZoom() });
+    } finally {
+      setCreatingShot(false);
+    }
+  }
+
+  // Create a COLORIZE sequence: kind=colorize, so it renders the embedded manga
+  // colorizer panel (ColorizeGroupNode) instead of a node graph.
+  async function handleNewColorizeShot() {
+    if (creatingShot) return;
+    setCreatingShot(true);
+    try {
+      const groups = useShotWorkflowStore.getState().shotGroups;
+      const nodes = useShotWorkflowStore.getState().nodes;
+      const pos = nextShotPosition(groups, nodes);
+      const shot = await createShot(sceneId);
+      if (!shot) {
+        const err = useShotStore.getState().error;
+        if (err) toast(err, "error");
+        return;
+      }
+      await patchShotGroup(shot.id, {
+        position: pos,
+        label: `Colorize ${groups.length + 1}`,
+        collapsed: false,
+        order: groups.length,
+        kind: "colorize",
+      }).catch(() => {});
+      await loadSceneCanvas(sceneId);
+      setCenter(pos.x + COLORIZE_DEFAULT_W / 2, pos.y + COLORIZE_DEFAULT_H / 2, { duration: 500, zoom: getZoom() });
+    } finally {
+      setCreatingShot(false);
+    }
+  }
+
   return (
     <div className="page page--scene-canvas">
       <header className="page-header page-header--canvas">
@@ -686,14 +1031,34 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
           <span>{currentScene?.name ?? "Scene"}</span>
         </nav>
         {canCreateSequence && (
-          <button
-            type="button"
-            className="btn btn--primary"
-            onClick={() => void handleNewShot()}
-            disabled={creatingShot}
-          >
-            {creatingShot ? "Adding…" : "+ New Sequence"}
-          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={() => void handleNewShot()}
+              disabled={creatingShot}
+            >
+              {creatingShot ? "Adding…" : "+ New Sequence"}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => void handleNewUpscaleShot()}
+              disabled={creatingShot}
+              title="Sequence xử lý upscale 4K hàng loạt"
+            >
+              ⤴ Upscale Sequence
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => void handleNewColorizeShot()}
+              disabled={creatingShot}
+              title="Sequence tô màu manga (dựng bible + tô cả chương)"
+            >
+              🎨 Colorize Sequence
+            </button>
+          </div>
         )}
       </header>
 
@@ -772,6 +1137,19 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
           edgeTypes={edgeTypes}
           onNodesChange={onNodesChange}
           onNodeDragStop={onNodeDragStop}
+          onSelectionDragStop={onSelectionDragStop}
+          onSelectionStart={onSelectionStart}
+          onSelectionEnd={onSelectionEnd}
+          // Alt/Option + drag = marquee select (Partial: box only needs to TOUCH,
+          // not enclose). onSelectionStart/End then keep child nodes (box started
+          // inside a sequence) or whole sequences (box started on open canvas).
+          // Alt/Option + click toggles items into the selection (multi-select).
+          selectionKeyCode={["Alt"]}
+          multiSelectionKeyCode={["Alt"]}
+          selectionMode={SelectionMode.Partial}
+          // Don't collapse a multi-selection to the one node you grab — so
+          // dragging any SELECTED sequence/node moves the whole selection.
+          selectNodesOnDrag={false}
           onNodeDoubleClick={onNodeDoubleClick}
           onNodeContextMenu={onNodeCtxMenu}
           onConnect={onConnect}
@@ -811,6 +1189,27 @@ function SceneCanvasInner({ projectId, sceneId }: { projectId: string; sceneId: 
           role="menu"
           onClick={(e) => e.stopPropagation()}
         >
+          {/* Multi-selection: wire everything selected into one Video node. */}
+          {(() => {
+            const sel = getNodes().filter(
+              (n) => n.selected && !n.id.startsWith(GROUP_PREFIX) && n.type !== "video",
+            );
+            return sel.length >= 2 ? (
+              <>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setCtxMenu(null);
+                    void handleConnectSelectedToVideo();
+                  }}
+                >
+                  <span aria-hidden="true">⚡</span> Nối {sel.length} node vào 1 node Video
+                </button>
+                <div className="canvas-ctx-menu__divider" />
+              </>
+            ) : null;
+          })()}
           {/* Node-specific: right-clicked directly on a node → Duplicate. */}
           {ctxMenu.nodeId && (
             <>

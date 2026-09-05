@@ -1868,9 +1868,17 @@
 .pn__legend-item.is-approved i          { background: var(--accent, #00a76f); }
 
 .pn__batch-foot {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px 10px;
+  flex-wrap: wrap;
   margin-top: 2px; padding-top: 10px;
   border-top: 1px solid var(--border, #2a2e38);
+}
+/* The "cùng làm" (shared workers) row drops to its own full-width line below the
+   assignee + actions, so it never crowds them. */
+.pn__batch-workers {
+  order: 2; flex-basis: 100%;
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding-top: 8px; border-top: 1px dashed var(--border, #2a2e38);
 }
 .pn__batch-foot .picker__select { max-width: 150px; }
 .pn__batch-acts { display: inline-flex; gap: 6px; align-items: center; }
@@ -1878,6 +1886,55 @@
 .pn__batch-acts .pn__tile-btn--danger { opacity: 0; transition: opacity .15s; }
 .pn__batch:hover .pn__tile-btn--danger,
 .pn__batch:focus-within .pn__tile-btn--danger { opacity: 1; }
+
+/* Per-panel reassign — a dropdown hung off the workspace header. */
+.pn__reassign { position: relative; display: inline-flex; }
+.pn__reassign-btn { display: inline-flex; align-items: center; gap: 6px; }
+.pn__reassign-tag {
+  font-size: 10px; line-height: 1; padding: 2px 5px; border-radius: 999px;
+  background: var(--accent, #6aa9ff); color: #0b0e14; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .03em;
+}
+.pn__reassign-menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 40;
+  min-width: 210px; max-height: 340px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 2px; padding: 6px;
+  background: var(--panel, #171a22); border: 1px solid var(--border, #2a2e38);
+  border-radius: 10px; box-shadow: 0 12px 30px rgba(0, 0, 0, .45);
+}
+.pn__reassign-head {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--muted, #8a91a0); padding: 2px 8px 6px;
+}
+.pn__reassign-item {
+  text-align: left; padding: 7px 9px; border-radius: 7px;
+  background: transparent; border: 0; color: var(--text, #e6e9ef);
+  font-size: 13px; cursor: pointer;
+}
+.pn__reassign-item:hover:not(:disabled) { background: var(--hover, #232733); }
+.pn__reassign-item:disabled { cursor: default; opacity: .6; }
+.pn__reassign-item.is-on { color: var(--accent, #6aa9ff); font-weight: 600; }
+.pn__reassign-item.is-clear {
+  color: var(--muted, #8a91a0);
+  border-bottom: 1px dashed var(--border, #2a2e38);
+  border-radius: 7px 7px 0 0; margin-bottom: 2px;
+}
+.pn__reassign-empty { padding: 8px 9px; font-size: 12px; color: var(--muted, #8a91a0); }
+
+/* Compact trigger on a grid card — an icon that sits right beside the code. */
+.pn__reassign--compact { display: inline-flex; }
+.pn__reassign-icon.pn__dl { margin-left: 0; width: 24px; height: 22px; }
+.pn__reassign-glyph { opacity: .6; }
+.pn__reassign-icon:hover .pn__reassign-glyph,
+.pn__reassign-glyph.is-on { opacity: 1; }
+
+/* Grid card: flags a panel handed to a specific person (overriding its batch). */
+.pn__card-reassigned {
+  font-size: 10.5px; font-weight: 600; color: var(--accent, #6aa9ff);
+  background: color-mix(in srgb, var(--accent, #6aa9ff) 14%, transparent);
+  padding: 1px 6px; border-radius: 999px; white-space: nowrap;
+  max-width: 120px; overflow: hidden; text-overflow: ellipsis;
+}
 
 /* A textarea defaults to `resize: both`, and the width a drag produces is an
    INLINE style — it beats `width: 100%` outright. Dragging either corner handle
@@ -2223,6 +2280,7 @@
 .pn__mysec-h.is-back { color: #ef4444; }
 .pn__mysec-h.is-wait { color: #f59e0b; }
 .pn__mysec-h.is-done { color: var(--accent, #00a76f); }
+.pn__mysec-h.is-assigned { color: #6aa9ff; }
 .pn__mysec-hint { margin: 0 0 10px; font-size: 12.5px; color: var(--muted); }
 /* Cards big enough to read the picture and the remark without leaning in. At
    280px the thumbnail was a stamp and the batch name — which is long now, by
@@ -2244,6 +2302,14 @@
 .pn__mycard.is-back { border-left-color: #ef4444; }
 .pn__mycard.is-wait { border-left-color: #f59e0b; }
 .pn__mycard.is-done { border-left-color: var(--accent, #00a76f); }
+.pn__mycard.is-assigned { border-left-color: #6aa9ff; }
+/* "được giao" chip beside the code, wherever a handed-over panel appears. */
+.pn__mycard-handed {
+  margin-left: 6px; font-size: 10px; font-weight: 700; vertical-align: middle;
+  text-transform: uppercase; letter-spacing: .03em;
+  color: #6aa9ff; background: color-mix(in srgb, #6aa9ff 16%, transparent);
+  padding: 1px 6px; border-radius: 999px;
+}
 .pn__mycard-img {
   position: relative; flex: 0 0 auto;
   width: 132px; aspect-ratio: 3 / 4;
@@ -2330,6 +2396,30 @@
    have already seen. */
 .pn__allbar { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
 .pn__allsearch { width: auto; flex: 1; min-width: 180px; max-width: 320px; }
+
+/* Report export controls — a date window + a CSV button, pushed to the right. */
+.pn__exportgrp {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+.pn__datewrap { display: inline-flex; align-items: center; gap: 4px; }
+.pn__dlabel { font-size: 12px; opacity: 0.7; }
+.pn__date { width: auto; min-width: 140px; }
+.pn__exportbtn {
+  padding: 7px 14px;
+  border: 1px solid var(--pn-accent, #3b82f6);
+  border-radius: 8px;
+  background: var(--pn-accent, #3b82f6);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pn__exportbtn:hover { filter: brightness(1.08); }
+.pn__exportbtn:disabled { opacity: 0.55; cursor: default; }
 
 .pn__table {
   width: 100%;

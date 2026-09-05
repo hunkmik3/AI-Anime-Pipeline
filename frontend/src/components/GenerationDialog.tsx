@@ -216,6 +216,35 @@ export function GenerationDialog() {
 
   const rfId = openDialog.rfId;
   const node = nodes.find((n) => n.id === rfId);
+
+  // Persist the in-progress prompt to the node BEFORE closing, so a stray
+  // click-outside / Escape / X never discards a half-written draft — reopening
+  // the dialog restores it (it initialises from node.data.prompt via
+  // openDialog.prompt). The submit path already saves via the gen flow, so
+  // those closes stay plain. (Ported from prod 2026-08-25.)
+  const savePromptDraft = () => {
+    if (rfId) {
+      useShotWorkflowStore.getState().updateNodeData(rfId, { prompt });
+      const dbId = parseInt(rfId, 10);
+      if (!isNaN(dbId)) patchNode(dbId, { data: { prompt } }).catch(() => {});
+    }
+  };
+  const closeWithDraft = () => {
+    savePromptDraft();
+    closeGenerationDialog();
+  };
+  // Persist the chosen aspect ratio to the node the moment it's picked, so it
+  // survives closing and reopening the dialog (the init effect reads it back
+  // from node.data.aspectRatio). Without this the selection lived only in React
+  // state and every reopen fell back to the default. (Ported from prod.)
+  const selectAspect = (key: AspectKey) => {
+    setAspectRatio(key);
+    if (rfId) {
+      useShotWorkflowStore.getState().updateNodeData(rfId, { aspectRatio: key });
+      const dbId = parseInt(rfId, 10);
+      if (!isNaN(dbId)) patchNode(dbId, { data: { aspectRatio: key } }).catch(() => {});
+    }
+  };
   const boardName = useProjectStore((s) => s.currentProject?.name ?? "");
   // Archived (frozen) series are view-only: block generation from the dialog too,
   // so the button is visibly disabled rather than erroring with a 423 on submit.
@@ -249,7 +278,6 @@ export function GenerationDialog() {
   // Manual mode lets the user paste a full SGS-template prompt (refs +
   // visual style + shot beats + dialogue + SFX), which runs ~4.5k chars in
   // production (contract §11.5). Match the character custom-prompt cap.
-  const promptMaxLen = isManualVideo ? 8000 : 500;
 
   // Find upstream source image for video nodes. When the upstream has
   // multiple variants, we batch-i2v one video per variant — `sourceMediaIds`
@@ -372,8 +400,8 @@ export function GenerationDialog() {
       if (openNodeType === "character") {
         nextAspect = "IMAGE_ASPECT_RATIO_SQUARE";
       } else {
-        const stored = (openNode?.data as { aspect_ratio?: unknown } | undefined)
-          ?.aspect_ratio;
+        const stored = (openNode?.data as { aspectRatio?: unknown } | undefined)
+          ?.aspectRatio;
         const inherited = pickDefaultAspect(
           rfId,
           openNodeType,
@@ -459,7 +487,7 @@ export function GenerationDialog() {
           return;
         }
         e.preventDefault();
-        closeGenerationDialog();
+        closeWithDraft();
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
         e.preventDefault();
@@ -774,7 +802,7 @@ export function GenerationDialog() {
       className="gen-dialog-backdrop"
       role="presentation"
       onClick={(e) => {
-        if (e.target === e.currentTarget) closeGenerationDialog();
+        if (e.target === e.currentTarget) closeWithDraft();
       }}
     >
       <div
@@ -804,7 +832,7 @@ export function GenerationDialog() {
           </div>
           <button
             className="gen-dialog__close"
-            onClick={closeGenerationDialog}
+            onClick={closeWithDraft}
             aria-label="Close dialog (Escape)"
           >
             esc
@@ -893,19 +921,19 @@ export function GenerationDialog() {
                   </span>
                 )}
               </label>
-              <span className="gen-dialog__char-count">{prompt.length}/{promptMaxLen}</span>
+              <span className="gen-dialog__char-count">{prompt.length} chars</span>
             </div>
             <textarea
               id="gen-prompt"
               ref={firstFocusRef}
               className="gen-dialog__textarea"
               rows={isManualVideo ? 12 : 5}
-              maxLength={promptMaxLen}
               value={prompt}
               onChange={(e) => {
                 setPrompt(e.target.value);
                 if (autoPromptUsed) setAutoPromptUsed(false);
               }}
+              onBlur={savePromptDraft}
               placeholder={
                 isManualVideo
                   ? "Paste full Seedance prompt — References (@image1 = …), Visual Style, Shot N (Xs-Ys), Dialogue, SFX. Sent verbatim."
@@ -1283,7 +1311,7 @@ export function GenerationDialog() {
                   <button
                     key={ar.key}
                     className={`aspect-chip${aspectRatio === ar.key ? " aspect-chip--active" : ""}`}
-                    onClick={() => setAspectRatio(ar.key)}
+                    onClick={() => selectAspect(ar.key)}
                     type="button"
                   >
                     {ar.label}

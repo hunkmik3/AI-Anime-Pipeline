@@ -106,6 +106,31 @@ export function NodeHistoryModal({
   const [viewer, setViewer] = useState<{ ids: string[]; label: string; ext: string } | null>(
     null,
   );
+  // request_id of the take whose prompt was just copied (shows a ✓ briefly).
+  const [copiedId, setCopiedId] = useState<number | null>(null);
+
+  async function copyPrompt(r: HistoryRow) {
+    if (!r.prompt) return;
+    try {
+      await navigator.clipboard.writeText(r.prompt);
+    } catch {
+      // Fallback for non-secure contexts / older browsers.
+      const ta = document.createElement("textarea");
+      ta.value = r.prompt;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+      } catch {
+        /* give up silently */
+      }
+      ta.remove();
+    }
+    setCopiedId(r.request_id);
+    window.setTimeout(() => setCopiedId((c) => (c === r.request_id ? null : c)), 1500);
+  }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -260,8 +285,17 @@ export function NodeHistoryModal({
                       </span>
                     ) : null}
                   </div>
-                  {r.media_ids.length || onReuse ? (
+                  {r.media_ids.length || onReuse || r.prompt ? (
                     <div className="nhist__actions">
+                      {r.prompt ? (
+                        <button
+                          className="nhist__act"
+                          title="Copy this prompt to the clipboard"
+                          onClick={() => void copyPrompt(r)}
+                        >
+                          {copiedId === r.request_id ? "✓ Copied" : "⧉ Copy prompt"}
+                        </button>
+                      ) : null}
                       {r.media_ids.length ? (
                         <button
                           className="nhist__act"

@@ -14,11 +14,13 @@ read as protection that isn't there.
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import logging
 import os
 import re
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -134,8 +136,14 @@ def _series_dict(session, row) -> dict:
     }
 
 
-def _batch_dict(session, row) -> dict:
+def _batch_dict(session, row, only_assignee=None) -> dict:
     panels = ps.list_panels(session, row.id)
+    # Partial visibility: someone handed a single panel in this batch sees the
+    # batch, but its counts and thumb must reflect only THEIR panel(s), not the
+    # whole batch they are not on — otherwise the card reads "33 panels" over a
+    # grid that shows one.
+    if only_assignee is not None:
+        panels = [p for p in panels if p.assignee_user_id == only_assignee]
     # The whole spread, not just "approved": a batch that is 40 untouched and 5
     # approved and one that is 40 in review and 5 approved read identically
     # otherwise, and they are nothing alike to a PM.
@@ -148,12 +156,15 @@ def _batch_dict(session, row) -> dict:
         if raws:
             first_raw = raws[0].media_id
             break
+    workers = ps.batch_worker_ids(session, row.id)
     return {
         "id": row.id,
         "chapter_id": row.chapter_id,
         "name": row.name,
         "assignee_user_id": str(row.assignee_user_id) if row.assignee_user_id else None,
         "assignee_name": _user_name(row.assignee_user_id),
+        "worker_user_ids": [str(w) for w in workers],
+        "worker_names": [_user_name(w) for w in workers],
         "panel_count": len(panels),
         "approved_count": counts.get("approved", 0),
         "status_counts": counts,
@@ -627,7 +638,23 @@ def _scoped_to_own_work(session, user) -> Optional[set[int]]:
     role = fp.best_role(session, user)
     if fp.sees_everything(role):
         return None
-    return fp.assigned_batch_ids(session, user)
+    # The VISIBLE set (own/worked batches + ones holding a panel handed to me),
+    # so navigation reaches a transferred panel in its real place. A partial
+    # batch's contents are narrowed to my panel(s) by `_partial_assignee` where
+    # panels are listed — being able to SEE the batch is not seeing its panels.
+    return fp.visible_batch_ids(session, user)
+
+
+def _partial_assignee(session, user, batch_id: int):
+    """For a batch this caller may see only PARTIALLY — handed a panel in it, but
+    not owning or working the batch — the user id its contents must be scoped to.
+    ``None`` when they see the whole batch (own it, work it, or see everything),
+    so counts and grids stay full for the people it belongs to."""
+    if fp.sees_everything(fp.best_role(session, user)):
+        return None
+    if batch_id in fp.assigned_batch_ids(session, user):
+        return None
+    return user.id if user else None
 
 
 def _guard_batch_read(session, user, batch_id: int) -> None:
@@ -636,6 +663,23 @@ def _guard_batch_read(session, user, batch_id: int) -> None:
     mine = _scoped_to_own_work(session, user)
     if mine is not None and batch_id not in mine:
         raise HTTPException(403, "this batch is not assigned to you")
+
+
+def _guard_panel_read(session, user, panel) -> None:
+    """Refuse a panel outside this caller's scope.
+
+    Wider than the batch check by exactly one case: a panel transferred to this
+    person is theirs to open even though its batch is not — that is the whole
+    point of a per-panel handover. Everything else still routes through the
+    batch scope.
+    """
+    _guard(session, user, _series_of_batch(session, panel.batch_id), "panel.read")
+    mine = _scoped_to_own_work(session, user)
+    if mine is None or panel.batch_id in mine:
+        return
+    if user and getattr(panel, "assignee_user_id", None) == user.id:
+        return
+    raise HTTPException(403, "this panel is not assigned to you")
 
 
 def _guard(session, user, series_id, capability: str) -> str:
@@ -664,6 +708,13 @@ def _panel_dict(session, panel, *, with_images: bool = False, _ctx: Optional[dic
         chapter = ps.get_chapter(session, batch.chapter_id)
         assignee_name = _user_name(batch.assignee_user_id)
         unresolved = ps.unresolved_count(session, panel.id)
+    # A per-panel transfer overrides the batch for THIS panel only. Everything
+    # downstream reads the effective owner, so a handed-over panel shows (and
+    # scopes) to the new person while the rest of the batch stays put.
+    eff_assignee_id = panel.assignee_user_id or batch.assignee_user_id
+    reassigned = panel.assignee_user_id is not None
+    if reassigned:
+        assignee_name = _user_name(panel.assignee_user_id)
     latest = generated[-1] if generated else None
     # delivered(): the submitted pick if it is set and present, else the most
     # recent generated. Replicated here to reuse the single `generated` fetch.
@@ -682,10 +733,12 @@ def _panel_dict(session, panel, *, with_images: bool = False, _ctx: Optional[dic
         "code": panel.code,
         "order_index": panel.order_index,
         "status": panel.status,
-        # Who works on this comes from the BATCH — the panel has no assignee of
-        # its own, so there is one place this fact lives.
-        "assignee_user_id": str(batch.assignee_user_id) if batch.assignee_user_id else None,
+        # The EFFECTIVE owner: the per-panel transfer if one was made, else the
+        # batch's assignee. `reassigned` lets the grid flag the handed-over ones.
+        "assignee_user_id": str(eff_assignee_id) if eff_assignee_id else None,
         "assignee_name": assignee_name,
+        "reassigned": reassigned,
+        "batch_assignee_name": _user_name(batch.assignee_user_id) if reassigned else None,
         # The grid shows original and result side by side — that pairing is the
         # whole point of the board this replaces.
         "raw_media_id": raws[0].media_id if raws else None,
@@ -739,7 +792,13 @@ def list_panels(batch_id: int, user=Depends(get_optional_user)):
             ps.get_batch(s, batch_id)
         except ps.PanelError as exc:
             raise _fail(exc)
-        return [_panel_dict(s, p) for p in ps.list_panels(s, batch_id)]
+        panels = ps.list_panels(s, batch_id)
+        # Partial visibility → this batch belongs to someone else and I was only
+        # handed a panel in it: show that panel, not the whole batch.
+        only = _partial_assignee(s, user, batch_id)
+        if only is not None:
+            panels = [p for p in panels if p.assignee_user_id == only]
+        return [_panel_dict(s, p) for p in panels]
 
 
 class PanelCreate(BaseModel):
@@ -838,6 +897,14 @@ def list_batches(chapter_id: int, user=Depends(get_optional_user)):
         rows = ps.list_batches(s, chapter_id)
         if mine is not None:
             rows = [b for b in rows if b.id in mine]
+            full = fp.assigned_batch_ids(s, user)
+            return [
+                _batch_dict(
+                    s, b,
+                    only_assignee=(None if b.id in full else (user.id if user else None)),
+                )
+                for b in rows
+            ]
         return [_batch_dict(s, b) for b in rows]
 
 
@@ -882,7 +949,10 @@ def get_batch(batch_id: int, user=Depends(get_optional_user)):
         resource_guard.require_signed_in(s, user)
         _guard_batch_read(s, user, batch_id)
         try:
-            return _batch_dict(s, ps.get_batch(s, batch_id))
+            return _batch_dict(
+                s, ps.get_batch(s, batch_id),
+                only_assignee=_partial_assignee(s, user, batch_id),
+            )
         except ps.PanelError as exc:
             raise _fail(exc)
 
@@ -903,6 +973,30 @@ def update_batch(batch_id: int, body: BatchUpdate, user=Depends(get_optional_use
             raise _fail(exc)
 
 
+class BatchWorkersBody(BaseModel):
+    #: The FULL set of extra workers (replaces whatever was there). The primary
+    #: assignee stays on the batch and is set via PATCH /batches/{id}; the same
+    #: person may legitimately be both assignee and (redundantly) a worker.
+    user_ids: list[uuid.UUID] = []
+
+
+@router.put("/batches/{batch_id}/workers")
+def set_workers(batch_id: int, body: BatchWorkersBody, user=Depends(get_optional_user)):
+    """Set the EXTRA people who may work this batch alongside its assignee, so a
+    batch can be SHARED among several people. PM/admin only. Each worker then gets
+    the same batch-scoped access as the assignee (sees it, generates, submits);
+    the per-version ``created_by`` and per-event ``actor`` still record who did
+    each piece, so a shared batch never blurs who did what."""
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, _series_of_batch(s, batch_id), "batch.manage")
+        try:
+            ps.set_batch_workers(s, batch_id, body.user_ids)
+            return _batch_dict(s, ps.get_batch(s, batch_id))
+        except ps.PanelError as exc:
+            raise _fail(exc)
+
+
 @router.delete("/batches/{batch_id}")
 def delete_batch(batch_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
@@ -919,9 +1013,35 @@ def delete_batch(batch_id: int, user=Depends(get_optional_user)):
 def get_panel(panel_id: int, user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
-        _guard_batch_read(s, user, ps.get_panel(s, panel_id).batch_id)
+        panel = ps.get_panel(s, panel_id)
+        _guard_panel_read(s, user, panel)
         try:
-            return _panel_dict(s, ps.get_panel(s, panel_id), with_images=True)
+            return _panel_dict(s, panel, with_images=True)
+        except ps.PanelError as exc:
+            raise _fail(exc)
+
+
+class PanelAssigneeBody(BaseModel):
+    #: Who to hand this one panel to. None clears the transfer — the panel
+    #: follows its batch's assignee again.
+    user_id: Optional[uuid.UUID] = None
+
+
+@router.put("/panels/{panel_id}/assignee")
+def reassign_panel(panel_id: int, body: PanelAssigneeBody, user=Depends(get_optional_user)):
+    """Transfer ONE panel to a different person, or clear it back to the batch.
+
+    PM/admin only — the same authority that assigns a batch. Only responsibility
+    moves: every image, note and event the previous person filed stays theirs,
+    because attribution is recorded per action when it happens and a transfer
+    never rewrites it. The new person now sees this panel in their My-work and
+    may open and work it, even if the rest of its batch is not theirs."""
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        _guard(s, user, _series_of_panel(s, panel_id), "batch.manage")
+        try:
+            panel = ps.set_panel_assignee(s, panel_id, body.user_id)
+            return _panel_dict(s, panel, with_images=True)
         except ps.PanelError as exc:
             raise _fail(exc)
 
@@ -938,10 +1058,16 @@ def assignable_users(user=Depends(get_optional_user)):
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
     active = [u for u in user_service.list_users() if getattr(u, "status", "active") == "active"]
-    # Prefer people marked as Giantflow staff (`flow_role` set) — that's the pool
-    # a PM builds ahead of time. Fall back to everyone while nobody is marked yet,
-    # so assignment never dead-ends on an empty picker.
-    designated = [u for u in active if getattr(u, "flow_role", None)]
+    # The pool = anyone who can actually take panel work: people marked as Giantflow
+    # staff (`flow_role` set) PLUS studio managers/admins. A "manager" resolves to a
+    # Giantflow admin (fp.STAFF_SYSTEM_ROLES → fp._role_for = ADMIN), so a batch can be
+    # handed to a PM and they work it directly — but with no flow_role they were being
+    # left out of the picker. Fall back to everyone while nobody is marked yet, so
+    # assignment never dead-ends on an empty picker.
+    designated = [
+        u for u in active
+        if getattr(u, "flow_role", None) or getattr(u, "role", None) in fp.STAFF_SYSTEM_ROLES
+    ]
     pool = designated or active
     return [{"user_id": str(u.id), "name": (u.display_name or u.username)} for u in pool]
 
@@ -1272,7 +1398,11 @@ def all_panels(
             q=q,
         )
         if mine is not None:
-            rows = [r for r in rows if r.batch_id in mine]
+            # A partial batch (I was only handed a panel in it) contributes just
+            # that panel here — never the rest of a batch I am not on.
+            full = fp.assigned_batch_ids(s, user)
+            uid = user.id if user else None
+            rows = [r for r in rows if r.batch_id in full or r.assignee_user_id == uid]
         # Filtered, not refused: someone who can read one comic and not another
         # gets the first rather than a 403 for the whole page.
         return [
@@ -1282,6 +1412,149 @@ def all_panels(
                 fp.role_for(s, user, _series_of_batch(s, row.batch_id)), "panel.read"
             )
         ]
+
+
+@router.get("/panels-report.csv")
+def export_panels_csv(
+    status: Optional[str] = None,
+    series_id: Optional[int] = None,
+    assignee: Optional[uuid.UUID] = None,
+    q: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    date_field: str = "created_at",
+    user=Depends(get_optional_user),
+):
+    """The All-panels view as a downloadable CSV report, optionally limited to a
+    created/updated date window.
+
+    Mirrors ``/panels`` filters (status, comic, artist, search) so the export
+    always matches what the table shows, then adds ``date_from``/``date_to``
+    (inclusive, ``YYYY-MM-DD``, on ``date_field`` = created_at | updated_at) so a
+    PM can pull "everything imported/worked this period" for a report. A distinct
+    path (``/panels-report.csv``, not ``/panels/...``) so it can't be shadowed by
+    ``/panels/{panel_id}``.
+    """
+    statuses = [s.strip() for s in (status or "").split(",") if s.strip()]
+    bad = [s for s in statuses if s not in PANEL_STATUSES]
+    if bad:
+        raise HTTPException(400, f"unknown status {bad[0]!r}")
+    if date_field not in ("created_at", "updated_at"):
+        raise HTTPException(400, "date_field must be 'created_at' or 'updated_at'")
+
+    def _parse(d: Optional[str], *, end: bool) -> Optional[datetime]:
+        if not d:
+            return None
+        try:
+            base = datetime.strptime(d, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(400, f"bad date {d!r} — expected YYYY-MM-DD")
+        # `date_to` is inclusive of its whole day → compare < next midnight.
+        return base + timedelta(days=1) if end else base
+
+    dt_from = _parse(date_from, end=False)
+    dt_to = _parse(date_to, end=True)
+
+    def _in_window(row) -> bool:
+        ts = getattr(row, date_field, None)
+        if ts is None:
+            return dt_from is None and dt_to is None
+        tsn = ts.replace(tzinfo=None) if ts.tzinfo else ts
+        # Compare in Vietnam local time (+7) so the window matches the calendar
+        # dates the user picked and the times printed in the CSV.
+        tsl = tsn + timedelta(hours=7)
+        if dt_from is not None and tsl < dt_from:
+            return False
+        if dt_to is not None and tsl >= dt_to:
+            return False
+        return True
+
+    def _fmt(ts) -> str:
+        """A stored UTC datetime → 'YYYY-MM-DD HH:MM' in Vietnam local time (+7)."""
+        if ts is None:
+            return ""
+        tsn = ts.replace(tzinfo=None) if ts.tzinfo else ts
+        return (tsn + timedelta(hours=7)).strftime("%Y-%m-%d %H:%M")
+
+    with get_session() as s:
+        resource_guard.require_signed_in(s, user)
+        mine = _scoped_to_own_work(s, user)
+        rows = ps.search_panels(
+            s,
+            statuses=statuses or None,
+            series_id=series_id,
+            assignee_user_id=assignee,
+            q=q,
+        )
+        if mine is not None:
+            # Same partial-batch narrowing as /panels, so the CSV matches the view.
+            full = fp.assigned_batch_ids(s, user)
+            uid = user.id if user else None
+            rows = [r for r in rows if r.batch_id in full or r.assignee_user_id == uid]
+
+        # Two passes: gather every row first (to learn the most submits any one
+        # panel has), then emit one "Submit N" column per submit so each hand-in
+        # time gets its own cell instead of being packed into one.
+        collected: list[tuple[list, list[str], int]] = []
+        max_submits = 0
+        for row in rows:
+            if not _in_window(row):
+                continue
+            if not fp.allows(
+                fp.role_for(s, user, _series_of_batch(s, row.batch_id)), "panel.read"
+            ):
+                continue
+            d = _panel_dict(s, row)
+            series_name = ps.series_of_batch(s, row.batch_id).name
+            # Every time this panel was submitted (kind == "submitted"), oldest
+            # first — not just the last — so the report shows the full history.
+            submit_times = [
+                _fmt(e.created_at)
+                for e in ps.list_events(s, row.id)
+                if e.kind == "submitted" and e.created_at
+            ]
+            max_submits = max(max_submits, len(submit_times))
+            prefix = [
+                series_name,
+                d.get("chapter_name", ""),
+                d.get("batch_name", ""),
+                d.get("code", ""),
+                d.get("status", ""),
+                d.get("assignee_name") or "",
+                d.get("delivered_version", 0),
+                d.get("version_count", 0),
+                d.get("raw_count", 0),
+                d.get("unresolved_notes", 0),
+                _fmt(row.created_at),
+                len(submit_times),
+            ]
+            collected.append((prefix, submit_times, row.id))
+
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(
+            [
+                "Comic", "Chapter", "Batch", "Panel code", "Status", "Artist",
+                "Delivered version", "Total versions", "Raw count",
+                "Unresolved notes", "Created", "Submit count",
+            ]
+            + [f"Submit {i + 1}" for i in range(max_submits)]
+            + ["Panel ID"]
+        )
+        for prefix, submit_times, pid in collected:
+            padded = submit_times + [""] * (max_submits - len(submit_times))
+            w.writerow(prefix + padded + [pid])
+
+    fname = "panels_report"
+    if date_from or date_to:
+        fname += f"_{date_from or 'start'}_to_{date_to or 'now'}"
+    fname += ".csv"
+    # Prepend a BOM so Excel opens the UTF-8 (Vietnamese names) correctly.
+    return Response(
+        content="\ufeff" + buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 @router.get("/review-queue")
@@ -1312,10 +1585,27 @@ def my_work(user=Depends(get_optional_user)):
         resource_guard.require_signed_in(s, user)
         if user is None:
             return {"changes_requested": [], "submitted": [], "approved": []}
+        my_batches = fp.assigned_batch_ids(s, user)  # assigned to me OR shared with me
         out: dict[str, list] = {}
         for status in ("changes_requested", "submitted", "approved"):
-            rows = ps.panels_by_status(s, [status], assignee_user_id=user.id)
+            # worker_user_id makes this per-panel aware: panels handed to me
+            # directly show up even from a batch I do not otherwise work, and a
+            # panel handed AWAY drops off my queue.
+            rows = ps.panels_by_status(
+                s, [status], batch_ids=my_batches, worker_user_id=user.id
+            )
             out[status] = [_queue_dict(s, p) for p in rows]
+        # Panels handed to me PERSONALLY that are still to be done. These have no
+        # other home on my screens: I am not a member of their batch, so the batch
+        # grid and All-panels never list them, and the three queues above only
+        # cover submitted/sent-back/approved. Without this a transferred not-yet-
+        # started panel would be reachable only by a direct link. `batch_ids=set()`
+        # narrows the OR to "assignee is me", so my own batches' unstarted panels
+        # (which DO belong in the batch grid) stay out of here.
+        assigned = ps.panels_by_status(
+            s, ["todo", "in_progress"], batch_ids=set(), worker_user_id=user.id
+        )
+        out["assigned"] = [_queue_dict(s, p) for p in assigned]
         return out
 
 
@@ -1546,8 +1836,14 @@ def reorder_chapters(series_id: int, body: ReorderBody, user=Depends(get_optiona
 
 
 @router.get("/chapters/{chapter_id}/export")
-async def export_chapter(chapter_id: int, user=Depends(get_optional_user)):
-    """Every approved panel in one chapter, foldered by batch."""
+async def export_chapter(chapter_id: int, status: str = "approved", user=Depends(get_optional_user)):
+    """Every panel of a given STATUS in one chapter, foldered by batch.
+
+    ``status`` selects which panels go in the zip: "approved" (default) or
+    "submitted" (= the "in review" panels shown on the dashboard). Anything else
+    falls back to "approved"."""
+    wanted = status if status in ("approved", "submitted") else "approved"
+    label = "in-review" if wanted == "submitted" else "approved"
     with get_session() as s:
         resource_guard.require_signed_in(s, user)
         _guard(s, user, _series_of_chapter(s, chapter_id), "panel.read")
@@ -1555,12 +1851,12 @@ async def export_chapter(chapter_id: int, user=Depends(get_optional_user)):
             chapter = ps.get_chapter(s, chapter_id)
         except ps.PanelError as exc:
             raise _fail(exc)
-        panels = [p for p in ps.list_chapter_panels(s, chapter_id) if p.status == "approved"]
+        panels = [p for p in ps.list_chapter_panels(s, chapter_id) if p.status == wanted]
         if not panels:
-            raise HTTPException(404, "no approved panels in this chapter yet")
+            raise HTTPException(404, f"no {label} panels in this chapter yet")
         path, written, skipped = await _zip_panels_to_file(s, panels, folders=True)
         name = _safe_filename(chapter.name)
-    return _zip_file_response(path, f"{name}_approved.zip", written, skipped)
+    return _zip_file_response(path, f"{name}_{label}.zip", written, skipped)
 
 
 @router.get("/chapters/{chapter_id}/export-token")

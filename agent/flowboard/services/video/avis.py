@@ -208,7 +208,8 @@ AVIS_SEEDANCE_2_5_CAPABILITY = VideoProviderCapability(
     # REQUIRED by the edit and extend subtasks. 3:4 and 21:9 came with the same
     # release. Still no 4k.
     aspect_ratios=("1:1", "16:9", "9:16", "4:3", "3:4", "21:9", "adaptive"),
-    resolutions=("480p", "720p", "1080p"),
+    # 1080p disabled on 2.5 per request (2026-08-24) — only 480p/720p offered.
+    resolutions=("480p", "720p"),
     durations=tuple(range(4, 31)),
 )
 
@@ -495,6 +496,32 @@ def _write_cached_kyc_asset(
         s.commit()
 
 
+# Seedance/Avis reject a KYC image whose width or height is outside 300–6000px.
+# A regular inline ref is already shrunk to _INLINE_MAX_DIM, but a KYC image is
+# hoisted to R2 at full size, so a big character sheet (e.g. 6336px wide) 400s
+# with "Width must be between 300px and 6000px". Downscale to fit first.
+_KYC_MAX_IMAGE_DIM = 6000
+
+
+def _kyc_fit_image(path: Path) -> tuple[Path, bool]:
+    """Return (path, resized). If the image's longest side exceeds
+    ``_KYC_MAX_IMAGE_DIM`` write a shrunk JPEG copy (aspect kept) and return it;
+    otherwise return the original untouched. Any read error → original."""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as im:
+            if max(im.size) <= _KYC_MAX_IMAGE_DIM:
+                return path, False
+            im = im.convert("RGB")
+            im.thumbnail((_KYC_MAX_IMAGE_DIM, _KYC_MAX_IMAGE_DIM))  # shrink-only
+            out = media_service.MEDIA_CACHE_DIR / f"kycfit_{path.stem}.jpg"
+            im.save(out, format="JPEG", quality=92, optimize=True)
+            return out, True
+    except Exception:  # noqa: BLE001 — unreadable → let Avis validate the original
+        return path, False
+
+
 async def ensure_kyc_asset(
     media_id: str,
     asset_type: str,
@@ -522,8 +549,18 @@ async def ensure_kyc_asset(
     local = media_service.cached_path(media_id)
     if local is None:
         raise VideoError("bad_input", f"KYC asset media {media_id!r} has no local cache file")
+    # KYC images over 6000px must be downscaled first (Seedance width/height cap:
+    # "Width must be between 300px and 6000px"). The resized copy hoists under its
+    # own asset_id so the original R2 object (used elsewhere) is never overwritten.
+    hoist_path = Path(local)
+    hoist_id = media_id
+    if asset_type == "Image":
+        fitted, resized = await asyncio.to_thread(_kyc_fit_image, hoist_path)
+        if resized:
+            hoist_path = fitted
+            hoist_id = f"{media_id}-kycfit"
     try:
-        public_url = prepare_image_url(Path(local), project_id=project_id, asset_id=media_id)
+        public_url = prepare_image_url(hoist_path, project_id=project_id, asset_id=hoist_id)
     except ObjectStorageError as exc:
         raise VideoError(
             "bad_input",

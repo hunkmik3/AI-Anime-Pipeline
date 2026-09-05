@@ -509,6 +509,175 @@ export function thumbUrl(mediaId: string, w = 256): string {
   return `/api/media/${encodeURIComponent(clean)}/thumb?w=${w}`;
 }
 
+// ── Batch 4K upscale (Atrium Nano Banana Pro) — used by the Upscale sequence ──
+
+export interface UpscaleSource {
+  source_media_id: string;
+  source_name: string;
+}
+
+/** Cache a source image server-side and return its media_id WITHOUT upscaling
+ *  (shrunk to 2048/WebP first — Atrium only fetches /thumb?w=2048 anyway). */
+export async function upscaleUploadSource(file: File, name?: string): Promise<UpscaleSource> {
+  const toSend = await shrinkImageForUpload(file);
+  const form = new FormData();
+  form.append("file", toSend);
+  if (name) form.append("name", name);
+  const res = await fetch("/api/upscale/source", { method: "POST", body: form });
+  if (!res.ok) throw new Error(await extractErrorMessage(res));
+  return res.json() as Promise<UpscaleSource>;
+}
+
+// Async 4K job: /run kicks it off (no Cloudflare 524), the UI polls /job/{id}.
+export interface UpscaleJob {
+  status: "running" | "done" | "error" | "none";
+  result_media_id?: string;
+  result_name?: string;
+  error?: string;
+}
+export function upscaleRun(sourceMediaId: string, name?: string): Promise<{ ok: boolean; status: string }> {
+  return api<{ ok: boolean; status: string }>("/api/upscale/run", {
+    method: "POST",
+    body: JSON.stringify({ source_media_id: sourceMediaId, name }),
+  });
+}
+export function upscaleJob(sourceMediaId: string): Promise<UpscaleJob> {
+  return api<UpscaleJob>(`/api/upscale/job/${encodeURIComponent(sourceMediaId)}`);
+}
+
+/** Download one 4K result as a real file (blob + <a download>). */
+export async function downloadUpscaleImage(mediaId: string, filename: string): Promise<void> {
+  const clean = mediaId.replace(/^media\//, "");
+  const res = await fetch(`/media/${encodeURIComponent(clean)}`);
+  if (!res.ok) throw new Error(await extractErrorMessage(res));
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename.endsWith(".png") ? filename : `${filename}.png`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/** Download all chosen 4K results as one .zip (each named <name>.png). */
+export async function downloadUpscaleZip(items: { media_id: string; name: string }[]): Promise<void> {
+  const res = await fetch("/api/upscale/zip", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(items),
+  });
+  if (!res.ok) throw new Error(await extractErrorMessage(res));
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "upscaled_4K.zip";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// ── Manga Colorizer — used by the Colorize sequence (kind="colorize") ─────────
+
+export interface ColorizeConfig {
+  engine_configured: boolean;
+  provider: string;
+  model: string;
+  reader_configured: boolean;
+  detect_configured: boolean;
+  sam_available: boolean;
+}
+export function colorizeConfig(): Promise<ColorizeConfig> {
+  return api<ColorizeConfig>("/api/colorize/config");
+}
+
+/** Upload one B&W page (or a style ref) → media_id. Shrunk to 2048 first (the
+ *  reader fetches /thumb and the engine downscales anyway). */
+export async function colorizeUploadPage(
+  file: File,
+): Promise<{ media_id: string; mime: string; size: number }> {
+  const toSend = await shrinkImageForUpload(file);
+  const form = new FormData();
+  form.append("file", toSend);
+  const res = await fetch("/api/colorize/upload-page", { method: "POST", body: form });
+  if (!res.ok) throw new Error(await extractErrorMessage(res));
+  return res.json();
+}
+
+// box = [ymin, xmin, ymax, xmax], normalized 0-1000.
+export type Box4 = [number, number, number, number];
+export function colorizeDetectPanels(mediaId: string): Promise<{ panels: { box: Box4 }[] }> {
+  return api<{ panels: { box: Box4 }[] }>("/api/colorize/detect-panels", {
+    method: "POST",
+    body: JSON.stringify({ media_id: mediaId }),
+  });
+}
+export interface ColorizeSegment {
+  id: number;
+  label: string;
+  box: Box4;
+}
+export function colorizeDetectObjects(mediaId: string): Promise<{ segments: ColorizeSegment[] }> {
+  return api<{ segments: ColorizeSegment[] }>("/api/colorize/detect-objects", {
+    method: "POST",
+    body: JSON.stringify({ media_id: mediaId }),
+  });
+}
+export function colorizeSamPoint(mediaId: string, x: number, y: number): Promise<{ box: Box4 }> {
+  return api<{ box: Box4 }>("/api/colorize/sam-point", {
+    method: "POST",
+    body: JSON.stringify({ media_id: mediaId, x, y }),
+  });
+}
+
+export async function downloadColorizeZip(
+  items: { media_id: string; name: string }[],
+  name?: string,
+): Promise<void> {
+  const res = await fetch("/api/colorize/download-zip", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items, name }),
+  });
+  if (!res.ok) throw new Error(await extractErrorMessage(res));
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${name || "chapter"}_colorized.zip`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/** Create a worker request and poll it to a terminal state — used by the colorize
+ *  jobs (build bible / sheets / colorize page / fix region). Resolves with the
+ *  finished RequestDTO on "done"; throws on failure/timeout. */
+export async function runRequestToCompletion(
+  type: string,
+  params: Record<string, unknown>,
+  opts?: { intervalMs?: number; timeoutMs?: number; onStatus?: (s: RequestDTO["status"]) => void },
+): Promise<RequestDTO> {
+  const req = await createRequest({ type, params });
+  const interval = opts?.intervalMs ?? 1500;
+  const timeout = opts?.timeoutMs ?? 12 * 60 * 1000;
+  const t0 = Date.now();
+  let last: RequestDTO = req;
+  const terminal = ["done", "failed", "canceled", "timeout"];
+  while (!terminal.includes(last.status)) {
+    if (Date.now() - t0 > timeout) throw new Error("hết thời gian chờ");
+    await new Promise((r) => setTimeout(r, interval));
+    last = await getRequest(req.id).catch(() => last);
+    opts?.onStatus?.(last.status);
+  }
+  if (last.status !== "done") throw new Error(last.error || `job ${last.status}`);
+  return last;
+}
+
 // ── Upload ───────────────────────────────────────────────────────────────────
 
 export interface UploadResponse {
@@ -523,15 +692,69 @@ export interface UploadResponse {
   height?: number;
 }
 
+// Reference / source images only ever feed the video model, which tops out at
+// 720p and downsamples refs anyway — so a 4K upload is tens of MB of pure waste
+// that, on a modest uplink, is slow and (worse) intermittently times out at
+// Cloudflare with a 408 before it ever reaches the origin. Shrink to a generous
+// 2048px longest edge and re-encode to WebP before sending: a ~20 MB PNG
+// becomes ~0.5 MB, uploads in a blink, and still holds ample face detail for
+// KYC. Small-enough, animated, or undecodable files are sent through untouched.
+// (Ported from prod 2026-08-25 — review used to push the full-size file.)
+const UPLOAD_MAX_EDGE = 2048;
+
+async function decodeBitmap(file: File): Promise<ImageBitmap | null> {
+  // `from-image` bakes EXIF orientation into the pixels so a phone photo isn't
+  // silently rotated when we redraw it; fall back if the option is unsupported.
+  try {
+    return await createImageBitmap(file, { imageOrientation: "from-image" });
+  } catch {
+    try {
+      return await createImageBitmap(file);
+    } catch {
+      return null;
+    }
+  }
+}
+
+async function shrinkImageForUpload(file: File): Promise<File> {
+  if (!file.type.startsWith("image/")) return file;
+  // GIF (animation) and SVG (vector) would be destroyed by a canvas re-encode.
+  if (file.type === "image/gif" || file.type === "image/svg+xml") return file;
+  const bmp = await decodeBitmap(file);
+  if (!bmp) return file;
+  try {
+    const longest = Math.max(bmp.width, bmp.height);
+    if (longest <= UPLOAD_MAX_EDGE) return file; // already within the cap
+    const scale = UPLOAD_MAX_EDGE / longest;
+    const w = Math.round(bmp.width * scale);
+    const h = Math.round(bmp.height * scale);
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return file;
+    ctx.drawImage(bmp, 0, 0, w, h);
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/webp", 0.9),
+    );
+    if (!blob || blob.size >= file.size) return file; // re-encode didn't help
+    const name = file.name.replace(/\.[^.]+$/, "") + ".webp";
+    return new File([blob], name, { type: "image/webp" });
+  } finally {
+    bmp.close?.();
+  }
+}
+
 export async function uploadImage(
   file: File,
   projectId: string,
   nodeId?: number,
 ): Promise<UploadResponse> {
+  const toSend = await shrinkImageForUpload(file);
   const form = new FormData();
   form.append("project_id", projectId);
   if (nodeId !== undefined) form.append("node_id", String(nodeId));
-  form.append("file", file);
+  form.append("file", toSend);
 
   // Don't set Content-Type — the browser sets it with the correct boundary.
   const res = await fetch("/api/upload", { method: "POST", body: form });
@@ -1212,6 +1435,8 @@ export interface ShotGroup {
   order: number;
   // Phase 8.3b — manual frame size; when set, overrides the auto-fit.
   size?: { w: number; h: number };
+  // undefined/"blank" = normal node canvas; "upscale" = the batch-4K panel.
+  kind?: string;
 }
 
 export interface SceneCanvasState {
@@ -2541,9 +2766,10 @@ export function reorderChapters(seriesId: number, ids: number[]): Promise<{ ok: 
   });
 }
 
-/** Every approved panel in one chapter, foldered by batch. */
-export function exportChapter(chapterId: number) {
-  return exportZipViaLink("chapters", chapterId);
+/** Panels of one chapter as a zip, foldered by batch. ``status`` picks which:
+ *  "approved" (default) or "submitted" (= in review). */
+export function exportChapter(chapterId: number, status?: string) {
+  return exportZipViaLink("chapters", chapterId, status);
 }
 
 /** The slate — the container every comic hangs off. */
@@ -2623,6 +2849,9 @@ export interface PanelBatch {
   name: string;
   assignee_user_id: string | null;
   assignee_name: string | null;
+  /** Extra people sharing this batch, on top of the assignee (multi-worker). */
+  worker_user_ids?: string[];
+  worker_names?: string[];
   panel_count: number;
   approved_count: number;
   /** Panels per status — the whole spread, not just how many are approved. */
@@ -2656,8 +2885,14 @@ export interface Panel {
   code: string;
   order_index: number;
   status: PanelStatus;
+  /** The EFFECTIVE owner: a per-panel transfer if one was made, else the batch's
+   *  assignee. Read this for "who works this panel". */
   assignee_user_id: string | null;
   assignee_name: string | null;
+  /** True when this one panel was transferred to a specific person, overriding
+   *  its batch. `batch_assignee_name` is then who the batch belongs to. */
+  reassigned?: boolean;
+  batch_assignee_name?: string | null;
   /** First raw piece — what the grid shows beside the result. */
   raw_media_id: string | null;
   raw_count: number;
@@ -2977,8 +3212,27 @@ export function deleteBatch(batchId: number): Promise<{ deleted: number }> {
   });
 }
 
+/** Set the EXTRA people who may work a batch alongside its assignee (share it).
+ *  Replaces the whole worker set. PM/admin only (enforced server-side). */
+export function setBatchWorkers(batchId: number, userIds: string[]): Promise<PanelBatch> {
+  return api<PanelBatch>(`/api/flowstudio/batches/${batchId}/workers`, {
+    method: "PUT",
+    body: JSON.stringify({ user_ids: userIds }),
+  });
+}
+
 export function getPanel(panelId: number): Promise<Panel> {
   return api<Panel>(`/api/flowstudio/panels/${panelId}`);
+}
+
+/** Transfer ONE panel to a different person, or clear it back to the batch
+ *  (userId = null). PM/admin only (enforced server-side). The previous person's
+ *  images, notes and events stay attributed to them — only responsibility moves. */
+export function reassignPanel(panelId: number, userId: string | null): Promise<Panel> {
+  return api<Panel>(`/api/flowstudio/panels/${panelId}/assignee`, {
+    method: "PUT",
+    body: JSON.stringify({ user_id: userId }),
+  });
 }
 
 
@@ -3108,9 +3362,14 @@ export function downloadPanel(panelId: number) {
 async function exportZipViaLink(
   kind: "batches" | "chapters" | "series",
   id: number,
+  status?: string,
 ): Promise<void> {
   const { token } = await api<{ token: string }>(`/api/flowstudio/${kind}/${id}/export-token`);
-  const url = `/api/flowstudio/${kind}/${id}/export${token ? `?dl=${encodeURIComponent(token)}` : ""}`;
+  const q = new URLSearchParams();
+  if (token) q.set("dl", token);
+  if (status) q.set("status", status);
+  const qs = q.toString();
+  const url = `/api/flowstudio/${kind}/${id}/export${qs ? `?${qs}` : ""}`;
   // Content-Disposition: attachment on the response makes this download without
   // navigating the page away.
   const a = document.createElement("a");
@@ -3208,6 +3467,46 @@ export function allPanels(filters: {
   return api<QueuePanel[]>(`/api/flowstudio/panels${qs ? `?${qs}` : ""}`);
 }
 
+/**
+ * Download the All-panels view as a CSV report. Same filters as `allPanels`
+ * plus an optional created/updated date window, so a PM can pull "everything
+ * this period" for a report. Fetches the CSV and triggers a browser download
+ * (filename comes from the server's Content-Disposition).
+ */
+export async function downloadPanelsCsv(filters: {
+  status?: string[];
+  series_id?: number;
+  assignee?: string;
+  q?: string;
+  date_from?: string;
+  date_to?: string;
+  date_field?: "created_at" | "updated_at";
+} = {}): Promise<void> {
+  const s = new URLSearchParams();
+  if (filters.status?.length) s.set("status", filters.status.join(","));
+  if (filters.series_id !== undefined) s.set("series_id", String(filters.series_id));
+  if (filters.assignee) s.set("assignee", filters.assignee);
+  if (filters.q?.trim()) s.set("q", filters.q.trim());
+  if (filters.date_from) s.set("date_from", filters.date_from);
+  if (filters.date_to) s.set("date_to", filters.date_to);
+  if (filters.date_field) s.set("date_field", filters.date_field);
+  const qs = s.toString();
+  const res = await fetch(`/api/flowstudio/panels-report.csv${qs ? `?${qs}` : ""}`);
+  if (!res.ok) throw new Error(await extractErrorMessage(res));
+  const blob = await res.blob();
+  const cd = res.headers.get("Content-Disposition") || "";
+  const m = /filename="([^"]+)"/.exec(cd);
+  const name = m ? m[1] : "panels_report.csv";
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 /** Everything handed in and waiting on a verdict, across every artist. */
 export function reviewQueue(seriesId?: number): Promise<QueuePanel[]> {
   const qs = seriesId === undefined ? "" : `?project_id=${seriesId}`;
@@ -3219,6 +3518,10 @@ export function myWork(): Promise<{
   changes_requested: QueuePanel[];
   submitted: QueuePanel[];
   approved: QueuePanel[];
+  /** Panels transferred to me personally that are still to-be-done (todo /
+   *  in_progress). They live in someone else's batch, so this is the only place
+   *  I can find them. */
+  assigned: QueuePanel[];
 }> {
   return api(`/api/flowstudio/my-work`);
 }

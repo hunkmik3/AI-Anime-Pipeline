@@ -5,6 +5,7 @@ import {
   Controls,
   MiniMap,
   ReactFlow,
+  SelectionMode,
   applyEdgeChanges,
   applyNodeChanges,
   useReactFlow,
@@ -161,6 +162,14 @@ export function ShotCanvas() {
         toast("Chưa sẵn sàng project để nhận file — thử lại sau giây lát.", "error");
         return;
       }
+      // Auto-tag each drop with the next sequential number, continuing the count
+      // of same-type nodes already in this sequence.
+      const nodeTypeOf = (k: "image" | "audio" | "video") =>
+        k === "audio" ? "audio_ref" : k === "video" ? "video_ref" : "visual_asset";
+      const tagCount: Record<string, number> = {};
+      for (const n of useShotWorkflowStore.getState().nodes) {
+        tagCount[n.type as string] = (tagCount[n.type as string] ?? 0) + 1;
+      }
       let i = 0;
       for (const file of files) {
         const kind = fileKind(file);
@@ -168,7 +177,10 @@ export function ShotCanvas() {
           toast(`Bỏ qua “${file.name}” — chỉ nhận ảnh, audio hoặc video.`, "error");
           continue;
         }
-        const pos = { x: base.x + i * 40, y: base.y + i * 40 };
+        // Grid, 5 per row (no cascade stacking).
+        const pos = { x: base.x + (i % 5) * 300, y: base.y + Math.floor(i / 5) * 320 };
+        const nt = nodeTypeOf(kind);
+        const tag = String((tagCount[nt] ?? 0) + 1);
         try {
           const resp =
             kind === "image"
@@ -178,7 +190,8 @@ export function ShotCanvas() {
                 : await uploadVideo(file, projectId);
           await useShotWorkflowStore
             .getState()
-            .addUploadedMediaNode(kind, resp.media_id, pos, file.name);
+            .addUploadedMediaNode(kind, resp.media_id, pos, tag);
+          tagCount[nt] = (tagCount[nt] ?? 0) + 1; // commit only on success (no gaps)
           i += 1;
         } catch (err) {
           toast(
@@ -240,6 +253,15 @@ export function ShotCanvas() {
   const onNodeDragStop: OnNodeDrag<FlowNode> = useCallback(
     (_event, node) => {
       persistNodePosition(node.id, node.position);
+    },
+    [persistNodePosition],
+  );
+
+  // Alt/Option + drag = marquee select; dragging the selection moves them all →
+  // persist every moved node's position.
+  const onSelectionDragStop = useCallback(
+    (_e: React.MouseEvent, nodes: FlowNode[]) => {
+      for (const node of nodes) void persistNodePosition(node.id, node.position);
     },
     [persistNodePosition],
   );
@@ -401,6 +423,15 @@ export function ShotCanvas() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeDragStop={onNodeDragStop}
+        onSelectionDragStop={onSelectionDragStop}
+        // Alt/Option + drag = marquee select nodes (Partial: box only needs to
+        // TOUCH a node). Alt/Option + click toggles nodes into the selection.
+        // Drag the selection to move them all together.
+        selectionKeyCode={["Alt"]}
+        multiSelectionKeyCode={["Alt"]}
+        selectionMode={SelectionMode.Partial}
+        // Drag any selected node moves the whole multi-selection (don't collapse).
+        selectNodesOnDrag={false}
         onConnect={onConnect}
         onConnectStart={onConnectStart}
         onConnectEnd={onConnectEnd}

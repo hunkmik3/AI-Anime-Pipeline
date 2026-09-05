@@ -34,7 +34,14 @@ from typing import Optional
 from fastapi import HTTPException
 from sqlmodel import Session, select
 
-from flowboard.db.models import FlowBatch, FlowChapter, FlowSeriesMember, User
+from flowboard.db.models import (
+    FlowBatch,
+    FlowBatchWorker,
+    FlowChapter,
+    FlowPanel,
+    FlowSeriesMember,
+    User,
+)
 
 ADMIN = "admin"
 PRODUCER = "producer"
@@ -180,6 +187,35 @@ def _role_for(session: Session, user: Optional[User], series_id: Optional[int]) 
     ).first()
     if assigned is not None:
         return ARTIST
+    # Or an extra worker on a SHARED batch in this comic — same working access as
+    # the assignee, because being added to a batch is the act of saying "help with
+    # this one".
+    worked = session.exec(
+        select(FlowBatchWorker.id)
+        .join(FlowBatch, FlowBatch.id == FlowBatchWorker.batch_id)
+        .join(FlowChapter, FlowChapter.id == FlowBatch.chapter_id)
+        .where(
+            FlowChapter.series_id == series_id,
+            FlowBatchWorker.user_id == user.id,
+        )
+    ).first()
+    if worked is not None:
+        return ARTIST
+    # Or handed a SINGLE panel inside this comic. A per-panel transfer grants the
+    # same working access as owning the batch would — scoped, in practice, to the
+    # panel(s) actually handed over (the read guard enforces the narrowing).
+    owns_panel = session.exec(
+        select(FlowPanel.id)
+        .join(FlowBatch, FlowBatch.id == FlowPanel.batch_id)
+        .join(FlowChapter, FlowChapter.id == FlowBatch.chapter_id)
+        .where(
+            FlowChapter.series_id == series_id,
+            FlowPanel.assignee_user_id == user.id,
+        )
+        .limit(1)
+    ).first()
+    if owns_panel is not None:
+        return ARTIST
     # Somebody with a standing on ANOTHER comic is a colleague: the studio reads
     # across its own slate, which is what VIEWER is for. Somebody with no standing
     # on any comic is not in this product at all — a Giant Studio editor was
@@ -204,10 +240,21 @@ def has_any_standing(session: Session, user: Optional[User]) -> bool:
         .limit(1)
     ).first():
         return True
+    if session.exec(
+        select(FlowBatch.id).where(FlowBatch.assignee_user_id == user.id).limit(1)
+    ).first():
+        return True
+    if session.exec(
+        select(FlowBatchWorker.id)
+        .where(FlowBatchWorker.user_id == user.id)
+        .limit(1)
+    ).first():
+        return True
+    # A single panel transferred to them is also a standing on the comic side.
     return bool(
         session.exec(
-            select(FlowBatch.id)
-            .where(FlowBatch.assignee_user_id == user.id)
+            select(FlowPanel.id)
+            .where(FlowPanel.assignee_user_id == user.id)
             .limit(1)
         ).first()
     )
@@ -225,13 +272,41 @@ def sees_everything(role: Optional[str]) -> bool:
 
 
 def assigned_batch_ids(session: Session, user: Optional[User]) -> set[int]:
-    """Batches handed to this account. The unit an artist's world is scoped to."""
+    """Batches this account may work: ones assigned to them, PLUS ones they were
+    added to as an extra worker (a shared batch). The unit an artist's world is
+    scoped to."""
+    if user is None:
+        return set()
+    assigned = session.exec(
+        select(FlowBatch.id).where(FlowBatch.assignee_user_id == user.id)
+    ).all()
+    shared = session.exec(
+        select(FlowBatchWorker.batch_id).where(FlowBatchWorker.user_id == user.id)
+    ).all()
+    return {r for r in assigned} | {r for r in shared}
+
+
+def panel_batch_ids(session: Session, user: Optional[User]) -> set[int]:
+    """Batches this account may see only PARTIALLY: ones holding a panel handed
+    to them by a per-panel transfer. They see the batch (to reach that panel in
+    its real place) but only their own panel inside it — the callers scope the
+    contents. Kept OUT of ``assigned_batch_ids`` on purpose: that set means "a
+    batch you fully work", and the my-work queue leans on it to decide which
+    un-transferred panels are yours."""
     if user is None:
         return set()
     rows = session.exec(
-        select(FlowBatch.id).where(FlowBatch.assignee_user_id == user.id)
+        select(FlowPanel.batch_id).where(FlowPanel.assignee_user_id == user.id)
     ).all()
     return {r for r in rows}
+
+
+def visible_batch_ids(session: Session, user: Optional[User]) -> set[int]:
+    """Every batch this account may SEE — fully worked ones PLUS ones it can only
+    see partially through a handed-over panel. The scope for navigation (which
+    projects/comics/chapters/batches to draw); the per-panel narrowing of a
+    partial batch's contents happens where the panels are listed."""
+    return assigned_batch_ids(session, user) | panel_batch_ids(session, user)
 
 
 def allows(role: Optional[str], capability: str) -> bool:
@@ -295,9 +370,15 @@ def best_role(session: Session, user: Optional[User]) -> str:
             best = normalize_member_role(r.role)
     if _RANK[best] < _RANK[ARTIST]:
         owns = session.exec(
-            select(FlowBatch).where(FlowBatch.assignee_user_id == user.id)
+            select(FlowBatch.id).where(FlowBatch.assignee_user_id == user.id).limit(1)
         ).first()
-        if owns is not None:
+        works = None if owns else session.exec(
+            select(FlowBatchWorker.id).where(FlowBatchWorker.user_id == user.id).limit(1)
+        ).first()
+        panel = None if (owns or works) else session.exec(
+            select(FlowPanel.id).where(FlowPanel.assignee_user_id == user.id).limit(1)
+        ).first()
+        if owns is not None or works is not None or panel is not None:
             best = ARTIST
     return cap_to_preview(best)
 

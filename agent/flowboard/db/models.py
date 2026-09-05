@@ -562,6 +562,28 @@ class FlowBatch(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow, index=True)
 
 
+class FlowBatchWorker(SQLModel, table=True):
+    """Extra people who may work a batch alongside its primary ``assignee``.
+
+    A batch still HAS one ``assignee`` (its owner/lead — the naming convention is
+    "one per artist"), but a batch can be SHARED: several artists splitting one
+    pile, or a PM stepping in to help. Each worker gets the same batch-scoped
+    access as the assignee — they see it, generate and submit. The per-version
+    ``created_by`` and per-event ``actor_user_id`` still record who actually did
+    each piece, so sharing a batch never blurs who did what.
+    """
+
+    __tablename__ = "flow_batch_worker"  # type: ignore[assignment]
+    __table_args__ = (
+        UniqueConstraint("batch_id", "user_id", name="uq_flow_batch_worker"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    batch_id: int = Field(foreign_key="flow_batch.id", index=True)
+    user_id: uuid.UUID = Field(foreign_key="app_user.id", index=True)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 #: Panel lifecycle. ``approved`` is terminal for GENERATION — the app refuses new
 #: versions for an approved panel — but not irreversible: a PM can reopen it to
 #: ``changes_requested``, because one mis-click should not destroy the work.
@@ -588,9 +610,17 @@ class FlowPanel(SQLModel, table=True):
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    #: The batch that owns it. Who works on this panel comes from the batch —
-    #: the panel deliberately does not carry its own assignee.
+    #: The batch that owns it. Who works on this panel normally comes from the
+    #: batch — but a single panel can be handed to a different person, and then
+    #: ``assignee_user_id`` below overrides the batch for THIS panel only.
     batch_id: int = Field(foreign_key="flow_batch.id", index=True)
+    #: Per-panel transfer. NULL = "no override": the panel follows its batch's
+    #: assignee. Set = this one panel was handed to that person specifically, so
+    #: it leaves the batch owner's queue and joins the new person's — without
+    #: moving the panel out of its batch or touching the other 200 panels in it.
+    assignee_user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="app_user.id", index=True
+    )
     #: The cutter's own name for it ("PANEL006") — shown as-is so it matches
     #: their sheet and the Miro history it replaces.
     code: str = Field(index=True)

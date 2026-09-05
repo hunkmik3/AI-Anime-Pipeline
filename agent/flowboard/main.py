@@ -57,6 +57,8 @@ from flowboard.routes import (
     shots,
     submissions,
     upload,
+    upscale,
+    colorize,
     video_providers,
     flowstudio,
     flowpanels,
@@ -125,6 +127,20 @@ async def lifespan(app: FastAPI):
         else None
     )
     worker_task = asyncio.create_task(worker.start(), name="request-worker")
+    # Warm the MobileSAM ONNX sessions in the background so the colorizer's Fix
+    # editor returns its first click-to-mask instantly. Best-effort; no-op if the
+    # models / onnxruntime are missing.
+    import threading
+
+    def _warm_colorize_ml() -> None:
+        try:
+            from flowboard.services import sam
+
+            sam.warm()
+        except Exception as exc:  # noqa: BLE001
+            logger.info("colorizer SAM warm skipped: %s", exc)
+
+    threading.Thread(target=_warm_colorize_ml, name="colorize-sam-warm", daemon=True).start()
     if BRIDGE_ENABLED:
         logger.info("flowboard agent started (ws:9223 + worker)")
     else:
@@ -289,6 +305,8 @@ app.include_router(requests_route.router)
 app.include_router(media.bytes_router)
 app.include_router(media.api_router)
 app.include_router(upload.router)
+app.include_router(upscale.router)
+app.include_router(colorize.router)
 app.include_router(audio.router)
 app.include_router(plans.router)
 app.include_router(vision.router)

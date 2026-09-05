@@ -25,6 +25,7 @@ import {
 import { useGiantflowRole } from "../store/giantflowRole";
 import { toast } from "../store/toast";
 import { FlowComposer } from "./FlowComposer";
+import { ReassignControl } from "./ReassignControl";
 import { ViewAsBar } from "./ViewAsBar";
 import { FlowViewer } from "./FlowViewer";
 
@@ -259,6 +260,7 @@ export function PanelWorkspacePage() {
           {/* The way back in from outside software: download a version, retouch
               it, bring the file here and it becomes the next version. */}
           {!locked && can("panel.submit") ? <UploadVersionButton onFiles={uploadVersion} /> : null}
+          {can("batch.manage") ? <ReassignControl panel={panel} onChanged={setPanel} /> : null}
           {can("panel.review") ? <ReviewBar panel={panel} onChanged={setPanel} /> : null}
         </div>
 

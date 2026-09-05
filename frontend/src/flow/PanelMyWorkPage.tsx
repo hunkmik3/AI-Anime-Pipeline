@@ -34,6 +34,7 @@ export function PanelMyWorkPage() {
     changes_requested: QueuePanel[];
     submitted: QueuePanel[];
     approved: QueuePanel[];
+    assigned: QueuePanel[];
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,10 +58,11 @@ export function PanelMyWorkPage() {
     return () => window.removeEventListener("flowboard:view-as-changed", onSwitch);
   }, [load]);
 
+  const handed = data?.assigned ?? [];
   const back = data?.changes_requested ?? [];
   const waiting = data?.submitted ?? [];
   const done = data?.approved ?? [];
-  const total = back.length + waiting.length + done.length;
+  const total = handed.length + back.length + waiting.length + done.length;
 
   return (
     <div className="shellpage pn__full">
@@ -87,6 +89,13 @@ export function PanelMyWorkPage() {
       ) : null}
 
       <Section
+        title="Được giao cho bạn"
+        hint="Panel được giao riêng cho bạn (nằm trong batch của người khác). Mở để làm."
+        tone="assigned"
+        panels={handed}
+        onChanged={load}
+      />
+      <Section
         title="Sent back"
         hint="The PM's reason is on each card. Fix it, tick it off, then submit again."
         tone="back"
@@ -111,7 +120,7 @@ function Section({
 }: {
   title: string;
   hint?: string;
-  tone: "back" | "wait" | "done";
+  tone: "back" | "wait" | "done" | "assigned";
   panels: QueuePanel[];
   onChanged: () => Promise<void>;
 }) {
@@ -124,7 +133,11 @@ function Section({
       </h2>
       {hint ? <p className="pn__mysec-hint">{hint}</p> : null}
       <ul className="pn__mygrid">
-        {panels.map((p) => (
+        {panels.map((p) => {
+          // A handed-over todo panel has no result yet — show its raw material so
+          // the artist sees what they were given to work from.
+          const img = p.delivered_media_id ?? p.raw_media_id;
+          return (
           <li key={p.id} className={`pn__mycard is-${tone}`}>
             {/* Click opens it full size. Reading "the border is off" and then
                 having to leave the page to see the border is the whole problem. */}
@@ -132,16 +145,15 @@ function Section({
               type="button"
               className="pn__mycard-img"
               title="Open full size — scroll to zoom, drag to pan"
-              onClick={() => p.delivered_media_id && select(p.delivered_media_id)}
+              onClick={() => img && select(img)}
             >
-              {p.delivered_media_id ? (
-                <img src={thumbUrl(p.delivered_media_id, 400)} alt="" loading="lazy" />
-              ) : null}
-              <em>v{p.delivered_version}</em>
+              {img ? <img src={thumbUrl(img, 400)} alt="" loading="lazy" /> : null}
+              <em>{p.delivered_media_id ? `v${p.delivered_version}` : "raw"}</em>
             </button>
             <div className="pn__mycard-body">
               <Link to={`/giantflow/panel/${p.id}`} className="pn__mycard-code">
                 {p.code}
+                {p.reassigned ? <span className="pn__mycard-handed">được giao</span> : null}
               </Link>
               <div className="pn__mycard-sub">
                 {p.series_name} · {p.batch_name}
@@ -195,7 +207,8 @@ function Section({
               {(p.history ?? []).length > 0 ? <MyHistory events={p.history ?? []} /> : null}
             </div>
           </li>
-        ))}
+          );
+        })}
       </ul>
     </section>
   );
