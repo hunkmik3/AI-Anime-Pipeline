@@ -24,6 +24,7 @@ import { LegacySceneRedirect } from "./routes/LegacySceneRedirect";
 import { ShotEditor } from "./routes/ShotEditor";
 import { AssetLibraryPage } from "./routes/AssetLibraryPage";
 import { MyWorkPage } from "./routes/MyWorkPage";
+import { AutomationPage } from "./routes/AutomationPage";
 import { MaterialsPage } from "./routes/MaterialsPage";
 import { CutReviewPage } from "./routes/CutReviewPage";
 import { ReviewQueuePage } from "./routes/ReviewQueuePage";
@@ -111,6 +112,10 @@ export function App() {
               panel inside the project tree — an editor is handed series across
               several projects and never opens a canvas. */}
           <Route path="/materials" element={<ProductGate need="studio"><MaterialsPage /></ProductGate>} />
+          {/* Drama-film automation demo. Its own board, its own store, no DB
+              writes — and no ProductGate while it is a demo, so it stays
+              openable for whoever is reviewing the pipeline shape. */}
+          <Route path="/automation" element={<AutomationPage />} />
           {/* One cut, with its notes. Keyed by the submission rather than the
               series: a series has several cuts and a note belongs to the one it
               was left on. */}
@@ -277,6 +282,9 @@ function useLayoutMode(): { topBar: boolean; sidebar: boolean } {
   if (
     pathname === "/work" ||
     pathname === "/review" ||
+    // Automation brings its own rail: a flat list of boards, not the
+    // Project → Series → Episode tree, which it has no place in.
+    pathname === "/automation" ||
     // Every giantflow surface: the production project tree belongs to the other
     // hierarchy entirely, and on the panel grid it was 384px of unrelated
     // navigation stealing width from the thing the page is for.

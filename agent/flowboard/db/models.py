@@ -1085,3 +1085,130 @@ class CreditGrant(SQLModel, table=True):
     decided_by: Optional[uuid.UUID] = Field(default=None, foreign_key="app_user.id")
     decided_at: Optional[datetime] = None
     decision_note: Optional[str] = None      # admin's note; required on reject
+
+
+class AutomationProject(SQLModel, table=True):
+    """A drama-film automation board — the ``/automation`` surface.
+
+    The whole board (nodes, edges, cast, places, sequences, cut shots) lives
+    in one JSON column rather than in tables of its own. That is deliberate
+    while the node shape is still moving: every change to it would otherwise
+    be a migration, and nothing else in the app joins against these rows. The
+    columns pulled out alongside it are only the ones a project *list* needs
+    to render without loading every board.
+
+    Generated images are NOT stored here. They are data URLs on the client and
+    a few megabytes each; the row keeps the prompt that made them and, for an
+    identity portrait, the R2 ``reference_url`` that anchors the sheets below
+    it — so a reopened board can still chain, and can regenerate the pictures.
+    """
+
+    __tablename__ = "automation_project"  # type: ignore[assignment]
+
+    id: uuid.UUID = Field(
+        default_factory=_uuid_pk,
+        primary_key=True,
+        sa_column_kwargs={"server_default": None},
+    )
+    name: str
+    owner_user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="app_user.id", index=True
+    )
+    # Denormalised for the project list: the premise's first line, and what the
+    # breakdown named the film.
+    script: str = ""
+    title: str = ""
+    logline: str = ""
+    runtime_seconds: Optional[int] = None
+    board: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
+    revision: int = 0
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow, index=True)
+
+
+class VideoAnalysis(SQLModel, table=True):
+    """A reference video broken down shot by shot — the "video mẫu" entry into /automation.
+
+    ``analysis`` and ``adaptation`` are separate columns because they are
+    separate things: the analysis is what the reference video actually did,
+    measured once at real cost (decode, speech, vision); the adaptation is one
+    re-telling of it in a target world, re-run whenever a name in the glossary
+    or the target style changes. Overwriting one with the other would mean
+    watching the video again to change a character's name.
+
+    The video file and its keyframes live on disk under
+    ``STORAGE_DIR/video_analysis/<id>/``; the row stores paths relative to that.
+    """
+
+    __tablename__ = "video_analysis"  # type: ignore[assignment]
+
+    id: uuid.UUID = Field(
+        default_factory=_uuid_pk,
+        primary_key=True,
+        sa_column_kwargs={"server_default": None},
+    )
+    name: str
+    owner_user_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="app_user.id", index=True
+    )
+    # The board this video was brought into, if any. A video can be analysed
+    # before it belongs to a board, and outlives the board being deleted.
+    automation_project_id: Optional[uuid.UUID] = Field(
+        default=None, foreign_key="automation_project.id", index=True, ondelete="SET NULL"
+    )
+    filename: str = ""
+    # queued → analysing → analysed → adapting → adapted, or failed / interrupted
+    status: str = "queued"
+    # {"stage": "vision", "done": 40, "total": 101}
+    progress: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
+    error: Optional[str] = None
+    analysis: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
+    adaptation: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
+    # The production bible read off the analysis: who is in this film and where
+    # it plays, in target names, plus which shots each covers and the reference
+    # sheet generated for it. Its own column because it outlives a re-adaptation
+    # (the plates cost money) and because the board is built from it.
+    cast: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
+    # Bumped on every completed adaptation, so an export names which one it is.
+    adaptation_version: int = 0
+    # How this video is to be read: {"detail": "standard" | "deep", "language": …}.
+    # Kept on the row because a resumed or re-run stage has to read the SAME way
+    # the first pass did, or half the shots are described from five frames and
+    # half from seven.
+    options: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow, index=True)
+
+
+class AutomationJob(SQLModel, table=True):
+    """Durable automation request. Provider submission and polling are distinct phases."""
+    __tablename__ = "automation_job"
+    __table_args__ = (UniqueConstraint("project_id", "request_key", name="uq_automation_job_request"),)
+    id: uuid.UUID = Field(default_factory=_uuid_pk, primary_key=True)
+    project_id: Optional[uuid.UUID] = Field(default=None, foreign_key="automation_project.id", index=True)
+    request_key: str
+    kind: str
+    node_id: str
+    slot: str = ""
+    payload: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
+    status: str = Field(default="queued", index=True)
+    provider_job_id: str = ""
+    prepared: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
+    result: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
+    error: str = ""
+    attempts: int = 0
+    lease_token: str = ""
+    lease_until: Optional[datetime] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
+class AutomationRevision(SQLModel, table=True):
+    """Immutable production manifest and asset versions for each board revision."""
+    __tablename__ = "automation_revision"
+    __table_args__ = (UniqueConstraint("project_id", "revision", name="uq_automation_revision"),)
+    id: uuid.UUID = Field(default_factory=_uuid_pk, primary_key=True)
+    project_id: uuid.UUID = Field(foreign_key="automation_project.id", index=True)
+    revision: int
+    manifest: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
+    created_at: datetime = Field(default_factory=_utcnow)

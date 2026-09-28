@@ -1,0 +1,77 @@
+CLIP 02 — SIENNA ROTHWELL ARRIVES
+DURATION: 26 seconds. SHOT COUNT: 11.
+
+[CREATIVES DESCRIPTION]
+
+@image1 — THEO LAMBERT. Character reference for identity, face, hairstyle, school clothing, age and proportions. Preserve his school blazer, tie and backpack. His backpack stays on both shoulders. He holds a small green watch box in his left hand throughout this clip.
+@image2 — SIENNA ROTHWELL. Character reference for identity, face, hairstyle, outfit and accessories.
+@image3 — DANA MERRICK. Sienna's manager; a separate character from the bodyguards.
+@image4 — GRANT MULLEN. Sienna's lead bodyguard and the sole speaker of the bodyguard announcement.
+@image5 — HALLWOOD HIGH MAIN LOCKER CORRIDOR. Architectural, material, blue-locker and daylight reference. Create the required new camera compositions within one coherent corridor.
+
+High-end cinematic 3D animation: age-appropriate proportions, restrained facial acting, physically based materials, soft global illumination and natural hair movement. Theo and Sienna remain teens; Dana and Grant retain their reference ages. No 2D or cel shading.
+
+DURATION: 26 seconds. SHOT COUNT: 11.
+Opening state: Theo approaches carrying his green watch box. Sienna arrives with Dana, Grant and one additional unnamed bodyguard. The second guard has no dialogue.
+
+[ONE-SENTENCE SUMMARY]
+
+Sienna's glamorous arrival turns the school corridor into a crowd of excited spectators, while Theo watches in surprise as she walks directly toward him.
+
+[SPECIFIC TIMELINE]
+
+[SHOT 1 — 00:00–00:04]
+Wide establishing shot of the double doors opening. Sienna walks through thin backlit haze, checking her reflection in a small mirror. Grant and one other bodyguard flank her; Dana follows behind. Sienna lowers the mirror. Establish corridor geography and travel direction.
+SFX: doors opening, measured footsteps, growing student murmurs.
+
+[SHOT 2 — 00:04–00:07]
+Medium close-up past Sienna's blurred shoulder toward three female students turning to follow her arrival. A blonde student raises a hand to her mouth and exclaims:
+BLONDE STUDENT: "Oh my god, Sienna Rothwell!"
+Only the blonde student speaks. The other two react silently.
+
+[SHOT 3 — 00:07–00:08]
+Medium shot behind Theo approaching the gathering, both backpack straps visible. He carries the closed green watch box in his left hand. He slows on noticing the crowd.
+During this cutaway, Sienna closes and stows the compact mirror in an outfit pocket off screen. Her hands are free afterward.
+SFX: his footsteps blending into hallway ambience.
+
+[SHOT 4 — 00:08–00:13]
+Medium close-up on Theo, who stops and glances toward the commotion. His brow tightens in curious confusion. Two distinct background voices speak sequentially, outside the frame:
+STUDENT, OFF SCREEN: "I can't believe she's in our school!"
+MALE STUDENT, OFF SCREEN: "She's one of the hottest"
+Theo listens silently. Do not animate his lips to either student's dialogue. Cut during the male student's ongoing sentence.
+
+[SHOT 5 — 00:13–00:15]
+Side-angle medium close-up on Sienna. She smoothly brushes her hair behind her shoulder while continuing forward. Hair follows the motion naturally. The same male student's voice continues immediately across the cut:
+MALE STUDENT, OFF SCREEN: "influencers in the world."
+Sienna remains silent and comfortably accustomed to the attention.
+
+[SHOT 6 — 00:15–00:17]
+Medium group shot. Sienna walks between Grant and the unnamed second bodyguard and gives a small wave. Dana remains visibly distinct behind them. Nearby students raise phones but stay at a respectful distance. Grant begins a calm, firm announcement:
+GRANT: "Miss Rothwell will not"
+His sentence continues through the next two cuts.
+
+[SHOT 7 — 00:17–00:19]
+Medium shot: Grant raises an open palm to stop a student's selfie approach without contact. Dana remains behind the group.
+GRANT: "be taking selfies"
+Maintain the same voice, breath and delivery from Shot 6.
+
+[SHOT 8 — 00:19–00:20]
+Close-up on Sienna as her face becomes visible past Grant's blurred shoulder. She glances left and notices Theo ahead.
+GRANT, OFF SCREEN: "today."
+End the announcement here. Sienna does not speak.
+
+[SHOT 9 — 00:20–00:21]
+Medium close-up on Theo. His lips part slightly, he swallows and blinks once, surprised that her attention has settled on him. His green box remains below frame in his left hand.
+
+[SHOT 10 — 00:21–00:24]
+Medium shot over Theo's back. Sienna walks directly toward him and slows to a stop. Grant remains behind her in the corridor. Preserve both backpack straps and the box's position. Establish Sienna frame left and Theo frame right for the conversation to follow.
+
+[SHOT 11 — 00:24–00:26]
+Medium two-shot. Theo raises his gaze to Sienna and offers a small, uncertain smile. She stands facing him with composed confidence. Hold the silent meeting, leaving space for her introduction in the following clip.
+
+[OVERALL SUPPLEMENT]
+
+Use clean cuts, coherent geography and restrained depth of field. After the meeting is established, Sienna looks screen right and Theo looks screen left. Students provide background context; only the specified students deliver intelligible dialogue. Their phone screens are indistinct and contain no readable generated text.
+Keep Grant, the additional bodyguard and Dana visually distinct. Dana never delivers the bodyguard announcement. The green watch box remains closed in Theo's left hand; no transfer occurs. End with Sienna and Theo face-to-face, ready to speak.
+Use accurate lip-sync, clear specified English dialogue and continuous low hallway ambience. The male student's sentence spans Shots 4–5; Grant's announcement spans Shots 6–8, each spoken once without restarting.
+No music, subtitles, captions, title cards or extra intelligible dialogue.

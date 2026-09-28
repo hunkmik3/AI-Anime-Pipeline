@@ -39,6 +39,7 @@ from flowboard.routes import (
     admin,
     audio,
     auth,
+    automation,
     bibles,
     budgets,
     chat,
@@ -62,6 +63,7 @@ from flowboard.routes import (
     video_providers,
     flowstudio,
     flowpanels,
+    video_analysis,
     vision,
 )
 from flowboard.routes import references as references_route
@@ -127,6 +129,10 @@ async def lifespan(app: FastAPI):
         else None
     )
     worker_task = asyncio.create_task(worker.start(), name="request-worker")
+    from flowboard.services.automation_jobs import worker as automation_worker
+    automation_task = asyncio.create_task(automation_worker(), name="automation-worker")
+    from flowboard.services.production_run import worker as production_worker
+    production_task = asyncio.create_task(production_worker(), name="production-worker")
     # Warm the MobileSAM ONNX sessions in the background so the colorizer's Fix
     # editor returns its first click-to-mask instantly. Best-effort; no-op if the
     # models / onnxruntime are missing.
@@ -157,7 +163,7 @@ async def lifespan(app: FastAPI):
             await asyncio.wait_for(worker.drain(), timeout=5.0)
         except asyncio.TimeoutError:
             logger.warning("worker drain timed out")
-        tasks = [t for t in (ws_task, worker_task) if t is not None]
+        tasks = [t for t in (ws_task, worker_task, automation_task, production_task) if t is not None]
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -317,6 +323,11 @@ app.include_router(activity.router)
 app.include_router(video_providers.router)
 app.include_router(flowstudio.router)
 app.include_router(flowpanels.router)
+# Film automation (/automation): saved boards and durable production jobs; no tie
+# to Project → Series → Episode until the node shape settles.
+app.include_router(automation.router)
+# Reference video → shotlist → adaptation, the other entry into /automation.
+app.include_router(video_analysis.router)
 
 
 @app.get("/api/health")

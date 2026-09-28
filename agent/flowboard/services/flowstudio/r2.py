@@ -45,7 +45,15 @@ _uploaded: set[str] = set()
 _lock = threading.Lock()
 _client = None
 
-_CT = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+_CT = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    # Served straight into a <video> tag, which refuses octet-stream.
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+}
 
 
 def _env(name: str) -> str:

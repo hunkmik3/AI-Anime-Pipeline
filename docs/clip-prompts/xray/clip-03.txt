@@ -1,0 +1,69 @@
+CLIP 03 — THE WRONG GUY (1)
+DURATION: 28 seconds. SHOT COUNT: 8.
+
+[CREATIVES DESCRIPTION]
+
+@image1 — THEO LAMBERT. Preserve identity, face, hairstyle, school outfit, teenage proportions, school blazer, tie and backpack. Both backpack straps remain on his shoulders.
+@image2 — SIENNA ROTHWELL. Preserve identity, face, hairstyle, outfit and accessories.
+@image3 — DANA MERRICK. Sienna's manager, standing behind Sienna at the opening.
+@image4 — GRANT MULLEN. Sienna's lead bodyguard, distinct from Dana, standing behind Sienna at the opening.
+@image5 — HALLWOOD HIGH MAIN LOCKER CORRIDOR. Preserve blue lockers, material palette, daylight direction and corridor geography; generate the specified new camera compositions.
+
+STYLE: High-end cinematic 3D animation, age-appropriate proportions, restrained facial acting, physically based materials, soft global illumination and natural hair motion. Theo and Sienna remain teens; Dana and Grant retain their reference ages. No 2D or cel shading.
+
+DURATION: 28 seconds. SHOT COUNT: 8.
+Opening state: Sienna has just stopped in front of Theo. She stands frame left looking right; he stands frame right looking left. Theo holds the closed green watch box in his left hand. Their introductions happen as one uninterrupted conversation.
+
+[ONE-SENTENCE SUMMARY]
+
+Sienna introduces herself through her grades, luxury car and enormous online following, and Theo answers with a dry, self-deprecating introduction while they exchange a handshake.
+
+[SPECIFIC TIMELINE]
+
+[SHOT 1 — 00:00–00:06]
+Eye-level over-the-shoulder medium shot past Theo toward Sienna. She introduces herself confidently and extends her right hand. Dana and Grant stand separately behind her, softly blurred.
+SIENNA: "Sienna Rothwell. I currently have a 4.0. I drive a"
+Pronounce 4.0 as "four point oh." Her hand remains extended. Theo listens silently. Cut after "a," carrying her voice across the cut.
+SFX: low corridor chatter and a soft clothing rustle.
+
+[SHOT 2 — 00:06–00:08]
+Medium close-up on Theo with his upper torso visible. He smiles patiently while listening to Sienna off screen.
+SIENNA, OFF SCREEN: "Mercedes Gullwing and…"
+Theo clearly stows the compact green box in his left inner blazer pocket, freeing his hands. His backpack stays on both shoulders. He remains silent.
+
+[SHOT 3 — 00:08–00:12]
+Medium close-up on Sienna facing right, hand still extended at frame bottom. She continues with a small smile, expecting her achievements to impress him:
+SIENNA: "I also have 400 million followers across all"
+Pronounce "four hundred million." Her eyebrows lift on the follower count. Keep natural pacing; her introduction continues across the cut.
+
+[SHOT 4 — 00:12–00:13]
+Over-the-shoulder shot showing Theo bringing his free right hand up to meet Sienna's extended right hand. The green box is safely inside his blazer.
+SIENNA: "my socials."
+Finish the same sentence and voice from Shot 3. Their hands meet as the line ends.
+
+[SHOT 5 — 00:13–00:14]
+Close insert: the two right hands complete one brief handshake, with coherent fingers and one small vertical movement. Neither holds a prop. Begin releasing before the cut.
+SFX: subtle sleeve movement. No dialogue.
+
+[SHOT 6 — 00:14–00:20]
+Medium close-up on Theo. Complete the release from the handshake, then let him loosely cross his arms without disturbing either backpack strap. He replies with a small, wry smile:
+THEO: "I'm Theo. I have a 0.0. I don't drive,"
+Keep the scripted number exactly 0.0, pronounced "zero point oh." His tone is dry and matter-of-fact. Leave enough space around the pauses for the contrast with Sienna's introduction to register. The box stays secure in his left inner pocket.
+
+[SHOT 7 — 00:20–00:23]
+Reverse medium close-up on Sienna. She withdraws her hand fully and crosses her arms while listening. Her confident smile becomes more appraising; she is assessing this unexpected response.
+THEO, OFF SCREEN: "although I'm pretty good at skateboarding,"
+Continue Theo's sentence and vocal tone across the cut. Sienna remains silent; her eyes stay on him. Her lips do not move with his words.
+
+[SHOT 8 — 00:23–00:28]
+Return to the medium close-up on Theo, with his chest and hands included in the lower frame. He tilts his head slightly and finishes with a restrained smirk:
+THEO: "and I have no followers on any social media."
+As the thought ends, he uncrosses his arms, retrieves the green watch box from the same left inner breast pocket and holds it again in his left hand at lower chest level. Make the retrieval readable before the clip ends. He waits for Sienna's response.
+
+[OVERALL SUPPLEMENT]
+
+Maintain the conversation axis: Sienna frame left looking right, Theo frame right looking left. Use stable eye-level compositions and clean cuts, with soft background students and blue lockers. All students remain uninvolved and indistinct.
+Sienna is self-assured; Theo is politely self-deprecating. Preserve every English line and both GPA values, including 0.0.
+The green box follows one clear physical path: Theo's left hand → left inner blazer pocket in Shot 2 → same pocket throughout handshake and crossed arms → Theo's left hand again in Shot 8. Its lid stays closed throughout. No one else touches it.
+Preserve continuous speaker identity and lip-sync. Carry Sienna's introduction across Shots 1–4 and Theo's introduction across Shots 6–8 without repeating text at cuts. Dana and Grant do not speak. End with the box ready in Theo's hand for the next clip.
+Natural low hallway ambience only. No music, subtitles, captions, title cards or additional intelligible dialogue.
