@@ -7857,81 +7857,128 @@ button:disabled {
 }
 
 /* Login */
+/* ── sign in ───────────────────────────────────────────────────────────────
+   A two-panel screen: the form on the left at a comfortable reading width,
+   work from the studio on the right. The old version was a 320px card on a
+   near-black field using its own greys (#0c0c0f / #16161c / #26262e) that
+   matched nothing else in the app — so this is the first screen a new hire
+   sees, and it looked like a different product. Tokens only from here on. */
 .login-shell {
-  display: flex; align-items: center; justify-content: center;
-  min-height: 100vh; background: #0c0c0f;
+  display: flex;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
 }
+
+.login-main {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px;
+  min-width: 0;
+}
+
 .login-card {
-  width: 320px; padding: 28px 26px; border-radius: 14px;
-  background: #16161c; border: 1px solid #26262e;
-  display: flex; flex-direction: column; gap: 14px;
-  box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
 }
-.login-logo { align-self: center; width: 96px; height: 96px; object-fit: contain; margin-bottom: 2px; }
-.login-title { margin: 0; font-size: 1.4rem; color: #f0f0f4; letter-spacing: 0.3px; text-align: center; }
-.login-sub { margin: -6px 0 6px; font-size: 0.85rem; color: #8a8a93; text-align: center; }
-.login-field { display: flex; flex-direction: column; gap: 5px; font-size: 0.8rem; color: #b6b6c0; }
-.login-field input {
-  padding: 9px 11px; border-radius: 8px; border: 1px solid #2c2c36;
-  background: #0e0e13; color: #f0f0f4; font-size: 0.9rem; outline: none;
-}
-.login-field input:focus { border-color: #00a76f; }
-/* Password field with a show/hide eye toggle. The wrapper is the flex row; the
-   input keeps its .login-field styling but leaves room on the right for the button. */
-.password-input { position: relative; display: flex; align-items: stretch; }
-.password-input input { flex: 1; min-width: 0; }
-.login-field .password-input input { padding-right: 40px; }
-.password-input__toggle {
-  position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
-  display: flex; align-items: center; justify-content: center;
-  width: 30px; height: 30px; padding: 0;
-  background: transparent; border: none; border-radius: 6px;
-  color: #8a8a93; cursor: pointer; transition: color 0.12s, background 0.12s;
-}
-.password-input__toggle:hover { color: #f0f0f4; background: rgba(255,255,255,0.06); }
-.password-input__toggle:disabled { opacity: 0.4; cursor: not-allowed; }
-.password-input__toggle svg { width: 18px; height: 18px; display: block; }
-.login-error { font-size: 0.82rem; color: #ff6b6b; background: #2a1414; padding: 7px 10px; border-radius: 7px; }
-.login-ok {
-  font-size: 0.84rem; line-height: 1.55; color: #6ee787;
-  background: rgba(0,167,111,0.10); border: 1px solid rgba(0,167,111,0.35);
-  padding: 11px 13px; border-radius: 8px;
-}
-/* sign in / sign up switcher */
-.login-form { display: flex; flex-direction: column; gap: 14px; }
+
+.login-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.login-logo { width: 44px; height: 44px; object-fit: contain; border-radius: 10px; }
+.login-title { margin: 0; font-size: 1.05rem; font-weight: 800; letter-spacing: -0.2px; }
+.login-brandsub { display: block; font-size: 0.78rem; color: var(--muted); margin-top: 1px; }
+
+.login-heading { margin: 0; font-size: 1.5rem; font-weight: 800; letter-spacing: -0.4px; }
+.login-sub { margin: -8px 0 4px; font-size: 0.85rem; color: var(--muted); line-height: 1.55; }
+.login-sub--tight { margin: 0 0 2px; text-align: left; }
+
 .login-tabs {
-  display: flex; gap: 4px; padding: 3px; border-radius: 10px;
-  background: #0e0e13; border: 1px solid #26262e;
+  display: flex; gap: 4px; padding: 4px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
 }
 .login-tab {
   flex: 1; padding: 8px 10px; border: none; border-radius: 7px; cursor: pointer;
-  background: transparent; color: #8a8a93; font: inherit; font-size: 0.86rem; font-weight: 600;
+  background: transparent; color: var(--muted); font: inherit; font-size: 0.86rem; font-weight: 600;
   transition: background-color 120ms ease, color 120ms ease;
 }
-.login-tab:hover { color: #d0d0d8; }
-.login-tab.is-active { background: #00a76f; color: #fff; }
-.login-sub--tight { margin: 0; text-align: left; line-height: 1.55; }
+.login-tab:hover { color: var(--text); }
+.login-tab.is-active { background: var(--accent); color: #04140d; }
+
+.login-form { display: flex; flex-direction: column; gap: 14px; }
+.login-field { display: flex; flex-direction: column; gap: 6px; font-size: 0.78rem; color: var(--muted); }
+.login-field input,
 .login-textarea {
-  padding: 9px 11px; border-radius: 8px; border: 1px solid #2c2c36;
-  background: #0e0e13; color: #f0f0f4; font: inherit; font-size: 0.88rem;
-  outline: none; resize: vertical; min-height: 64px;
+  padding: 11px 12px; border-radius: 9px; border: 1px solid var(--border);
+  background: var(--panel); color: var(--text); font: inherit; font-size: 0.9rem;
+  outline: none; transition: border-color 120ms ease, box-shadow 120ms ease;
 }
-.login-textarea:focus { border-color: #00a76f; }
-.login-textarea::placeholder { color: #5f5f68; }
+.login-field input:focus,
+.login-textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
+}
+.login-field input::placeholder,
+.login-textarea::placeholder { color: var(--d-faint, #637381); }
+/* PasswordInput had no rules of its own anywhere — the wrapper did not stretch
+   and the eye button was not positioned. It only ever looked right because the
+   old 320px card happened to match an input's default ~20ch width; widening
+   the card exposed it. Own the component here rather than leaving the next
+   screen to rediscover it. */
+.password-input { position: relative; display: block; width: 100%; }
+.password-input input { width: 100%; }
+.login-field .password-input input { padding-right: 40px; }
+.password-input__toggle {
+  position: absolute; top: 50%; right: 6px; transform: translateY(-50%);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; padding: 0;
+  border: none; border-radius: 7px; background: transparent;
+  color: var(--muted); cursor: pointer;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+.password-input__toggle:hover:not(:disabled) { color: var(--text); background: var(--panel-high); }
+.password-input__toggle:disabled { opacity: 0.4; cursor: not-allowed; }
+.login-textarea { resize: vertical; min-height: 68px; }
+
+.login-error {
+  font-size: 0.82rem; color: #ff9c85; line-height: 1.5;
+  background: rgba(255, 86, 48, 0.1); border: 1px solid rgba(255, 86, 48, 0.32);
+  padding: 9px 11px; border-radius: 8px;
+}
+.login-ok {
+  font-size: 0.85rem; color: var(--accent-bright); line-height: 1.6;
+  background: rgba(var(--accent-rgb), 0.1); border: 1px solid rgba(var(--accent-rgb), 0.3);
+  padding: 12px 13px; border-radius: 9px;
+}
+
 .login-btn {
-  margin-top: 4px; padding: 10px; border: none; border-radius: 8px;
-  background: #00a76f; color: #fff; font-size: 0.92rem; font-weight: 600; cursor: pointer;
+  margin-top: 2px; padding: 12px; border: none; border-radius: 9px;
+  background: var(--accent); color: #04140d; font-size: 0.93rem; font-weight: 700; cursor: pointer;
+  transition: background-color 120ms ease;
 }
-.login-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.login-btn--ghost { background: transparent; border: 1px solid #2c2c36; color: #b6b6c0; font-weight: 500; }
-.login-btn--ghost:hover { border-color: #3a3a46; color: #f0f0f4; }
+.login-btn:hover:not(:disabled) { background: var(--accent-bright); }
+.login-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.login-btn--ghost {
+  background: transparent; border: 1px solid var(--border); color: var(--muted); font-weight: 600;
+}
+.login-btn--ghost:hover { border-color: var(--muted); color: var(--text); background: transparent; }
 .login-btn--google {
-  display: block; text-align: center; text-decoration: none;
-  background: #fff; color: #1f1f1f; border: 1px solid #dadce0;
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  text-decoration: none;
+  background: var(--panel); color: var(--text); border: 1px solid var(--border); font-weight: 600;
 }
-.login-btn--google:hover { background: #f4f5f6; }
-.login-divider { display: flex; align-items: center; gap: 10px; color: #6a6a73; font-size: 0.78rem; margin: 2px 0; }
-.login-divider::before, .login-divider::after { content: ""; flex: 1; height: 1px; background: #2c2c36; }
+.login-btn--google:hover { background: var(--panel-high); }
+.login-btn--google svg { flex: 0 0 auto; }
+
+.login-divider { display: flex; align-items: center; gap: 12px; color: var(--d-faint, #637381); font-size: 0.76rem; margin: 2px 0; }
+.login-divider::before, .login-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+
+.login-foot { font-size: 0.76rem; color: var(--d-faint, #637381); text-align: center; margin: 6px 0 0; }
+
+
 
 /* Change-password overlay (forced first-login + self-service) */
 .cpw-backdrop {
@@ -8236,6 +8283,111 @@ button:disabled {
 
 /* ── main column ─────────────────────────────────────────────────────── */
 .dash__main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+/* ── admin topbar ──────────────────────────────────────────────────────────
+   A slim toolbar, not a page header: the title moved down into the content
+   (.pagehead) so this bar keeps a constant height whatever tab is open, and
+   the search sits at the same spot every time instead of jumping with the
+   length of each tab's subtitle. */
+.dash__bar {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 32px;
+  border-bottom: 1px solid var(--d-border);
+  background: var(--d-surface);
+  position: sticky; top: 0; z-index: 20;
+}
+.dash__bar-spacer { flex: 1 1 auto; }
+.dash__bar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+
+.dash__bar-icon {
+  position: relative;
+  display: inline-grid; place-items: center;
+  width: 40px; height: 40px; flex: 0 0 40px;
+  border: 1px solid var(--d-border); border-radius: 10px;
+  background: transparent; color: var(--d-muted); cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.dash__bar-icon:hover { background: var(--d-hover); color: var(--d-ink); }
+/* The burger is the one control that is mobile-only; everything else in the
+   bar is needed at every width. */
+.dash__bar-burger { display: none; }
+
+/* An unread mark rather than a number: the count is already on the Approvals
+   nav item, and two copies of the same figure drift the moment one refreshes
+   and the other does not. */
+.dash__bar-dot {
+  position: absolute; top: 8px; right: 9px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--d-danger);
+  box-shadow: 0 0 0 2px var(--d-surface);
+}
+
+.dash__bar-search {
+  display: flex; align-items: center; gap: 10px;
+  flex: 1 1 420px; max-width: 460px;
+  height: 40px; padding: 0 12px;
+  border: 1px solid var(--d-border); border-radius: 10px;
+  background: var(--d-surface-2); color: var(--d-muted);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.dash__bar-search:focus-within {
+  border-color: var(--d-primary);
+  box-shadow: 0 0 0 3px var(--d-primary-subtle);
+}
+.dash__bar-search input {
+  flex: 1 1 auto; min-width: 0;
+  border: none; background: none; outline: none;
+  color: var(--d-ink); font-size: 0.88rem; font-family: inherit;
+}
+.dash__bar-search input::placeholder { color: var(--d-faint); }
+.dash__bar-search kbd {
+  flex: 0 0 auto;
+  border: 1px solid var(--d-border); border-radius: 6px;
+  padding: 2px 6px; font-size: 0.68rem; font-family: inherit;
+  color: var(--d-faint); background: var(--d-surface);
+}
+
+/* The account block, moved up out of the sidebar foot. */
+.dash__bar-user .kebab__trigger {
+  display: flex; align-items: center; gap: 9px;
+  height: 40px; padding: 0 10px 0 4px;
+  border: 1px solid transparent; border-radius: 10px;
+  background: transparent; color: var(--d-body); cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.dash__bar-user .kebab__trigger:hover {
+  background: var(--d-hover); border-color: var(--d-border);
+}
+.dash__bar-avatar {
+  width: 32px; height: 32px; flex: 0 0 32px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #00a76f, #5be49b);
+  color: #fff; font-size: 0.68rem; font-weight: 800;
+}
+.dash__bar-who {
+  font-size: 0.86rem; font-weight: 600; color: var(--d-ink);
+  max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.kebab__menu--right { left: auto; right: 0; }
+
+/* The page title, now that the bar no longer carries it. */
+.pagehead {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap; padding: 22px 0 4px;
+}
+.pagehead__text { min-width: 0; flex: 1 1 420px; }
+.pagehead__actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+
+@media (max-width: 900px) {
+  .dash__bar { padding: 10px 16px; }
+  .dash__bar-burger { display: inline-grid; }
+  .dash__bar-who { display: none; }
+  .dash__bar-search { flex-basis: auto; }
+  .dash__bar-search kbd { display: none; }
+  .pagehead { padding-top: 16px; }
+}
+
 .dash__topbar {
   flex: 0 0 auto; display: flex; align-items: flex-start; justify-content: space-between;
   gap: 20px; flex-wrap: wrap; padding: 22px 32px 16px;

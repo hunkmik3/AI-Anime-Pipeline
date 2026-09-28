@@ -100,9 +100,15 @@ export function LoginPage() {
 
   return (
     <div className="login-shell">
+      <div className="login-main">
       <div className="login-card">
-        <img className="login-logo" src="/giantstudio-512.png" alt="Giant Studio" />
-        <h1 className="login-title">Giant Studio</h1>
+        <div className="login-brand">
+          <img className="login-logo" src="/giantstudio-512.png" alt="" />
+          <span>
+            <h1 className="login-title">Giant Studio</h1>
+            <span className="login-brandsub">Sleepy Giant</span>
+          </span>
+        </div>
 
         {signupDone ? (
           // Terminal state: the request is queued, there's nothing more to do here.
@@ -124,6 +130,9 @@ export function LoginPage() {
           </>
         ) : (
           <>
+            <h2 className="login-heading">
+              {mode === "signin" ? "Sign in" : "Request an account"}
+            </h2>
             <div className="login-tabs" role="tablist">
               <button
                 role="tab"
@@ -182,8 +191,17 @@ export function LoginPage() {
 
                 {/* Full-page navigation (server-side OAuth redirect flow), not a fetch. */}
                 <a className="login-btn login-btn--google" href="/api/account/sso/google/start">
+                  <svg width="17" height="17" viewBox="0 0 48 48" aria-hidden="true">
+                    <path fill="#4285F4" d="M45.1 24.5c0-1.6-.1-3.1-.4-4.5H24v8.5h11.8c-.5 2.7-2 5-4.4 6.6v5.5h7.1c4.1-3.8 6.6-9.4 6.6-16.1Z"/>
+                    <path fill="#34A853" d="M24 46c5.9 0 10.9-2 14.5-5.4l-7.1-5.5c-2 1.3-4.5 2.1-7.4 2.1-5.7 0-10.5-3.8-12.2-9H4.5v5.7C8.1 41.1 15.4 46 24 46Z"/>
+                    <path fill="#FBBC05" d="M11.8 28.2c-.4-1.3-.7-2.7-.7-4.2s.3-2.9.7-4.2v-5.7H4.5A22 22 0 0 0 2 24c0 3.6.9 6.9 2.5 9.9l7.3-5.7Z"/>
+                    <path fill="#EA4335" d="M24 10.8c3.2 0 6.1 1.1 8.4 3.3l6.3-6.3C34.9 4.2 29.9 2 24 2 15.4 2 8.1 6.9 4.5 14.1l7.3 5.7c1.7-5.2 6.5-9 12.2-9Z"/>
+                  </svg>
                   Sign in with Google
                 </a>
+                <p className="login-foot">
+                  Google sign-in is limited to @sleepygiant.studio accounts.
+                </p>
               </form>
             ) : (
               <form className="login-form" onSubmit={onSignup}>
@@ -236,6 +254,7 @@ export function LoginPage() {
             )}
           </>
         )}
+      </div>
       </div>
     </div>
   );

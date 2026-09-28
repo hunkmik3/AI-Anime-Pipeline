@@ -15,6 +15,8 @@ import { useRevalidate } from "../../hooks/useRevalidate";
  * dollar figure alone cannot tell you the studio is an hour from a wall.
  */
 
+import { matches } from "./searchMatch";
+
 type Counts = Record<string, number>;
 
 type Overview = {
@@ -88,7 +90,7 @@ function untilReset(seconds: number): string {
   return h ? `${h}h ${m}m` : `${m}m`;
 }
 
-export function ComicsTab() {
+export function ComicsTab({ search = "" }: { search?: string }) {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [comics, setComics] = useState<ComicRow[]>([]);
   const [artists, setArtists] = useState<ArtistRow[]>([]);
@@ -197,7 +199,7 @@ export function ComicsTab() {
               </tr>
             </thead>
             <tbody>
-              {comics.map((c) => (
+              {comics.filter((c) => matches(search, c.name)).map((c) => (
                 <tr key={c.series_id}>
                   <td className="comics__name">{c.name}</td>
                   <td className="num">{c.chapters}</td>
@@ -243,7 +245,7 @@ export function ComicsTab() {
               </tr>
             </thead>
             <tbody>
-              {artists.map((a) => (
+              {artists.filter((a) => matches(search, a.name)).map((a) => (
                 <tr key={a.user_id ?? "none"}>
                   <td className="comics__name">{a.name}</td>
                   <td className="num">{a.panels}</td>

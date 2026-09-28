@@ -6,8 +6,23 @@ export interface KebabItem {
   danger?: boolean;
 }
 
-/** Row actions dropdown ("⋯") — replaces a row of cramped inline buttons. */
-export function KebabMenu({ items }: { items: KebabItem[] }) {
+/** Row actions dropdown ("⋯") — replaces a row of cramped inline buttons.
+ *
+ * `trigger` swaps the ⋯ for anything else (the header's avatar button, say).
+ * The part worth reusing is below it: click-away, Escape, and the focus
+ * bookkeeping — writing that a second time for every new dropdown is how two
+ * menus end up closing differently. */
+export function KebabMenu({
+  items,
+  trigger,
+  align = "left",
+  className,
+}: {
+  items: KebabItem[];
+  trigger?: React.ReactNode;
+  align?: "left" | "right";
+  className?: string;
+}) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -28,19 +43,22 @@ export function KebabMenu({ items }: { items: KebabItem[] }) {
   }, [open]);
 
   return (
-    <div className="kebab" ref={ref}>
+    <div className={`kebab${className ? ` ${className}` : ""}`} ref={ref}>
       <button
         type="button"
-        className="kebab__btn"
+        className={trigger ? "kebab__trigger" : "kebab__btn"}
         aria-haspopup="menu"
         aria-expanded={open}
-        title="Actions"
+        title={trigger ? undefined : "Actions"}
         onClick={() => setOpen((o) => !o)}
       >
-        ⋯
+        {trigger ?? "⋯"}
       </button>
       {open ? (
-        <div className="kebab__menu" role="menu">
+        <div
+          className={`kebab__menu${align === "right" ? " kebab__menu--right" : ""}`}
+          role="menu"
+        >
           {items.map((it) => (
             <button
               key={it.label}

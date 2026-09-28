@@ -1,5 +1,5 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { Brand } from "../components/shell/Brand";
 
@@ -238,6 +238,21 @@ const SPEND_VIEWS: readonly { key: SpendView; label: string; hint: string }[] = 
 export function AdminPage() {
   const me = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
+  const navigate = useNavigate();
+  // ⌘K / Ctrl-K focuses the header search. Advertised on the box itself, so it
+  // has to actually work — a printed shortcut that does nothing is a lie.
+  const searchRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
   const [users, setUsers] = useState<AdminUser[]>([]);
   // Which person's project roles are open. An id, not the user object: the
   // drawer re-fetches anyway, and holding the object would show a stale name
@@ -284,6 +299,11 @@ export function AdminPage() {
     const p = new URLSearchParams(params);
     p.set("tab", next);
     setParams(p, { replace: false });
+    // One box, many tables — so the term has to go when the table does.
+    // Carrying "huy" from Employees over to Audit would silently hide most of
+    // the log, and the box is at the top of the page where a leftover value is
+    // easy to miss.
+    setSearch("");
   };
   const urlView = params.get("view") as SpendView | null;
   const spendView: SpendView = SPEND_VIEWS.some((v) => v.key === urlView)
@@ -566,6 +586,16 @@ export function AdminPage() {
       items: [["audit", "Audit log", "audit"]],
     },
   ];
+  // Which tabs the header search actually filters, and what it searches in
+  // each. Absent from this table = no box, rather than a box that does
+  // nothing: an inert search field is a worse answer than an empty toolbar.
+  const SEARCH_PLACEHOLDER: Partial<Record<AdminTab, string>> = {
+    members: "Search employees by name, username or email…",
+    projects: "Search projects by name or owner…",
+    comics: "Search comics and artists by name…",
+    sequences: "Search sequences by code, episode or series…",
+    audit: "Search the log by action, actor, target, IP or detail…",
+  };
   const SUBTITLES: Record<string, string> = {
     spend: "Money and delivery in one place — the pool, what each project spent, who delivered, and every billed generation.",
     members: "Your team directory — accounts, budgets, and each person's Giant Studio (·GS) / Giantflow (·GF) roles.",
@@ -628,23 +658,6 @@ export function AdminPage() {
           ))}
         </nav>
 
-        <div className="dash__side-foot">
-          <div className="dash__me">
-            <span className="dash__me-avatar" aria-hidden="true">
-              {initials({ display_name: me?.display_name, username: me?.username ?? "?" })}
-            </span>
-            <span className="dash__me-txt">
-              <b>{me?.display_name || me?.username}</b>
-              <small>Admin</small>
-            </span>
-          </div>
-          <Link to="/projects" className="dash__side-link">
-            ← Back to app
-          </Link>
-          <button className="dash__side-link" onClick={() => logout()}>
-            Sign out
-          </button>
-        </div>
       </aside>
 
       {/* click-away backdrop for the mobile nav drawer */}
@@ -652,28 +665,98 @@ export function AdminPage() {
 
       {/* ── main column ── */}
       <div className="dash__main">
-        <header className="dash__topbar">
+        <header className="dash__bar">
           <button
-            className="dash__hamburger"
+            className="dash__bar-icon dash__bar-burger"
             aria-label="Open menu"
             onClick={() => setNavOpen(true)}
           >
-            ☰
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+              <path d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
           </button>
-          <div>
-            <h1 className="dash__title">{curLabel}</h1>
-            <p className="dash__sub">{SUBTITLES[tab]}</p>
-          </div>
-          <div className="dash__topbar-actions">
-            {tab === "members" ? (
-              <button className="btn2 btn2--primary" onClick={() => setCreateOpen(true)}>
-                + Add employee
-              </button>
-            ) : null}
+
+          {/* Only on tabs that have something to search — see
+              SEARCH_PLACEHOLDER. */}
+          {SEARCH_PLACEHOLDER[tab] ? (
+            <label className="dash__bar-search">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m20 20-3.5-3.5" />
+              </svg>
+              <input
+                ref={searchRef}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={SEARCH_PLACEHOLDER[tab]}
+                aria-label={SEARCH_PLACEHOLDER[tab]}
+              />
+              <kbd>⌘K</kbd>
+            </label>
+          ) : (
+            <span className="dash__bar-spacer" />
+          )}
+
+          <div className="dash__bar-right">
+            <button
+              className="dash__bar-icon"
+              aria-label={
+                pendingSignups > 0
+                  ? `${pendingSignups} sign-ups waiting`
+                  : "Nothing waiting"
+              }
+              title={
+                pendingSignups > 0
+                  ? `${pendingSignups} sign-ups waiting`
+                  : "Nothing waiting"
+              }
+              onClick={() => setTab("approvals")}
+            >
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0" />
+              </svg>
+              {pendingSignups > 0 ? <span className="dash__bar-dot" /> : null}
+            </button>
+
+            <KebabMenu
+              className="dash__bar-user"
+              align="right"
+              trigger={
+                <>
+                  <span className="dash__bar-avatar" aria-hidden="true">
+                    {initials({
+                      display_name: me?.display_name,
+                      username: me?.username ?? "?",
+                    })}
+                  </span>
+                  <span className="dash__bar-who">{me?.display_name || me?.username}</span>
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="m6 9 6 6 6-6" />
+                  </svg>
+                </>
+              }
+              items={[
+                { label: "← Back to app", onSelect: () => navigate("/projects") },
+                { label: "Sign out", onSelect: () => logout() },
+              ]}
+            />
           </div>
         </header>
 
         <main className="dash__content">
+          <div className="pagehead">
+            <div className="pagehead__text">
+              <h1 className="dash__title">{curLabel}</h1>
+              <p className="dash__sub">{SUBTITLES[tab]}</p>
+            </div>
+            {tab === "members" ? (
+              <div className="pagehead__actions">
+                <button className="btn2 btn2--primary" onClick={() => setCreateOpen(true)}>
+                  + Add employee
+                </button>
+              </div>
+            ) : null}
+          </div>
           {error ? <div className="admin-error">{error}</div> : null}
 
       {/* ───────────────── TỔNG QUAN ───────────────── */}
@@ -796,13 +879,7 @@ export function AdminPage() {
             </div>
           </section>
 
-          <div className="admin2__toolbar">
-            <input
-              className="admin2__search"
-              placeholder="Search by name, username or email…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
+          <div className="admin2__toolbar admin2__toolbar--count-only">
             <span className="admin2__count">
               {shown.length}/{users.length} members
             </span>
@@ -1012,11 +1089,11 @@ export function AdminPage() {
           }}
         />
       ) : null}
-      {tab === "projects" ? <ProjectsTab /> : null}
+      {tab === "projects" ? <ProjectsTab search={search} /> : null}
       {tab === "production" ? <ProductionCRM /> : null}
-      {tab === "comics" ? <ComicsTab /> : null}
-      {tab === "sequences" ? <BlockedSequencesTab /> : null}
-      {tab === "audit" ? <AuditTab fmtTime={fmtTime} /> : null}
+      {tab === "comics" ? <ComicsTab search={search} /> : null}
+      {tab === "sequences" ? <BlockedSequencesTab search={search} /> : null}
+      {tab === "audit" ? <AuditTab fmtTime={fmtTime} search={search} /> : null}
         </main>
 
       {createOpen ? (

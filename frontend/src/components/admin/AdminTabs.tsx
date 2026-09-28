@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 
 import { useRevalidate } from "../../hooks/useRevalidate";
+import { matches } from "./searchMatch";
 
 import {
   thumbUrl,
@@ -589,7 +590,7 @@ function ProjectSeriesPreview({ projectId }: { projectId: string }) {
   );
 }
 
-export function ProjectsTab() {
+export function ProjectsTab({ search = "" }: { search?: string }) {
   const projects = useFetch<AdminProject[]>("/api/projects");
   const users = useFetch<AdminUserLite[]>("/api/admin/users");
   const costs = useFetch<ProjectCost[]>("/api/admin/stats/projects");
@@ -728,7 +729,9 @@ export function ProjectsTab() {
     }
   }
 
-  const rows = projects.data ?? [];
+  const rows = (projects.data ?? []).filter((p) =>
+    matches(search, p.name, p.owner_name),
+  );
 
   return (
     <>
@@ -958,15 +961,25 @@ interface AuditRow {
   detail?: string | null;
 }
 
-export function AuditTab({ fmtTime }: { fmtTime: (iso?: string | null) => string }) {
+export function AuditTab({
+  fmtTime,
+  search = "",
+}: {
+  fmtTime: (iso?: string | null) => string;
+  search?: string;
+}) {
   const { data, err, loading } = useFetch<AuditRow[]>("/api/admin/audit?limit=300");
   if (loading) return <Skeleton />;
   if (err) return <div className="admin-error">{err}</div>;
-  const rows = data ?? [];
+  const rows = (data ?? []).filter((a) =>
+    matches(search, a.action, a.actor, a.target, a.ip, a.detail),
+  );
   return (
     <div className="admin2__card">
       {rows.length === 0 ? (
-        <div className="admin2__empty">No events yet.</div>
+        <div className="admin2__empty">
+          {search ? "No events match that search." : "No events yet."}
+        </div>
       ) : (
         <table className="admin2__table admin2__table--cards admin2__cards-audit">
           <thead>

@@ -14,6 +14,8 @@ import { toast } from "../../store/toast";
  * "7 / 5" says at a glance that this one has been fought with, which is the
  * signal a PM is here to act on.
  */
+import { matches } from "./searchMatch";
+
 
 type Row = {
   shot_id: string;
@@ -33,7 +35,7 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
   return r.json() as Promise<T>;
 }
 
-export function BlockedSequencesTab() {
+export function BlockedSequencesTab({ search = "" }: { search?: string }) {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -88,10 +90,12 @@ export function BlockedSequencesTab() {
     );
   }
 
+  const shown = rows.filter((r) => matches(search, r.code, r.episode, r.series));
+
   return (
     <div className="blockseq">
       <p className="blockseq__note">
-        <b>{rows.length}</b> sequence đã dùng hết lượt gen và đang chờ bạn xem.
+        <b>{shown.length}</b> sequence đã dùng hết lượt gen và đang chờ bạn xem.
         Mở khoá là cấp thêm lượt cho <em>chính sequence đó</em> — không đụng tới
         ngân sách của ai.
       </p>
@@ -108,7 +112,7 @@ export function BlockedSequencesTab() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {shown.map((r) => (
               <tr key={r.shot_id}>
                 <td className="blockseq__code">{r.code || "—"}</td>
                 <td>{r.episode}</td>
