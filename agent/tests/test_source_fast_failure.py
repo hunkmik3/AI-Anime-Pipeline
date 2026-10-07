@@ -80,7 +80,9 @@ def test_unknown_analysis_mode_rejected_before_creating_jobs(client):
 def test_fast_analysis_capability_is_advertised(client):
     response=client.get('/api/automation/videos/capabilities')
     assert response.status_code==200
-    assert response.json()=={'analysis_modes':['standard','fast'],'fast_mode_experimental':True}
+    assert response.json()=={'analysis_modes':['standard','fast','one_pass'],
+                            'fast_mode_experimental':True,
+                            'one_pass_analysis_only':False,'one_pass_auto_production':True}
 
 
 def test_source_refusal_is_terminal_across_resumes(tmp_path,monkeypatch):

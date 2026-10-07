@@ -121,6 +121,19 @@ def test_missing_prior_dispositions_block_every_affected_shot(tmp_path,monkeypat
     assert any(a['active_finding']['code']=='resolution_incomplete' for a in result['issue_audit']['final'])
 
 
+def test_protocol_review_rejects_changed_identity_model_before_calls(tmp_path, monkeypatch):
+    from flowboard.services.video_analyzer import source_identity, source_protocol_review
+    case = _case(tmp_path)
+    calls, _ = _mock(monkeypatch, omit=True)
+    result = _run(case)
+    assert result['source_verification']['refinement']['identity_model'] == source_identity.MODEL
+    count = len(calls)
+    monkeypatch.setattr(source_identity, 'MODEL', 'changed-identity-model')
+    with pytest.raises(ValueError, match='unchanged, source-bound'):
+        asyncio.run(source_protocol_review.review(case[0], case[1], result, selected_shots=[1]))
+    assert len(calls) == count
+
+
 def test_new_round_one_defect_requires_final_disposition(tmp_path,monkeypatch):
     case=_case(tmp_path);_,checks=_mock(monkeypatch,first_issue=True)
     result=_run(case)

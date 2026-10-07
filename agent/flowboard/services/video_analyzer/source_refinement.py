@@ -820,7 +820,7 @@ async def refine(video,work_dir,analysis,*,on_progress=None,only_unresolved=Fals
             'shot_digests':{n:inv._digest(row) for n,row in output['shots'].items()},
             'asset_digests':{a['id']:inv._digest(a) for a in output['assets']},'usage':usage,
             'refinement':{'version':VERSION,'policy':policy,'source_binding':binding(evidence),'source_shots_digest':inv._digest(ordered_shots),
-                          'observation_model':observation_model,'strategy':strategy,
+                          'observation_model':observation_model,'identity_model':identity.MODEL,'strategy':strategy,
                           'reviewer_model':observation_model if focused else inv.VERIFY_MODEL,
                           'prior_report_digest':inv._digest(prior),'prior_findings':len(prior.get('findings',[])),
                           'scope':{'mode':'selected' if selected_shots is not None else 'remaining' if can_retain else 'all','processed_shots':sorted(requested),

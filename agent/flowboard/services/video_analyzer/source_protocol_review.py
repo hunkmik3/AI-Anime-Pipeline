@@ -91,6 +91,11 @@ async def review(video, work_dir, analysis, *, on_progress=None, selected_shots=
     binding_input = {"video": inv._hash_file(video) if video.is_file() else None,
         "models": [inv.MODEL, inv.VERIFY_MODEL],
         "evidence": sorted((e["id"], e["sha256"], e.get("timestamp_s"), e.get("shot")) for e in evidence)}
+    if refinement.get('identity_model'):
+        # Match the refinement's identity-aware binding with the current model.
+        # Legacy reports without this field retain their original binding format.
+        from . import source_identity as identity
+        binding_input['identity_model'] = identity.MODEL
     if refinement.get('narrative_context'):
         binding_input['narrative'] = inv._digest(result.get('transcript') or {})
     source_binding = inv._digest(binding_input)
