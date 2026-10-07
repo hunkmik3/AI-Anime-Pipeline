@@ -39,7 +39,7 @@ when the next shot needs the immediately previous shot's movement/pose as a refe
 ordinary dialogue/reverse angles can use shared materials and run independently.
 Do not add unsupported exact positions or change explicitly observed hands. Use
 supported_transition only if the input explicitly contains a transition/event.
-All spoken dialogue stays exactly in English; do not translate or add speech.
+All spoken dialogue stays exactly in its supplied original language; do not translate or add speech.
 '''
 STRATEGIES = {'keep_last_known', 'framing_only', 'preserve_unknown', 'reduce_unspecified_motion', 'supported_transition'}
 
@@ -128,7 +128,7 @@ def fallback(scene, diagnostic):
             'do not invent a handoff, empty occupied hands, add movements, or force offscreen people into the frame. '
             'If a hand is unspecified, keep it unspecified. Use shared set geometry for the stated camera angle.',
             'resolutions': resolutions, 'depends_on_previous': False})
-    return {'scene_rule': 'Preserve the continuous scene, materials and English dialogue. Use minimal motion and neutral framing for unspecified details.',
+    return {'scene_rule': 'Preserve the continuous scene, materials and original-language dialogue. Use minimal motion and neutral framing for unspecified details.',
             'shots': shots, 'mode': 'rules_fallback', 'diagnostic': diagnostic[:500]}
 
 

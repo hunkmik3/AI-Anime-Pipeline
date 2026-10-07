@@ -103,6 +103,25 @@ def test_provider_failure_is_scoped_to_every_affected_pair(tmp_path, monkeypatch
     assert all(f["code"] == "identity_coverage_failed" for f in findings)
 
 
+def test_coverage_uses_identity_model_and_does_not_reuse_other_model_cache(tmp_path, monkeypatch):
+    case = _case(tmp_path, 2)
+    used, journal = [], {}
+
+    async def ask(system, payload, supplied, work_dir, usage, **kwargs):
+        used.append(kwargs['model_override'])
+        return {'checks': [{**p, 'status': 'absent', 'evidence_ids': [f"e{p['shot']}"]}
+                           for p in payload['expected_checks']]}
+
+    monkeypatch.setattr(inv, '_ask', ask)
+    monkeypatch.setattr(coverage.identity, 'MODEL', 'gpt-identity-a')
+    _run(case, tmp_path, journal)
+    _run(case, tmp_path, journal)
+    assert used == ['gpt-identity-a']
+    monkeypatch.setattr(coverage.identity, 'MODEL', 'gpt-identity-b')
+    _run(case, tmp_path, journal)
+    assert used == ['gpt-identity-a', 'gpt-identity-b']
+
+
 def test_missing_frames_or_anchor_are_scoped_errors_without_paid_calls(tmp_path, monkeypatch):
     case = _case(tmp_path, 3)
     (tmp_path / "frame-1.jpg").unlink()

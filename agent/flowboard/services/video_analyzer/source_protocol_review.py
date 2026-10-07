@@ -88,9 +88,12 @@ async def review(video, work_dir, analysis, *, on_progress=None, selected_shots=
         + prior.get("evidence", [])}.values())
     evidence = [{**e, "sha256": inv._hash_file(path)} for e in evidence
                 if (path := inv._safe_path(work_dir, e["frame"]))]
-    source_binding = inv._digest({"video": inv._hash_file(video) if video.is_file() else None,
+    binding_input = {"video": inv._hash_file(video) if video.is_file() else None,
         "models": [inv.MODEL, inv.VERIFY_MODEL],
-        "evidence": sorted((e["id"], e["sha256"], e.get("timestamp_s"), e.get("shot")) for e in evidence)})
+        "evidence": sorted((e["id"], e["sha256"], e.get("timestamp_s"), e.get("shot")) for e in evidence)}
+    if refinement.get('narrative_context'):
+        binding_input['narrative'] = inv._digest(result.get('transcript') or {})
+    source_binding = inv._digest(binding_input)
     if (prior.get("method") != "source_frames" or refinement.get("source_binding") != source_binding
             or refinement.get("source_shots_digest") != inv._digest(shots)
             or prior.get("inventory_digest") != inv.inventory_digest(inventory)):
@@ -183,6 +186,9 @@ async def review(video, work_dir, analysis, *, on_progress=None, selected_shots=
             "screen_graphics": inventory.get("screen_graphics", []), "proposed_text_updates": {},
             "relationship_checks": refine._relationship_checks(patch),
             "required_context_reviews": [{"shot": n, "asset_id": asset} for n, asset in sorted(required)]})
+        if refinement.get('narrative_context'):
+            from .source_narrative_context import build_narrative_context
+            payload['narrative_context'] = build_narrative_context(result, batch)
         key = f"{batch[0]['shot']}-{batch[-1]['shot']}"
         entry = journal["batches"].setdefault(key, {"calls": {}, "usage": {}, "trace": []})
         if entry.get("result") and not entry["result"].get("retryable"):

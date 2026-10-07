@@ -94,7 +94,7 @@ def test_the_writer_is_handed_the_fixed_facts_and_asked_once_more_with_the_probl
         return {"prompt": prompt, "end_state": "Theo holds the box in his left hand."}
 
     monkeypatch.setattr(adapt_mod, "ask_json", fake)
-    out = asyncio.run(prompt_writer.write_clip_prompt(sequence, shots, characters=cast, environment=env,
+    out = asyncio.run(prompt_writer.write_clip_prompt(sequence, shots, characters=cast, environment=env, cinematic=False,
                                                       look="cg3d", aspect_ratio="9:16",
                                                       previous_state="She holds the box."))
     assert len(asked) == 2
@@ -123,29 +123,26 @@ def test_a_shot_to_rewrite_is_marked_and_its_lines_are_not_held_to_the_words(mon
 
     monkeypatch.setattr(adapt_mod, "ask_json", fake)
     unsafe = automation.unsafe_shots(shots, cast, env)
-    out = asyncio.run(prompt_writer.write_clip_prompt(sequence, shots, characters=cast, environment=env,
+    out = asyncio.run(prompt_writer.write_clip_prompt(sequence, shots, characters=cast, environment=env, cinematic=False,
                                                       unsafe=unsafe))
     assert "What pen" in out.prompt
 
 
-def test_the_route_falls_back_to_the_template_and_says_why(monkeypatch):
+def test_app_does_not_restore_a_template_even_with_an_old_engine_setting(monkeypatch):
+    monkeypatch.setattr(prompt_writer, "CLIP_ENGINE", "legacy")
     sequence, shots, cast, env = _clip()
 
-    async def broken(*a, **kw):
+    async def broken(*args, **kwargs):
+        assert kwargs["cinematic"] is True
         raise prompt_writer.WriterError("Shot 1 must contain this line")
 
     monkeypatch.setattr(prompt_writer, "write_clip_prompt", broken)
-    body = automation_routes.VideoWriteBody(sequence=sequence, shots=shots, characters=cast, environment=env,
-                                            style="cg3d", aspect_ratio="9:16")
-    out = asyncio.run(automation_routes.write_video_prompt(body))
-    assert out.writer == "template" and "[SPECIFIC TIMELINE]" in out.prompt
-    assert out.warnings and "template" in out.warnings[0]
-    # An unsafe clip the writer could not adapt is refused, as before.
-    shots[0]["action"] = ["Her camisole fabric breaks into particles."]
-    body = automation_routes.VideoWriteBody(sequence=sequence, shots=shots, characters=cast, environment=env)
-    with pytest.raises(Exception) as err:
+    body = automation_routes.VideoWriteBody(sequence=sequence, shots=shots, characters=cast,
+                                            environment=env, style="cg3d", aspect_ratio="9:16")
+    with pytest.raises(Exception) as caught:
         asyncio.run(automation_routes.write_video_prompt(body))
-    assert getattr(err.value, "status_code", None) == 422
+    assert caught.value.status_code == 422
+    assert "Shot 1 must contain" in caught.value.detail
 
 
 def test_the_image_writer_rewrites_descriptions_and_keeps_the_contract(monkeypatch):
@@ -210,7 +207,7 @@ def test_underwear_in_a_school_age_shot_is_handed_over_to_be_rewritten(monkeypat
         return {"prompt": prompt, "end_state": ""}
 
     monkeypatch.setattr(adapt_mod, "ask_json", fake)
-    out = asyncio.run(prompt_writer.write_clip_prompt(sequence, shots, characters=cast, environment=env))
+    out = asyncio.run(prompt_writer.write_clip_prompt(sequence, shots, characters=cast, environment=env, cinematic=False))
     assert seen["rewrite"] == "lingerie" and "Nice bag." in out.prompt
 
 

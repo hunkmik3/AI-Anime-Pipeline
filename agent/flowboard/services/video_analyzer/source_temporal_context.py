@@ -62,7 +62,6 @@ def build_temporal_context(inv, batch, all_shots, inventory, evidence, *, extra_
     selection uses the complete source timeline, not the subset needing review.
     Presence comes only from individual shot rows, never a scene's member union.
     """
-    context, base = build_visual_context(inv, batch, inventory, evidence, extra_asset_ids=extra_asset_ids)
     current = {row["shot"]: row for row in batch}
     timeline = sorted((row for row in all_shots if type(row.get("shot")) is int and _bounds(row)),
                       key=lambda row: (row["start"], row["end"], row["shot"]))
@@ -82,6 +81,15 @@ def build_temporal_context(inv, batch, all_shots, inventory, evidence, *, extra_
             if gap <= MAX_GAP_SECONDS:
                 relations.append({"for_shot": number, "shot": neighbor["shot"], "offset": offset,
                                   "gap_seconds": gap, "scene_relation": _scene_relation(number, neighbor["shot"], inventory)})
+    # A cropped target may omit the person's ID precisely because the extractor
+    # could not recognize it. Include identity anchors for observed neighbors,
+    # not just profiles already assigned to the target. Scene unions still
+    # cannot create presence; all contextual links require own-shot evidence.
+    neighbor_assets = {p.get('asset_id') for relation in relations
+        for p in inventory.get('shots', {}).get(str(relation['shot']), {}).get('asset_presence', [])
+        if p.get('visibility') in VISIBLE and isinstance(p.get('asset_id'), str)}
+    context, base = build_visual_context(inv, batch, inventory, evidence,
+        extra_asset_ids=set(extra_asset_ids) | neighbor_assets)
     selected_neighbors = {}
     for number in sorted({row["shot"] for row in relations}):
         related = [row for row in relations if row["shot"] == number]
@@ -135,6 +143,27 @@ def build_temporal_context(inv, batch, all_shots, inventory, evidence, *, extra_
     for by_asset in allowed.values():
         for key in by_asset:
             by_asset[key] = list(dict.fromkeys(by_asset[key]))
+    # All frames in a review batch are already supplied, including middle
+    # frames and shots outside a target's temporal radius. A cited, visible
+    # appearance of the SAME catalog asset is a usable identity anchor. It is
+    # not an extra temporal neighbor and never proves the target's presence.
+    # Previously only two endpoint frames were allowed despite sending all
+    # batch frames, causing legitimate reviewer citations to fail validation.
+    for number, row in inventory.get("shots", {}).items():
+        for presence in row.get("asset_presence", []):
+            key = presence.get("asset_id")
+            if key not in canonical or presence.get("visibility") not in VISIBLE:
+                continue
+            refs = [ref for ref in presence.get("evidence_ids", []) if ref in supplied
+                    and str(supplied[ref].get("shot")) == str(number)]
+            for target in current:
+                if str(target) != str(number):
+                    allowed[str(target)].setdefault(key, []).extend(refs)
+            for ref in refs:
+                roles[ref].setdefault("appearance_asset_ids", []).append(key)
+    for by_asset in allowed.values():
+        for key in by_asset:
+            by_asset[key] = list(dict.fromkeys(by_asset[key]))
     aliases, paths, unresolved = _alias_graph(inventory, canonical)
     context["temporal_context"] = {
         "policy": {"neighbor_radius": NEIGHBOR_RADIUS, "max_gap_seconds": MAX_GAP_SECONDS,
@@ -150,6 +179,28 @@ def build_temporal_context(inv, batch, all_shots, inventory, evidence, *, extra_
         "alias_paths": paths, "unresolved_alias_ids": unresolved,
     }
     return context, list(supplied.values())
+
+
+def retain_supplied_identity_context(original, review, supplied):
+    """Changing the proposed cast must not revoke pixels already given to QA.
+
+    A newly corrected target appearance can become the latest anchor and push
+    its earlier reveal out of the anchor sampler. Keep the original host-selected
+    context whitelist for pixels still supplied; independent vision must still
+    confirm the identity and current-shot presence.
+    """
+    temporal = review['temporal_context']
+    known = set(temporal.get('canonical_asset_ids', []))
+    cards = {frame['id']: frame for frame in supplied}
+    allowed = temporal.setdefault('allowed_identity_context', {})
+    for number, by_asset in original.get('temporal_context', {}).get('allowed_identity_context', {}).items():
+        if number not in allowed:
+            continue
+        for key, refs in by_asset.items():
+            if key not in known:
+                continue
+            kept = [ref for ref in refs if ref in cards and str(cards[ref].get('shot')) != str(number)]
+            allowed[number][key] = list(dict.fromkeys(allowed[number].get(key, []) + kept))
 
 
 def validate_context_links(links, batch, inventory, supplied, context):

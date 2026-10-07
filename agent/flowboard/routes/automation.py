@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, File, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, ValidationError
 from sqlmodel import select
@@ -28,11 +28,30 @@ from flowboard.db.models import AutomationProject, AutomationJob, AutomationRevi
 from flowboard.routes.deps import get_optional_user
 from flowboard.services import automation, auth, authored_contract, prompt_coverage, prompt_writer, automation_jobs, production_manifest, shot_package
 from flowboard.services.llm.base import LLMError
+from flowboard.services.board_roundtrip import preserve_numeric_representation
 from flowboard.services.video_analyzer.production import build_asset_prompt
+from flowboard.services import film_styles
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/automation", tags=["automation"])
+
+
+@router.get("/styles")
+def list_film_styles():
+    from flowboard.services import film_styles
+    return [film_styles.metadata(key) for key in film_styles.KEYS]
+
+
+@router.get("/styles/{style_id}/{kind}")
+def film_style_reference(style_id: str, kind: str):
+    from flowboard.services import film_styles
+    if not film_styles.is_preset(style_id) or kind not in ('character', 'environment'):
+        raise HTTPException(404, detail='Style reference not found')
+    path = film_styles.reference_path(kind, style_id)
+    if path is None:
+        raise HTTPException(404, detail='This style uses profile-only masters; no bundled reference image')
+    return FileResponse(path, media_type='image/png')
 
 
 # ───────────────────────────── projects (CRUD) ─────────────────────────────
@@ -49,13 +68,18 @@ def _owner_id(user: Any) -> Optional[uuid.UUID]:
 
 
 def _summary(p: AutomationProject) -> dict[str, Any]:
+    # The DB column stores UTC but can return a naive datetime. Without an
+    # offset, browsers interpret it as local time (a seven-hour error in VN).
+    updated_at = p.updated_at
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
     return {
         "id": str(p.id),
         "name": p.name,
         "title": p.title,
         "logline": p.logline,
         "runtime_seconds": p.runtime_seconds,
-        "updated_at": p.updated_at.isoformat(),
+        "updated_at": updated_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
         "revision": p.revision,
     }
 
@@ -186,7 +210,11 @@ def save_project(
             if field == "board":
                 value = _keep_earned(value, stored)
                 # Results/status are server-owned, never reverted by stale autosave.
-                value = automation_jobs.overlay(value, s.exec(select(AutomationJob).where(AutomationJob.project_id==project_id)).all())
+                all_jobs = s.exec(select(AutomationJob).where(AutomationJob.project_id==project_id)).all()
+                from flowboard.services.primary_materials import invalidate_identity_states
+                value = invalidate_identity_states(value, stored, all_jobs)
+                value = automation_jobs.overlay(value, all_jobs)
+                value = preserve_numeric_representation(value, stored)
             setattr(row, field, value)
         row.revision += 1
         row.updated_at = datetime.now(timezone.utc)
@@ -208,6 +236,10 @@ def delete_project(project_id: uuid.UUID, user=Depends(get_optional_user)) -> di
         jobs = s.exec(select(AutomationJob).where(AutomationJob.project_id==project_id)).all()
         if any(j.status in automation_jobs.ACTIVE | {'unknown'} for j in jobs):
             raise HTTPException(409, detail="Resolve active jobs before deleting this board.")
+        from flowboard.db.models import AutomationAssistantTurn
+        if s.exec(select(AutomationAssistantTurn).where(AutomationAssistantTurn.project_id == project_id,
+                AutomationAssistantTurn.status.in_({'queued', 'running'}))).first():
+            raise HTTPException(409, detail="Dừng agent chat trước khi xóa board.")
         for j in jobs: s.delete(j)
         for r in s.exec(select(AutomationRevision).where(AutomationRevision.project_id==project_id)).all(): s.delete(r)
         s.flush()
@@ -325,7 +357,7 @@ class PromptBody(BaseModel):
     characters: list[dict[str, Any]] = Field(default_factory=list)
     has_reference: bool = False
     aspect_ratio: str = "16:9"
-    style: str = Field(default="realistic", pattern="^(realistic|anime|cg3d)$")
+    style: str = Field(default="realistic", pattern=film_styles.STYLE_PATTERN)
 
 
 class PromptResponse(BaseModel):
@@ -354,11 +386,19 @@ async def build_prompt(body: PromptBody) -> PromptResponse:
             aspect_ratio=body.aspect_ratio,
         )
     elif body.kind == "character":
-        if not body.character or not body.state:
+        if not body.character or (not body.state and body.style not in film_styles.PROFILE_KEYS):
             raise HTTPException(status_code=422, detail="A character prompt needs a character and a state.")
+        state = body.state or body.character.get("selected_state")
+        if not state and body.style in film_styles.PROFILE_KEYS:
+            states = body.character.get("states") or []
+            state = next((s for s in states if s.get("key") == body.character.get("baseline_state_key")), None)
+            if not state and len(states) == 1:
+                state = states[0]
+            if not state and len(states) > 1:
+                raise HTTPException(422, detail="Choose one costume state or specify baseline_state_key; do not mix outfits.")
         design = body.character.get("design") or None
         text = automation.build_character_prompt(
-            body.character, body.state, has_reference=body.has_reference, style=body.style,
+            body.character, state or {}, has_reference=body.has_reference, style=body.style,
             design=design,
         )
         text, _ = await prompt_writer.write_image_prompt(
@@ -375,6 +415,7 @@ async def build_prompt(body: PromptBody) -> PromptResponse:
         design = body.environment.get("design") or None
         text = automation.build_environment_prompt(
             body.environment, aspect_ratio=body.aspect_ratio, style=body.style, design=design,
+            has_reference=body.has_reference,
         )
         text, _ = await prompt_writer.write_image_prompt(
             text, kind="environment", subject=str(body.environment.get("name") or ""),
@@ -383,6 +424,9 @@ async def build_prompt(body: PromptBody) -> PromptResponse:
 
 
 class PlateBody(BaseModel):
+    style: str = Field(default="", pattern=film_styles.OPTIONAL_STYLE_PATTERN)
+    material_kind: str = Field(default="", pattern="^(|character|environment|prop|background_group)$")
+    style_version: str = ""
     prompt: str
     image_model: str = automation.DEFAULT_IMAGE_MODEL
     # 1K / 2K / 4K, capped to what the chosen model can actually deliver.
@@ -405,6 +449,44 @@ class PlateResponse(BaseModel):
     images: list[PlateImage]
 
 
+def _store_uploaded_plate(raw: bytes) -> PlateImage:
+    """Decode uploads before storing them; use the same R2/KYC path as plates."""
+    from io import BytesIO
+    from PIL import Image, ImageOps, UnidentifiedImageError
+    try:
+        with Image.open(BytesIO(raw)) as source:
+            if source.format not in ('PNG', 'JPEG', 'WEBP') or getattr(source, 'is_animated', False):
+                raise HTTPException(415, detail='Chọn ảnh PNG, JPEG hoặc WebP tĩnh.')
+            if source.width * source.height > 40_000_000:
+                raise HTTPException(413, detail='Ảnh vượt quá 40 megapixel.')
+            source.load()
+            image = ImageOps.exif_transpose(source).convert('RGBA' if 'A' in source.getbands() else 'RGB')
+            output = BytesIO()
+            image.save(output, format='PNG')
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
+        raise HTTPException(415, detail='File không phải ảnh hợp lệ hoặc đã bị hỏng.') from exc
+    png = output.getvalue()
+    url = automation._publish(png)
+    if not url:
+        raise HTTPException(503, detail='Không lưu được ảnh lên R2. Ảnh cũ vẫn được giữ; thử tải lại.')
+    media_id = automation._ingest_plate(png)
+    if not media_id:
+        raise HTTPException(503, detail='Không lưu được media để dùng làm reference. Ảnh cũ vẫn được giữ.')
+    return PlateImage(url=url, reference_url=url, media_id=media_id, persisted=True)
+
+
+@router.post('/projects/{project_id}/upload-image', response_model=PlateImage)
+async def upload_material_image(project_id: uuid.UUID, file: UploadFile = File(...), user=Depends(get_optional_user)):
+    with get_session() as session:
+        _load(session, project_id, user)
+    # Read a bounded amount rather than trusting the supplied MIME or filename.
+    raw = await file.read(20 * 1024 * 1024 + 1)
+    if len(raw) > 20 * 1024 * 1024:
+        raise HTTPException(413, detail='Ảnh tối đa 20 MB.')
+    import asyncio
+    return await asyncio.to_thread(_store_uploaded_plate, raw)
+
+
 @router.post("/plate", response_model=PlateResponse)
 async def plate(body: PlateBody) -> PlateResponse:
     if body.image_model not in automation.IMAGE_MODELS:
@@ -416,7 +498,7 @@ async def plate(body: PlateBody) -> PlateResponse:
             aspect_ratio=body.aspect_ratio,
             reference_urls=body.reference_urls,
             variant_count=body.variant_count,
-            image_size=body.image_size,
+            image_size=body.image_size, style=body.style, material_kind=body.material_kind, style_version=body.style_version,
         )
     except automation.AutomationError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
@@ -434,7 +516,7 @@ class VideoPromptBody(BaseModel):
     production_assets: Optional[list[dict[str, Any]]] = None
     reference_assets: list[dict[str, Any]] = Field(default_factory=list)
     source_verification: Optional[dict[str, Any]] = None
-    style: str = Field(default="realistic", pattern="^(realistic|anime|cg3d)$")
+    style: str = Field(default="realistic", pattern=film_styles.STYLE_PATTERN)
     # English by default. Chinese staging rescued dialogue on a 30,000-character
     # prompt whose first line sat at 65% of its length; the section format now
     # used puts every line inside its own shot at ~5,000 characters, and in that
@@ -447,48 +529,6 @@ class VideoPromptBody(BaseModel):
     # The writer describes the medium in their terms, so a clip of donghua
     # sheets is not told it is a generic 3D feature.
     style_note: str = ""
-
-
-class VideoPromptResponse(BaseModel):
-    prompt: str
-    duration_seconds: int
-    language: str = "en"
-
-
-@router.post("/video/prompt", response_model=VideoPromptResponse)
-async def build_video_prompt(body: VideoPromptBody) -> VideoPromptResponse:
-    """Assemble a sequence's Seedance prompt, without spending a generation."""
-    # Refused here, before anything is built or paid for, and named precisely so
-    # the board can show which shot to rewrite rather than a bare failure.
-    if body.production_assets is not None or body.source_verification is not None:
-        raise HTTPException(status_code=422, detail="Dùng bước viết và kiểm tra prompt (/video/write) cho shotlist đã kiểm chứng.")
-    unsafe = automation.unsafe_shots(body.shots, body.characters, body.environment)
-    if unsafe:
-        raise HTTPException(status_code=422, detail=(
-            "Clip này có shot cởi/lộ đồ lót của nhân vật tuổi học sinh — không dựng: "
-            + "; ".join(f"shot {n} (\"{words}\")" for n, words in unsafe)
-            + ". Viết lại các shot đó rồi dựng lại."
-        ))
-    prompt = automation.build_video_prompt(
-        body.sequence,
-        body.shots,
-        characters=body.characters,
-        environment=body.environment,
-        look=body.style,
-        aspect_ratio=body.aspect_ratio,
-    )
-    # Cast and locations are named in the adaptation's language; translating
-    # them is how the clip ended up speaking Chinese names over English lines.
-    keep = [str(c.get("name") or "") for c in body.characters]
-    keep += [str((body.environment or {}).get("name") or "")]
-    translated = await automation.translate_prompt(prompt, body.language, keep=keep)
-    # A failed translation falls back to English; say which one the board got
-    # rather than let the label claim Chinese for an English prompt.
-    return VideoPromptResponse(
-        prompt=translated,
-        duration_seconds=automation.clip_seconds(body.sequence, body.shots),
-        language=body.language if translated != prompt else "en",
-    )
 
 
 class VideoWriteBody(VideoPromptBody):
@@ -507,6 +547,9 @@ class VideoWriteResponse(BaseModel):
     coverage: Optional[dict[str, Any]] = None
     contract_digest: str = ""
     coverage_token: str = ""
+    engine: str = "legacy"
+    staging_decisions: list[dict[str, Any]] = Field(default_factory=list)
+    reference_images: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def _writing_digest(body: VideoWriteBody) -> str:
@@ -529,59 +572,46 @@ def _coverage_token(body: VideoWriteBody, prompt: str, duration: int, coverage: 
     return hmac.new(auth._server_secret(), b"flowboard-prompt-coverage-v1\0" + payload.encode(), hashlib.sha256).hexdigest()
 
 
+@router.post("/video/prompt", response_model=VideoWriteResponse, deprecated=True)
 @router.post("/video/write", response_model=VideoWriteResponse)
 async def write_video_prompt(body: VideoWriteBody) -> VideoWriteResponse:
     """Have the prompt writer (GPT) write a sequence's clip prompt, checked.
 
     Verified-source inputs require complete coverage and an independent review.
-    Older freeform boards retain their existing template fallback.
+    Cinematic writing uses actual reference images and fails visibly if checks
+    fail. Both the current and old API paths use the same cinematic writer.
     """
     strict = prompt_coverage.is_strict(body.production_assets, body.source_verification)
     if not strict and (body.production_assets is not None or body.source_verification is not None):
         # A legacy report travels with some boards; it is not a contract.
-        body = body.model_copy(update={"production_assets": None, "source_verification": None,
-                                       "reference_assets": []})
+        body = body.model_copy(update={"production_assets": None, "source_verification": None})
     unsafe = automation.unsafe_shots(body.shots, body.characters, body.environment)
-    warnings: list[str] = []
-    if prompt_writer.WRITER_ON:
-        try:
-            out = await prompt_writer.write_clip_prompt(
-                body.sequence, body.shots, characters=body.characters, environment=body.environment,
-                look=body.style, aspect_ratio=body.aspect_ratio, previous_state=body.previous_state,
-                style_note=body.style_note, unsafe=unsafe,
-                production_assets=body.production_assets, reference_assets=body.reference_assets,
-                source_verification=body.source_verification,
-            )
-            return VideoWriteResponse(prompt=out.prompt, duration_seconds=out.duration,
-                                      end_state=out.end_state, writer=out.model, warnings=out.warnings,
-                                      coverage=out.coverage, contract_digest=out.contract_digest,
-                                      coverage_token=_coverage_token(body, out.prompt, out.duration, out.coverage)
-                                      if strict else "")
-        except prompt_writer.WriterError as exc:
-            logger.warning("video/write %s: %s", body.sequence.get("label"), exc)
-            if strict:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
-            warnings.append(f"GPT chưa viết được prompt đạt kiểm tra ({exc}) — đang dùng template.")
-    if strict:
-        raise HTTPException(status_code=422, detail="Bật prompt writer để kiểm tra đầy đủ shot, nhân vật và đạo cụ trước khi gen.")
-    if unsafe:
-        raise HTTPException(status_code=422, detail=(
-            "Clip này có shot cởi/lộ đồ lót của nhân vật tuổi học sinh — không dựng: "
-            + "; ".join(f"shot {n} (\"{words}\")" for n, words in unsafe)
-            + ". Viết lại các shot đó rồi dựng lại."
-        ))
-    prompt = automation.build_video_prompt(
-        body.sequence, body.shots, characters=body.characters, environment=body.environment,
-        look=body.style, aspect_ratio=body.aspect_ratio,
-    )
-    return VideoWriteResponse(prompt=prompt, duration_seconds=automation.clip_seconds(body.sequence, body.shots),
-                              writer="template", warnings=warnings)
+    if not prompt_writer.WRITER_ON:
+        raise HTTPException(status_code=422, detail="Bật prompt writer để viết theo cấu trúc cinematic và kiểm tra nội dung trước khi gen.")
+    try:
+        out = await prompt_writer.write_clip_prompt(
+            body.sequence, body.shots, characters=body.characters, environment=body.environment,
+            look=body.style, aspect_ratio=body.aspect_ratio, previous_state=body.previous_state,
+            style_note=body.style_note, unsafe=unsafe,
+            production_assets=body.production_assets, reference_assets=body.reference_assets,
+            source_verification=body.source_verification, cinematic=True,
+        )
+    except prompt_writer.WriterError as exc:
+        logger.warning("video/write %s: %s", body.sequence.get("label"), exc)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return VideoWriteResponse(prompt=out.prompt, duration_seconds=out.duration,
+                              end_state=out.end_state, writer=out.model, warnings=out.warnings,
+                              coverage=out.coverage, contract_digest=out.contract_digest,
+                              coverage_token=_coverage_token(body, out.prompt, out.duration, out.coverage)
+                              if strict else "", engine=out.engine,
+                              staging_decisions=out.staging_decisions, reference_images=out.reference_images)
 
 
 class VerifyPromptBody(BaseModel):
     prompt_contract: VideoWriteBody
     prompt: str = Field(min_length=1)
     end_state: str = ""
+    staging_decisions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 @router.post("/video/verify-prompt", response_model=VideoWriteResponse)
@@ -598,13 +628,15 @@ async def verify_video_prompt(body: VerifyPromptBody) -> VideoWriteResponse:
             previous_state=contract.previous_state, style_note=contract.style_note, end_state=body.end_state,
             production_assets=contract.production_assets, reference_assets=contract.reference_assets,
             source_verification=contract.source_verification,
+            staging_decisions=body.staging_decisions,
         )
     except prompt_writer.WriterError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return VideoWriteResponse(prompt=out.prompt, duration_seconds=out.duration,
                               end_state=out.end_state, writer=out.model, warnings=out.warnings,
                               coverage=out.coverage, contract_digest=out.contract_digest,
-                              coverage_token=_coverage_token(contract, out.prompt, out.duration, out.coverage))
+                              coverage_token=_coverage_token(contract, out.prompt, out.duration, out.coverage),
+                              engine=out.engine, staging_decisions=out.staging_decisions)
 
 
 class ClipBody(BaseModel):
@@ -898,6 +930,11 @@ def create_job(project_id: uuid.UUID, body: JobCreate, user=Depends(get_optional
         board = automation_jobs.project_board(s,row)
         node = next((n.get('data') for n in board.get('nodes',[]) if n.get('id')==body.node_id),None)
         if not node: raise HTTPException(422,detail="Job target is not on this board.")
+        from flowboard.services.primary_materials import waiting_run
+        if waiting_run(s, project_id) and not (body.kind == 'plate' and
+                ((node.get('kind') == 'character' and body.slot == 'identity') or
+                 (node.get('kind') == 'environment' and body.slot == 'plate'))):
+            raise HTTPException(409, detail='Chốt sheet ở tab Tạo hình chính trước khi gen diện mạo phụ hoặc video.')
         metadata={}
         if body.kind=='clip':
             try: clip_body=ClipBody.model_validate(body.payload)
@@ -1126,9 +1163,11 @@ class ProductionRunConfig(BaseModel):
     mode: str = Field(default='prepare', pattern='^(prepare|render)$')
     sequence_keys: list[str] = Field(default_factory=list, max_length=2000)
     boundary_frames: bool = False
+    review_masters: bool = False
     assemble: bool = True
+    timing_policy: str = Field(default='source_duration', pattern='^(source_duration|full_take)$')
     fps: int = Field(default=24, ge=24, le=60)
-    resolution: str = Field(default='720p', pattern='^(720p|1080p)$')
+    resolution: str = Field(default='720p', pattern='^(480p|720p|1080p)$')
     image_parallel: int = Field(default=4, ge=1, le=32)
     video_parallel: int = Field(default=4, ge=1, le=32)
     text_parallel: int = Field(default=8, ge=1, le=64)
@@ -1171,6 +1210,8 @@ def control_production_run(project_id: uuid.UUID, run_id: uuid.UUID, action: str
         if not run or run.project_id!=project_id or run.kind!=production_run.KIND:raise HTTPException(404,detail='Run not found')
         if action=='pause' and run.status!='running':raise HTTPException(409,detail='Run is not active')
         if action=='resume' and run.status not in ('paused','blocked'):raise HTTPException(409,detail='Run is not paused or blocked')
+        if action=='resume' and run.result.get('stage') == 'master_review':
+            raise HTTPException(409, detail='Mở tab Tạo hình chính và bấm Chốt sheet & tiếp tục.')
         if action=='resume':
             active=s.exec(select(AutomationJob).where(AutomationJob.project_id==project_id,AutomationJob.kind==production_run.KIND,AutomationJob.status=='running')).first()
             if active:raise HTTPException(409,detail='Another production run is active')
@@ -1191,3 +1232,62 @@ def download_production_film(project_id: uuid.UUID, run_id: uuid.UUID, user=Depe
         path=Path(STORAGE_DIR)/'production-renders'/filename
         if not path.is_file():raise HTTPException(404,detail='Rendered file no longer exists')
         return FileResponse(path,media_type='video/mp4',filename='film.mp4')
+
+
+@router.get('/projects/{project_id}/primary-materials')
+def primary_materials(project_id: uuid.UUID, user=Depends(get_optional_user)):
+    from flowboard.services import primary_materials as primary
+    with get_session() as s:
+        project = _load(s, project_id, user); run = primary.waiting_run(s, project_id)
+        return {'items': primary.items(automation_jobs.project_board(s, project), project_id,
+                    run.payload['config'].get('sequence_keys') if run else None),
+                'revision': project.revision, 'waiting_run': {**automation_jobs.public(run), 'config': run.payload['config']} if run else None}
+
+
+class PrimaryGenerate(BaseModel):
+    node_id: str
+    expected_revision: int = Field(ge=0)
+    request_key: str = Field(min_length=1, max_length=180)
+
+
+@router.post('/projects/{project_id}/primary-materials/generate', status_code=202)
+def generate_primary_material(project_id: uuid.UUID, body: PrimaryGenerate, user=Depends(get_optional_user)):
+    from flowboard.services import production_run as production
+    with get_session() as s:
+        project = _load(s, project_id, user)
+        if project.revision != body.expected_revision: raise HTTPException(409, detail='Board đã đổi. Lưu/tải lại trước khi gen.')
+        board = automation_jobs.project_board(s, project)
+        node = next((n for n in board.get('nodes', []) if n['id'] == body.node_id), None)
+        if not node or node['data'].get('kind') not in ('character', 'environment'):
+            raise HTTPException(422, detail='Chỉ tạo sheet nhân vật hoặc bối cảnh chính.')
+        d = node['data']; kind = d['kind']; slot = 'identity' if kind == 'character' else 'plate'
+        if s.exec(select(AutomationJob).where(AutomationJob.project_id == project_id,
+                AutomationJob.kind == 'production_run', AutomationJob.status == 'running')).first():
+            raise HTTPException(409, detail='Tạm dừng sản xuất trước khi thay sheet chính.')
+        payload = production.material_payload({'kind': kind, 'item': d[kind], 'plate': d.get(slot, {}), 'slot': slot}, [], board)
+    return create_job(project_id, JobCreate(kind='plate', node_id=body.node_id, slot=slot,
+        payload=payload, expected_revision=body.expected_revision, request_key=body.request_key), user)
+
+
+class PrimaryApprove(BaseModel):
+    run_id: uuid.UUID
+    expected_revision: int = Field(ge=0)
+
+
+@router.post('/projects/{project_id}/primary-materials/continue')
+def continue_primary_materials(project_id: uuid.UUID, body: PrimaryApprove, user=Depends(get_optional_user)):
+    from flowboard.services import primary_materials as primary
+    with get_session() as s:
+        _load(s, project_id, user)
+        project = s.exec(select(AutomationProject).where(AutomationProject.id == project_id).with_for_update()).one()
+        run = s.exec(select(AutomationJob).where(AutomationJob.id == body.run_id).with_for_update()).first()
+        if not run or run.project_id != project_id or run.kind != 'production_run': raise HTTPException(404, detail='Run not found')
+        try: return primary.approve(s, project, run, body.expected_revision)
+        except ValueError as exc: raise HTTPException(409, detail=str(exc)) from exc
+
+
+@router.get('/projects/{project_id}/progress')
+def production_progress(project_id: uuid.UUID, user=Depends(get_optional_user)):
+    from flowboard.services.production_progress import snapshot
+    with get_session() as session:
+        return snapshot(session, _load(session, project_id, user))

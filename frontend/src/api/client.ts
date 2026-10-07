@@ -764,6 +764,18 @@ export async function uploadImage(
   return res.json() as Promise<UploadResponse>;
 }
 
+/** Automation references are stored directly with a public URL and KYC media ID. */
+export async function uploadAutomationImage(file: File, projectId: string): Promise<{
+  url: string; reference_url: string; media_id: string; persisted: boolean;
+}> {
+  if (file.size > 20 * 1024 * 1024) throw new Error("Ảnh tối đa 20 MB.");
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`/api/automation/projects/${encodeURIComponent(projectId)}/upload-image`, { method: "POST", body: form });
+  if (!res.ok) throw new Error(await errorMessage(res));
+  return res.json();
+}
+
 // ── Frame extraction (Phase 8.4 — continuity) ────────────────────────────────
 
 export interface ExtractFrameResponse {

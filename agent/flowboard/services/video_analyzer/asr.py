@@ -49,11 +49,12 @@ def extract_audio(video: Path, out: Path) -> Path:
     return out
 
 
-async def transcribe(audio: Path, work_dir: Path, *, language: Optional[str] = None) -> dict:
+async def transcribe(audio: Path, work_dir: Path, *, language: Optional[str] = None, multilingual: bool = False) -> dict:
     """Run the worker and return its JSON. Raises RuntimeError with the worker's stderr."""
-    out = work_dir / "transcript.json"
+    out = work_dir / ("transcript.multilingual.v1.json" if multilingual else "transcript.json")
+    worker = "asr_multilingual_worker" if multilingual else "asr_worker"
     proc = await asyncio.create_subprocess_exec(
-        sys.executable, "-m", "flowboard.services.video_analyzer.asr_worker",
+        sys.executable, "-m", f"flowboard.services.video_analyzer.{worker}",
         str(audio), str(out), DEFAULT_MODEL, language or "",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -62,6 +63,7 @@ async def transcribe(audio: Path, work_dir: Path, *, language: Optional[str] = N
         _, err = await asyncio.wait_for(proc.communicate(), timeout=_ASR_TIMEOUT_S)
     except asyncio.TimeoutError:
         proc.kill()
+        await proc.communicate()
         raise RuntimeError(f"ASR timed out after {_ASR_TIMEOUT_S}s")
     if proc.returncode != 0 or not out.exists():
         tail = (err or b"").decode(errors="replace").strip().splitlines()[-3:]

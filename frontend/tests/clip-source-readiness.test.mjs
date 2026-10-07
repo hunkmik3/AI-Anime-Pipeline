@@ -20,6 +20,18 @@ const report = () => ({ status: "needs_review", method: "source_frames", scope: 
   findings: [{ shot: 99, code: "source_mismatch" }], scope_notes: [{ code: "audio_not_checked" }] });
 const shot = { n: 1, source_shots: [1], duration_s: 5, action: ["The box stays closed."], dialogue: [], character_keys: [] };
 
+test("one-pass readiness is structural and never requires a false verified claim", () => {
+  const observed = { status: "observed", method: "one_pass_production", digest: "bound-inputs",
+    structural_checks_passed: true, prepared_shots: [1], reviewed_shots: [], independent_review: false, findings: [] };
+  assert.equal(sourceReadyForShots([shot], observed), true);
+  for (const patch of [{ status: "verified" }, { structural_checks_passed: false }, { digest: "" },
+    { prepared_shots: [] }, { findings: [{ shot: 1, code: "unresolved" }] }, { findings: [{ code: "global" }] }])
+    assert.equal(sourceReadyForShots([shot], { ...observed, ...patch }), false);
+  assert.equal(sourceReadyForShots([{ source_shots: [1, 2] }], observed), false);
+  assert.equal(sourceReadyForShots([], observed), false);
+  assert.equal(observed.status, "observed");
+});
+
 test("clip readiness leaves the film report unchanged and blocks selected or global issues", () => {
   const original = report();
   const before = structuredClone(original);

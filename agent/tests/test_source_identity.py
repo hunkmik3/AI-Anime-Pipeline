@@ -78,6 +78,108 @@ def test_new_ids_use_each_dispatch_seed_and_scenes_are_namespaced(tmp_path, monk
     assert items == original
 
 
+def test_identity_model_is_separate_and_model_change_invalidates_saved_mapping(tmp_path, monkeypatch):
+    evidence = _evidence(tmp_path, 1)
+    items = [_item(1, [_asset("person", "e1")])]
+    journal, used = {}, []
+
+    async def ask(system, payload, supplied, work_dir, usage, **kwargs):
+        used.append(kwargs['model_override'])
+        return {"mappings": [_new(c) for c in payload['candidates']]}
+
+    monkeypatch.setattr(inv, '_ask', ask)
+    monkeypatch.setattr(inv, 'MODEL', 'extract-only')
+    monkeypatch.setattr(inv, 'VERIFY_MODEL', 'review-only')
+    monkeypatch.setattr(identity, 'MODEL', 'gpt-identity-a')
+    _run(items, inv._empty(), evidence, tmp_path, journal)
+    _run(items, inv._empty(), evidence, tmp_path, journal)
+    assert used == ['gpt-identity-a']
+    monkeypatch.setattr(identity, 'MODEL', 'gpt-identity-b')
+    _run(items, inv._empty(), evidence, tmp_path, journal)
+    assert used == ['gpt-identity-a', 'gpt-identity-b']
+    assert journal['context_history']
+
+
+def test_large_identity_payload_keeps_all_same_kind_targets_and_order(tmp_path, monkeypatch):
+    candidates = [{'candidate_id': f'c{i}', 'asset': {'id': f'c{i}', 'kind': 'character' if i % 2 else 'prop'},
+                   'candidate_evidence_ids': [f'e{i}']} for i in range(20)]
+    known = [{'asset': {'id': k, 'kind': k}, 'anchor_evidence_ids': [k]}
+             for k in ('character', 'prop', 'environment')]
+    supplied = [{'id': f'e{i}'} for i in range(20)] + [{'id': k} for k in ('character', 'prop', 'environment')]
+    calls = []
+
+    async def stage(journal, name, system, payload, evidence, *args, **kwargs):
+        calls.append(copy.deepcopy(payload))
+        own = set(payload['required_candidate_ids'])
+        same_kind = payload['candidates'][0]['asset']['kind']
+        assert all(c['asset']['kind'] == same_kind for c in payload['candidates'])
+        assert payload['known_identities'] == [k for k in known if k['asset']['kind'] == same_kind]
+        assert len(own) <= 6 and kwargs['model_override'] == identity.MODEL
+        assert system == identity.COMPLETE_SYSTEM
+        return {'mappings': [_new(c) for c in payload['candidates'] if c['candidate_id'] in own]}
+
+    monkeypatch.setattr(inv, '_stage_call', stage)
+    result = asyncio.run(identity._partitioned_mappings(inv, candidates, {'known_identities': known}, supplied,
+                        {}, tmp_path, asyncio.Semaphore(1), lambda: None))
+    assert len(calls) == 4
+    assert [r['candidate_id'] for r in result['mappings']] == [c['candidate_id'] for c in candidates]
+    assert len(calls[1]['existing_mappings']) == 6
+
+
+def test_empty_provider_response_stops_identity_wave(tmp_path, monkeypatch):
+    from flowboard.services.avis_text import AvisEmptyResponse
+    evidence = _evidence(tmp_path, 1)
+    calls = []
+    async def ask(*args, **kwargs):
+        calls.append(1)
+        raise AvisEmptyResponse('empty provider response')
+    monkeypatch.setattr(inv, '_ask', ask)
+    with pytest.raises(AvisEmptyResponse):
+        _run([_item(1, [_asset('person', 'e1')])], inv._empty(), evidence, tmp_path)
+    assert len(calls) == 1
+
+
+def test_partition_saved_empty_failure_stays_blocking_without_paid_retry(tmp_path, monkeypatch):
+    candidates = [{'candidate_id': f'c{i}', 'asset': {'id': f'c{i}', 'kind': 'character'},
+                   'candidate_evidence_ids': [f'e{i}']} for i in range(8)]
+    payload = {'known_identities': [], 'candidates': candidates}
+    supplied = [{'id': f'e{i}'} for i in range(49)]
+    journal = {'context_digest': 'scope', 'calls': {'identity_partition_character_0':
+               {'model': identity.MODEL, 'error': 'AvisEmptyResponse: no text'}}}
+    called = []
+    async def stage(journal, name, system, part, *args, **kwargs):
+        called.append(name)
+        ids = set(part['required_candidate_ids'])
+        return {'mappings': [_new(c) for c in part['candidates'] if c['candidate_id'] in ids]}
+    monkeypatch.setattr(inv, '_stage_call', stage)
+    rows, problems, retryable = asyncio.run(identity._mappings(inv, candidates, payload, supplied,
+                                          journal, tmp_path, asyncio.Semaphore(1), lambda: None))
+    assert called == ['identity_partition_character_6']
+    assert set(rows) == {'c6', 'c7'}
+    assert set(problems) == {f'c{i}' for i in range(6)}
+    assert all('not retried' in problem for problem in problems.values())
+    assert not retryable
+
+
+def test_independent_identity_kinds_run_concurrently(tmp_path, monkeypatch):
+    async def run():
+        entered, released = set(), asyncio.Event()
+        candidates = [{'candidate_id': k, 'asset': {'id': k, 'kind': k},
+                       'candidate_evidence_ids': [k]} for k in ('character', 'prop', 'environment')]
+        async def stage(journal, name, system, part, *args, **kwargs):
+            entered.add(part['required_candidate_ids'][0])
+            if len(entered) == 3:
+                released.set()
+            await released.wait()
+            return {'mappings': [_new(c) for c in part['candidates']]}
+        monkeypatch.setattr(inv, '_stage_call', stage)
+        result = await asyncio.wait_for(identity._partitioned_mappings(inv, candidates,
+            {'known_identities': []}, [{'id': k} for k in ('character', 'prop', 'environment')],
+            {}, tmp_path, asyncio.Semaphore(3), lambda: None), 2)
+        assert len(result['mappings']) == 3 and len(entered) == 3
+    asyncio.run(run())
+
+
 def test_visual_match_remaps_all_relationships_and_copies_canonical_profile(tmp_path, monkeypatch):
     evidence = _evidence(tmp_path, 1, 99)
     canonical = _asset("lead", "e99", name="Established lead")

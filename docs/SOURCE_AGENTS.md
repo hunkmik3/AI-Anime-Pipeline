@@ -1,5 +1,14 @@
 # Source inventory and prompt agents
 
+For the default **one-pass automatic film** upload, use
+[`ONE_PASS_SOURCE_ANALYSIS.md`](ONE_PASS_SOURCE_ANALYSIS.md). That route compiles a
+catalog and locked production shots directly after observations/audio; it omits
+the independent source-verification/refinement loop shown below. Its source report
+is `one_pass_production/observed`, never falsely `verified`. Both paths converge on
+the same approved material masters, cinematic writer, per-clip contract checks,
+generation and assembly. The rest of this document describes the existing
+**standard/fast source-verification** route.
+
 This pipeline applies to each uploaded film independently. Characters, groups,
 locations, props, identities and shot membership come from that film. There is no
 default cast, setting, group size or prop list. The house prompt examples define
@@ -25,7 +34,7 @@ flowchart LR
 
 ## Use in the existing application
 
-1. New video analyses automatically run inventory extraction and source
+1. Standard/fast video analyses automatically run inventory extraction and source
    verification. Existing analyses can use **Đối chiếu video gốc** in the source
    review tab (`POST /api/automation/videos/{id}/verify`). This preserves the
    adaptation and generated plates; re-import the updated board afterwards.
@@ -41,7 +50,8 @@ flowchart LR
    that person. The same mechanism covers group members and container contents.
 4. Import the board. It keeps evidence, prop state/holder, background presence,
    references and the separate source report. Imported plates remain usable.
-5. Write the clip prompt. Agent 2 preserves the existing six-section format,
+5. Write the clip prompt. Agent 2 uses the cinematic-v1 structure in
+   `CLIP_PROMPT_STANDARD.md`,
    checks every required fact inside its own shot, and independently reviews
    meaning. Changes to shots, assets, references, style or previous state make a
    stored prompt stale. Gen requires a current server-issued coverage receipt.
@@ -71,8 +81,12 @@ confidence is not sufficient for a verified status.
 `source_verification.scope_notes` separately records method limitations such as
 `audio_not_checked` and `continuous_motion_not_checked`. These host-written notes
 are informational; they do not change shot verdicts or require human acceptance.
-The verifier receives visual source descriptions and visible captions, without
-ASR dialogue to judge as unheard audio. Every finding actually returned by the
+The verifier receives visual source descriptions, visible captions and bounded,
+timestamped ASR story context. Narration can help distinguish story identities
+and reveals when image continuity supports them; it does not prove visual
+presence or certify audio delivery. The original transcript remains unchanged,
+its digest participates in source-review cache binding, and the report explicitly
+records that audio was not independently verified. Every finding returned by the
 verifier remains blocking: the host does not discard a warning because its text
 mentions audio or motion. A concrete visual contradiction, missing evidence, or
 unresolved identity remains a finding. Human acceptance keeps findings, scope
@@ -92,7 +106,7 @@ Strict failures return 422 and never silently fall back to an unchecked template
 
 ## Configuration and bounded execution
 
-Both agents use **GPT-6 Luna through the existing Avis provider** by default,
+Inventory and prompt agents use **GPT-6 Luna through the existing Avis provider** by default,
 with `AVIS_API_KEY` and the existing `AVIS_BASE_URL` configuration. Inventory
 extraction and source verification are separate calls with separate instructions;
 prompt writing and semantic review also remain separate calls. Using the same
@@ -105,6 +119,7 @@ No new SDK or database migration is needed for these additive JSON fields.
 | Source concurrency | `FLOWBOARD_SOURCE_CONCURRENCY` | `4`; configurable 1–64; fast profile uses 48 |
 | Parallel observation | `FLOWBOARD_SOURCE_OBSERVATION_CONCURRENCY` | `1`; fast profile uses 32 |
 | Source verifier | `FLOWBOARD_SOURCE_VERIFY_MODEL` | Configured inventory model, in a separate call/context |
+| Visual identity matching and later-appearance checks | `FLOWBOARD_SOURCE_IDENTITY_MODEL` | `gpt-6-astra` through Avis |
 | Character/image and clip prompt writer | `FLOWBOARD_PROMPT_WRITER_MODEL` | `gpt-6-luna` |
 | Prompt fallback model | `FLOWBOARD_PROMPT_WRITER_FALLBACK` | Empty: cross-model fallback disabled |
 | Prompt semantic reviewer | `FLOWBOARD_PROMPT_REVIEW_MODEL` | Configured writer model, in a separate call/context |
@@ -117,9 +132,74 @@ overrides retain precedence; restart the backend after changing them. The older
 `FLOWBOARD_VISION_TIER1`/`FLOWBOARD_VISION_TIER2` settings no longer select the
 inventory agents, and the other shot-analysis/adaptation stages are unchanged.
 The writer cannot switch to Claude or another model unless an administrator
-explicitly sets `FLOWBOARD_PROMPT_WRITER_FALLBACK`. Existing legacy template
-fallback behavior is separate and remains labelled as a template, not Luna.
+explicitly sets `FLOWBOARD_PROMPT_WRITER_FALLBACK`. All newly written Automation video prompts use the shared cinematic structure
+in `CLIP_PROMPT_STANDARD.md`; there is no template fallback. Disabling the writer
+stops writing rather than switching formats.
 Model calls are mocked in implementation tests.
+
+Visual identity matching has its own model setting, so changing its provider does
+not repeat cached transcription, shot detection or raw visual extraction. Its
+mapping, duplicate-pair and coverage journals are bound to the selected model;
+an earlier model's response cannot be presented as the new model's result.
+The `gpt-6-astra` image route was exercised on source-film frames on 2026-10-05.
+Uncertain matches and invalid citations remain unresolved. Profile repair sends
+only the current asset batch's questions, grouping repeated questions by their
+affected shots, while the full findings remain in the original report.
+Identity requests above 48 evidence frames are partitioned into at most six new
+decisions of one asset kind. Every compatible known target and earlier candidate
+remains available; different kinds run concurrently under the shared call limit.
+Saved empty provider responses are retained as unresolved subsets, not retried
+or interpreted as visual uncertainty. Two fresh empty responses in a partitioned
+wave stop that wave. Empty responses are distinct from malformed JSON.
+
+### Source refinement and identity context
+
+Before freezing the per-shot catalog, profile-related findings can trigger a
+bounded stable-description repair. A separate source-image reviewer must approve
+the exact new description with valid asset-specific citations. A rejected
+description gets at most one revision/review; IDs, authored names, kinds and
+dependencies cannot change in this stage. Actions, holders, open/closed states
+and currently visible contents belong to shot appearances, not permanent profiles.
+
+Identity comparison receives original character anchors, including later actual
+appearances, rather than relying on draft labels to propose duplicate pairs.
+Per-shot refinement also receives a bounded alternative cast and neighboring
+identity anchors. It checks whether an existing profile has accidentally grouped
+two people. Other-shot images can support identity but cannot create current-shot
+presence. Every supplied, cited visible appearance can serve as same-asset
+identity context; middle frames are not rejected merely because the neighboring
+shot sampler selected its endpoints.
+
+Repair batches split at scene boundaries and gaps between requested shots. Their
+scene membership lists cover only the selected shot rows; a separately labelled
+whole-scene union is context, not evidence of current visibility. Refinement batches
+first read their own source images without draft descriptions or previous model
+findings, using the existing `FLOWBOARD_VISION_TIER1` visual extractor. The source
+agent writer/reviewer models remain unchanged. These observations are unverified input to the subsequent writer
+and independent reviewer, never automatic acceptance. This adds one bounded call
+per repair batch and avoids simply reinforcing a mistaken old finding.
+The visual extractor also independently checks the proposed visible facts at
+each bounded repair round, without earlier reviewer verdicts. Concrete visual
+contradictions enter the normal repair ledger and block acceptance even when the
+identity/reasoning reviewer returns verified. Invalid/missing image verdicts fail
+closed. This adds at most two visual checks per repair batch.
+
+The automatic source-to-film controller attempts one bounded source refinement
+when source verification is incomplete. It persists that attempt before dispatch,
+does not repeat it on recovery, and still requires a genuinely clear report before
+adaptation/material generation. It never calls human acceptance on the user's behalf.
+
+After independent shot QA changes an assignment, stale character anchor ownership
+is removed only for verified shots and recorded in `refinement.anchor_actions`.
+Changed assignments trigger another bounded duplicate comparison. Two independent
+image decisions and co-occurrence/dependency guards still control merges.
+
+Reference typos are repairable only when the complete, unique host-issued 80-bit
+identity suffix survives. Names and visual similarity never authorize this
+mechanical repair; corrected references still go through source QA. Requests
+exceeding Avis's 50-image limit pack frames into JPEG (q95) panels without resizing
+(PNG panels exceeded Avis's request size, HTTP 413),
+with each cell retaining its original evidence ID, time, crop and pixel bounds.
 
 Agent 1 works in six-shot batches, makes at most five logical model calls per
 batch, permits two extra-frame requests per inspection round and 32 extra frames
@@ -359,3 +439,86 @@ current facts, including technical findings left by an earlier proposal. It
 cannot edit inventory or descriptions, and unselected/global blockers remain.
 Selected-shot requests are part of the checkpoint key; a previous selection
 cannot suppress a requested check of other shots.
+
+### Focused refinement trial
+
+`POST /api/automation/videos/{id}/refine` accepts
+`{"strategy":"focused","shots":[30]}` (shot numbers belong to the current video).
+This opt-in strategy reuses the source observations and retains only unchanged,
+evidence-bound prior checks. GPT through Avis writes the correction; the vision
+tier-1 model independently checks the full proposed facts with source images,
+citations, contextual identity links and finding dispositions. It does not add
+the separate blind-observation, second visual-gate or protocol-retry calls used
+by the full strategy. One corrective revision is allowed. Missing evidence and
+remaining contradictions still block; no report is accepted on the user's behalf.
+
+The worker enforces a 300-second deadline for focused refinement, preserves the
+database draft on timeout, and stores the strategy in the durable operation for
+recovery. Completed model stages retain their normal checkpoints. Profile repairs
+and genuinely new identities may still add calls within that deadline. Removing
+a falsely detected person alone no longer reopens global identity comparisons.
+This trial does not change the default full-source analysis strategy.
+
+Source-film production now derives its cast and membership directly from a
+verified source inventory rather than asking a new bible/mapping pass to guess
+the same identities. Unused candidates remain in the source audit; production
+keeps all used entities and their transitive dependencies. Existing cast designs
+are retained. Independent source-film design briefs run with concurrency eight.
+
+Character briefs reserve cited wider views alongside facial identity anchors so
+close-ups cannot displace all costume evidence. The selected appearances include
+known held objects as context; neutral identity turnarounds keep hands empty.
+The board handoff accepts only the UI's exact empty auto-source script scaffold,
+never an authored script or existing content. Generic asset mirrors are matched
+by stable source ID/key even when a newly written design makes their dictionaries
+differ, preventing duplicate material nodes.
+
+### Fast extraction trial (2026-10-05)
+
+Uploads can set `analysis_mode=fast`; omitted values retain `standard`.
+The video input exposes an experimental checkbox only when the running backend
+advertises it at `GET /api/automation/videos/capabilities`. The option is stored
+with the video for worker recovery. This prevents a newer frontend from silently
+sending the fast option to an older backend that ignores it.
+
+Fast extraction reads shot descriptions and the candidate asset inventory in one
+Gemini visual call per six shots, default concurrency 12. Each batch has a
+content-addressed journal including model, prompt, source dialogue and frame
+hashes. Successful batches survive sibling failures. Measured timing remains
+machine-owned. Local candidate IDs are namespaced before canonical identity
+reconciliation; matching names alone never merge two people.
+
+Only the duplicate observation pass is skipped. Source identity reconciliation,
+independent frame verification and downstream readiness gates remain. Focused
+repair retains first-pass approvals only when the source bytes, frame hashes,
+shot descriptions, inventory, models and review policy still match. It targets
+remaining findings with a 300-second ceiling; timeout does not approve a shot.
+Source-film orchestration does not immediately follow this attempt with another
+full refinement loop. The existing full strategy remains the standard-mode path.
+
+Relevant environment variables:
+
+- `FLOWBOARD_JOINT_VISION_MODEL` (default vision tier 1 / Gemini)
+- `FLOWBOARD_JOINT_VISION_CONCURRENCY=12` (bounded 1–32)
+- `FLOWBOARD_ADAPT_CONCURRENCY=8` (bounded 1–32)
+
+Source-call journals distinguish queue time from request time for new calls.
+Content refusals are terminal, not JSON-repair or model-fallback triggers.
+Story/source journals preserve that terminal state across ordinary resumes.
+Empty gateway replies remain retryable without submitting an invalid empty
+assistant message.
+
+The October 5 trial used a 1008.19-second, 596-shot source. ASR took 153.17s;
+measurement/keyframes took 378.28s in parallel. All 100 joint extraction batches
+were saved after fixing a camera-angle validator, but the run was stopped after
+a story-model content refusal. Independent verification and both style renders
+were not completed. There is no measured end-to-end speedup or quality-parity
+claim from this trial. With current batch sizes the planned basic extraction
+count falls from 220 calls to 100, excluding identity, review, escalation and
+repair calls. This is a call-count calculation, not a wall-time benchmark.
+
+Local cut preprocessing now resizes BGR before swapping to RGB. On 300 source
+frames this took 0.750s versus 1.001s with identical pixels. The detectors,
+thresholds and TransNet CPU execution are unchanged; CPU-thread trials did not
+show a useful improvement. This small benchmark does not imply a 25% reduction
+in the full cut-detection stage.

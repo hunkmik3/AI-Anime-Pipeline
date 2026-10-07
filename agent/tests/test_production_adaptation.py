@@ -183,7 +183,7 @@ def test_overlay_flows_to_writer_and_reviewer_without_approving_source(monkeypat
     monkeypatch.setattr(adapt, "ask_json", fake)
     result = asyncio.run(writer.write_clip_prompt({"label": "CLIP 01", "title": "TEST", "duration_s": 3}, [shot],
         characters=cast, environment=None, production_assets=assets, reference_assets=refs, source_verification=report,
-        unsafe=[(1, "source clothing dissolve")]))
+        unsafe=[(1, "source clothing dissolve")], cinematic=False))
     assert result.coverage["status"] == "verified"
     assert len(calls) == 2
     assert (shot, report) == original

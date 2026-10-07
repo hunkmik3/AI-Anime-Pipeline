@@ -205,6 +205,17 @@ def inventory_digest(inventory: dict) -> str:
     return _digest(inventory)
 
 
+def verification_binding(video: Path, shots: list[dict], evidence: list[dict]) -> str:
+    """Bind a completed visual review to source bytes, descriptions and pixels."""
+    from .source_identity import MODEL as identity_model
+    return _digest({'version': 1, 'video': _hash_file(video) if video.is_file() else None,
+                    'shots': shots, 'models': [MODEL, VERIFY_MODEL], 'review_prompt': _VERIFY,
+                    'identity_model': identity_model,
+                    'review_policy': VERIFICATION_POLICY_VERSION,
+                    'evidence': sorted((e['id'], e.get('sha256'), e.get('timestamp_s'), e.get('shot'))
+                                       for e in evidence)})
+
+
 def _safe_path(work_dir: Path, rel: str) -> Path | None:
     root = work_dir.resolve()
     path = (root / rel).resolve()
@@ -324,6 +335,11 @@ def _context(inventory: dict) -> dict:
 
 
 def _cards(evidence: list[dict], work_dir: Path) -> list[dict]:
+    from .source_evidence_cards import packed_cards
+
+    packed = packed_cards(evidence, work_dir, safe_path=_safe_path)
+    if packed is not None:
+        return packed
     out = []
     for e in evidence:
         path = _safe_path(work_dir, e["frame"])
@@ -356,8 +372,9 @@ async def _ask(
     semaphore: asyncio.Semaphore | None = None,
     journal: dict | None = None,
     checkpoint=None,
+    model_override: str | None = None,
 ) -> dict:
-    model = VERIFY_MODEL if verify else MODEL
+    model = model_override or (VERIFY_MODEL if verify else MODEL)
     messages = [
         {"role": "system", "content": system},
         {
@@ -382,9 +399,11 @@ async def _ask(
                 if checkpoint:
                     checkpoint()
             if semaphore is None:
+                dispatched = time.monotonic()
                 response = await avis_text.complete(model, messages, temperature=0.1, max_tokens=12000, attempts=2)
             else:
                 async with semaphore:
+                    dispatched = time.monotonic()
                     response = await avis_text.complete(model, messages, temperature=0.1, max_tokens=12000, attempts=2)
             entry = usage.setdefault(model, {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0})
             entry["calls"] += 1
@@ -394,11 +413,14 @@ async def _ask(
             if journal is not None:
                 saved.append({"text": response_text, "model": model,
                               "elapsed_s": round(time.monotonic() - started, 3),
+                              "queue_s": round(dispatched - started, 3),
+                              "request_s": round(time.monotonic() - dispatched, 3),
                               "prompt_tokens": response.prompt_tokens,
                               "completion_tokens": response.completion_tokens})
                 journal["in_flight"] = False
                 if checkpoint:
                     checkpoint()
+        avis_text.check_content_response(response_text)
         try:
             repairs: list[dict] = []
             result = _parse_object(response_text, repairs=repairs)
@@ -410,6 +432,10 @@ async def _ask(
         except (ValueError, json.JSONDecodeError) as exc:
             last = exc
             if attempt == 0:
+                if not response_text.strip():
+                    # Empty gateway replies must not become empty assistant
+                    # messages: Avis rejects those before inference (HTTP 400).
+                    continue
                 messages = messages[:2] + [
                     {"role": "assistant", "content": response_text[:20000]},
                     {"role": "user", "content": f"That reply was not one valid JSON object ({exc}). "
@@ -1012,8 +1038,15 @@ def _trace_once(entry: dict, event: dict) -> None:
 
 async def _stage_call(entry: dict, stage: str, system: str, payload: dict,
                       supplied: list[dict], work_dir: Path, semaphore: asyncio.Semaphore,
-                      save, *, verify: bool = False) -> dict:
+                      save, *, verify: bool = False, model_override: str | None = None) -> dict:
     state = entry.setdefault("calls", {}).setdefault(stage, {})
+    if state.get('content_refusal'):
+        raise avis_text.AvisContentRefusal(state['content_refusal'])
+    selected_model = model_override or (VERIFY_MODEL if verify else MODEL)
+    if state.get('model') is not None and state['model'] != selected_model:
+        entry.setdefault('call_model_history', {}).setdefault(stage, []).append(copy.deepcopy(state))
+        state = entry['calls'][stage] = {}
+    state['model'] = selected_model
     if "output" in state:
         return copy.deepcopy(state["output"])
     if state.get("error"):
@@ -1047,7 +1080,12 @@ async def _stage_call(entry: dict, stage: str, system: str, payload: dict,
             state.pop(key, None)
     try:
         result = await _ask(system, payload, supplied, work_dir, entry["usage"],
-                            verify=verify, semaphore=semaphore, journal=state, checkpoint=save)
+                            verify=verify, semaphore=semaphore, journal=state, checkpoint=save,
+                            **({'model_override': model_override} if model_override else {}))
+    except avis_text.AvisContentRefusal as exc:
+        state.update(content_refusal=str(exc), error=str(exc), in_flight=False)
+        save()
+        raise
     except Exception as exc:
         state.update(error=f"{type(exc).__name__}: {str(exc)[:500]}", in_flight=False)
         save()
@@ -1083,15 +1121,23 @@ def _entry_evidence_valid(entry: dict, work_dir: Path) -> bool:
 
 async def _observe_batch(entry: dict, batch: list[dict], known: dict, payload: dict,
                          supplied: list[dict], video: Path, work_dir: Path, fps: float,
-                         budget: dict, semaphore: asyncio.Semaphore, save) -> dict:
+                         budget: dict, semaphore: asyncio.Semaphore, save, *, preobserved=None) -> dict:
     if "observation" in entry:
         return copy.deepcopy(entry["observation"])
     entry["supplied"] = copy.deepcopy(supplied)
     try:
         if not any(e["shot"] in {s["shot"] for s in batch} for e in supplied):
             raise ValueError("No readable source keyframes for this batch")
-        draft = await _stage_call(entry, "observe", _EXTRACT, payload, supplied,
-                                  work_dir, semaphore, save)
+        if preobserved is not None:
+            allowed = {e['id'] for e in supplied}
+            if not set(preobserved['evidence_ids']) <= allowed:
+                raise ValueError('Joint observation refers to unavailable source evidence')
+            draft = copy.deepcopy(preobserved['draft'])
+            entry['joint_observation_fingerprint'] = preobserved['fingerprint']
+            _trace_once(entry, {'stage': 'joint_observation_reused', 'shots': [s['shot'] for s in batch]})
+        else:
+            draft = await _stage_call(entry, "observe", _EXTRACT, payload, supplied,
+                                      work_dir, semaphore, save)
         extra = await _stage_frames(entry, "observe", draft.get("review_requests"), batch,
                                     video, work_dir, fps, budget, save)
         supplied = list({e["id"]: e for e in supplied + extra}.values())
@@ -1303,7 +1349,7 @@ def _route_identity_changes(changes: list[dict], inventory: dict, batches: list[
 
 async def analyze(
     video: Path, work_dir: Path, shots: list[dict], sequences: list[dict] | None = None,
-    *, fps: float = 0, deep: bool = False, on_progress=None,
+    *, fps: float = 0, deep: bool = False, on_progress=None, preobserved=None,
 ) -> tuple[dict, dict]:
     """Serial identity registration, bounded frozen-context review, ordered merge.
 
@@ -1312,9 +1358,10 @@ async def analyze(
     """
     if not shots:
         return unverified(shots, "Source shotlist is empty")
-    if SOURCE_OBSERVATION_CONCURRENCY > 1:
+    if SOURCE_OBSERVATION_CONCURRENCY > 1 or preobserved is not None:
         from .source_parallel import analyze as analyze_parallel
-        return await analyze_parallel(video, work_dir, shots, sequences, fps=fps, deep=deep, on_progress=on_progress)
+        return await analyze_parallel(video, work_dir, shots, sequences, fps=fps, deep=deep, on_progress=on_progress,
+                                      **({'preobserved': preobserved} if preobserved is not None else {}))
     started = time.monotonic()
     work_dir.mkdir(parents=True, exist_ok=True)
     sequences = sequences or []

@@ -1,0 +1,41 @@
+MASTER ENVIRONMENT GENERATION PROMPT
+PREMIUM CINEMATIC 3D ARCHITECTURAL REALISM / 4K PRODUCTION QUALITY
+
+Create a premium production-ready 3D ENVIRONMENT CONCEPT for the location defined in the ENVIRONMENT PROFILE below.
+
+Use the ENVIRONMENT PROFILE as the ABSOLUTE SOURCE OF TRUTH for the environment design.
+Use @image1 as the ABSOLUTE LIGHTING / MOOD / ENVIRONMENT QUALITY REFERENCE ONLY.
+
+REFERENCE HIERARCHY
+@image1 controls only lighting quality, mood, atmosphere, exposure balance, highlight roll-off, shadow softness/readability, bounce-light quality, warm/cool balance, render cleanliness, compositing sophistication and premium environmental polish.
+
+The ENVIRONMENT PROFILE controls location identity, interior/exterior, architecture, layout, circulation, scale, entrances/exits, windows, furniture zones, materials, story function, actual time of day, continuity and raccord locks.
+
+Do not copy exact architecture, floorplan, door/window count, furniture placement, exact composition or literal time of day from @image1.
+
+CORE GOAL
+Create a reusable cinematic production location, not only a decorative concept image. The environment must clearly communicate what the location is, how characters move through it, where key action zones are, and how future camera angles maintain continuity.
+
+VISUAL STYLE TARGET
+Premium cinematic architectural 3D realism; high-end architectural visualization; elegant controlled realism; naturalistic cinematic lighting; sophisticated materials; realistic perspective; clean compositing; crisp 4K-quality finish.
+
+ABSOLUTE QUALITY FLOOR
+Simple design must never mean cheap rendering. Maintain premium lighting, geometry, materials, atmosphere, compositing, spatial clarity and 4K presentation for every location.
+
+TIME-OF-DAY ADAPTATION
+The ENVIRONMENT PROFILE overrides @image1 for actual time of day. If the time differs, transfer only lighting quality: exposure control, shadow readability, highlight roll-off, bounce-light sophistication, atmospheric polish and cinematic tonal control.
+
+PRODUCTION GEOGRAPHY
+Clearly establish primary entrance, exits, circulation direction, key action zone, character staging zones, furniture zones and stable spatial anchors. Support establishing wides, medium shots, OTS, reverse angles, profiles, tracking shots, POVs and inserts.
+
+AI ARTIFACT PREVENTION
+Prevent warped architecture, broken perspective, duplicate doors/windows, impossible stairs, floating objects, melted furniture, inconsistent human scale, broken reflections, impossible shadows, pattern glitches, random text/logos, halo edges, over-sharpening, fake HDR and compression artifacts.
+
+FINAL TARGET
+The profile defines architecture, geography, function, materials, layout, continuity and story use. @image1 defines lighting quality, mood, atmosphere, exposure, shadow quality, highlight quality, environmental polish and compositing standard.
+
+REQUESTED VIEW TYPE:
+[VIEW TYPE]
+
+ENVIRONMENT PROFILE:
+[PROFILE]

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ProductionProgress } from "./ProductionProgress";
 import { ProductionRun } from "./ProductionRun";
 import { ShotPreparation } from "./ShotPreparation";
 import { api } from "../api/client";
@@ -7,7 +8,24 @@ import { useAutomation, type AutoNodeData } from "../store/automation";
 type Manifest = { version: string; assets: Record<string, { version: string }>; shots: { id: string; sequence_key: string; source_shots: number[]; start_state: unknown; end_state: unknown; transitions: { asset_id: string; field: string; to: unknown; explained: boolean }[] }[]; issues: { shot: string; code: string }[] };
 const labels: Record<string,string> = { queued: "Chờ chạy", preparing: "Chuẩn bị", submitting: "Đang gửi", running: "Đang xử lý", succeeded: "Hoàn thành", failed: "Lỗi", unknown: "Cần đối soát", cancelled: "Đã hủy" };
 
+/** Keep job polling alive even while advanced controls are out of view. */
 export function ProductionPanel() {
+  const projectId = useAutomation(s => s.currentProjectId);
+  const refresh = useAutomation(s => s.refreshJobs);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    setError("");
+    if (!projectId) return;
+    let active = true;
+    const poll = () => void refresh().then(() => { if (active) setError(""); })
+      .catch(e => { if (active) setError(e.message); });
+    poll(); const timer = setInterval(poll, 4000);
+    return () => { active = false; clearInterval(timer); };
+  }, [projectId, refresh]);
+  return <ProductionProgress key={projectId ?? "draft"} jobError={error} />;
+}
+
+export function ProductionControls() {
   const projectId = useAutomation((s) => s.currentProjectId);
   const jobs = useAutomation((s) => s.jobs);
   const refresh = useAutomation((s) => s.refreshJobs);
@@ -22,12 +40,7 @@ export function ProductionPanel() {
   const [notes, setNotes] = useState<Record<string,string>>({});
   useEffect(() => {
     setManifest(null);setError("");setRevisions([]);setSelectedRevision("");
-    if (!projectId) return;
-    let active=true;
-    const poll=()=>void refresh().catch((e)=>{if(active)setError(e.message)});
-    poll();const timer=setInterval(poll,4000);
-    return ()=>{active=false;clearInterval(timer)};
-  }, [projectId,refresh]);
+  }, [projectId]);
   async function resolveAbsent(id:string) {
     try {
       await api(`/api/automation/projects/${projectId}/jobs/${id}/resolve-absent`, { method:"POST", body:JSON.stringify({provider_checked_no_submission:true,note:absenceNotes[id]}) });
@@ -57,8 +70,8 @@ export function ProductionPanel() {
     state.patchNode(node.id,{shots} as Partial<AutoNodeData>);
     void loadManifest().catch((e)=>setError(e.message));
   }
-  return <details style={{padding:"10px 18px",borderBottom:"1px solid #394151",maxHeight:"45vh",overflow:"auto"}}>
-    <summary>Sản xuất · {jobs.filter((j)=>["queued","preparing","submitting","running"].includes(j.status)).length} job đang xử lý · {jobs.filter((j)=>j.status==="unknown").length} cần đối soát</summary>
+  return <details className="production-advanced">
+    <summary>Điều khiển sản xuất nâng cao · {jobs.filter((j)=>["queued","preparing","submitting","running"].includes(j.status)).length} job đang xử lý · {jobs.filter((j)=>j.status==="unknown").length} cần đối soát</summary>
     <p><label><input type="checkbox" checked={preserve} onChange={(e)=>setPreserve(e.target.checked)}/> Giữ từng shot nguồn khi nhập board (không gộp cut ngắn)</label></p>
     <p>Job ảnh/video của board đã lưu chạy trên server. Đóng tab không hủy job. Đối soát chỉ tiếp tục theo dõi mã provider, không gửi gen mới.</p>
     {error && <p role="alert">{error}</p>}

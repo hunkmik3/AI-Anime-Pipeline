@@ -7,10 +7,12 @@
  * shotWorkflow node contract, so they cannot reuse BaseNodeShell.
  */
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { useState, type ReactNode } from "react";
+import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
+import { VideoSourceInput } from "./VideoSourceInput";
 
 import {
   useAutomation,
+  videoDisplayRefs,
   type CharacterNodeData,
   type EnvironmentNodeData,
   type AssetNodeData,
@@ -19,14 +21,11 @@ import {
   type SequenceNodeData,
   type VideoNodeData,
 } from "../store/automation";
-import {
-  DEFAULT_RULES,
-  RUNNING,
-  STAGE_LABELS,
-  STYLE_PRESETS,
-  useVideoAnalysis,
-} from "../store/videoAnalysis";
 import { isStrictBoard, sameFingerprint, sourceReadyForShots } from "./contracts";
+
+// The clip workspace reuses the same editors and actions outside React Flow.
+export const EmbeddedAutomationNodes = createContext(false);
+type NodeViewProps = Pick<NodeProps, "id" | "data" | "selected">;
 
 function Shell({
   title,
@@ -45,15 +44,16 @@ function Shell({
   outbound?: boolean;
   children: ReactNode;
 }) {
+  const embedded = useContext(EmbeddedAutomationNodes);
   return (
     <div className={`auto-node auto-node--${variant}${selected ? " auto-node--selected" : ""}`}>
-      {inbound && <Handle type="target" position={Position.Left} className="auto-handle" />}
+      {!embedded && inbound && <Handle type="target" position={Position.Left} className="auto-handle" />}
       <header className="auto-node__head">
         <span className="auto-node__title">{title}</span>
         {badge}
       </header>
       {children}
-      {outbound && <Handle type="source" position={Position.Right} className="auto-handle" />}
+      {!embedded && outbound && <Handle type="source" position={Position.Right} className="auto-handle" />}
     </div>
   );
 }
@@ -69,6 +69,7 @@ function PlatePanel({
   disabled,
   onEdit,
   onGenerate,
+  onUpload,
 }: {
   plate: Plate;
   label: string;
@@ -76,8 +77,11 @@ function PlatePanel({
   disabled?: boolean;
   onEdit(text: string): void;
   onGenerate(): void;
+  onUpload(file: File): Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
   const running = plate.status === "running";
 
   return (
@@ -85,13 +89,26 @@ function PlatePanel({
       <div className="auto-plate__bar">
         <button
           type="button"
-          className="auto-plate__toggle"
+          className="auto-plate__toggle nodrag"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
         >
-          {open ? "▾" : "▸"} {label}
+          {open ? "▾" : "▸"} {label} · prompt
         </button>
-        {plate.referenceUrl && <span className="auto-tag auto-tag--ok">đã lưu</span>}
+        {plate.referenceUrl && <span className="auto-tag auto-tag--ok">{plate.uploaded ? "ảnh upload" : "đã lưu"}</span>}
+        <label className={`auto-btn auto-btn--file nodrag${uploading || running ? " va-disabled" : ""}`}>
+          {uploading ? "Đang upload…" : plate.image || plate.referenceUrl ? "Thay ảnh" : "Upload ảnh"}
+          <input type="file" accept="image/png,image/jpeg,image/webp" aria-label={`Upload ảnh ${label}`}
+            disabled={uploading || running} onChange={async event => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (!file) return;
+              setUploadError(""); setUploading(true);
+              try { await onUpload(file); }
+              catch (error) { setUploadError((error as Error).message); }
+              finally { setUploading(false); }
+            }} />
+        </label>
         {plate.image?.startsWith("data:") && (
           <span
             className="auto-tag auto-tag--warn"
@@ -102,9 +119,9 @@ function PlatePanel({
         )}
         <button
           type="button"
-          className="auto-btn auto-btn--go"
+          className="auto-btn auto-btn--go nodrag"
           onClick={onGenerate}
-          disabled={running || disabled || !plate.prompt.trim()}
+          disabled={running || uploading || disabled || !plate.prompt?.trim()}
           title={hint}
         >
           {running ? "đang gen…" : plate.image ? "gen lại" : "gen"}
@@ -114,7 +131,8 @@ function PlatePanel({
       {open && (
         <textarea
           className="auto-textarea auto-textarea--prompt nodrag nowheel"
-          value={plate.prompt}
+          aria-label={`Prompt ${label}`}
+          value={plate.prompt ?? ""}
           onChange={(e) => onEdit(e.target.value)}
           rows={7}
           spellCheck={false}
@@ -122,202 +140,34 @@ function PlatePanel({
         />
       )}
 
+      {uploadError && <p className="auto-error" role="alert">{uploadError}</p>}
       {plate.error && <p className="auto-error">{plate.error}</p>}
-      {plate.image && (
-        <a href={plate.image} download={`${label}.png`} className="auto-plate__img">
-          <img src={plate.image} alt={label} />
+      {(plate.referenceUrl || plate.image) && (
+        <a href={plate.referenceUrl || plate.image} download={`${label}.png`} className="auto-plate__img nodrag">
+          <img src={plate.referenceUrl || plate.image} alt={label} />
         </a>
       )}
     </div>
   );
 }
 
-// The premise node reads straight from the store rather than from node data:
-// it is a singleton, and the breakdown that rebuilds the board would otherwise
-// have to carry the draft text through every rebuild.
-export function AutoScriptNode({ selected }: NodeProps) {
-  const [source, setSource] = useState<"script" | "video">("script");
-  return (
-    <Shell
-      title={source === "script" ? "Kịch bản thô" : "Video mẫu"}
-      variant="script"
-      selected={selected}
-      inbound={false}
-    >
-      <div className="auto-tabs" role="tablist">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={source === "script"}
-          className={`auto-tab${source === "script" ? " auto-tab--on" : ""}`}
-          onClick={() => setSource("script")}
-        >
-          Kịch bản thô
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={source === "video"}
-          className={`auto-tab${source === "video" ? " auto-tab--on" : ""}`}
-          onClick={() => setSource("video")}
-        >
-          Video mẫu
-        </button>
-      </div>
-      {source === "script" ? <ScriptInput /> : <VideoInput />}
-    </Shell>
-  );
+// Keep the persisted node type compatible with existing boards; the entry UI
+// now accepts source video only.
+export function AutoScriptNode({ selected }: NodeViewProps) {
+  return <Shell title="Video nguồn" variant="script" selected={selected} inbound={false}
+    badge={<span className="source-input__badge">Bắt đầu tại đây</span>}>
+    <VideoSourceInput />
+  </Shell>;
 }
 
-/** Upload a reference video, watch it analyse, open it for review. The review
- *  itself is a full-screen panel at page level — a 101-row shotlist does not
- *  fit in a node. */
-function VideoInput() {
-  const projectId = useAutomation((s) => s.currentProjectId);
-  const videos = useVideoAnalysis((s) => s.videos);
-  const uploading = useVideoAnalysis((s) => s.uploading);
-  const error = useVideoAnalysis((s) => s.error);
-  const upload = useVideoAnalysis((s) => s.upload);
-  const openVideo = useVideoAnalysis((s) => s.open);
-  const [preset, setPreset] = useState(STYLE_PRESETS[0].key);
-  const [deep, setDeep] = useState(false);
-
-  return (
-    <>
-      <p className="auto-hint">
-        Máy đo điểm cắt và thời lượng; model chỉ mô tả trong từng shot, rồi chuyển thể sang thế giới mới
-        mà giữ nguyên dựng.
-      </p>
-      <div className="auto-row">
-        <label className="auto-select">
-          <span>Chuyển thể thành</span>
-          <select value={preset} onChange={(e) => setPreset(e.target.value as typeof preset)}>
-            {STYLE_PRESETS.map((p) => (
-              <option key={p.key} value={p.key}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className={`auto-btn auto-btn--primary auto-btn--file${uploading !== null ? " va-disabled" : ""}`}>
-          {uploading !== null ? `đang tải lên ${Math.round(uploading * 100)}%` : "Tải video lên"}
-          <input
-            type="file"
-            accept="video/mp4,video/quicktime,video/webm,.mkv,.m4v"
-            disabled={uploading !== null}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              e.target.value = "";
-              if (!file) return;
-              const text = STYLE_PRESETS.find((p) => p.key === preset)?.text ?? DEFAULT_RULES.visual_style;
-              void upload(
-                file,
-                projectId,
-                { ...DEFAULT_RULES, visual_style: text },
-                deep ? "deep" : "standard",
-              ).catch(() => undefined);
-            }}
-          />
-        </label>
-      </div>
-      <label
-        className="auto-check"
-        title="Đọc kỹ từng shot: nhiều keyframe hơn (tới 7 khung cho shot dài), mỗi lượt gọi ít shot hơn nên model tập trung hơn, và shot nào model tự nhận là không chắc thì đẩy lên model mạnh. Tốn khoảng gấp đôi token."
-      >
-        <input type="checkbox" checked={deep} onChange={(e) => setDeep(e.target.checked)} />
-        <span>Phân tích shot kỹ (chậm và tốn hơn)</span>
-      </label>
-      {error && <p className="auto-error">{error}</p>}
-      {videos.length > 0 && (
-        <ul className="va-list nowheel">
-          {videos.map((v) => {
-            const busy = RUNNING.includes(v.status);
-            const pct = v.progress.total ? ((v.progress.done ?? 0) / v.progress.total) * 100 : 0;
-            return (
-              <li key={v.id}>
-                <button type="button" className="va-list__item" onClick={() => void openVideo(v.id)}>
-                  <span className="va-list__name">{v.name}</span>
-                  <span className="va-list__meta">
-                    {busy
-                      ? `${STAGE_LABELS[v.progress.stage ?? ""] ?? "đang chờ"}${v.progress.total ? ` ${v.progress.done}/${v.progress.total}` : ""}`
-                      : v.status === "failed"
-                        ? "lỗi — mở để xem"
-                        : v.status === "interrupted"
-                          ? "bị ngắt — mở để chạy tiếp"
-                          : `${v.shot_count} shot${v.duration ? ` · ${v.duration.toFixed(0)}s` : ""}${v.detail === "deep" ? " · kỹ" : ""}${v.status === "adapted" ? " · đã chuyển thể" : ""}`}
-                  </span>
-                  {busy && (
-                    <span className="va-progress" aria-hidden>
-                      <span style={{ width: `${pct}%` }} />
-                    </span>
-                  )}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </>
-  );
-}
-
-function ScriptInput() {
-  const script = useAutomation((s) => s.script);
-  const runtime = useAutomation((s) => s.runtimeSeconds);
-  const status = useAutomation((s) => s.breakdownStatus);
-  const error = useAutomation((s) => s.breakdownError);
-  const setScript = useAutomation((s) => s.setScript);
-  const setRuntime = useAutomation((s) => s.setRuntimeSeconds);
-  const run = useAutomation((s) => s.runBreakdown);
-
-  return (
-    <>
-      <textarea
-        className="auto-textarea nodrag nowheel"
-        value={script}
-        onChange={(e) => setScript(e.target.value)}
-        rows={9}
-        placeholder="Ví dụ: một bộ phim về bạo lực nơi công sở, người bị bắt nạt sau này đứng lên trả thù những kẻ đã bắt nạt mình."
-      />
-      <div className="auto-row">
-        <label className="auto-field">
-          <span>Thời lượng</span>
-          <input
-            type="number"
-            min={15}
-            max={3600}
-            step={15}
-            value={runtime ?? ""}
-            placeholder="tự tính"
-            onChange={(e) => setRuntime(e.target.value ? Number(e.target.value) : null)}
-          />
-          <span className="auto-field__unit">giây</span>
-        </label>
-        <button
-          type="button"
-          className="auto-btn auto-btn--primary"
-          onClick={() => void run()}
-          disabled={status === "running" || !script.trim()}
-        >
-          {status === "running" ? "đang phân tích…" : "Phân tích"}
-        </button>
-      </div>
-      {status === "running" && (
-        <p className="auto-hint">Đang dựng nhân vật, bối cảnh và shotlist — mất một lúc.</p>
-      )}
-      {error && <p className="auto-error">{error}</p>}
-    </>
-  );
-}
-
-export function AutoCharacterNode({ id, data, selected }: NodeProps) {
+export function AutoCharacterNode({ id, data, selected }: NodeViewProps) {
   const d = data as CharacterNodeData;
   const setActiveState = useAutomation((s) => s.setActiveState);
   const editPrompt = useAutomation((s) => s.editPrompt);
   const generate = useAutomation((s) => s.generate);
 
-  const active = d.states[d.activeState];
-  const state = d.character.states.find((st) => st.key === d.activeState);
+  const active = d.states?.[d.activeState];
+  const state = d.character.states?.find((st) => st.key === d.activeState);
   const identityReady = Boolean(d.identity.referenceUrl);
 
   return (
@@ -338,11 +188,12 @@ export function AutoCharacterNode({ id, data, selected }: NodeProps) {
         label="Chân dung identity"
         onEdit={(t) => editPrompt(id, "identity", t)}
         onGenerate={() => void generate(id, "identity")}
+        onUpload={file => useAutomation.getState().uploadPlate(id, "identity", file)}
       />
 
-      {d.character.states.length > 0 && (
+      {(d.character.states?.length ?? 0) > 0 && (
         <>
-          <div className="auto-tabs" role="tablist">
+          <div className="auto-tabs nodrag" role="tablist">
             {d.character.states.map((st) => (
               <button
                 key={st.key}
@@ -353,7 +204,7 @@ export function AutoCharacterNode({ id, data, selected }: NodeProps) {
                 onClick={() => setActiveState(id, st.key)}
               >
                 {st.label}
-                {d.states[st.key]?.image && <i className="auto-dot" aria-hidden="true" />}
+                {d.states?.[st.key]?.image && <i className="auto-dot" aria-hidden="true" />}
               </button>
             ))}
           </div>
@@ -370,6 +221,7 @@ export function AutoCharacterNode({ id, data, selected }: NodeProps) {
               }
               onEdit={(t) => editPrompt(id, d.activeState, t)}
               onGenerate={() => void generate(id, d.activeState)}
+              onUpload={file => useAutomation.getState().uploadPlate(id, d.activeState, file)}
             />
           )}
         </>
@@ -378,7 +230,7 @@ export function AutoCharacterNode({ id, data, selected }: NodeProps) {
   );
 }
 
-export function AutoEnvironmentNode({ id, data, selected }: NodeProps) {
+export function AutoEnvironmentNode({ id, data, selected }: NodeViewProps) {
   const d = data as EnvironmentNodeData;
   const editPrompt = useAutomation((s) => s.editPrompt);
   const generate = useAutomation((s) => s.generate);
@@ -402,12 +254,13 @@ export function AutoEnvironmentNode({ id, data, selected }: NodeProps) {
         label="Plate"
         onEdit={(t) => editPrompt(id, "plate", t)}
         onGenerate={() => void generate(id, "plate")}
+        onUpload={file => useAutomation.getState().uploadPlate(id, "plate", file)}
       />
     </Shell>
   );
 }
 
-export function AutoAssetNode({ id, data, selected }: NodeProps) {
+export function AutoAssetNode({ id, data, selected }: NodeViewProps) {
   const d = data as AssetNodeData;
   const editPrompt = useAutomation((s) => s.editPrompt);
   const generate = useAutomation((s) => s.generate);
@@ -416,12 +269,13 @@ export function AutoAssetNode({ id, data, selected }: NodeProps) {
       variant="environment" selected={selected}>
       <p className="auto-node__sub">{d.asset.description || d.asset.summary}</p>
       <PlatePanel plate={d.plate} label="Reference" onEdit={(text) => editPrompt(id, "plate", text)}
-        onGenerate={() => void generate(id, "plate")} />
+        onGenerate={() => void generate(id, "plate")}
+        onUpload={file => useAutomation.getState().uploadPlate(id, "plate", file)} />
     </Shell>
   );
 }
 
-export function AutoSequenceNode({ data, selected }: NodeProps) {
+export function AutoSequenceNode({ data, selected }: NodeViewProps) {
   const d = data as SequenceNodeData;
   const cutSequence = useAutomation((s) => s.cutSequence);
   const [open, setOpen] = useState(false);
@@ -452,7 +306,7 @@ export function AutoSequenceNode({ data, selected }: NodeProps) {
       <div className="auto-plate__bar">
         <button
           type="button"
-          className="auto-plate__toggle"
+          className="auto-plate__toggle nodrag"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
           disabled={!d.shots.length}
@@ -462,7 +316,7 @@ export function AutoSequenceNode({ data, selected }: NodeProps) {
         </button>
         <button
           type="button"
-          className="auto-btn auto-btn--go"
+          className="auto-btn auto-btn--go nodrag"
           onClick={() => void cutSequence(seq.key)}
           disabled={running}
         >
@@ -573,12 +427,25 @@ export function AutoSequenceNode({ data, selected }: NodeProps) {
   );
 }
 
-export function AutoVideoNode({ data, selected }: NodeProps) {
+export function AutoVideoNode({ data, selected }: NodeViewProps) {
   const d = data as VideoNodeData;
+  const referenceNodes = useAutomation((s) => s.nodes);
+  const referenceAssets = useAutomation((s) => s.productionAssets);
+  const collectVideoRefs = useAutomation((s) => s.collectVideoRefs);
+  // Zustand snapshots must keep stable identity between store changes. Resolve
+  // fresh display objects outside the selector to avoid a render loop.
+  const refs = useMemo(() => {
+    if (d.refs.length) return d.refs;
+    try { return videoDisplayRefs(d, collectVideoRefs(d.sequenceKey).refs); }
+    catch { return d.refs; }
+  }, [d, referenceNodes, referenceAssets, collectVideoRefs]);
   const primeVideoPrompt = useAutomation((s) => s.primeVideoPrompt);
+  const editVideoPrompt = useAutomation(s => s.editVideoPrompt);
+  const [verifying, setVerifying] = useState(false);
   const generateClip = useAutomation((s) => s.generateClip);
   const kyc = useAutomation((s) => s.kyc);
   const authored = useAutomation((s) => s.sourceVerification?.method === "authored_script");
+  const onePassSource = useAutomation((s) => s.sourceVerification?.method === "one_pass_production");
   const sourceReady = useAutomation((s) => {
     const sequence = s.nodes.find((node) => node.id === `seq:${d.sequenceKey}`);
     return sequence?.data.kind === "sequence"
@@ -592,6 +459,11 @@ export function AutoVideoNode({ data, selected }: NodeProps) {
     try { return !sameFingerprint(d.inputFingerprint, s.currentFingerprint(d.sequenceKey)); }
     catch { return true; }
   });
+  // A server receipt without a browser fingerprint records the writing-time
+  // review; absence of that local comparison is not evidence of changed inputs.
+  const serverReviewedPrompt = !d.inputFingerprint && Boolean(d.prompt)
+    && d.promptEngine === "cinematic-v1" && d.coverage?.status === "verified"
+    && Boolean(d.contractDigest && d.coverageToken);
   const [open, setOpen] = useState(false);
 
   const patchNode = useAutomation((s) => s.patchNode);
@@ -609,7 +481,7 @@ export function AutoVideoNode({ data, selected }: NodeProps) {
   const running = d.status === "running";
   const keyframed = Boolean(d.startFrame?.referenceUrl);
   const chained = Boolean(d.chainFromPrevious);
-  const ready = (chained && Boolean(previousClip?.clipUrl)) || keyframed || d.refs.length > 0;
+  const ready = (chained && Boolean(previousClip?.clipUrl)) || keyframed || refs.length > 0;
 
   return (
     <Shell
@@ -620,6 +492,11 @@ export function AutoVideoNode({ data, selected }: NodeProps) {
           {d.promptBy && (
             <span className="auto-tag" title="Ai viết prompt này">
               {d.promptBy === "template" ? "template" : d.promptBy}
+            </span>
+          )}
+          {d.promptEngine === "cinematic-v1" && (
+            <span className="auto-tag auto-tag--ok" title={`Đọc ${d.inspectedReferences?.length ?? 0} ảnh reference; viết cảnh, thoại và raccord theo cấu trúc đã chốt.`}>
+              cinematic
             </span>
           )}
           {keyframed && (
@@ -638,9 +515,9 @@ export function AutoVideoNode({ data, selected }: NodeProps) {
     >
       {/* Position is the binding, so show it: the reader can check that
           @image1 really is the character the prompt says it is. */}
-      {d.refs.length > 0 ? (
-        <div className="auto-refs">
-          {d.refs.map((r) => {
+      {refs.length > 0 ? (
+        <div className="auto-refs nodrag">
+          {refs.map((r) => {
             // Under KYC every ref must have a media row: the identity assets
             // are built from those, in order, and one missing entry shifts
             // every @imageN after it onto the wrong picture.
@@ -666,7 +543,7 @@ export function AutoVideoNode({ data, selected }: NodeProps) {
 
       {previousClip && !strict && (
         <label
-          className="auto-check"
+          className="auto-check nodrag"
           title="Clip này chạy tiếp từ clip trước (Seedance 'extend'): nhân vật, ánh sáng và màu được kế thừa từ video chứ không dựng lại từ ref. Đây là cách duy nhất giữ được người thật xuyên suốt — nhưng khung hình sẽ theo clip trước."
         >
           <input
@@ -690,7 +567,7 @@ export function AutoVideoNode({ data, selected }: NodeProps) {
       {strict && (chained || keyframed) && (
         <div className="auto-node__sub">
           <p>Kiểm tra coverage áp dụng cho các ảnh reference. Chuyển clip này sang chế độ reference để gửi đủ ảnh đã kiểm tra.</p>
-          <button type="button" className="auto-btn" disabled={running} onClick={() => patchNode(`vid:${d.sequenceKey}`, {
+          <button type="button" className="auto-btn nodrag" disabled={running} onClick={() => patchNode(`vid:${d.sequenceKey}`, {
             chainFromPrevious: false, startFrame: undefined, endFrame: undefined,
           } as Partial<VideoNodeData>)}>Dùng ảnh reference</button>
         </div>
@@ -699,25 +576,24 @@ export function AutoVideoNode({ data, selected }: NodeProps) {
       <div className="auto-plate__bar">
         <button
           type="button"
-          className="auto-plate__toggle"
+          className="auto-plate__toggle nodrag"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          disabled={!d.prompt}
         >
-          {d.prompt ? (open ? "▾" : "▸") : "·"} Prompt
+          {open ? "▾" : "▸"} Sửa prompt
         </button>
         <button
           type="button"
-          className="auto-btn auto-btn--go"
-          onClick={() => void primeVideoPrompt(d.sequenceKey, { writer: true }).catch(() => undefined)}
+          className="auto-btn auto-btn--go nodrag"
+          onClick={() => void primeVideoPrompt(d.sequenceKey).catch(() => undefined)}
           disabled={running}
-          title="GPT viết lại prompt theo chuẩn clip prompt, nối từ trạng thái cuối của clip trước — vài cent, chưa gen gì."
+          title="GPT qua Avis đọc shotlist và ảnh reference, viết cảnh, thoại và raccord theo cấu trúc cinematic. Chỉ viết prompt, chưa gen video."
         >
           viết prompt
         </button>
         <button
           type="button"
-          className="auto-btn auto-btn--go"
+          className="auto-btn auto-btn--go nodrag"
           onClick={() => void generateClip(d.sequenceKey)}
           disabled={running || !ready}
           title={ready ? undefined : "Cần ít nhất một ref đã lên R2."}
@@ -734,22 +610,44 @@ export function AutoVideoNode({ data, selected }: NodeProps) {
         </button>
       </div>
 
-      {open && d.prompt && (
+      {open && (
         <textarea
           className="auto-textarea auto-textarea--prompt nodrag nowheel"
+          aria-label={`Prompt video ${d.label}`}
           value={d.prompt}
-          readOnly
+          onChange={event => editVideoPrompt(d.sequenceKey, event.target.value)}
+          readOnly={running}
           rows={10}
           spellCheck={false}
         />
       )}
 
+      {open && <p className="auto-hint">Prompt được lưu tự động. Bản tự chỉnh được giữ nguyên khi gen.</p>}
+      {d.promptBy === "manual" && strict && <button type="button" className="auto-btn nodrag"
+        disabled={running || verifying || !d.prompt.trim()} onClick={async () => {
+          setVerifying(true);
+          try { await useAutomation.getState().verifyVideoPrompt(d.sequenceKey); }
+          catch (error) { patchNode(`vid:${d.sequenceKey}`, { error: (error as Error).message }); }
+          finally { setVerifying(false); }
+        }}>{verifying ? "Đang kiểm tra…" : "Kiểm tra prompt đã sửa"}</button>}
       {d.error && <p className="auto-error">{d.error}</p>}
+      {open && Boolean(d.stagingDecisions?.length) && (
+        <details className="auto-node__sub nodrag nowheel">
+          <summary>Quyết định nối cảnh ({d.stagingDecisions!.length})</summary>
+          <p>Chỉ dẫn dàn dựng để nối các trạng thái; không phải dữ kiện mới từ video gốc.</p>
+          {d.stagingDecisions!.map((decision, i) => <p key={i}>
+            <strong>Shot {decision.shot}:</strong> {decision.description}<br />{decision.basis}
+          </p>)}
+        </details>
+      )}
       {strict && (
         <div className="auto-node__sub" role="status">
           <p>{authored ? `Kịch bản sáng tác · ${sourceReady ? "đã khóa dữ liệu dựng" : "cần khóa dữ liệu dựng"}`
+            : onePassSource ? `Shotlist một lượt · ${sourceReady ? "đã chuẩn bị dữ liệu" : "cần xử lý dữ liệu"}`
             : `Agent 1 · ${sourceReady ? "các shot của clip đã đối chiếu" : "các shot của clip cần đối chiếu"}`}</p>
-          <p>Agent 2 · {stale ? "dữ liệu đã đổi — cần viết lại" : d.coverage?.status === "verified" ? "prompt đã kiểm tra đủ nội dung" : "prompt chưa xác minh"}
+          <p>Agent 2 · {serverReviewedPrompt ? "prompt từ pipeline tự động · server đã kiểm tra đầu vào khi viết"
+            : d.promptBy === "manual" && (!d.coverageToken || stale) ? "prompt tự chỉnh — sẽ kiểm tra trước khi gen"
+            : stale ? "dữ liệu đã đổi — cần viết lại" : d.coverage?.status === "verified" ? "prompt đã kiểm tra đủ nội dung" : "prompt chưa xác minh"}
             {d.coverage?.requirements && ` · ${d.coverage.matches?.length ?? 0}/${d.coverage.requirements.length} mục có dẫn chứng`}</p>
           {d.coverage?.semantic_review?.findings?.map((finding, i) => <p key={i}>{finding.message || finding.code}</p>)}
         </div>
@@ -759,7 +657,7 @@ export function AutoVideoNode({ data, selected }: NodeProps) {
       ))}
       {d.clipUrl && (
         <>
-          <video className="auto-clip" src={d.clipUrl} controls preload="metadata" />
+          <video className="auto-clip nodrag" src={d.clipUrl} controls preload="metadata" />
           {d.persisted === false && (
             <p className="auto-hint">
               Link tạm của nhà cung cấp — sẽ hết hạn. Tải về nếu muốn giữ.
@@ -799,7 +697,7 @@ function KeyframeStrip({ data }: { data: VideoNodeData }) {
             )}
             <button
               type="button"
-              className="auto-btn auto-btn--go"
+              className="auto-btn auto-btn--go nodrag"
               disabled={busy}
               title="Gen tấm ảnh này từ sheet nhân vật + plate bối cảnh của clip."
               onClick={() => void generateKeyframe(data.sequenceKey, which).catch(() => undefined)}

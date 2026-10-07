@@ -37,6 +37,24 @@ DESIGN_MODEL = os.getenv("FLOWBOARD_DESIGN_MODEL", "gpt-6-astra")
 DESIGN_FALLBACK = os.getenv("FLOWBOARD_DESIGN_FALLBACK", "gemini-3-8-flash")
 MAX_FRAMES = 6
 
+_SOURCE_STATE_RULES = """
+
+SOURCE STATE AND REFERENCE DESIGN HAVE DIFFERENT ROLES:
+observed_states are the supplied per-shot source observations. They control known
+visibility, position, holder, hand, contents, object state and transitions for those
+shots. Preserve explicit unknowns; an omitted detail is not proof of absence.
+The design brief describes identity, construction, materials, palette and rendering,
+not new per-shot events or state assignments. Do not reinterpret an unknown source
+state as a known state because a sampled frame appears to suggest it. Do not add
+shot numbers, timestamps, blocking or custody directives to the aesthetic brief.
+Any reference_variants describe alternative sheet views/configurations of the SAME
+asset, only where supported by its construction and supplied observations. They do
+not say which variant is active in a filmed shot, require a transition, or establish
+previously unknown contents, mechanisms or a lid angle. A reference-sheet pose or
+variant never overrides an observed shot state. Compatible unresolved geometry may
+remain unspecified; do not invent a more revealing view to settle it.
+"""
+
 _CHARACTER_SYSTEM = """You are a character designer writing the reference sheet brief for ONE character.
 
 You get frames of them from the film, the target style, and what the analysis \
@@ -78,6 +96,12 @@ not survive being seen at half scale, it does not belong.
 - Write in short declarative lines, not paragraphs. One fact per line.
 - Nothing worn should hide the body in a turnaround: bags and cases go in \
 "carried", not in "costume".
+- The neutral identity turnaround keeps both hands empty. Carried objects belong
+  to scene actions, not permanent anatomy or wardrobe. Never infer a book/folder
+  from a partly hidden phone or physical photograph; cross-check observed_states.
+- Use wider body views for lower garments and footwear. A close-up crop cannot
+  justify a skirt when wider source views show trousers. Do not invent a costume
+  change or merge different outfits into one look.
 - Do not change who they are. This is the same person the film shows, described \
 properly — not a redesign.
 - Costume: 4-10 pieces, head to feet, including what holds it together.
@@ -88,6 +112,10 @@ _ENVIRONMENT_SYSTEM = """You are a production designer writing the reference bri
 You get frames of the place from the film, the target style, and what the \
 analysis already knows. Everything must be visible in the frames; where the \
 frames only show a corner, extend it so it follows, and say so in "inferred".
+Respect the location's physical function and scale. Do not decorate a confined
+elevator cabin with lounge chairs, tables or other furniture unless clearly seen
+in its own source frames. Keep circulation space and door clearance usable.
+Separate an elevator cabin from an adjoining lobby; their furniture is not shared.
 
 Return ONE JSON object and nothing else:
 {
@@ -191,14 +219,20 @@ async def design_character(entry: dict, work_dir: Path, rules: dict,
         "identity_anchor": entry.get("identity_anchor"),
         "seen_as": entry.get("looks_like"),
         "states": entry.get("states"),
+        "observed_states": entry.get("observed_states", []),
         "target_style": rules.get("visual_style"),
     }
+    system=_CHARACTER_REIMAGINE if world else _CHARACTER_SYSTEM
+    if entry.get('target_appearance'):
+        from flowboard.services.target_casting import POLICY
+        known['target_appearance']=entry['target_appearance']
+        system+='\nEXPLICIT OWNER CASTING EXCEPTION\n'+POLICY
     if world:
         known["world_brief"] = world
         known.pop("identity_anchor", None)   # the old face is not evidence here
         known.pop("seen_as", None)
     return await _design(
-        _CHARACTER_REIMAGINE if world else _CHARACTER_SYSTEM,
+        system,
         known,
         [] if world else _frame_parts(work_dir, entry.get("frames") or []),
         stats, label=str(entry.get("key")), need_frames=not world,
@@ -214,13 +248,14 @@ async def design_environment(entry: dict, work_dir: Path, rules: dict,
         "mood": entry.get("mood"),
         "lock": entry.get("lock"),
         "settings_seen": entry.get("settings"),
+        "observed_states": entry.get("observed_states", []),
         "target_style": rules.get("visual_style"),
     }
     if world:
         known["world_brief"] = world
         known.pop("settings_seen", None)
     return await _design(
-        _ENVIRONMENT_REIMAGINE if world else _ENVIRONMENT_SYSTEM,
+        (_ENVIRONMENT_REIMAGINE if world else _ENVIRONMENT_SYSTEM) + _SOURCE_STATE_RULES,
         known,
         [] if world else _frame_parts(work_dir, entry.get("frames") or []),
         stats, label=str(entry.get("key")), need_frames=not world,
@@ -232,15 +267,17 @@ async def design_asset(entry: dict, work_dir: Path, rules: dict,
     """Describe a recurring group or story prop from its own source evidence."""
     system = """Write a production reference brief for ONE background group or prop.
 Return JSON: {"description":"...", "identity_details":[], "materials":[],
-"members":[], "states":[], "dependencies":[], "inferred":[], "avoid":[]}.
+"members":[], "reference_variants":[], "dependencies":[], "inferred":[], "avoid":[]}.
 Use the supplied source frames and inventory. Preserve the exact group membership,
 distinguishing clothes/identities, prop geometry, container contents and any people
 depicted in photographs. Do not invent faces, counts, text or unseen details.
 For uncertain features say unknown. A crowd is an ensemble of distinct people,
 not a single new character. Dependencies must reuse supplied asset ids.
 Do not change who holds a prop or where a group stands: those are shot facts,
-not a design decision. Describe appearance in the requested visual style."""
-    known = {"asset": entry, "target_style": rules.get("visual_style")}
+not a design decision. Describe appearance in the requested visual style.""" + _SOURCE_STATE_RULES
+    known = {"asset": {key: value for key, value in entry.items() if key != 'observed_states'},
+             "observed_states": entry.get('observed_states', []),
+             "target_style": rules.get("visual_style")}
     if world:
         known["world_brief"] = world
         system += _REIMAGINE_RULES

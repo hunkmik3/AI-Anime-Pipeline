@@ -1075,6 +1075,26 @@ def test_a_school_age_cast_puts_the_content_rule_in_the_shot_brief():
     assert "SCHOOL-AGE" in school and "OBJECT" in school
 
 
+def test_story_changes_override_the_source_in_the_shot_brief_and_the_glossary(monkeypatch):
+    import asyncio, json as _json
+    from flowboard.services.video_analyzer import adapt as adapt_mod
+    plain = adapt_mod._shot_system(adapt_mod.AdaptationRules(), {}, [])
+    rules = adapt_mod.AdaptationRules.from_dict({"story_changes": "Set in an office; all adults; no romance plot."})
+    brief = adapt_mod._shot_system(rules, {}, [])
+    assert "STORY CHANGES" not in plain                          # unset: the brief is unchanged
+    assert "STORY CHANGES" in brief and "Set in an office; all adults" in brief
+    assert "Never add, drop or move a line" in brief and "Camera and blocking stay locked" in brief
+    sent = {}
+
+    async def ask(system, user, stats):
+        sent.update(_json.loads(user))
+        return {}
+
+    monkeypatch.setattr(adapt_mod, "ask_json", ask)
+    asyncio.run(adapt_mod.build_glossary({}, rules, adapt_mod.TextStats()))
+    assert sent["story_changes"].startswith("Set in an office")    # names follow the new world too
+
+
 def test_a_gap_fill_after_a_cast_rename_keeps_the_shots_already_adapted(monkeypatch):
     import asyncio
     from flowboard.services.video_analyzer import adapt as adapt_mod, pipeline

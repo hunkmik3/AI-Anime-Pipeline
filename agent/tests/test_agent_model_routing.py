@@ -30,7 +30,7 @@ def default_agents(monkeypatch):
     # Fresh namespaces test startup configuration without reloading shared
     # modules or leaking the test's settings into other service tests.
     return (
-        runpy.run_path(source_inventory.__file__),
+        runpy.run_path(source_inventory.__file__, run_name='flowboard.services.video_analyzer._routing_test'),
         runpy.run_path(prompt_writer.__file__),
     )
 
@@ -102,7 +102,7 @@ def test_image_writer_and_prompt_reviewer_use_luna_via_avis_in_separate_contexts
     async def complete(model, messages, **kwargs):
         calls.append((model, messages))
         value = ({"sections": {"FACE": "Oval face with a narrow jaw."}} if len(calls) == 1 else
-                 {"status": "verified", "findings": [], "checked_requirement_ids": ["r1"]})
+                 {"status": "verified", "findings": [], "checked_requirement_ids": ["R1"]})
         return avis_text.Completion(text=json.dumps(value), model=model)
 
     monkeypatch.setattr(avis_text, "complete", complete)
@@ -147,7 +147,8 @@ def test_refused_luna_clip_writer_cannot_use_adaptations_other_model_fallback(
     assert called == ["gpt-6-luna"]
 
 
-def test_luna_request_uses_avis_alias_and_omits_unsupported_temperature(monkeypatch):
+@pytest.mark.parametrize('model', ['gpt-6-luna', 'gpt-6-astra'])
+def test_gpt_request_uses_avis_alias_and_omits_unsupported_temperature(monkeypatch, model):
     requests = []
 
     def handle(request):
@@ -161,13 +162,28 @@ def test_luna_request_uses_avis_alias_and_omits_unsupported_temperature(monkeypa
     monkeypatch.setattr(avis_text, "_BASE", "https://avis.test")
     monkeypatch.setenv("AVIS_API_KEY", "test-key-no-provider-access")
     answer = asyncio.run(avis_text.complete(
-        "gpt-6-luna", [{"role": "user", "content": "Return JSON."}],
+        model, [{"role": "user", "content": "Return JSON."}],
         temperature=0.4, max_tokens=123, attempts=1,
     ))
-    assert answer.model == "gpt-6-luna" and len(requests) == 1
+    assert answer.model == model and len(requests) == 1
     request = requests[0]
     assert str(request.url) == "https://avis.test/api/v1/text/completions"
     assert request.headers["x-api-key"] == "test-key-no-provider-access"
     body = json.loads(request.content)
-    assert body["model"] == "gpt-6-luna" and body["maxTokens"] == 123
+    assert body["model"] == model
+    assert 'maxTokens' not in body
     assert "temperature" not in body
+
+
+def test_empty_completed_response_is_terminal_without_repeating_paid_request(monkeypatch):
+    requests = []
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(200, text='data: {"finishReason":"stop","usage":{"promptTokens":342,"completionTokens":0}}\n\n')
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(avis_text.httpx, 'AsyncClient', lambda **kwargs: real_client(
+        transport=httpx.MockTransport(handle), **kwargs))
+    monkeypatch.setenv('AVIS_API_KEY', 'test-key-no-provider-access')
+    with pytest.raises(avis_text.AvisEmptyResponse):
+        asyncio.run(avis_text.complete('gpt-6-astra', [{'role': 'user', 'content': 'Return JSON.'}], attempts=4))
+    assert len(requests) == 1

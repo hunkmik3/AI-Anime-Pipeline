@@ -34,17 +34,8 @@ from flowboard.services import avis_text
 
 logger = logging.getLogger(__name__)
 
-# claude-sonnet-5, measured on the reference fight clip's sequence pass:
-#
-#   gpt-5-4                 stopped mid-array, finish_reason=content_filter, on
-#                           both tries — a martial-arts fight with a "demon lord"
-#                           trips OpenAI's filter, and every action drama will
-#   gemini-3-1-pro-preview  21s, 4 sequences (1-18 / 19-28 / 29-69 / 70-101)
-#   claude-sonnet-5         33s, 9 sequences, the finer beats a clip plan needs
-#
 # The owner's pipeline (2026-09-24) puts GPT-6 Astra on adaptation and planning.
-# It refuses a temperature, which the client drops for it; if a filter stops a
-# reply, the fallback is asked instead (see ask_json).
+# Fallback handles availability errors only; content refusals stop the request.
 TEXT_MODEL = os.getenv("FLOWBOARD_ADAPT_MODEL", "gpt-6-astra")
 # Asked when TEXT_MODEL gives no usable answer. What looked like per-model load
 # shedding on 2026-09-24 was the gateway reporting refusals INSIDE a 200 stream
@@ -75,6 +66,7 @@ class AdaptationRules:
     dialogue_mode: str = "literal"          # literal | cinematic
     dialogue_language: str = "English"      # what the adapted lines are written in
     preserve_editing: bool = True           # exact reconstruction: no merge, no split
+    story_changes: str = ""                 # the owner's rewrite of the story; overrides the source
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "AdaptationRules":
@@ -110,7 +102,8 @@ class TextStats:
 
 async def ask_json(system: str, user: str, stats: TextStats, *, attempts: int = 3,
                    temperature: float = 0.2, model: str | None = None,
-                   fallback: str | None = None, max_tokens: int | None = None) -> Any:
+                   fallback: str | None = None, max_tokens: int | None = None,
+                   image_parts: list[dict] | None = None, transport_attempts: int | None = None) -> Any:
     """One JSON answer. A reply with no parseable JSON is asked again once,
     with the failure named — and if it still fails, the error says what came
     back (finish reason and the reply's first characters) instead of just
@@ -118,11 +111,12 @@ async def ask_json(system: str, user: str, stats: TextStats, *, attempts: int = 
 
     ``model`` / ``fallback`` default to the adaptation pair; a stage with its
     own model (the prompt writers) passes its own. The fallback is asked when
-    the primary does not answer at all, is refused outright, or has its reply
-    stopped by a content filter — never because it answered badly."""
+    the primary is unavailable or does not answer at all. Content refusals stop
+    the request without retrying or switching models."""
     primary = model or TEXT_MODEL
     backup = FALLBACK_MODEL if fallback is None else fallback
-    first = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    content = [avis_text.text_part(user), *image_parts] if image_parts else user
+    first = [{"role": "system", "content": system}, {"role": "user", "content": content}]
     last = ""
     models = [primary] * attempts
     if backup and backup != primary:
@@ -156,7 +150,10 @@ async def ask_json(system: str, user: str, stats: TextStats, *, attempts: int = 
             await asyncio.sleep(4.0 * (attempt % attempts or 1) ** 2)
         try:
             completion = await avis_text.complete(name, messages, temperature=temperature,
-                                                  max_tokens=max_tokens or MAX_TOKENS)
+                                                  max_tokens=max_tokens or MAX_TOKENS,
+                                                  **({'attempts':transport_attempts} if transport_attempts is not None else {}))
+        except avis_text.AvisContentRefusal:
+            raise
         except avis_text.AvisModelError as exc:
             # The model itself is refused: another try is the same answer.
             last = str(exc)[:200]
@@ -176,16 +173,7 @@ async def ask_json(system: str, user: str, stats: TextStats, *, attempts: int = 
             continue
         stats.add(completion)
         stats.last_response["max_tokens"] = max_tokens or MAX_TOKENS
-        if (completion.finish_reason in ("content_filter", "safety") and name == primary
-                and len(models) > attempts):
-            # A filter is one vendor's judgement of this request, not of the
-            # task: gpt-5-4 stopped mid-array on a martial-arts fight twice.
-            # Another vendor's model is asked; the primary stays in use.
-            last = f"finish={completion.finish_reason}"
-            logger.warning("adapt: %s filtered the reply; asking the fallback", name)
-            skip_to = attempts
-            messages = first
-            continue
+        avis_text.check_content_response(completion.text, completion.finish_reason)
         try:
             value = avis_text.extract_json(completion.text)
         except avis_text.AvisTextError:
@@ -241,7 +229,7 @@ are ONE entity: use the card spelling and list the misheard form under aliases.
 know; they must never become a character. A name card or a name used as one is."""
 
 
-async def extract_entities(shots: list[dict], stats: TextStats) -> dict:
+async def extract_entities(shots: list[dict], stats: TextStats, *, single_pass: bool = False) -> dict:
     evidence = []
     for s in shots:
         a = s.get("source") or {}
@@ -256,7 +244,8 @@ async def extract_entities(shots: list[dict], stats: TextStats) -> dict:
             evidence.append(line)
     if not evidence:
         return {"characters": [], "sects": [], "locations": [], "techniques": []}
-    data = await ask_json(_ENTITY_SYSTEM, json.dumps(evidence, ensure_ascii=False), stats)
+    data = await ask_json(_ENTITY_SYSTEM, json.dumps(evidence, ensure_ascii=False), stats,
+                          **({'attempts':1,'fallback':'','transport_attempts':1} if single_pass else {}))
     return data if isinstance(data, dict) else {}
 
 
@@ -284,6 +273,7 @@ async def build_glossary(entities: dict, rules: AdaptationRules, stats: TextStat
             "locations": rules.location_names,
             "techniques": rules.technique_names,
         },
+        **({"story_changes": rules.story_changes} if rules.story_changes else {}),
         "entities": entities,
     }
     data = await ask_json(_GLOSSARY_SYSTEM, json.dumps(ask, ensure_ascii=False), stats)
@@ -313,7 +303,7 @@ Rules:
 - Describe events, do not rename anyone — use the names as given."""
 
 
-async def build_sequences(shots: list[dict], stats: TextStats) -> list[dict]:
+async def build_sequences(shots: list[dict], stats: TextStats, *, single_pass: bool = False) -> list[dict]:
     compact = [
         {
             "shot": s["shot"],
@@ -323,7 +313,8 @@ async def build_sequences(shots: list[dict], stats: TextStats) -> list[dict]:
         }
         for s in shots
     ]
-    data = await ask_json(_SEQUENCE_SYSTEM, json.dumps(compact, ensure_ascii=False), stats)
+    data = await ask_json(_SEQUENCE_SYSTEM, json.dumps(compact, ensure_ascii=False), stats,
+                          **({'attempts':1,'fallback':'','transport_attempts':1} if single_pass else {}))
     seqs = data if isinstance(data, list) else []
     return tile_sequences([q for q in seqs if isinstance(q, dict)], len(shots))
 
@@ -414,9 +405,25 @@ OBJECT — a bag, a book, a locker, a pencil case turning see-through — or ont
 reaction. Clothing stays opaque and unchanged in every shot."""
 
 
+def _story_rule(story: str) -> str:
+    """The owner's rewrite of the story. The editing stays the source's; what it means does not."""
+    return f"""
+
+STORY CHANGES — the owner's rewrite of this adaptation. Where they conflict with the \
+source, they win, inside dialogue too:
+{story}
+- A spoken line the changes rule out is rewritten to serve the new story: same speaker, \
+same shot, same place in the scene, about the same length (within 20% of its words) and \
+the same emotional beat. Never add, drop or move a line.
+- Costumes, props, set dressing and world terms follow the new story.
+- Camera and blocking stay locked. Where a locked action is ruled out, keep the movement \
+and change what it does (an unzip opens a costume over clothes that stay on)."""
+
+
 def _shot_system(rules: AdaptationRules, glossary: dict[str, str], cast: list[dict] | None = None,
                  minors: bool = False) -> str:
-    return (_shot_system_text(rules, glossary, cast) + (_MINORS_RULE if minors else ""))
+    return (_shot_system_text(rules, glossary, cast) + (_story_rule(rules.story_changes) if rules.story_changes else "")
+            + (_MINORS_RULE if minors else ""))
 
 
 def _shot_system_text(rules: AdaptationRules, glossary: dict[str, str], cast: list[dict] | None = None) -> str:
@@ -513,6 +520,10 @@ async def adapt_shots(
     from flowboard.services import automation      # local: automation is heavy, and only this needs it
     minors = automation.school_age(list((cast or {}).get("characters") or []), None)
     system = _shot_system(rules, flat, sheet, minors=minors)
+    if rules.dialogue_mode == 'verbatim':
+        system += ("\nVERBATIM SOURCE DIALOGUE OVERRIDE: Preserve every dialogue_here string "
+                   "exactly, including punctuation and original language. No translation, tightening "
+                   "or naming substitutions within spoken lines. Keep line order and owning shot.")
     if only is not None:
         # Neighbours stay in the list for context of numbering only; the model
         # is sent just the shots being filled.
@@ -524,7 +535,7 @@ async def adapt_shots(
     size = DEEP_SHOT_BATCH if deep else SHOT_BATCH
     batches = [shots[i : i + size] for i in range(0, len(shots), size)]
     results: dict[int, dict] = {}
-    sem = asyncio.Semaphore(4)
+    sem = asyncio.Semaphore(max(1, min(32, int(os.getenv('FLOWBOARD_ADAPT_CONCURRENCY', '8')))))
     done = 0
 
     async def run(batch: list[dict]) -> None:

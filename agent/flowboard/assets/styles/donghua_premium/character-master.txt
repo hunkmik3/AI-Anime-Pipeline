@@ -1,0 +1,44 @@
+MASTER CHARACTER GENERATION PROMPT
+PREMIUM MODERN 3D DONGHUA / AAA 4K PRODUCTION QUALITY
+
+Create a premium production-ready 3D DONGHUA CHARACTER SHEET for the character defined in the CHARACTER PROFILE below.
+
+Use the CHARACTER PROFILE as the ABSOLUTE SOURCE OF TRUTH for the character design.
+Use @image1 as the ABSOLUTE VISUAL STYLE / QUALITY REFERENCE ONLY.
+
+REFERENCE HIERARCHY
+@image1 controls only rendering language, facial sculpt sophistication, adult proportion language, skin quality, hair groom quality, material polish, beauty-studio lighting quality, compositing and premium 4K presentation.
+
+The CHARACTER PROFILE controls identity, age, face/hair canon, eye color, body type, costume, costume colors, accessories, personality, social status, temporary powers and requested outfit/timeline state.
+
+Do not copy exact face, hairstyle, costume, costume colors, or props from @image1 unless explicitly requested.
+
+CORE GOAL
+Create the exact character from the profile, not a generic archetype. Preserve identity while translating the character into a premium high-end modern 3D donghua character-sheet presentation.
+
+VISUAL STYLE TARGET
+High-end stylized 3D donghua / Chinese cinematic rendering with refined stylized realism, mature facial sculpt, premium luminous skin, premium grouped hair grooming, refined materials, soft beauty-studio cinematic lighting, polished compositing and crisp 4K-quality finish.
+
+ABSOLUTE QUALITY FLOOR
+Ordinary, poor, simple, modest, or student-coded characters must still receive the same premium rendering quality.
+
+FACE / BODY / SKIN / HAIR RULE
+Use mature adult proportions, strong cross-view identity consistency, clean skin, premium hair grooming, naturalistic but flattering lighting, and no generic AI face drift.
+
+LAYOUT
+16:9 landscape character sheet; left 60% = front / strict side / back turnaround; right 40% = front / back / 3/4 / strict side head studies; neutral medium-gray studio background; no text or logos.
+
+STATE RULE
+Generate only the requested outfit/timeline state. Do not merge states. Temporary activated effects are not permanent anatomy unless explicitly requested.
+
+AI ARTIFACT PREVENTION
+Prevent face drift, malformed eyes/ears, broken hands, fused fingers, costume drift, floating accessories, random logos/text, hair clipping, over-sharpening, fake HDR and compression artifacts.
+
+FINAL TARGET
+The CHARACTER PROFILE defines design canon; @image1 defines rendering quality and visual style.
+
+REQUESTED OUTFIT / TIMELINE STATE:
+[STATE]
+
+CHARACTER PROFILE:
+[PROFILE]

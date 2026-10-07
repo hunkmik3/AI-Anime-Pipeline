@@ -52,8 +52,13 @@ export interface SourceIssueSummary {
 }
 
 export interface SourceVerification {
-  status: "verified" | "needs_review" | "unverified" | "legacy";
+  status: "verified" | "needs_review" | "unverified" | "legacy" | "observed";
   method?: string;
+  structural_checks_passed?: boolean;
+  prepared_shots?: number[];
+  observation_only?: boolean;
+  independent_review?: boolean;
+  locked_shots?: Record<string, Record<string, unknown>>;
   /** Server seal of authored production intent; not source-video evidence. */
   signature?: string;
   project_id?: string;
@@ -158,6 +163,20 @@ export function sourceReadyForShots(
   shots: { source_shots?: number[]; source_shot?: number; id?: string; provenance?: string }[],
   report: SourceVerification | null | undefined,
 ): boolean {
+  if (report?.method === "one_pass_production") {
+    // Observation + structural readiness, never independent visual verification.
+    // The server also validates the exact source locks and inventory digests.
+    if (report.status !== "observed" || !report.structural_checks_passed || !report.digest || !shots.length) return false;
+    const prepared = new Set((report.prepared_shots ?? []).map(String));
+    const selected = new Set<string>();
+    for (const shot of shots) {
+      const sources = shot.source_shots?.length ? shot.source_shots
+        : shot.source_shot === undefined ? [] : [shot.source_shot];
+      if (sources.length !== 1 || !prepared.has(String(sources[0]))) return false;
+      selected.add(String(sources[0]));
+    }
+    return !(report.findings ?? []).some((f) => !f || f.shot == null || selected.has(String(f.shot)));
+  }
   if (report?.method === "authored_script") {
     // Display readiness only. The server verifies the signature, current
     // project and exact shot/asset digests before reviewing or generating.

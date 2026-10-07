@@ -104,6 +104,47 @@ def plan_clips(
     return merged
 
 
+def plan_dialogue_clips(shots, sequences, dialogue_track, max_clip_s, *, character_states=None,
+                        state_specific_references=False):
+    """Never cut a spoken sentence between independent generation requests.
+
+    Keep every source shot. Select a shorter safe boundary, or a bounded longer
+    clip when necessary. Each character has one wardrobe reference per clip, so
+    a wardrobe change also requires a safe cut. A take/sentence over the provider
+    limit or crossing that wardrobe cut needs attention, rather than losing speech.
+    """
+    result = []
+    i = 0
+    while i < len(shots):
+        start = shots[i]['start']
+        safe = []
+        clip_states = {}
+        wardrobe_boundary = None
+        for j in range(i, len(shots)):
+            states = (character_states or {}).get(shots[j]['shot'], {})
+            if any(aid in clip_states and clip_states[aid] != state for aid, state in states.items()) and not (
+                    state_specific_references and not safe):
+                wardrobe_boundary = shots[j]['shot']
+                break
+            clip_states.update(states)
+            end = shots[j]['end']
+            if end-start > HARD_MAX_S + .001: break
+            crosses = any(d['start'] < end-.001 and d['end'] > end+.001 for d in dialogue_track)
+            if not crosses: safe.append(j)
+            if end-start >= max_clip_s and safe: break
+        preferred = [j for j in safe if shots[j]['end']-start <= max_clip_s+.001]
+        if not safe:
+            if wardrobe_boundary is not None:
+                raise ValueError(f"Source shot {wardrobe_boundary}: wardrobe change crosses a spoken sentence; "
+                                 "no dialogue-safe boundary before the change.")
+            raise ValueError(f"Source shot {shots[i]['shot']}: no dialogue-safe boundary within {HARD_MAX_S}s.")
+        last = preferred[-1] if preferred else safe[0]
+        qi = next((k for k,q in enumerate(sequences) if q['first_shot'] <= shots[i]['shot'] <= q['last_shot']), 0)
+        result.append({'sequence':qi, 'shots':[s['shot'] for s in shots[i:last+1]]})
+        i = last+1
+    return result
+
+
 _BIBLE_SYSTEM = """You write the production bible for re-making a reference video in a new world.
 
 You get the target style, the naming rules, the LOCKED naming glossary, the \
@@ -347,7 +388,7 @@ def board_shot(n_in_clip: int, shot: dict, adapted: dict, cast: dict[int, dict])
         "n": n_in_clip,
         "title": adapted.get("title") or "",
         "duration_s": round(shot["end"] - shot["start"], 6),
-        "framing": _FRAMING.get(size, size or "MS"),
+        "framing": _FRAMING.get(str(adapted.get('framing') or size).upper(), adapted.get('framing') or size or "MS"),
         "lens_mm": str(adapted.get("lens_mm") or ""),
         "camera": camera,
         "framing_note": adapted.get("framing_note") or "",
@@ -364,6 +405,7 @@ def board_shot(n_in_clip: int, shot: dict, adapted: dict, cast: dict[int, dict])
         "heard": shot.get("dialogue_heard") or "",
         "continues_from": shot.get("dialogue_continues"),
         "character_keys": list((cast.get(shot["shot"]) or {}).get("character_keys") or []),
+        "character_states": dict((cast.get(shot['shot']) or {}).get('character_states') or {}),
         **{key: (cast.get(shot["shot"]) or {}).get(key, [] if key != "environment_key" and key != "scene_id" else "")
            for key in ("asset_keys", "asset_presence", "scene_present_asset_ids", "scene_asset_ids", "source_evidence",
                        "source_appearances", "environment_key", "scene_id")},
@@ -616,6 +658,12 @@ async def build_board(analysis: dict, adaptation: dict, cast: Optional[dict] = N
     if cast is None:
         cast = await build_cast(analysis, adaptation)
     cast = attach_inventory(analysis, cast)
+    if (cast.get('usage') or {}).get('method') == 'verified_source_inventory':
+        # Source attachment keeps the audit catalog complete. Do not turn its
+        # retired extraction candidates back into production sheet nodes.
+        unused = set(cast['usage'].get('unused_candidates') or [])
+        for bucket in ('characters', 'environments', 'props', 'background_groups', 'assets'):
+            cast[bucket] = [e for e in cast.get(bucket, []) if e.get('source_asset_id') not in unused]
     characters = [dict(c) for c in cast.get("characters") or []]
     environments = [dict(e) for e in cast.get("environments") or []]
     per_shot = {int(n): v for n, v in (cast.get("shots") or {}).items()}
@@ -640,7 +688,13 @@ async def build_board(analysis: dict, adaptation: dict, cast: Optional[dict] = N
     for n in sorted(set(by_n)-covered):
         normalized.append({'first_shot':n,'last_shot':n,'title':'Source shot '+str(n)})
     sequences_src = sorted(normalized,key=lambda q:q['first_shot'])
-    clips = plan_clips(analysis["shots"], sequences_src, max_clip_s=max_clip_s)
+    one_pass_film = (analysis.get('source_verification') or {}).get('method') == 'one_pass_production'
+    if one_pass_film:
+        clips = plan_dialogue_clips(analysis['shots'], sequences_src, analysis.get('dialogue_track') or [], max_clip_s,
+                                   character_states={n: row.get('character_states') or {} for n, row in per_shot.items()},
+                                   state_specific_references=True)
+    else:
+        clips = plan_clips(analysis["shots"], sequences_src, max_clip_s=max_clip_s)
 
     sequences: list[dict] = []
     shots_by_seq: dict[str, list[dict]] = {}
@@ -666,7 +720,16 @@ async def build_board(analysis: dict, adaptation: dict, cast: Optional[dict] = N
         ]
         if not preserve_source_shots:
             board_shots = _merge_unshootable(board_shots)
-        board_shots = _carry_lines(board_shots)
+        if not one_pass_film:
+            board_shots = _carry_lines(board_shots)
+        else:
+            for shot in board_shots:
+                shot['performance'] = [
+                    f"Clip audio {line['start']-first['start']:.3f}–{line['end']-first['start']:.3f}s: " +
+                    ('start assigned dialogue once; continue seamlessly across following cuts.'
+                     if line['first_shot'] == shot['source_shot'] else 'carry preceding dialogue only; never restart it.')
+                    for line in analysis.get('dialogue_track') or []
+                    if line['first_shot'] <= shot['source_shot'] <= line['last_shot']]
         for shot in board_shots:
             shot["shot_uid"] = f"{source_id or 'source'}:shot:{shot['source_shot']}"
         titles = [s["title"] for s in board_shots if s["title"]]
@@ -714,6 +777,7 @@ async def build_board(analysis: dict, adaptation: dict, cast: Optional[dict] = N
         "sequences": sequences,
         "shots": shots_by_seq,
         "preserve_source_shots": preserve_source_shots,
+        "state_specific_references": one_pass_film,
         "source_video_id": source_id,
         "style": automation.style_from_rules((adaptation.get("rules") or {}).get("visual_style")),
         "aspect_ratio": video.get("aspect_ratio"),

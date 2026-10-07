@@ -33,7 +33,7 @@ def _register_with_provenance(inv, catalog, observation, batch_key, batch, origi
 
 
 async def analyze(video: Path, work_dir: Path, shots: list[dict], sequences=None,
-                  *, fps=0, deep=False, on_progress=None):
+                  *, fps=0, deep=False, on_progress=None, preobserved=None):
     from . import source_inventory as inv, source_identity as identity
 
     started = time.monotonic()
@@ -41,6 +41,9 @@ async def analyze(video: Path, work_dir: Path, shots: list[dict], sequences=None
     work_dir.mkdir(parents=True, exist_ok=True)
     digest = await asyncio.to_thread(inv._fingerprint, video, work_dir, shots, sequences, fps, deep)
     cache_path = work_dir / 'source_inventory.v1.json'
+    if preobserved is not None:
+        digest = inv._digest({'source': digest, 'joint': preobserved})
+        cache_path = work_dir / 'source_inventory.joint.v1.json'
     cache = {'cache_version': inv.CACHE_VERSION, 'digest': digest, 'batches': {},
              'budget': {'remaining': inv.MAX_EXTRA_FRAMES}}
     try:
@@ -182,7 +185,8 @@ async def analyze(video: Path, work_dir: Path, shots: list[dict], sequences=None
             entry = entry_for(prefix, known, supplied, 'serial-prefix')
             payload = payload_for(prefix, known, prior)
             observation = await inv._observe_batch(entry, batches[prefix], known, payload, supplied,
-                         video, work_dir, fps, budget, limiter, save)
+                         video, work_dir, fps, budget, limiter, save,
+                         **({'preobserved': preobserved[key]} if preobserved is not None else {}))
             provenance = register(prefix, observation, entry)
             producer_evidence = list({e['id']: e for e in producer_evidence + entry['supplied']}.values())
             observed.update(s['shot'] for s in batches[prefix])
@@ -211,7 +215,8 @@ async def analyze(video: Path, work_dir: Path, shots: list[dict], sequences=None
             entry, payload, supplied = dispatch[index]
             async with observation_slots:
                 observation = await inv._observe_batch(entry, batches[index], seed, payload, supplied,
-                             video, work_dir, fps, budget, limiter, save)
+                             video, work_dir, fps, budget, limiter, save,
+                             **({'preobserved': preobserved[keys[index]]} if preobserved is not None else {}))
             observed.update(s['shot'] for s in batches[index])
             if on_progress: on_progress('inventory', len(observed), len(shots))
             return observation
@@ -333,5 +338,6 @@ async def analyze(video: Path, work_dir: Path, shots: list[dict], sequences=None
                          'max_model_calls_per_batch': 5, 'identity_calls_per_wave': 1,
                          'max_concurrent_model_calls': concurrency, 'observation_concurrency': observe_concurrency}}
     cache['result'] = {'scene_inventory': inventory, 'source_verification': report}
+    report['input_binding'] = inv.verification_binding(video, shots, report['evidence'])
     save()
     return inventory, report

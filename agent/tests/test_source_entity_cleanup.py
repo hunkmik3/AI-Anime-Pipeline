@@ -40,7 +40,8 @@ def _install(monkeypatch, pairs=None, decide=None):
         calls.append({"system": system, "payload": copy.deepcopy(payload),
                       "evidence": [e["id"] for e in supplied]})
         if system == cleanup.PROPOSE_SYSTEM:
-            assert not supplied
+            assert set(e["id"] for e in supplied) == {
+                ref for refs in payload["character_anchor_ids"].values() for ref in refs}
             return {"pairs": pairs if pairs is not None else [{"asset_a": "casual", "asset_b": "formal"}]}
         assert system in (cleanup.VISUAL_SYSTEM, cleanup.REVIEW_SYSTEM)
         # Each pass has raw evidence, not the proposal reason or another verdict.
@@ -72,6 +73,7 @@ def test_cross_wardrobe_match_needs_two_passes_and_remaps_relationships(tmp_path
     assert data == original and not findings
     assert audit["aliases"] == {"casual": "formal"}
     assert len(calls) == 3
+    assert calls[0]["evidence"]  # Proposer sees source faces despite incorrect draft labels.
     assert {call["system"] for call in calls[1:]} == {cleanup.VISUAL_SYSTEM, cleanup.REVIEW_SYSTEM}
     assets = {a["id"]: a for a in result["assets"]}
     assert "casual" not in assets
@@ -194,6 +196,16 @@ def test_anchor_selection_has_first_last_and_clear_actual_appearance(tmp_path):
     candidate = cleanup._anchor_candidate(data["assets"][1], data, readable)
     assert candidate["anchor_evidence_ids"] == ["e2", "e4", "e3"]
     assert len(candidate["anchor_evidence_ids"]) <= 3
+
+
+def test_latest_actual_appearance_can_show_identity_after_a_reveal(tmp_path):
+    data, evidence = _fixture(tmp_path)
+    # Canonical anchors came from an early masked close-up; the later appearance
+    # must not be excluded just because the first visible occurrence was early.
+    data['assets'][1]['evidence_ids'] = ['e2']
+    candidate = cleanup._anchor_candidate(data['assets'][1], data,
+                                          cleanup._readable_evidence(inv, evidence, tmp_path))
+    assert 'e4' in candidate['anchor_evidence_ids']
 
 
 def test_transitive_merge_cannot_bypass_cooccurrence(tmp_path, monkeypatch):
@@ -335,7 +347,7 @@ def test_coverage_hints_share_existing_pair_budget_and_deduplicate_model_pairs()
     assert len(limited) == 5 and not ignored
 
 
-def test_no_usable_hints_keep_legacy_digest_payload_and_resume(tmp_path, monkeypatch):
+def test_no_usable_hints_keep_current_model_digest_payload_and_resume(tmp_path, monkeypatch):
     data, evidence = _fixture(tmp_path)
     calls = _install(monkeypatch)
     journal = {}
@@ -343,14 +355,14 @@ def test_no_usable_hints_keep_legacy_digest_payload_and_resume(tmp_path, monkeyp
     readable = cleanup._readable_evidence(inv, evidence, tmp_path)
     candidates = {a["id"]: cleanup._anchor_candidate(a, data, readable) for a in data["assets"]}
     selected = {ref for candidate in candidates.values() for ref in candidate["anchor_evidence_ids"]}
-    legacy_digest = inv._digest({"version": cleanup.VERSION,
+    legacy_digest = inv._digest({"version": cleanup.VERSION, "identity_model": cleanup.identity.MODEL,
         "systems": [cleanup.PROPOSE_SYSTEM, cleanup.VISUAL_SYSTEM, cleanup.REVIEW_SYSTEM],
         "models": [inv.MODEL, inv.VERIFY_MODEL], "inventory": data,
         "evidence": [readable[ref] for ref in sorted(selected)],
-        "limits": [cleanup.MAX_PAIRS, cleanup.MAX_PAIRS_PER_ASSET, cleanup.MAX_ANCHORS_PER_ASSET]})
+        "limits": [cleanup.MAX_PAIRS, cleanup.MAX_PAIRS_PER_ASSET, cleanup.MAX_ANCHORS_PER_ASSET, cleanup.MAX_PROPOSAL_IMAGES]})
     assert first[2]["input_digest"] == legacy_digest
     assert "candidate_hints" not in first[2]
-    assert set(calls[0]["payload"]) == {"catalog"}
+    assert set(calls[0]["payload"]) == {"catalog", "character_anchor_ids"}
     assert _run(data, evidence, tmp_path, journal, prior_findings=[]) == first
     assert _run(data, evidence, tmp_path, journal, prior_findings=_omissions("unknown")) == first
     assert len(calls) == 3 and len(journal["runs"]) == 1

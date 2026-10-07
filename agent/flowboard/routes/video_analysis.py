@@ -41,7 +41,7 @@ from sqlmodel import select
 
 from flowboard.config import STORAGE_DIR
 from flowboard.db import get_session
-from flowboard.db.models import VideoAnalysis
+from flowboard.db.models import VideoAnalysis, AutomationProject, AutomationJob
 from flowboard.routes.deps import get_optional_user
 from flowboard.services import automation, prompt_writer
 from flowboard.services.video_analyzer import board as board_mod
@@ -110,6 +110,13 @@ def _summary(row: VideoAnalysis) -> dict[str, Any]:
     if status in _RUNNING and not _is_running(row.id):
         status = "interrupted"
     video = (row.analysis or {}).get("video") or {}
+    auto_film = dict((row.options or {}).get('auto_production') or {})
+    if auto_film.get('run_id'):
+        with get_session() as s:
+            run = s.get(AutomationJob, uuid.UUID(auto_film['run_id']))
+            if run and run.project_id == row.automation_project_id:
+                auto_film.update(run_status=run.status, run_stage=run.result.get('stage'),
+                                 error=run.error or None, output=run.result.get('output'))
     return {
         "id": str(row.id),
         "name": row.name,
@@ -126,6 +133,7 @@ def _summary(row: VideoAnalysis) -> dict[str, Any]:
         "environment_count": len((row.cast or {}).get("environments") or []),
         "asset_count": len(((row.analysis or {}).get("scene_inventory") or {}).get("assets") or []),
         "source_verification_status": ((row.analysis or {}).get("source_verification") or {}).get("status", "unverified"),
+        "auto_production": auto_film or None,
         "adaptation_version": row.adaptation_version,
         "updated_at": row.updated_at.isoformat(),
     }
@@ -150,6 +158,8 @@ def _update(video_id: uuid.UUID, **fields: Any) -> None:
         if row is None:
             return
         for k, v in fields.items():
+            if k == 'progress' and isinstance(v, dict) and 'steps' not in v and (row.progress or {}).get('steps'):
+                v = {**v, 'steps': row.progress['steps']}
             setattr(row, k, v)
         row.updated_at = datetime.now(timezone.utc)
         s.add(row)
@@ -165,7 +175,8 @@ def _progress_writer(video_id: uuid.UUID):
         if stage == last["stage"] and now - last["t"] < 1.0 and done < total:
             return
         last.update(stage=stage, t=now)
-        _update(video_id, progress={"stage": stage, "done": done, "total": total})
+        from flowboard.services.production_progress import record_source
+        record_source(video_id, stage, done, total)
 
     return write
 
@@ -188,6 +199,7 @@ async def _run_analysis(video_id: uuid.UUID, then_adapt: Optional[dict]) -> None
             language=options.get("language") or None,
             deep=options.get("detail") == "deep",
             on_progress=_progress_writer(video_id),
+            **({'analysis_mode': options['analysis_mode']} if options.get('analysis_mode') in {'fast','one_pass'} else {}),
         )
         analysis["video"]["path"] = source.name  # never leak an absolute server path to the page
         _update(video_id, status="analysed", analysis=analysis, progress={})
@@ -256,7 +268,7 @@ async def _run_cast(video_id: uuid.UUID) -> None:
         _update(video_id, status="failed", error=str(exc)[:1000])
 
 
-async def _run_design(video_id: uuid.UUID, keys: list[str], world: str = "") -> None:
+async def _run_design(video_id: uuid.UUID, keys: list[str], world: str = "", *, concurrency: int = 3) -> None:
     """Write a design brief for every cast entry, from its own keyframes.
 
     With ``world`` set the pass runs the other way: the frames are NOT sent and
@@ -286,7 +298,7 @@ async def _run_design(video_id: uuid.UUID, keys: list[str], world: str = "") -> 
         _update(video_id, status="designing", error=None,
                 progress={"stage": "design", "done": 0, "total": total})
         stats = adapt_mod.TextStats()
-        sem = asyncio.Semaphore(3)
+        sem = asyncio.Semaphore(max(1, min(16, concurrency)))
         done = 0
 
         async def one(bucket: str, entry: dict) -> None:
@@ -392,6 +404,12 @@ def _start(video_id: uuid.UUID, coro, *, operation: dict | None = None) -> None:
 # ──────────────────────────────── routes ────────────────────────────────
 
 
+@router.get('/capabilities')
+def analysis_capabilities(user=Depends(get_optional_user)) -> dict:
+    return {'analysis_modes': ['standard', 'fast', 'one_pass'], 'fast_mode_experimental': True,
+            'one_pass_analysis_only': False, 'one_pass_auto_production': True}
+
+
 @router.post("")
 async def upload(
     file: UploadFile = File(...),
@@ -402,18 +420,38 @@ async def upload(
     # readier escalation) for about double the tokens.
     detail: str = Form("standard"),
     language: str = Form(""),
+    auto_production: str = Form(""),
+    analysis_mode: str = Form("one_pass"),
     user=Depends(get_optional_user),
 ) -> dict[str, Any]:
     """Store the video and start analysing it. With ``rules`` (JSON), adapt straight after."""
     ext = Path(file.filename or "").suffix.lower()
     if ext not in _VIDEO_EXT:
         raise HTTPException(status_code=415, detail=f"Định dạng {ext or '?'} không hỗ trợ — dùng mp4/mov/webm/mkv.")
+    if analysis_mode not in {'standard', 'fast', 'one_pass'}:
+        raise HTTPException(status_code=422, detail='analysis_mode must be standard, fast or one_pass')
     try:
         then_adapt = json.loads(rules) if rules.strip() else None
     except ValueError:
         raise HTTPException(status_code=422, detail="rules phải là JSON.")
+    if analysis_mode=='one_pass':
+        then_adapt=None  # Film controller owns preparation; analysis alone still stops here.
+
+    auto_settings = None
+    if auto_production.strip():
+        from flowboard.services.source_film import FilmOptions
+        try: auto_settings = FilmOptions.model_validate_json(auto_production).model_dump()
+        except ValueError as exc: raise HTTPException(422, detail='Invalid film settings: '+str(exc)) from exc
 
     with get_session() as s:
+        if auto_settings:
+            from flowboard.services import film_styles
+            project = AutomationProject(name=((name.strip() or Path(file.filename or 'video').stem)+' — '+
+                (film_styles.metadata(auto_settings['style'])['label'] if film_styles.is_preset(auto_settings['style']) else auto_settings['style']))[:200], owner_user_id=_owner_id(user),
+                board={'style':auto_settings['style'],'autoSourceFilm':True,'imageModel':'dola-seedream-5-0-pro',
+                       'imageSize':'2K','aspectRatio':auto_settings['aspect_ratio'],
+                       'kyc':auto_settings['kyc'],'unmoderated':auto_settings['unmoderated']})
+            s.add(project);s.flush();project_id=project.id
         row = VideoAnalysis(
             name=(name.strip() or Path(file.filename or "video").stem)[:200],
             filename=file.filename or "",
@@ -421,6 +459,8 @@ async def upload(
             automation_project_id=project_id,
             options={
                 "detail": "deep" if detail == "deep" else "standard",
+                "analysis_mode": analysis_mode,
+                **({"auto_production":{"settings":auto_settings,"stage":"queued"}} if auto_settings else {}),
                 **({"language": language.strip()} if language.strip() else {}),
             },
         )
@@ -446,10 +486,14 @@ async def upload(
             dead = s.get(VideoAnalysis, video_id)
             if dead:
                 s.delete(dead)
+                if auto_settings:
+                    empty_project = s.get(AutomationProject, project_id)
+                    if empty_project:
+                        s.delete(empty_project)
                 s.commit()
         raise
 
-    _start(video_id, _run_analysis(video_id, then_adapt), operation={"task":"analyze","then_adapt":then_adapt})
+    _start(video_id, _run_analysis(video_id, then_adapt), operation={"task":"film"} if auto_settings else {"task":"analyze","then_adapt":then_adapt})
     with get_session() as s:
         return _summary(s.get(VideoAnalysis, video_id))
 
@@ -481,13 +525,13 @@ def get_video(video_id: uuid.UUID, user=Depends(get_optional_user)) -> dict[str,
 async def resume_analysis(video_id: uuid.UUID, user=Depends(get_optional_user)) -> dict[str, Any]:
     with get_session() as s:
         row = _load(s, video_id, user)
-    _start(video_id, _run_analysis(video_id, None), operation={"task":"analyze"})
+    _start(video_id, _run_analysis(video_id, None), operation={"task":"film"} if (row.options or {}).get("auto_production") else {"task":"analyze"})
     with get_session() as s:
         return _summary(s.get(VideoAnalysis, row.id))
 
 
 async def _run_source_refinement(video_id: uuid.UUID, *, protocol_only: bool = False,
-                                 selected_shots: list[int] | None = None) -> None:
+                                 selected_shots: list[int] | None = None, strategy: str = 'full') -> None:
     """Repair a source draft and independently recheck it without discarding ASR."""
     try:
         with get_session() as s:
@@ -506,9 +550,16 @@ async def _run_source_refinement(video_id: uuid.UUID, *, protocol_only: bool = F
                 on_progress=_progress_writer(video_id),
                 **({'selected_shots':selected_shots} if selected_shots is not None else {}))
         else:
-            result = await source_refinement.refine(source, _work_dir(video_id), analysis,
+            task = source_refinement.refine(source, _work_dir(video_id), analysis,
                                                      on_progress=_progress_writer(video_id), only_unresolved=True,
-                                                     selected_shots=selected_shots)
+                                                     selected_shots=selected_shots, strategy=strategy)
+            if strategy == 'focused':
+                try:
+                    result = await asyncio.wait_for(task, timeout=300)
+                except TimeoutError as exc:
+                    raise RuntimeError('Focused source refinement exceeded its 300-second budget; draft preserved, no automatic retry.') from exc
+            else:
+                result = await task
         if (result.get("source_verification") or {}).get("retryable"):
             raise RuntimeError("Một số lượt gọi AI chưa hoàn tất. Kết quả từng bước đã lưu; bấm Sửa & đối chiếu để tiếp tục.")
         async with _cast_lock(video_id):
@@ -546,8 +597,12 @@ class RefineBody(BaseModel):
         return shots
 
 
+class SourceRefineBody(RefineBody):
+    strategy: str = Field(default='full', pattern='^(full|focused)$')
+
+
 @router.post("/{video_id}/refine")
-async def refine_source(video_id: uuid.UUID, body: RefineBody | None = None,
+async def refine_source(video_id: uuid.UUID, body: SourceRefineBody | None = None,
                         user=Depends(get_optional_user)) -> dict[str, Any]:
     selected = sorted(body.shots) if body is not None and body.shots is not None else None
     with get_session() as s:
@@ -559,7 +614,9 @@ async def refine_source(video_id: uuid.UUID, body: RefineBody | None = None,
             missing = set(selected) - existing
             if missing:
                 raise HTTPException(status_code=422, detail="Shot không có trong video: " + ", ".join(map(str, sorted(missing))))
-    _start(video_id, _run_source_refinement(video_id, selected_shots=selected), operation={"task":"refine","shots":selected})
+    strategy = body.strategy if body else 'full'
+    extra = {'strategy':strategy} if strategy != 'full' else {}
+    _start(video_id, _run_source_refinement(video_id, selected_shots=selected, **extra), operation={"task":"refine","shots":selected,**extra})
     with get_session() as s:
         return _summary(s.get(VideoAnalysis, video_id))
 
@@ -990,6 +1047,10 @@ async def plate(video_id: uuid.UUID, body: PlateBody, user=Depends(get_optional_
         prompt = production.build_asset_prompt({**entry, "dependency_references": dependency_refs},
             kind=body.kind, style=style, aspect_ratio=aspect, has_reference=bool(reference_urls))
 
+    from flowboard.services import film_styles
+    if film_styles.is_preset(style):
+        aspect = "16:9"
+
     # The descriptive sections are the prompt writer's (GPT); the layout, pose
     # and exclusions stay the house text that made the approved sheets.
     written_by = "verified-asset-template"
@@ -1005,6 +1066,7 @@ async def plate(video_id: uuid.UUID, body: PlateBody, user=Depends(get_optional_
             aspect_ratio=aspect,
             reference_urls=reference_urls,
             image_size=body.image_size,
+            style=style, material_kind=body.kind,
         )
     except automation.AutomationError as exc:
         raise HTTPException(status_code=502, detail=str(exc))

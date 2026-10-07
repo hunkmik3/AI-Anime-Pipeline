@@ -1,0 +1,46 @@
+MASTER CHARACTER GENERATION PROMPT
+PREMIUM PRODUCTION CHARACTER SHEET — SELECTED STYLE
+
+Create ONE production-ready CHARACTER SHEET from the CHARACTER PROFILE below. Text-only input. The profile is the absolute source of truth for the specific character; the selected style changes visual representation, not the design canon.
+
+INPUT HIERARCHY
+The CHARACTER PROFILE controls name, role, personality, story period, species, age, face structure, eye/skin/hair colours, body proportions, hair silhouette, costume construction, materials, palette, accessories, physical state and distinctive asymmetries.
+The SELECTED STYLE controls drawing or rendering language, surface treatment, lighting translation and aesthetic finish only. It never changes a contemporary character into a historical/fantasy archetype or gives someone a different hairstyle, costume or age.
+This master controls the approved seven-view sheet layout. Generate from the text; there is no input image. Do not invent an image-reference binding.
+Use the selected outfit/state stated in the profile. If only one outfit is supplied, use it. If multiple states exist and none is selected, use the explicitly identified baseline; never merge outfits. Keep unspecified incidental seams understated and consistent; do not invent measurements, signature props, biography or powers.
+
+CORE GOAL
+Create the specific individual described in the profile, not a generic archetype. Establish one coherent face and body, then rotate that SAME design through all seven views. Communicate personality through the restrained gaze and posture specified in the profile.
+
+SELECTED STYLE
+American theatrical 2D cartoon animation aesthetic; expressive hand-drawn characters, confident flowing contours, clear shape language and strong readable silhouettes. Use appealing stylized proportions, flexible brows and mouths, and facial construction that supports a broad emotional range. Preserve each character’s specified age, identity and established design. Render characters with clean colour fills, economical cel shadows and selective highlights. Describe materials through graphic shapes, folds and purposeful line accents. Maintain a consistently drawn 2D appearance. Avoid photoreal textures, sculpted 3D surfaces and generic stock-vector or clip-art styling.
+
+Environments should use designed, painted backgrounds with coherent perspective, selective brush texture and clear foreground, middle-ground and background separation. Coordinate scenery, props and characters through a shared shape language and colour palette. Follow the project’s established period, architecture, costumes and props. Draw atmospheric and magical effects as readable 2D forms with controlled visual complexity.
+
+For narrative scenes, use clear value grouping, expressive colour design and simplified lighting motivated by sources within the setting. Keep faces, gestures and silhouettes easy to read. Create depth through staging, overlap, scale and multiplane composition, with restrained blur. For white-background asset references, use clean model-sheet presentation, neutral colours, minimal shading and consistent construction across every required view.
+
+ABSOLUTE QUALITY FLOOR
+Apply equally careful execution to every role and social status. Simple, poor, worn or modest designs retain those properties; quality must not add wealth, glamour, decoration or a different costume. Interpret the stated materials in the chosen medium: photographic texture for live action, shaped CG surfaces for 3D, purposeful drawn marks and shadow shapes for 2D. Do not apply a single realistic texture treatment to every style.
+
+FACE / BODY / HAIR / COSTUME
+Preserve the profile's age and species. Keep adults adult, younger characters age-appropriate, and non-human anatomy as specified. Keep the same head shape, jaw, nose, eye spacing, iris colour, hairline, parting, hair length and signature features across views. Do not automatically enlarge eyes or heads or replace distinct faces with a generic face.
+Maintain coherent anatomy, readable hands and logically connected limbs. Keep garment layers, seams, closures and accessory attachments structurally understandable. Preserve hem length, neckline, back construction, and the same jewellery count across every view. Left and right always mean the character's anatomical sides: do not mirror a slit, badge, scar, fastening or accessory.
+Include only explicitly specified props and powers. No equipment inset, weapon or extra costume without a profile requirement. Temporary effects are absent in the baseline unless explicitly selected.
+
+LAYOUT — 60/40
+One 16:9 landscape character sheet on a plain neutral medium-gray studio background, matching the owner's approved sheet format.
+LEFT 60%: exactly THREE full-body views in order FRONT, STRICT SIDE, BACK. Consistent body scale and floor baseline; all heads, hands, hems and footwear fully visible with safe margins. Same restrained neutral standing pose rotated coherently. STRICT SIDE is a true 90-degree profile; BACK is a true rear view.
+RIGHT 40%: exactly FOUR head-and-shoulder close-ups in a clean 2×2 arrangement: FRONT top-left, BACK top-right, THREE-QUARTER bottom-left, STRICT SIDE bottom-right. Rear head has no visible face. Three-quarter is visibly turned. Same face scale and identity in all studies. Use clear spacing without drawn frames or grid lines.
+All seven depictions are one person in one outfit, not an ensemble. No scenery, extra character, expression chart, view labels, typography, logo or watermark.
+
+ASSET LIGHTING AND PRESENTATION
+Apply the selected style's neutral asset-reference lighting and colours to this medium-gray background. The style's white-background reference advice is conditional lighting/presentation guidance, not a change to the approved gray layout. Keep even focus over every required view and detail; no narrative depth-of-field blur, scenic illumination or dramatic vignette. Use minimal cel shadows for drawn styles and restrained neutral studio shading for photographic/CG styles.
+
+STATE / CONSISTENCY LOCK
+One selected physical state and costume. Natural baseline eyes unless the profile explicitly requests activation. Preserve the profile's gender presentation, proportions, skin tone and palette; no random hairstyle, eye-colour, costume or accessory drift.
+
+FINAL QUALITY CHECK
+Resolve malformed eyes or ears, missing or extra limbs, fused fingers, floating accessories, hair clipping, incorrect cross-view asymmetries, accidental lettering, halos, oversharpening and compression artefacts. Preserve the design while improving execution. Render the selected medium throughout; do not blend competing styles.
+
+CHARACTER PROFILE:
+{{PROFILE}}

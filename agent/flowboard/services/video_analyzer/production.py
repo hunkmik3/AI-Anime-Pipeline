@@ -21,6 +21,34 @@ MATCH_MIN = 0.5
 MATCH_MARGIN = 0.15
 
 
+def character_design_frames(frame_names, evidence, by_n):
+    """Keep identity anchors and reserve room for cited wider costume views."""
+    cards = {e['frame']:e for e in evidence.values() if e.get('frame')}
+    ordered = list(dict.fromkeys(frame_names))
+    chosen, shots = [], set()
+    def add(name):
+        shot = cards.get(name, {}).get('shot')
+        if name not in chosen and shot not in shots:
+            chosen.append(name)
+            shots.add(shot)
+    for name in ordered:
+        add(name)
+        if len(chosen) == 2:
+            break
+    wide = {'WS', 'WIDE', 'MWS', 'MS', 'FULL', 'EWS'}
+    for name in ordered:
+        source = by_n.get(str(cards.get(name, {}).get('shot')), {}).get('source') or {}
+        if str(source.get('shot_size', '')).upper() in wide:
+            add(name)
+        if len(chosen) >= 4:
+            break
+    for name in ordered:
+        add(name)
+        if len(chosen) >= 6:
+            break
+    return (chosen + [name for name in ordered if name not in chosen])[:6]
+
+
 def _legacy_shots(cast: dict, entry: dict, kind: str) -> set[int]:
     """Shots an older bible put this entry in (its own shot map, else its list)."""
     rows = cast.get("shots") or {}
@@ -185,7 +213,9 @@ def attach_inventory(analysis: dict, cast: dict) -> dict:
     source_kinds = {a["id"]: a.get("kind") for a in (inventory.get("assets") or []) + graphics}
     legacy_assets = []
     for entry in out.get("assets") or []:
-        if any(entry in (out.get(bucket) or []) for bucket in BUCKETS.values()):
+        if any(entry == item or (entry.get('key') and entry.get('key') == item.get('key')
+                                 and entry.get('source_asset_id') == item.get('source_asset_id'))
+               for bucket in BUCKETS.values() for item in out.get(bucket) or []):
             # The generic list normally mirrors these buckets, including older
             # entries without kind. Do not append that mirror as custom media.
             continue
@@ -298,7 +328,26 @@ def attach_inventory(analysis: dict, cast: dict) -> dict:
                 frames = (by_n.get(str(n)) or {}).get("frames") or []
                 if frames:
                     frame_names.append(frames[len(frames) // 2])
-        frame_names = list(dict.fromkeys(frame_names))[:6]
+        frame_names = (character_design_frames(frame_names, evidence, by_n) if kind == 'character' and evidence
+                       else list(dict.fromkeys(frame_names))[:6])
+        if kind == 'character':
+            selected_shots = {e['shot'] for e in evidence.values() if e.get('frame') in frame_names}
+            names = {a['id']:a.get('name',a['id']) for a in assets}
+            entry['observed_states'] = [
+                {'shot':int(n), 'state':p.get('state',''),
+                 'held_objects':[names.get(q['asset_id'],q['asset_id']) for q in row.get('asset_presence',[])
+                                 if q.get('holder_id') == aid]}
+                for n,row in source_shots.items() if int(n) in selected_shots
+                for p in row.get('asset_presence',[]) if p.get('asset_id') == aid]
+        else:
+            # A reference designer may describe invariant appearance and sheet
+            # variants, but cannot turn an ambiguous frame into a new shot fact.
+            # Keep exact temporal observations separate from the aesthetic brief,
+            # including explicit unknowns and offscreen continuity.
+            entry['observed_states'] = [
+                {'shot': int(n), 'scene_id': row.get('scene_id'), **deepcopy(p)}
+                for n, row in sorted(source_shots.items(), key=lambda item: int(item[0]))
+                for p in row.get('asset_presence', []) if p.get('asset_id') == aid]
         if entry.get("frames") != frame_names:
             entry.pop("frame_urls", None)
         entry["frames"] = frame_names
@@ -371,6 +420,9 @@ def build_asset_prompt(
     has_reference: bool = False,
 ) -> str:
     """Reference plates for recurring groups and story props, including dependencies."""
+    from flowboard.services import film_styles
+    if film_styles.is_preset(style):
+        return film_styles.sheet_prompt(kind, asset, has_reference=has_reference, style=style)
     medium = {
         "cg3d": "Stylized cinematic 3D animation, consistent sculpted faces and physically based materials",
         "anime": "Cinematic 2D anime with consistent linework and cel shading",

@@ -37,6 +37,7 @@ from typing import Any, Optional
 # — so the window is a couple of captions wide, not a scene.
 _WINDOW_WORDS = 40
 _SENTENCE_END = re.compile(r"[.!?…。！？]['\")»”]?\s*$")
+_INTERRUPTION_END = re.compile(r"[-–—]['\")»”]?\s*$")
 
 
 @dataclass
@@ -165,13 +166,56 @@ def from_transcript(transcript: dict, shots: list[dict]) -> list[Line]:
     return lines
 
 
-def build_track(shots: list[dict], transcript: dict) -> list[Line]:
+def audio_sentences(transcript: dict, shots: list[dict]) -> list[Line]:
+    """Split timed audio at sentence ends, never at a visual cut or caption change.
+
+    Whisper decoder windows may split a sentence. Rejoin adjacent pieces while
+    retaining each word once. A terminal interruption dash at an ASR segment
+    boundary closes that turn; an internal hyphen does not. Repeated spoken
+    sentences are intentional data.
+    """
+    segments=[]
+    current=[]
+    def flush():
+        if current:
+            segments.append({'start':current[0]['start'],'end':current[-1]['end'],
+                             'text':''.join(w['word'] for w in current).strip()})
+            current.clear()
+    previous_language=None
+    for seg in transcript.get('segments') or []:
+        words=seg.get('words') or []
+        if not words:
+            flush();segments.append(seg);continue
+        language=seg.get('language')
+        if previous_language and language and previous_language!=language:flush()
+        previous_language=language
+        for word in words:
+            if current and word['start']-current[-1]['end']>.8:flush()
+            current.append(word)
+            if _SENTENCE_END.search(word['word']) or word.get('source_sentence_end'):flush()
+        # Do not join an interrupted turn to the next segment/speaker. Check
+        # only the segment boundary, so hyphenated words inside a segment (even
+        # when the decoder tokenizes their hyphen separately) stay intact.
+        if (_INTERRUPTION_END.search(str(seg.get('text') or ''))
+                or _INTERRUPTION_END.search(str(words[-1].get('word') or ''))):
+            flush()
+    flush()
+    return from_transcript({'segments':segments},shots)
+
+
+def build_track(shots: list[dict], transcript: dict, *, policy: str = 'legacy') -> list[Line]:
     """Subtitles when the video burns them in, speech recognition otherwise.
 
     Not a mix: the two disagree on spelling constantly ("kiếm cận tu tiên" vs
     the card's "Kiếm Trận Tru Tiên"), and interleaving them is how a line ends
     up written twice in two spellings.
     """
+    if policy == 'audio_verbatim':
+        # Translated burned-in captions must never replace the original speech.
+        # Even an empty ASR result remains empty: expose a gap, do not invent a dub.
+        return audio_sentences(transcript, shots)
+    if policy != 'legacy':
+        raise ValueError('Unknown dialogue source policy')
     subtitles = from_subtitles(shots)
     heard = from_transcript(transcript, shots)
     if len(subtitles) >= max(3, len(heard) // 3):

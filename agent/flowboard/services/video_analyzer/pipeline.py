@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from flowboard.services.video_analyzer import adapt as adapt_mod
+from flowboard.services import avis_text
 # Deliberately NOT importing cuts: it pulls in scenedetect, and scenedetect pulls
 # in PyAV next to OpenCV. That half runs in machine_worker's process.
 from flowboard.services.video_analyzer import asr, dialogue as dialogue_mod, frames, source_inventory, vision
@@ -40,7 +41,7 @@ Progress = Callable[[str, int, int], None]
 
 _MEASURE_TIMEOUT_S = 1800
 
-STAGES = ["probe", "cuts", "keyframes", "speech", "vision", "story", "inventory", "source_verify", "glossary", "adapt", "validate"]
+STAGES = ["probe", "cuts", "keyframes", "speech", "joint_vision", "vision", "story", "inventory", "source_verify", "glossary", "adapt", "validate"]
 
 
 def _noop(stage: str, done: int, total: int) -> None:  # pragma: no cover
@@ -97,15 +98,32 @@ async def _measure(video: Path, work_dir: Path, on_progress: Progress, *, deep: 
     return json.loads(out.read_text(encoding="utf-8"))
 
 
-async def _speech(video: Path, work_dir: Path, language: Optional[str]) -> dict:
-    done = work_dir / "transcript.json"
+async def _speech(video: Path, work_dir: Path, language: Optional[str], *, multilingual: bool = False) -> dict:
+    done = work_dir / ("transcript.multilingual.v1.json" if multilingual else "transcript.json")
+    signature=None
+    if multilingual:
+        def signature_for_source():
+            digest=hashlib.sha256()
+            with video.open('rb') as fh:
+                for block in iter(lambda:fh.read(1024*1024),b''):digest.update(block)
+            return {'source_sha256':digest.hexdigest(),'language':language,'model':asr.DEFAULT_MODEL,'version':1}
+        signature=await asyncio.to_thread(signature_for_source)
     if done.exists():
-        return json.loads(done.read_text(encoding="utf-8"))
+        cached=json.loads(done.read_text(encoding="utf-8"))
+        if not multilingual or cached.get('cache_signature') == signature:
+            if multilingual:cached['cache_reused']=True
+            return cached
     wav = await asyncio.to_thread(asr.extract_audio, video, work_dir / "audio.wav")
-    return await asr.transcribe(wav, work_dir, language=language)
+    result = await asr.transcribe(wav, work_dir, language=language, **({'multilingual':True} if multilingual else {}))
+    if multilingual:
+        result['requested_language']=language
+        result['cache_signature']=signature
+        result['cache_reused']=False
+        done.write_text(json.dumps(result,ensure_ascii=False))
+    return result
 
 
-async def _story(shots: list[dict], work_dir: Path):
+async def _story(shots: list[dict], work_dir: Path, *, single_pass: bool = False):
     """Keep successful story inputs stable across source-agent resumes.
 
     Rebuilding sequences on every resume changed the downstream input digest,
@@ -113,7 +131,7 @@ async def _story(shots: list[dict], work_dir: Path):
     retryable; a successful sibling stage does not have to be purchased again.
     """
     digest = hashlib.sha256(json.dumps({
-        "version": 1, "shots": shots,
+        "version": 1, "shots": shots, **({'single_pass':True} if single_pass else {}),
         "models": [adapt_mod.TEXT_MODEL, adapt_mod.FALLBACK_MODEL],
         "prompts": [adapt_mod._SEQUENCE_SYSTEM, adapt_mod._ENTITY_SYSTEM],
     }, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
@@ -127,18 +145,29 @@ async def _story(shots: list[dict], work_dir: Path):
         pass
     stats = adapt_mod.TextStats()
 
-    async def stage(name, build, expected):
-        value = cache["stages"].get(name)
-        if isinstance(value, expected):
-            return value
-        value = await build(shots, stats)
-        if not isinstance(value, expected):
-            raise ValueError(f"Invalid {name} result")
-        cache["stages"][name] = value
+    def save():
         work_dir.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".tmp")
         temporary.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
         temporary.replace(path)
+
+    async def stage(name, build, expected):
+        if name in cache.get('content_refusals', {}):
+            raise avis_text.AvisContentRefusal(cache['content_refusals'][name])
+        value = cache["stages"].get(name)
+        if isinstance(value, expected):
+            return value
+        try:
+            task=build(shots, stats, **({'single_pass':True} if single_pass else {}))
+            value = await asyncio.wait_for(task,timeout=180) if single_pass else await task
+        except avis_text.AvisContentRefusal as exc:
+            cache.setdefault('content_refusals', {})[name] = str(exc)
+            save()
+            raise
+        if not isinstance(value, expected):
+            raise ValueError(f"Invalid {name} result")
+        cache["stages"][name] = value
+        save()
         return value
 
     sequences, entities = await asyncio.gather(
@@ -147,6 +176,9 @@ async def _story(shots: list[dict], work_dir: Path):
         return_exceptions=True,
     )
     errors = []
+    for result in (sequences, entities):
+        if isinstance(result, avis_text.AvisContentRefusal):
+            raise result
     if isinstance(sequences, BaseException):
         errors.append(f"sequences: {sequences}")
         sequences = adapt_mod.tile_sequences([], len(shots))
@@ -157,14 +189,18 @@ async def _story(shots: list[dict], work_dir: Path):
 
 
 async def analyze(video: Path, work_dir: Path, *, language: Optional[str] = None,
-                  deep: bool = False, on_progress: Progress = _noop) -> dict:
+                  deep: bool = False, on_progress: Progress = _noop, analysis_mode: str = 'standard') -> dict:
     """Watch ``video`` and return the source analysis. Never renames anything.
 
     ``deep`` reads every shot harder — more keyframes, fewer shots per vision
     call, a lower bar for the strong tier. Roughly double the tokens, for the
     videos where the shot detail is the point."""
+    if analysis_mode not in {'standard', 'fast', 'one_pass'}:
+        raise ValueError('Unknown source analysis mode')
+    wall_started = time.monotonic()
     work_dir.mkdir(parents=True, exist_ok=True)
     timer = _Timer()
+    machine_reused = (work_dir/'machine.json').exists()
 
     # Measuring the picture and transcribing the sound share nothing, so they
     # run side by side, each in its own process. A video with no audio track
@@ -172,13 +208,15 @@ async def analyze(video: Path, work_dir: Path, *, language: Optional[str] = None
     on_progress("speech", 0, 1)
     measured, speech = await asyncio.gather(
         _measure(video, work_dir, on_progress, deep=deep),
-        _speech(video, work_dir, language),
+        _speech(video, work_dir, language, **({'multilingual':True} if analysis_mode=='one_pass' else {})),
         return_exceptions=True,
     )
     if isinstance(measured, BaseException):
         raise measured
     on_progress("speech", 1, 1)
     timer.stages.update(measured["timings_s"])
+    if analysis_mode=='one_pass' and machine_reused:
+        timer.stages.update({k:0 for k in measured['timings_s']})
     timer.lap("measure+speech")
 
     meta = _meta_from(measured["video"])
@@ -210,10 +248,22 @@ async def analyze(video: Path, work_dir: Path, *, language: Optional[str] = None
     # failure further down never costs the whole video a second time.
     vision_file = work_dir / "vision.json"
     analyses: dict[int, dict] = {}
-    if vision_file.exists():
+    joint_drafts, joint_stats = None, None
+    one_pass_stats = None
+    vstats = vision.VisionStats()
+    if analysis_mode == 'one_pass':
+        from . import one_pass
+        analyses, vstats, one_pass_stats = await one_pass.analyze(spans, work_dir, on_progress=on_progress)
+    elif analysis_mode == 'fast':
+        from . import joint_observation
+        raw_shots = [{'shot': s.index, 'start': s.start, 'end': s.end,
+                      'frames': [str(p.relative_to(work_dir)) for p in s.frame_paths],
+                      'dialogue': dialogue.get(s.index, '')} for s in spans]
+        analyses, joint_drafts, joint_stats = await joint_observation.analyze(
+            raw_shots, work_dir, fps=meta.fps, deep=deep, on_progress=on_progress)
+    elif vision_file.exists():
         analyses = {int(k): v for k, v in json.loads(vision_file.read_text(encoding="utf-8")).items()}
     todo = [s for s in spans if s.index not in analyses]
-    vstats = vision.VisionStats()
     on_progress("vision", len(spans) - len(todo), len(spans))
     if todo:
         def checkpoint(done: int, total: int) -> None:
@@ -240,11 +290,13 @@ async def analyze(video: Path, work_dir: Path, *, language: Optional[str] = None
     # Speech was sliced per shot so the vision pass could read it. Now that the
     # burned-in subtitles are known, rebuild it as whole lines, each owned by
     # one shot — see dialogue.py for why a per-shot slice repeats itself.
-    track = dialogue_mod.build_track(shots, transcript)
+    dialogue_policy='audio_verbatim' if analysis_mode=='one_pass' else 'legacy'
+    track = dialogue_mod.build_track(shots, transcript, policy=dialogue_policy)
     dialogue_mod.attach(shots, track)
 
     on_progress("story", 0, 2)
-    sequences, entities, tstats, story_errors = await _story(shots, work_dir)
+    sequences, entities, tstats, story_errors = await _story(shots, work_dir,
+        **({'single_pass':True} if analysis_mode=='one_pass' else {}))
     timer.lap("story")
     on_progress("story", 2, 2)
 
@@ -252,13 +304,23 @@ async def analyze(video: Path, work_dir: Path, *, language: Optional[str] = None
     # adaptation. A separate source-frame verifier can request bounded extra
     # frames; this is not generated-video QA. Legacy vision caches are reused,
     # while this pass owns its versioned, input-fingerprinted checkpoint.
-    on_progress("inventory", 0, len(shots))
-    on_progress("source_verify", 0, len(shots))
+    if analysis_mode!='one_pass':
+        on_progress("inventory", 0, len(shots))
+        on_progress("source_verify", 0, len(shots))
     try:
-        inventory, verification = await source_inventory.analyze(
-            video, work_dir, shots, sequences, fps=meta.fps,
-            deep=bool(measured.get("deep", deep)), on_progress=on_progress,
-        )
+        if analysis_mode=='one_pass':
+            # This mode delivers a source shotlist without buying an independent
+            # inventory/review/refinement loop. Never label it verified.
+            inventory, verification = source_inventory.unverified(shots, 'One-pass shotlist; inventory verification was not run')
+            verification.update(method='one_pass_observation', observation_only=True)
+        else:
+            inventory, verification = await source_inventory.analyze(
+                video, work_dir, shots, sequences, fps=meta.fps,
+                deep=bool(measured.get("deep", deep)), on_progress=on_progress,
+                **({'preobserved': joint_drafts} if joint_drafts is not None else {}),
+            )
+    except avis_text.AvisContentRefusal:
+        raise
     except Exception as exc:  # preserve the already measured/source-described film
         logger.warning("video_analyzer: source inventory failed: %s", exc)
         inventory, verification = source_inventory.unverified(shots, str(exc)[:1000])
@@ -270,9 +332,20 @@ async def analyze(video: Path, work_dir: Path, *, language: Optional[str] = None
         qa.error("vision_incomplete", f"{len(missing)} shots have no analysis yet — run analyse again to fill them")
     for err in story_errors:
         qa.warn("story_failed", err)
-    if verification.get("status") != "verified":
+    if analysis_mode=='one_pass':
+        qa.warn('one_pass_observation', 'Single observation complete; independent inventory review was not run')
+    elif verification.get("status") != "verified":
         qa.warn("source_inventory_review", f"Source asset verification: {verification.get('status')}; "
                 f"{len(verification.get('unresolved_shots') or [])} shots require review")
+    if analysis_mode=='one_pass':
+        for finding in transcript.get('findings',[]):
+            qa.warn('asr_uncertain', json.dumps(finding,ensure_ascii=False))
+        for shot in shots:
+            # Sparse subtitle coverage is a cue for a local audio check, not
+            # permission to translate the subtitle into fabricated speech.
+            events=(shot.get('source') or {}).get('subtitle_events') or []
+            if events and not any(seg['end']>shot['start'] and seg['start']<shot['end'] for seg in transcript.get('segments',[])):
+                qa.warn('caption_without_audio', 'Visible caption but no ASR coverage; spoken wording unresolved', shot['shot'])
     result = {
         "video": {"path": str(video), **meta.as_dict()},
         "cuts": measured["cuts"],
@@ -281,23 +354,45 @@ async def analyze(video: Path, work_dir: Path, *, language: Optional[str] = None
         "speech_error": speech_error,
         "story_errors": story_errors,
         "deep": deep,
+        "analysis_mode": analysis_mode,
+        "dialogue_policy": dialogue_policy,
         "shots": shots,
         "sequences": sequences,
         "entities": entities,
         "scene_inventory": inventory,
         "source_verification": verification,
         "validation": qa.as_dict(),
-        "usage": {"vision": vstats.as_dict(), "story": asdict(tstats)},
+        "usage": {"vision": vstats.as_dict(), "story": asdict(tstats),
+                  **({'one_pass':one_pass_stats} if one_pass_stats is not None else {}),
+                  **({'joint_observation': joint_stats} if joint_stats is not None else {})},
         "timings_s": timer.stages,
     }
+    if analysis_mode=='one_pass':
+        result['cache_usage']={'machine_reused':machine_reused,'transcript_reused':bool(transcript.get('cache_reused')),
+                              'cached_preprocessing_timings_s':measured['timings_s'] if machine_reused else {}}
     # The original extractor is a draft. Final quality repair has its own
     # evidence-bound journal and never needs to repeat ASR, cuts or vision.
-    if (verification.get("reviewed_shots") and
+    if (analysis_mode != 'one_pass' and verification.get("reviewed_shots") and
+            (analysis_mode != 'fast' or verification.get('status') != 'verified') and
             os.getenv("FLOWBOARD_SOURCE_REFINEMENT", "on").lower() not in {"off", "0", "false"}):
         from . import source_refinement
-        result = await source_refinement.refine(video, work_dir, result, on_progress=on_progress)
+        if analysis_mode == 'fast':
+            result['source_refinement_attempted'] = True
+            source_inventory._checkpoint(work_dir / 'pre-refinement.analysis.json', result)
+            try:
+                result = await asyncio.wait_for(source_refinement.refine(
+                    video, work_dir, result, on_progress=on_progress,
+                    only_unresolved=True, strategy='focused'), timeout=300)
+            except avis_text.AvisContentRefusal:
+                raise
+            except Exception as exc:
+                # Keep unresolved facts unresolved; a deadline is not approval.
+                result['source_refinement_error'] = f'{type(exc).__name__}: {str(exc)[:500]}'
+        else:
+            result = await source_refinement.refine(video, work_dir, result, on_progress=on_progress)
         timer.lap("source_refinement")
         result["timings_s"] = timer.stages
+    result['run_wall_seconds'] = round(time.monotonic() - wall_started, 3)
     return result
 
 
@@ -510,7 +605,7 @@ def ensure_dialogue(analysis: dict) -> None:
     shots = analysis.get("shots") or []
     if not shots:
         return
-    track = dialogue_mod.build_track(shots, analysis.get("transcript") or {})
+    track = dialogue_mod.build_track(shots, analysis.get("transcript") or {}, policy=analysis.get('dialogue_policy','legacy'))
     dialogue_mod.attach(shots, track)
     analysis["dialogue_track"] = [l.as_dict() for l in track]
 

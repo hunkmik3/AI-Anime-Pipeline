@@ -1,28 +1,26 @@
 """A model writes the prompts; code fixes what it may not change and checks the rest.
 
-The owner's pipeline (2026-09-24) moves prompt writing from templates to GPT:
+The owner's pipeline uses GPT through Avis:
 
   image prompts  the DESCRIPTIVE sections of a sheet or plate prompt — face, hair,
                  outfit, the place, its light — are rewritten from the design
                  brief. The technical sections (format, the 60/40 layout, pose,
                  rendering, exclusions) produced the approved sheets and are kept
                  word for word by code.
-  clip prompts   the whole prompt, in the standard of docs/CLIP_PROMPT_STANDARD.md,
-                 with two of the owner's own prompts as examples. A template can
-                 only rearrange the fields each shot already has; the owner's
-                 prompts carry the previous clip's end state, a prop's path,
-                 speakers bound to cast names, pronunciation, and a safe rewrite
-                 of a beat that must not be shown — all of which need the clip
-                 read as a whole.
+  clip prompts   the shared cinematic structure in docs/CLIP_PROMPT_STANDARD.md,
+                 for every new project. The writer reads the current film's
+                 profiles, actual images, shotlist and scene continuity. Full
+                 example stories are kept out of the cinematic model context.
 
 Everything a prompt must get exactly right is decided here, before the model is
 asked, and checked after it answers: the @image tags in the order the images are
 sent, every shot's start and end, the clip's length, every line word for word.
 A prompt that fails the checks is sent back once with the problems named. If the
 independent semantic review first finds draft defects on round two, one final
-repair is allowed; source defects and repeated schema errors stop for correction. Only older freeform
-requests may use the caller's legacy template fallback. Verified-source writing
-also records deterministic full-shot evidence and an independent semantic review.
+repair is allowed; source defects and repeated schema errors stop for correction.
+All application video-writing routes require this writer and never fall back to
+a template. An explicit internal legacy branch supports historical regression
+fixtures only. Cinematic writing records full-shot evidence and semantic review.
 """
 from __future__ import annotations
 
@@ -34,10 +32,12 @@ import os
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional
 
 from flowboard.services import automation, prompt_coverage, production_adaptation
+from flowboard.services import cinematic_prompt, film_styles
 from flowboard.services.video_analyzer import adapt as adapt_mod
 
 logger = logging.getLogger(__name__)
@@ -50,10 +50,14 @@ WRITER_MODEL = os.getenv("FLOWBOARD_PROMPT_WRITER_MODEL", "gpt-6-luna")
 WRITER_FALLBACK = os.getenv("FLOWBOARD_PROMPT_WRITER_FALLBACK", "")
 WRITER_ON = os.getenv("FLOWBOARD_PROMPT_WRITER", "on").strip().lower() not in ("off", "0", "false", "no")
 REVIEW_MODEL = os.getenv("FLOWBOARD_PROMPT_REVIEW_MODEL", WRITER_MODEL)
+# Shared production standard. Old environment settings must not select the old
+# format for a new clip; legacy formatting remains only for regression tooling.
+CLIP_ENGINE = "cinematic"
 
 # agent/flowboard/services → repository root
 _DOCS = Path(os.getenv("FLOWBOARD_DOCS_DIR") or Path(__file__).resolve().parents[3] / "docs")
 STANDARD_FILE = _DOCS / "CLIP_PROMPT_STANDARD.md"
+LEGACY_STANDARD_FILE = _DOCS / "cinematic-prompts" / "legacy-standard.md"
 # The owner's prompts, in the order they are preferred as examples: the two
 # generated and measured at 7/7 lines (a crowd scene with named and off-screen
 # speakers; a two-hander whose sentences cross cuts while a prop moves) first.
@@ -88,6 +92,9 @@ class Written:
     warnings: list[str] = field(default_factory=list)
     coverage: dict[str, Any] = field(default_factory=dict)
     contract_digest: str = ""
+    engine: str = "legacy"
+    staging_decisions: list[dict] = field(default_factory=list)
+    reference_images: list[dict] = field(default_factory=list)
 
 
 # ───────────────────────────── image prompts ─────────────────────────────
@@ -141,6 +148,9 @@ async def write_image_prompt(draft: str, *, kind: str, subject: str,
                              design: Optional[dict], style: str) -> tuple[str, str]:
     """(prompt, who wrote it). The draft comes back untouched when there is
     nothing to write from or the writer's answer does not fit the sections."""
+    from flowboard.services import film_styles
+    if film_styles.is_preset(style):
+        return draft, film_styles.version(style)
     if not WRITER_ON or not design:
         return draft, "template"
     parts = _split_sections(draft)
@@ -371,6 +381,14 @@ Sheet panel/layout/pose notes and front-view-only display instructions do not
 override video-shot presence. Preserve complete garment details, colour patterns
 and accessories. A stated opaque material and an explicitly designed garment
 opening are not contradictory; do not invent new openings or erase approved ones.
+Reference role is binding: a prop sheet controls that prop's design and scale,
+not incidental people, clothes or scenery shown with it. Use the designated
+character and location sheets for those subjects. Open/closed reference variants
+are not a shot timeline or evidence of a transition. Evaluate current object
+state against the shot's appearance/action record. Unknown source lid detail
+and an optional reference variant are not two contradictory established source
+facts; the prompt may keep the detail unclear. Still reject an invented reveal,
+unsupported state change or conflict between explicit established shot states.
 Transport atlases may contain complete original multi-object sheets. OUTER atlas
 cell coordinates locate the original sheet; INNER cell coordinates select an
 object within it. Different numbers at these two explicitly described levels
@@ -526,8 +544,11 @@ def _norm(text: str) -> str:
 
 def _speaker_identity(label: str) -> str:
     """Compare dialogue owners independently of screenplay delivery qualifiers."""
-    identity = re.split(r"[,()]|\bOFF[\s-]+SCREEN\b|\bCONTINUING\b", str(label),
-                        maxsplit=1, flags=re.I)[0]
+    # Delivery may precede the name (OFF-SCREEN NARRATOR) as well as follow it.
+    # Splitting at a leading qualifier loses the owner and rejects correct lines.
+    without_delivery = re.sub(r"\b(?:OFF[\s-]*SCREEN|VOICE[\s-]*OVER|CONTINUING)\b",
+                              " ", str(label), flags=re.I)
+    identity = re.split(r"[,()\u2014]", without_delivery, maxsplit=1)[0]
     return _norm(identity).strip(" —-")
 
 
@@ -564,7 +585,21 @@ def normalize_shot_headers(prompt: str, slots: list[tuple[float, float]]) -> str
     return re.sub(pattern, render, prompt, flags=re.M)
 
 
-def _save_writer_draft(digest: str, prompt: str, end_state: str, round_: int) -> None:
+def _load_writer_draft(digest: str) -> dict | None:
+    """A paid draft is reusable input, never a coverage receipt."""
+    from flowboard.config import STORAGE_DIR
+    if not re.fullmatch(r'[a-f0-9]{64}', digest): return None
+    try:
+        saved = json.loads((Path(STORAGE_DIR) / 'prompt_writer_drafts' / (digest + '.json')).read_text())
+    except (OSError, ValueError): return None
+    if (not isinstance(saved, dict) or saved.get('status') != 'unverified_draft' or saved.get('contract_digest') != digest
+            or not isinstance(saved.get('prompt'), str) or not saved['prompt'].strip()
+            or not isinstance(saved.get('end_state'), str)):
+        return None
+    return {k: saved[k] for k in ('prompt', 'end_state', 'staging_decisions') if k in saved}
+
+
+def _save_writer_draft(digest: str, prompt: str, end_state: str, round_: int, *, staging_decisions=None) -> None:
     """Keep an unverified draft for diagnosis/review without treating it as a pass."""
     from flowboard.config import STORAGE_DIR
     try:
@@ -573,7 +608,8 @@ def _save_writer_draft(digest: str, prompt: str, end_state: str, round_: int) ->
         path = directory / (digest + '.json')
         tmp = path.with_suffix('.tmp')
         tmp.write_text(json.dumps({'status':'unverified_draft','contract_digest':digest,
-                                  'prompt':prompt,'end_state':end_state,'writer_round':round_},
+                                  'prompt':prompt,'end_state':end_state,'writer_round':round_,
+                                  'staging_decisions':staging_decisions or []},
                                  ensure_ascii=False,indent=2))
         tmp.replace(path)
     except OSError:
@@ -586,6 +622,9 @@ def check_clip_prompt(prompt: str, *, refs: list[tuple[str, str]], duration: int
                       speakers: Optional[list[tuple[int, str, str]]] = None,
                       max_characters: int = 12000) -> list[str]:
     """What is wrong with a written clip prompt, as sentences the writer can act on."""
+    cinematic = cinematic_prompt.is_cinematic(prompt)
+    if cinematic:
+        prompt = cinematic_prompt.canonical(prompt, duration)
     prompt = unicodedata.normalize("NFC", prompt)
     refs = [(tag, unicodedata.normalize("NFC", name)) for tag, name in refs]
     problems: list[str] = []
@@ -593,7 +632,8 @@ def check_clip_prompt(prompt: str, *, refs: list[tuple[str, str]], duration: int
     for tag, name in refs:
         m = re.search(rf"^{re.escape(tag)} — {re.escape(name)}\b", prompt, re.M)
         if not m:
-            problems.append(f"{tag} must be declared on its own line as `{tag} — {name}`.")
+            declaration = f"- **{tag} = {name} — REFERENCE ROLE.**" if cinematic else f"{tag} — {name}"
+            problems.append(f"{tag} must be declared on its own line as `{declaration}`.")
         elif m.start() < at:
             problems.append(f"{tag} is declared out of order; declare the references in the order given.")
         else:
@@ -609,7 +649,7 @@ def check_clip_prompt(prompt: str, *, refs: list[tuple[str, str]], duration: int
     want = [(str(i), _mmss(a), _mmss(b)) for i, (a, b) in enumerate(slots, start=1)]
     if heads != want:
         problems.append("The shot headers must be exactly: "
-                        + " ".join(f"[SHOT {n} — {a}–{b}]" for n, a, b in want) + ".")
+                        + " ".join(f"# SHOT {n} | {a}–{b}" if cinematic else f"[SHOT {n} — {a}–{b}]" for n, a, b in want) + ".")
     blocks = prompt_coverage.shot_blocks(prompt)
     for n, line in lines:
         if n in exempt_shots:
@@ -673,6 +713,7 @@ def _payload(sequence: dict, shots: list[dict], slots: list[tuple[int, int]], du
             continue
         design = c.get("design") or {}
         refs.append({"tag": c["ref_label"], "name": str(c.get("name") or "").upper(), "kind": "character",
+                     "state_key": c.get("state_key"),
                      "id": prompt_coverage.asset_id(c), "description": c.get("description") or c.get("summary") or "",
                      "role": c.get("role") or "", "age": design.get("age_read") or "",
                      "keep": (_strict_preserve_line(c) if strict else
@@ -686,6 +727,11 @@ def _payload(sequence: dict, shots: list[dict], slots: list[tuple[int, int]], du
             refs.append({"tag": asset["ref_label"], "name": str(asset.get("name") or "").upper(),
                          "kind": asset.get("kind") or "prop", "id": prompt_coverage.asset_id(asset),
                          "keep": asset.get("description") or ""})
+    source_refs=[*characters,*([environment] if environment else []),*(reference_assets or [])]
+    for ref in refs:
+        source_ref=next((r for r in source_refs if prompt_coverage.asset_id(r)==ref.get('id') and r.get('ref_label')==ref['tag']),{})
+        for field in ('reference_scope','target_appearance'):
+            if source_ref.get(field):ref[field]=deepcopy(source_ref[field])
     # The caller sends all image types in a single positional list. Preserve
     # those positions even when a prop or crowd sheet precedes the location.
     refs.sort(key=lambda r: int(re.search(r"\d+", r["tag"]).group()) if re.fullmatch(r"@image\d+", r["tag"]) else 0)
@@ -758,12 +804,14 @@ def _payload(sequence: dict, shots: list[dict], slots: list[tuple[int, int]], du
         elif school_age and (hit := (_INTIMATE_WORDS.search(target_text) or automation._UNDRESSING.search(target_text))):
             row["rewrite_required"] = hit.group(0)
         rows.append(row)
+    from flowboard.services import film_motion
     summary = str(sequence.get("summary") or "").split(" Beats:")[0].strip()
     return {
         "clip": {"label": sequence.get("label") or "", "title": sequence.get("title") or "",
                  "summary": summary, "duration_seconds": duration, "shot_count": len(rows),
                  "aspect_ratio": aspect_ratio or "",
-                 "style": (style_note or "").strip() or automation._style(look)["video_style"]},
+                 "production_standard": film_motion.standard(look),
+                 "style": automation._style(look)["video_style"] if film_styles.is_preset(look) else (style_note or "").strip() or automation._style(look)["video_style"]},
         "references": refs,
         "school_age": school_age,
         "opening_state": previous_state or None,
@@ -828,7 +876,8 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
                             unsafe: Optional[list[tuple[int, str]]] = None,
                             production_assets: Optional[list[dict]] = None,
                             reference_assets: Optional[list[dict]] = None,
-                            source_verification: Optional[dict] = None) -> Written:
+                            source_verification: Optional[dict] = None,
+                            cinematic: bool = True) -> Written:
     """The whole clip prompt, written by the model and checked by code."""
     if not shots:
         raise WriterError("no shots to write")
@@ -836,7 +885,9 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
     if not strict and any("production_adaptation" in shot for shot in shots):
         raise WriterError("Production adaptation requires a verified-source contract.")
     if not strict:
-        production_assets, source_verification, reference_assets = None, None, []
+        production_assets, source_verification = None, None
+        if not cinematic:
+            reference_assets = []
     if strict:
         issues = prompt_coverage.validate_source_contract(
             shots, production_assets or [], source_verification,
@@ -852,7 +903,13 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
     ask = _payload(sequence, fitted, slots, duration, characters=characters, environment=environment,
                    look=look, aspect_ratio=aspect_ratio, previous_state=previous_state,
                    unsafe=unsafe_map, school_age=school_age, style_note=style_note,
-                   reference_assets=reference_assets, strict=strict)
+                   reference_assets=reference_assets, strict=strict or cinematic)
+    observed_source = (source_verification or {}).get('method') == 'one_pass_production'
+    if observed_source:
+        ask['source_modality_policy'] = cinematic_prompt.OBSERVED_SOURCE_MODALITY_POLICY
+        ask['production_context'] = cinematic_prompt.source_model_context(ask.get('production_context'))
+    from flowboard.services.target_casting import POLICY as casting_policy
+    ask['target_casting_policy']=casting_policy
     refs = [(r["tag"], r["name"]) for r in ask["references"]]
     # Shots the payload marked for intimate words join the refused ones: their
     # lines may change, and the rest of the checks stand.
@@ -863,7 +920,8 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
                           + ", ".join(map(str, sorted(unsafe_map))) + "; the writer cannot silently change verified facts.")
     lines = [(row["shot"], d["line"]) for row in ask["shots"] for d in row["dialogue"]]
     speakers = [(row["shot"], d["who"], d["line"]) for row in ask["shots"] for d in row["dialogue"]]
-    requirements = prompt_coverage.build_requirements(ask["shots"], fitted, production_assets or []) if strict else []
+    requirements = prompt_coverage.build_requirements(ask["shots"], fitted, production_assets or [],
+        include_in_frame=cinematic and not strict) if strict or cinematic else []
     digest = prompt_coverage.contract_digest(
         sequence, shots, characters, environment, production_assets, reference_assets, source_verification,
         look=look, aspect_ratio=aspect_ratio, previous_state=previous_state, style_note=style_note,
@@ -885,26 +943,49 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
         if strict else "Drop camera jargon and lens numbers, and do not list every micro-movement."
     )
     system = _CLIP_SYSTEM.format(label=label, title=title, duration=duration, count=len(slots),
-                                 standard=_read(STANDARD_FILE), example1=_read(ex1), example2=_read(ex2),
+                                 standard=_read(LEGACY_STANDARD_FILE), example1=_read(ex1), example2=_read(ex2),
                                  technical_detail_rule=technical_detail_rule)
     if strict:
         system += _CONTRACT_SYSTEM
+    image_parts, inspected = [], []
+    if cinematic:
+        # Keep the approved film as an offline golden fixture. Putting its full
+        # story in the model context leaked its end state into unrelated clips.
+        system = (_CONTRACT_SYSTEM + "\nCINEMATIC OVERRIDES: the following output schema and "
+                  "logged staging policy replace legacy output-shape and unspecified-hand defaults only. "
+                  "Every known source fact remains locked.\n" if strict else "") + cinematic_prompt.SYSTEM
+        references = [*characters, *([environment] if environment else []), *(reference_assets or [])]
+        ask["unreferenced_assets"] = [
+            {key: asset[key] for key in ("id", "key", "name", "kind", "role", "summary", "description",
+                                        "identity_anchor", "design", "look", "wardrobe", "lighting", "mood", "lock", "target_appearance")
+             if key in asset}
+            for asset in references if not asset.get("ref_label")
+        ]
+        try:
+            image_parts, inspected = await cinematic_prompt.reference_images(references)
+        except Exception as exc:
+            raise WriterError(f"Cannot inspect the actual reference images: {exc}") from exc
+        ask['reference_image_evidence'] = inspected
     stats = adapt_mod.TextStats()
     user = json.dumps(ask, ensure_ascii=False)
     problems: list[str] = []
     prompt, end_state = "", ""
     coverage: dict[str, Any] = {}
     writer_model = ""
+    staging = []
     output_budget = adapt_mod.MAX_TOKENS
+    resumed_draft = (_load_writer_draft(digest) if cinematic and
+                     (source_verification or {}).get('method') == 'one_pass_production' else None)
     allow_final_semantic_repair = False
     for round_ in (1, 2, 3):
         if round_ == 3 and not allow_final_semantic_repair:
             break
         semantic_prompt_defect = False
         try:
-            data = await adapt_mod.ask_json(system, user, stats, model=WRITER_MODEL,
+            data = resumed_draft if round_ == 1 and resumed_draft else await adapt_mod.ask_json(system, user, stats, model=WRITER_MODEL,
                                             fallback=WRITER_FALLBACK, temperature=0.4,
-                                            attempts=1, max_tokens=output_budget)
+                                            attempts=1, max_tokens=output_budget,
+                                            **({"image_parts": image_parts} if cinematic else {}))
         except Exception as exc:  # noqa: BLE001
             diagnostic = _response_diagnostic(stats)
             reason = str(stats.last_response.get("finish_reason") or "")
@@ -921,13 +1002,19 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
             raise WriterError(f"no answer: {exc}; response metadata={diagnostic}") from exc
         writer_model = next(iter(stats.answered_by), WRITER_MODEL)
         data = _clip_response(data)
-        if strict and isinstance(data, dict) and data.get("source_issues"):
+        if (strict or cinematic) and isinstance(data, dict) and data.get("source_issues"):
             raise WriterError("Source contract needs review: " + str(data["source_issues"]))
         prompt_value = data.get("prompt") if isinstance(data, dict) else None
-        prompt = normalize_shot_headers(normalize_reference_mentions(prompt_value.strip(),refs),slots) if isinstance(prompt_value, str) else ""
+        prompt = prompt_value.strip() if isinstance(prompt_value, str) else ""
+        if cinematic:
+            prompt = cinematic_prompt.enforce_audio_policy(prompt)
+        if cinematic and (source_verification or {}).get('method') == 'one_pass_production':
+            prompt = cinematic_prompt.serialize_source_locks(prompt, fitted, slots)
+        if not cinematic:
+            prompt = normalize_shot_headers(normalize_reference_mentions(prompt, refs), slots)
         end_state = str((data or {}).get("end_state") or "").strip() if isinstance(data, dict) else ""
         if strict and prompt:
-            _save_writer_draft(digest, prompt, end_state, round_)
+            _save_writer_draft(digest, prompt, end_state, round_, staging_decisions=data.get('staging_decisions'))
         if not prompt:
             diagnostic = _response_diagnostic(stats, data)
             logger.warning("clip writer %s: answer carried no prompt (%s)", label, diagnostic)
@@ -939,8 +1026,16 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
             raise WriterError(f"the answer carried no prompt; response metadata={diagnostic}")
         problems = check_clip_prompt(prompt, refs=refs, duration=duration, slots=slots, lines=lines,
                                      exempt_shots=set(unsafe_map), school_age=school_age,
-                                     speakers=speakers, max_characters=40000 if strict else 12000)
-        if strict:
+                                     speakers=speakers, max_characters=40000 if strict or cinematic else 12000)
+        if cinematic:
+            problems.extend(cinematic_prompt.validate(prompt, ask, slots))
+            if not isinstance(data.get("end_state"), str) or not end_state:
+                problems.append("Return a non-empty end_state describing the physical state carried into the next clip.")
+            try:
+                staging = cinematic_prompt.decisions(data.get('staging_decisions', []), len(slots), prompt)
+            except ValueError as exc:
+                problems.append(str(exc))
+        if strict or cinematic:
             # Evidence is actual full shot text, not self-selected writer
             # proof. Only the independent review can certify its meaning.
             matches = prompt_coverage.full_shot_coverage(prompt, requirements)
@@ -949,6 +1044,9 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
                 review = await review_prompt(prompt, requirements, ask["references"],
                                              model_assets, end_state=end_state,
                                              opening_state=previous_state,
+                                             production_standard=ask["clip"]["production_standard"],
+                                             observed_source=observed_source,
+                                             **({"staging_decisions": staging, "production_context": ask.get("production_context")} if cinematic else {}),
                                              **({"shot_package": ask["shot_package"]} if ask.get("shot_package") else {}))
                 source_issues = [_review_problem(f, requirements) for f in review.get("findings", [])
                                  if isinstance(f, dict) and f.get("kind") == "source_issue"]
@@ -965,7 +1063,9 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
                                 "contract_digest": digest, "prompt_digest": prompt_coverage.prompt_digest(prompt),
                                 "verification_method": "deterministic_shot_evidence_and_semantic_review",
                                 "evidence_scope": "full_shot",
-                                "writer_rounds": round_}
+                                "writer_rounds": round_,
+                                **({"resumed_saved_draft": True, "writer_rounds": round_ - 1} if resumed_draft else {}),
+                                **({"engine": cinematic_prompt.ENGINE, "staging_decisions": staging, "reference_images": inspected} if cinematic else {})}
         if not problems:
             break
         if round_ == 2:
@@ -973,7 +1073,7 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
             # independent reviewer ever saw a valid draft. Give actual draft
             # defects found by that reviewer one final repair, never a source
             # issue or another malformed/deterministically invalid response.
-            allow_final_semantic_repair = strict and semantic_prompt_defect
+            allow_final_semantic_repair = (strict or cinematic) and semantic_prompt_defect
             if not allow_final_semantic_repair:
                 break
         logger.info("clip writer %s: round %d problems: %s", label, round_, problems)
@@ -987,7 +1087,9 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
     if model != WRITER_MODEL:
         warnings.append(f"Viết bằng {model} ({WRITER_MODEL} không trả lời được).")
     return Written(prompt=prompt + "\n", duration=duration, end_state=end_state, model=model,
-                   warnings=warnings, coverage=coverage, contract_digest=digest)
+                   warnings=warnings, coverage=coverage, contract_digest=digest,
+                   engine=cinematic_prompt.ENGINE if cinematic else 'legacy',
+                   staging_decisions=staging, reference_images=inspected)
 
 
 async def verify_provided_clip_prompt(prompt: str, sequence: dict[str, Any], shots: list[dict[str, Any]], *,
@@ -996,7 +1098,8 @@ async def verify_provided_clip_prompt(prompt: str, sequence: dict[str, Any], sho
                                       previous_state: str = "", style_note: str = "", end_state: str = "",
                                       production_assets: Optional[list[dict]] = None,
                                       reference_assets: Optional[list[dict]] = None,
-                                      source_verification: Optional[dict] = None) -> Written:
+                                      source_verification: Optional[dict] = None,
+                                      staging_decisions: Optional[list[dict]] = None) -> Written:
     """Review an existing draft unchanged; only an independent model can certify it.
 
     Use the writer's same source, target projection, fitted timeline, and
@@ -1021,6 +1124,8 @@ async def verify_provided_clip_prompt(prompt: str, sequence: dict[str, Any], sho
                    look=look, aspect_ratio=aspect_ratio, previous_state=previous_state,
                    unsafe=unsafe_map, school_age=school_age, style_note=style_note,
                    reference_assets=reference_assets, strict=True)
+    if (source_verification or {}).get('method') == 'one_pass_production':
+        ask['production_context'] = cinematic_prompt.source_model_context(ask.get('production_context'))
     unsafe_map.update({row["shot"]: row["rewrite_required"] for row in ask["shots"]
                        if row.get("rewrite_required") and row["shot"] not in unsafe_map})
     if unsafe_map:
@@ -1032,6 +1137,14 @@ async def verify_provided_clip_prompt(prompt: str, sequence: dict[str, Any], sho
     problems = check_clip_prompt(prompt, refs=refs, duration=duration, slots=slots, lines=lines,
                                  exempt_shots=set(), school_age=school_age, speakers=speakers,
                                  max_characters=40000)
+    cinematic = cinematic_prompt.is_cinematic(prompt)
+    staging = []
+    if cinematic:
+        problems.extend(cinematic_prompt.validate(prompt, ask, slots))
+        try:
+            staging = cinematic_prompt.decisions(staging_decisions or [], len(slots), prompt)
+        except ValueError as exc:
+            problems.append(str(exc))
     requirements = prompt_coverage.build_requirements(ask["shots"], fitted, production_assets or [])
     if not requirements:
         problems.append("Prompt coverage requirements are missing.")
@@ -1044,6 +1157,9 @@ async def verify_provided_clip_prompt(prompt: str, sequence: dict[str, Any], sho
     )
     review = await review_prompt(prompt, requirements, ask["references"], model_assets,
                                  end_state=end_state, opening_state=previous_state,
+                                 production_standard=ask["clip"]["production_standard"],
+                                 observed_source=(source_verification or {}).get('method') == 'one_pass_production',
+                                 **({"staging_decisions": staging, "production_context": ask.get("production_context")} if cinematic else {}),
                                  **({"shot_package": ask["shot_package"]} if ask.get("shot_package") else {}))
     source_issues = [_review_problem(finding, requirements) for finding in review.get("findings", [])
                      if finding.get("kind") == "source_issue"]
@@ -1062,21 +1178,29 @@ async def verify_provided_clip_prompt(prompt: str, sequence: dict[str, Any], sho
                 "semantic_review": review, "contract_digest": digest,
                 "prompt_digest": prompt_coverage.prompt_digest(prompt),
                 "verification_method": "deterministic_shot_evidence_and_semantic_review",
-                "evidence_scope": "full_shot", "writer_rounds": 0, "draft_origin": "provided_prompt"}
+                "evidence_scope": "full_shot", "writer_rounds": 0, "draft_origin": "provided_prompt",
+                **({"engine": cinematic_prompt.ENGINE, "staging_decisions": staging} if cinematic else {})}
     return Written(prompt=prompt, duration=duration, end_state=end_state, model="provided_prompt",
-                   coverage=coverage, contract_digest=digest)
+                   coverage=coverage, contract_digest=digest,
+                   engine=cinematic_prompt.ENGINE if cinematic else 'legacy', staging_decisions=staging)
 
 
 async def review_prompt(prompt: str, requirements: list[dict], references: list[dict],
                         production_assets: list[dict], *, end_state: str = "",
-                        opening_state: str = "", shot_package: Optional[dict] = None) -> dict:
+                        opening_state: str = "", shot_package: Optional[dict] = None,
+                        staging_decisions: Optional[list[dict]] = None,
+                        production_context: Optional[dict] = None,
+                        production_standard: Optional[dict] = None,
+                        observed_source: bool = False) -> dict:
     """Bounded independent reviews, with full context and exact ID accounting."""
     if len(requirements) > 64:
         semaphore = asyncio.Semaphore(4)
         async def check_chunk(chunk):
             async with semaphore:
                 return await review_prompt(prompt, chunk, references, production_assets,
-                    end_state=end_state, opening_state=opening_state, shot_package=shot_package)
+                    end_state=end_state, opening_state=opening_state, shot_package=shot_package,
+                    staging_decisions=staging_decisions, production_context=production_context,
+                    production_standard=production_standard, observed_source=observed_source)
         reports = await asyncio.gather(*(check_chunk(requirements[i:i+64])
                                         for i in range(0, len(requirements), 64)))
         findings = [f for report in reports for f in report['findings']]
@@ -1094,11 +1218,14 @@ async def review_prompt(prompt: str, requirements: list[dict], references: list[
         {r['shot'] for r in requirements if isinstance(r.get('shot'), int)})}
     try:
         review = await adapt_mod.ask_json(
-            _REVIEW_SYSTEM, json.dumps({"prompt": prompt, "requirements": supplied,
+            _REVIEW_SYSTEM + (cinematic_prompt.REVIEW_ADDENDUM if staging_decisions is not None else "")
+            + ('\n' + cinematic_prompt.OBSERVED_SOURCE_MODALITY_POLICY if observed_source else ''), json.dumps({"prompt": prompt, "requirements": supplied,
                                         "shot_texts": shot_texts,
                                         "references": references, "production_assets": production_assets,
                                         "opening_state": opening_state, "end_state": end_state,
-                                        "shot_package": shot_package}, ensure_ascii=False),
+                                        "shot_package": shot_package, "staging_decisions": staging_decisions,
+                                        "production_context": production_context,
+                                        "production_standard": production_standard}, ensure_ascii=False),
             adapt_mod.TextStats(), model=REVIEW_MODEL, fallback="", attempts=1, temperature=0.0,
         )
     except Exception as exc:  # noqa: BLE001

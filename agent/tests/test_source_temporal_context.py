@@ -69,7 +69,7 @@ def test_evidence_roles_keep_current_frames_anchors_and_neighbors_distinct():
     assert details["evidence_roles"]["e4b"]["roles"] == ["current_frame"]
     assert details["evidence_roles"]["e1a"]["roles"] == ["identity_anchor"]
     assert details["evidence_roles"]["e1a"]["anchor_asset_ids"] == ["person"]
-    assert details["evidence_roles"]["e3a"]["roles"] == ["temporal_neighbor"]
+    assert "temporal_neighbor" in details["evidence_roles"]["e3a"]["roles"]
     assert details["evidence_roles"]["e3a"]["neighbor_for_shots"] == [4]
     assert {"e4a", "e4b", "e4c"} <= {frame["id"] for frame in supplied}
     assert details["canonical_aliases"]["old-person"] == "person"
@@ -97,6 +97,52 @@ def test_noncontiguous_review_batch_does_not_make_distant_targets_neighbors():
     assert [row["shot"] for row in rows if row["for_shot"] == 4] == [2, 3, 5, 6]
     assert [row["shot"] for row in rows if row["for_shot"] == 8] == [6, 7]
     assert len({ref for row in rows if row["shot"] == 6 for ref in row["evidence_ids"]}) <= 2
+
+
+def test_supplied_batch_middle_frames_can_anchor_same_identity_without_becoming_neighbors():
+    shots, inventory, evidence = _fixture()
+    batch = [shots[3], shots[7]]
+    context, supplied = temporal.build_temporal_context(inv, batch, shots, inventory, evidence)
+    issues, audit = temporal.validate_context_links(
+        [_link(context_evidence_ids=["e8b"])], batch, inventory, supplied, context)
+    assert not issues and audit[0]["valid"]
+    assert not any(row["shot"] == 8 and row["for_shot"] == 4
+                   for row in context["temporal_context"]["neighbors"])
+    assert audit[0]["authorizes_presence_or_merge"] is False
+
+
+@pytest.mark.parametrize("visibility", ["offscreen", "uncertain", "occluded"])
+def test_supplied_frame_does_not_authorize_an_unobserved_identity(visibility):
+    shots, inventory, evidence = _fixture()
+    inventory["shots"]["8"]["asset_presence"][0]["visibility"] = visibility
+    batch = [shots[3], shots[7]]
+    context, supplied = temporal.build_temporal_context(inv, batch, shots, inventory, evidence)
+    issues, _ = temporal.validate_context_links(
+        [_link(context_evidence_ids=["e8b"])], batch, inventory, supplied, context)
+    assert [issue["code"] for issue in issues] == ["context_link_context_evidence"]
+
+
+def test_other_asset_or_unsupplied_middle_frame_remains_disallowed():
+    batch, inventory, context, supplied = _build()
+    for ref in ("e3b", "e8b"):
+        issues, _ = temporal.validate_context_links(
+            [_link(context_evidence_ids=[ref])], batch, inventory, supplied, context)
+        assert any(issue["code"] == "context_link_context_evidence" for issue in issues)
+
+
+def test_reviewer_keeps_original_reveal_anchor_when_proposal_resamples_identity():
+    batch, inventory, original, supplied = _build()
+    review = copy.deepcopy(original)
+    review['temporal_context']['allowed_identity_context']['4']['person'] = []
+    # A bad/foreign/new ID cannot be smuggled into this retained whitelist.
+    original['temporal_context']['allowed_identity_context']['4']['person'] += ['missing', 'e4a']
+    original['temporal_context']['allowed_identity_context']['4']['new-person'] = ['e3a']
+    temporal.retain_supplied_identity_context(original, review, supplied)
+    issues, _ = temporal.validate_context_links([_link()], batch, inventory, supplied, review)
+    assert not issues
+    refs = review['temporal_context']['allowed_identity_context']['4']['person']
+    assert 'e4a' not in refs and 'missing' not in refs
+    assert 'new-person' not in review['temporal_context']['allowed_identity_context']['4']
 
 
 @pytest.mark.parametrize("reference", ["e3a", "e1a"])

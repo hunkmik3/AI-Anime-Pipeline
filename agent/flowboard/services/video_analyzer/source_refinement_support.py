@@ -116,6 +116,17 @@ def build_visual_context(inv, batch, inventory, evidence, *, candidate_profiles=
             if presence.get("holder_id"):
                 relevant.add(presence["holder_id"])
             relevant.update(presence.get("contains_ids") or [])
+    # A misassigned person cannot be corrected using only that wrong profile.
+    # Supply a bounded alternative cast, nearest appearances first. Draft names
+    # and ages are not identity evidence; the source anchors are what matter.
+    def distance(asset):
+        appearances = [int(n) for n, row in inventory.get('shots', {}).items()
+                       for p in row.get('asset_presence', []) if p.get('asset_id') == asset['id']
+                       and p.get('visibility') in {'visible', 'partial'}]
+        return min((abs(n-target) for n in appearances for target in numbers), default=float('inf'))
+    alternatives = sorted((a for a in canonical.values() if a.get('kind') == 'character'),
+                          key=lambda a: (a['id'] not in relevant, distance(a), a['id']))[:16]
+    relevant.update(a['id'] for a in alternatives)
     while True:
         expanded = relevant | {ref for key in relevant for field in ("member_ids", "depends_on_asset_ids")
                                for ref in definitions.get(key, {}).get(field) or []}
@@ -127,20 +138,48 @@ def build_visual_context(inv, batch, inventory, evidence, *, candidate_profiles=
         relevant = expanded
     available = {frame["id"]: frame for frame in evidence}
     selected = {frame["id"] for frame in evidence if frame.get("shot") in numbers}
+    from .source_entity_cleanup import _anchor_candidate
     for asset in [definitions[key] for key in sorted(relevant) if key in definitions] + candidates:
-        selected.update([ref for ref in asset.get("evidence_ids") or [] if ref in available][:2])
+        selected.update(_anchor_candidate(asset, inventory, available)['anchor_evidence_ids'])
     scene_ids = {row.get("scene_id") for row in rows.values() if row.get("scene_id")}
-    scenes = [{**copy.deepcopy(scene),
-               "shot_ids": [n for n in scene.get("shot_ids") or [] if n in numbers],
-               "present_asset_ids": [key for key in scene.get("present_asset_ids") or [] if key in relevant]}
-              for scene in inventory.get("scenes") or [] if scene["id"] in scene_ids]
+    scenes = []
+    scene_context = []
+    for scene in inventory.get("scenes") or []:
+        if scene["id"] not in scene_ids:
+            continue
+        selected_rows = {n: row for n, row in rows.items() if row.get("scene_id") == scene["id"]}
+        membership = {p["asset_id"] for row in selected_rows.values()
+                      for p in row.get("asset_presence") or []}
+        scenes.append({**copy.deepcopy(scene),
+                       "shot_ids": sorted(int(n) for n in selected_rows),
+                       "present_asset_ids": sorted(membership)})
+        scene_context.append({"id": scene["id"],
+                              "scope": "whole_scene_union_not_current_shot_presence",
+                              "shot_ids": copy.deepcopy(scene.get("shot_ids") or []),
+                              "present_asset_ids": copy.deepcopy(scene.get("present_asset_ids") or [])})
     context = {
         "source_shots": inv._visual_source_rows(batch),
         "proposed_inventory": {"schema_version": inventory.get("schema_version", inv.SCHEMA_VERSION),
                                "assets": [copy.deepcopy(canonical[key]) for key in sorted(relevant) if key in canonical],
                                "scenes": scenes, "shots": rows},
         "candidate_profiles": candidates,
+        "scene_context": scene_context,
         "other_asset_index": [{key: asset.get(key) for key in ("id", "kind", "name")}
                               for asset in inventory.get("assets") or [] if asset["id"] not in relevant],
     }
     return context, [copy.deepcopy(available[key]) for key in sorted(selected)]
+
+
+def contiguous_batches(selected, inventory, size):
+    """Never pack unrelated repair targets into one visual comparison task."""
+    batches = []
+    for shot in sorted(selected, key=lambda row: row['shot']):
+        scene = inventory.get('shots', {}).get(str(shot['shot']), {}).get('scene_id')
+        previous = batches[-1][-1] if batches else None
+        previous_scene = (inventory.get('shots', {}).get(str(previous['shot']), {}).get('scene_id')
+                          if previous else None)
+        if (previous is None or len(batches[-1]) >= size
+                or shot['shot'] != previous['shot'] + 1 or scene != previous_scene):
+            batches.append([])
+        batches[-1].append(shot)
+    return batches

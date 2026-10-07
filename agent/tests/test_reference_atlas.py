@@ -42,10 +42,10 @@ def test_atlas_rejects_ambiguous_or_accidental_duplicate_bindings(change):
     assert coverage.validate_source_contract(shots, assets, report, cast + extra)
 
 
-def test_ten_distinct_slots_are_rejected_before_paid_generation():
+def test_over_thirty_distinct_slots_are_rejected_before_paid_generation():
     references = [{"id": f"asset-{i}", "ref_label": f"@image{i}", "ref_url": f"https://example.test/{i}.png"}
-                  for i in range(1, 11)]
-    assert any("at most 9" in error for error in coverage.reference_slots(references)[1])
+                  for i in range(1, 32)]
+    assert any("at most 30" in error for error in coverage.reference_slots(references)[1])
 
 
 def test_writer_has_one_atlas_declaration_without_losing_requirements(monkeypatch):

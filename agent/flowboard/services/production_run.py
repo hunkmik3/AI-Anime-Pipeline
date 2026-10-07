@@ -16,6 +16,10 @@ KIND = 'production_run'
 RUNNING = {'running'}
 SCHEMA = 1
 
+def style_version(board):
+    from flowboard.services import film_styles
+    return film_styles.version(board['style']) if film_styles.is_preset(board.get('style')) else ''
+
 
 def authored_prompt(plate):
     prompt=plate.get('prompt','')
@@ -24,6 +28,7 @@ def authored_prompt(plate):
 
 def input_version(board):
     """User-authored production inputs only; generated results and canvas layout excluded."""
+    from flowboard.services import film_motion
     nodes = []
     for n in board.get('nodes', []):
         d = n.get('data', {}); kind = d.get('kind')
@@ -31,10 +36,15 @@ def input_version(board):
             seq = {k:v for k,v in d.get('sequence', {}).items() if k not in ('shot_package','production_context')}
             nodes.append({'id':n['id'],'sequence':seq,'shots':d.get('shots',[]),'function':d.get('functionOf'), 'raccord':d.get('raccord')})
         elif kind in ('character','environment','asset'):
+            uploads={k:v.get('referenceUrl') for k,v in {'identity':d.get('identity',{}),'plate':d.get('plate',{}),**d.get('states',{})}.items() if v.get('uploaded')}
             nodes.append({'id':n['id'],'definition':d.get(kind),'activeState':d.get('activeState'),
+                          **({'uploads':uploads} if uploads else {}),
                           'prompts':{k:authored_prompt(v) for k,v in {'identity':d.get('identity',{}),'plate':d.get('plate',{}),**d.get('states',{})}.items()}})
-    return pm.digest({'schema':SCHEMA,'nodes':nodes, **{k:board.get(k) for k in
-        ('productionAssets','sourceVerification','preserveSourceShots','style','aspectRatio','imageModel','imageSize','kyc','unmoderated')}})
+        elif kind=='video' and d.get('promptBy')=='manual':
+            nodes.append({'id':n['id'],'manual_prompt':d.get('prompt',''),'end_state':d.get('endState') or '',
+                          'staging_decisions':d.get('stagingDecisions') or []})
+    return pm.digest({'schema':SCHEMA,'style_version':style_version(board),'video_standard_version':film_motion.version(board.get('style')),'nodes':nodes, **{k:board.get(k) for k in
+        ('productionAssets','sourceVerification','preserveSourceShots','style','aspectRatio','imageModel','imageSize','kyc','unmoderated','dialogueLanguage','targetCasting')}})
 
 
 def selected_packages(board, pid, keys):
@@ -83,7 +93,7 @@ def material_specs(board, packs):
         if key in specs: return key
         plate=d.get('states',{}).get(slot,{}) if kind=='character' and slot!='identity' else d.get(slot,{})
         # A single wardrobe identity sheet already satisfies this state.
-        if kind=='character' and slot!='identity' and not plate.get('referenceUrl') and len(item.get('states',[]))<=1 and d.get('identity',{}).get('referenceUrl'):
+        if kind=='character' and slot!='identity' and not plate.get('referenceUrl') and len(item.get('states',[]))<=1 and (d.get('identity',{}).get('referenceUrl') or (board.get('sourceVerification') or {}).get('method')=='one_pass_production'):
             return add(aid,None,trail)
         deps=[]
         if kind=='character' and slot!='identity': deps.append(add(aid,None,(*trail,key)))
@@ -114,7 +124,8 @@ def preview(board, pid, config):
         count=len({m['reference_url'] or m['asset_id'] for m in p['materials'].values()})
         try:reference_atlas.plan(p['materials'],2 if config.get('boundary_frames') else 0)
         except ValueError as exc:issues.append({'clip':p['sequence_key'],'code':'reference_limit','message':str(exc),'blocking':True})
-    return {'input_version':input_version(board),'clips':[p['sequence_key'] for p in packs],
+    from flowboard.services.production_progress import make_plan
+    return {'progress_plan': make_plan(specs, packs), 'input_version':input_version(board),'clips':[p['sequence_key'] for p in packs],
             'shots':sum(len(p['shots']) for p in packs),'materials':len(specs) if specs else len({k for p in packs for k in p['materials']}),
             'missing_materials':sum(not s['plate'].get('referenceUrl') for s in specs.values()) if specs else len({k for p in packs for k,m in p['materials'].items() if not m['reference_url']}),
             'issues':issues,'ready':not issues,'config':config,
@@ -130,12 +141,15 @@ def start(pid, revision, config, request_key):
         if previous:
             if previous.kind!=KIND or previous.payload.get('config')!=config: raise ValueError('Request key already used with different settings.')
             return jobs.public(previous)
+        from flowboard.services.primary_materials import waiting_run
+        pending_review = waiting_run(s, pid)
+        if pending_review: raise ValueError('Chốt sheet ở tab Tạo hình chính trước khi bắt đầu lượt khác.')
         active=s.exec(select(AutomationJob).where(AutomationJob.project_id==pid,AutomationJob.kind==KIND,AutomationJob.status=='running')).first()
         if active: raise ValueError('A production run is already active for this project.')
         board=jobs.project_board(s,project);report=preview(board,pid,config)
         if not report['ready']: raise ValueError(json.dumps(report['issues'],ensure_ascii=False))
-        job=AutomationJob(project_id=pid,kind=KIND,node_id='production',request_key=request_key,status='running',
-            payload={'config':config,'input_version':report['input_version']},result={'stage':'materials','tasks':{},'created_counts':{},'preview':report})
+        job=AutomationJob(project_id=pid,kind=KIND,node_id='production',request_key=request_key,status='paused' if config.get('review_masters') else 'running',
+            payload={'config':config,'input_version':report['input_version']},result={'stage':'master_review' if config.get('review_masters') else 'materials','tasks':{},'created_counts':{},'progress_plan':report['progress_plan'],'preview':report})
         s.add(job);s.commit();s.refresh(job);return jobs.public(job)
 
 
@@ -184,14 +198,17 @@ def material_payload(spec, deps, board):
         if kind=='character':
             state=next((a for a in item.get('states',[]) if a['key']==spec['slot']),None) or next(iter(item.get('states',[])),{'key':'identity','wardrobe':''})
             prompt=automation.build_character_prompt(item,state,has_reference=bool(refs),style=style,design=item.get('design'))
-        elif kind=='environment': prompt=automation.build_environment_prompt(item,aspect_ratio=board.get('aspectRatio','16:9'),style=style,design=item.get('design'))
+        elif kind=='environment': prompt=automation.build_environment_prompt(item,aspect_ratio=board.get('aspectRatio','16:9'),style=style,design=item.get('design'),has_reference=bool(refs))
         else:
             bindings=[{'id':d['asset_id'],'name':d['name'],'ref_label':f'@image{refs.index(d["reference_url"])+1}','ref_url':d['reference_url']} for i,d in enumerate(deps)]
             prompt=build_asset_prompt({**item,'dependency_references':bindings},kind=item['kind'],style=style,
                 aspect_ratio=board.get('aspectRatio','16:9'),has_reference=bool(refs))
-    prompt += '\nLOCKED TARGET DEFINITION: '+json.dumps(item,ensure_ascii=False)
+    if not style_version(board):
+        prompt += '\nLOCKED TARGET DEFINITION: '+json.dumps(item,ensure_ascii=False)
     return {'prompt':prompt,'image_model':board.get('imageModel',automation.DEFAULT_IMAGE_MODEL),'image_size':board.get('imageSize','2K'),
-            'aspect_ratio':board.get('aspectRatio','16:9'),'reference_urls':list(dict.fromkeys(refs)),'variant_count':1}
+            'aspect_ratio':'16:9' if style_version(board) else board.get('aspectRatio','16:9'),
+            'reference_urls':list(dict.fromkeys(refs)),'variant_count':1,
+            'style':style,'style_version':style_version(board), 'material_kind':item.get('kind',kind) if kind=='asset' else kind}
 
 
 def writing_body(board, pid, package, continuity_refs, atlas_receipts=None):
@@ -207,7 +224,10 @@ def writing_body(board, pid, package, continuity_refs, atlas_receipts=None):
     materials.sort(key=lambda m:({'character':0,'environment':1}.get(m['kind'],2),m['asset_id']))
     for m in materials:
         node=nodes[m['asset_id']]['data'];item=node[node['kind']]
-        ref={**item,'source_asset_id':m['asset_id'],'id':m['asset_id'],**binding(m)}
+        ref={**item,'source_asset_id':m['asset_id'],'id':m['asset_id'],
+             'state_key':m.get('state_key'),**binding(m)}
+        if m.get('reference_scope'):
+            ref['reference_scope']=deepcopy(m['reference_scope'])
         if m.get('atlas_instruction'):
             ref.update(atlas_cell=m['atlas_cell'],description='ORIGINAL SOURCE SHEET DESIGN (cell numbers here are INNER sheet coordinates): '+m['description']+'\n'+m['atlas_instruction'])
         if m['kind']=='character': characters.append({**ref,'wardrobe':m['wardrobe']})
@@ -216,8 +236,10 @@ def writing_body(board, pid, package, continuity_refs, atlas_receipts=None):
     for r in continuity_refs:
         extras.append({'id':r['id'],'kind':'continuity_frame','name':r['name'],
             'description':r['description'],**binding({'reference_url':r['url'],'media_id':r.get('media_id','')})})
-    if len(urls)>9: raise Blocked('More than 9 references including continuity frames; prepare an atlas or disable boundary previews.')
+    if len(urls)>30: raise Blocked('More than 30 references including continuity frames; prepare an atlas or disable boundary previews.')
+    from flowboard.services import film_motion
     sequence={**seq['sequence'],'function':seq.get('functionOf',[]),'raccord':seq.get('raccord',[]),
+        'video_standard_version':film_motion.version(board.get('style')),
         'preserve_source_shots':board.get('preserveSourceShots',True),'shot_package':package,'timing_policy_version':TIMING_POLICY_VERSION,'reference_format_version':1,
         'production_context':pm.context(pm.build(board,str(pid)),key),'continuity_references':continuity_refs,'reference_atlases':atlas_receipts or []}
     # Source state is already complete and deterministic; independent writers need not wait for a previous writer.
@@ -225,7 +247,42 @@ def writing_body(board, pid, package, continuity_refs, atlas_receipts=None):
         reference_assets=extras,production_assets=board.get('productionAssets') if prompt_coverage.is_strict(board.get('productionAssets'),board.get('sourceVerification')) else None,
         source_verification=board.get('sourceVerification') if prompt_coverage.is_strict(board.get('productionAssets'),board.get('sourceVerification')) else None,
         style=board.get('style','realistic'),aspect_ratio=board.get('aspectRatio','16:9'),language='en',
-        style_note=next((m['style_note'] for m in materials if m['style_note']),''))
+        style_note=automation._style(board['style'])['video_style'] if style_version(board) else next((m['style_note'] for m in materials if m['style_note']),''))
+
+
+def completed_clip_contract(body):
+    """Facts supporting an already rendered clip, excluding a later scene replan.
+
+    Old direction remains frozen only for completed media. Actual shot inputs,
+    material versions/scopes, incoming state, references and authored direction
+    still compare exactly. This is never a relaxed submit-time validation.
+    """
+    contract=deepcopy(body)
+    package=contract.get('sequence',{}).get('shot_package',{})
+    package.pop('version',None)
+    package.pop('raccord_versions',None)
+    for shot in package.get('shots',[]):shot.pop('raccord',None)
+    return pm.digest(contract)
+
+
+def reuse_completed_clip(board, package, body, config, all_jobs, state):
+    key=package['sequence_key'];node='vid:'+key
+    # Never conceal an unresolved generation behind an older successful one.
+    if any(j.kind=='clip' and j.node_id==node and j.status in jobs.ACTIVE|{'unknown'} for j in all_jobs):
+        return None
+    current=completed_clip_contract(body.model_dump(mode='json'))
+    draft=next((n['data'].get('prompt','') for n in board['nodes'] if n['id']==node),'')
+    for job in reversed(all_jobs):
+        if job.kind!='clip' or job.node_id!=node or job.status!='succeeded' or not job.result.get('url'):continue
+        old=job.payload
+        if not old.get('prompt_contract') or completed_clip_contract(old['prompt_contract'])!=current:continue
+        if old.get('resolution')!=config['resolution'] or old.get('aspect_ratio')!=package['aspect_ratio']:continue
+        if old.get('unmoderated')!=board.get('unmoderated',True) or bool(old.get('kyc_media_ids'))!=bool(board.get('kyc')):continue
+        if draft and draft!=old.get('prompt'):continue
+        state['tasks']['clip:'+key]={'id':str(job.id),'kind':'clip','status':'succeeded','target':node,'slot':'',
+            'reused':True,'basis':'Unchanged clip facts, materials, incoming state and references; completed direction retained.'}
+        return job
+    return None
 
 
 def advance(s, run, project, all_jobs):
@@ -234,14 +291,16 @@ def advance(s, run, project, all_jobs):
     board=jobs.overlay(project.board or {},all_jobs);config=run.payload['config']
     if input_version(board)!=run.payload['input_version']: raise Blocked('Production inputs changed. Start a new run to reuse matching tasks and rebuild affected outputs.')
     packs=selected_packages(board,project.id,config.get('sequence_keys',[]));specs=material_specs(board,packs)
+    from flowboard.services.production_progress import make_plan
+    state['progress_plan'] = make_plan(specs, packs)
     ready={};waiting=False;errors=[]
     state['stage']='materials'
     for key,spec in specs.items():
         if any(d not in ready for d in spec['deps']): waiting=True;continue
         deps=[ready[d] for d in spec['deps']];plate=spec['plate'];signature=pm.digest({'item':spec['item'],'deps':[{k:v for k,v in d.items() if k!='media_id'} for d in deps],'slot':spec['slot'],
-            'prompt':authored_prompt(plate),'model':board.get('imageModel'),'size':board.get('imageSize'),'style':board.get('style')})
+            'prompt':authored_prompt(plate),'model':board.get('imageModel'),'size':board.get('imageSize'),'style':board.get('style'),'style_version':style_version(board)})
         old=next((j for j in reversed(all_jobs) if j.kind in ('plate','material_binding') and j.node_id==spec['node_id'] and j.slot==spec['slot'] and j.status=='succeeded'),None)
-        fresh=plate.get('referenceUrl') and (not old or not old.prepared.get('material_signature') or old.prepared['material_signature']==signature)
+        fresh=plate.get('referenceUrl') and not plate.get('needsIdentityRefresh') and (plate.get('uploaded') or not old or not old.prepared.get('material_signature') or old.prepared['material_signature']==signature)
         try:
             if fresh:
                 image={'reference_url':plate['referenceUrl'],'media_id':plate.get('mediaId','')}
@@ -259,6 +318,7 @@ def advance(s, run, project, all_jobs):
             ready[key]={'reference_url':image['reference_url'],'media_id':image.get('media_id',''),'asset_id':spec['asset_id'],'name':spec['item'].get('name',spec['asset_id'])}
         except Waiting: waiting=True
         except Blocked as exc: errors.append(str(exc))
+    state['ready_materials'] = list(ready)
     if errors: state['errors']=errors;state['stage']='blocked';return state,'blocked'
     if waiting: return state,'running'
     # Recompile only after all material dependencies have settled.
@@ -272,6 +332,7 @@ def advance(s, run, project, all_jobs):
             return state,'running'
     state['stage']='raccord';waiting=False
     scenes=raccord.scene_inputs(board,str(project.id));selected={p['sequence_key'] for p in packs}
+    state['raccord_scopes'] = [scene['scope'] for scene in scenes.values() if any(sh['sequence_key'] in selected for sh in scene['shots'])]
     for scene in scenes.values():
         if not any(sh['sequence_key'] in selected for sh in scene['shots']): continue
         try:_task(s,run,all_jobs,state,'raccord:'+scene['scope'],'raccord','raccord:'+scene['version'],'',scene)
@@ -304,8 +365,10 @@ def advance(s, run, project, all_jobs):
                     prev_pack,prev_shot=shots[pred];prev_key=prev_pack['sequence_key']
                     if prev_key not in clips: raise Waiting()
                     elapsed=sum(float(x['duration_s']) for x in prev_pack['shots'][:prev_shot['index']+1])
+                    ending = config.get('timing_policy')=='full_take' and prev_shot['index']==len(prev_pack['shots'])-1
                     j=_task(s,run,all_jobs,state,'handoff:'+pred,'extract_frame','vid:'+prev_key,'handoff:'+pred,
-                        {'url':clips[prev_key]['url'],'time_s':max(0,elapsed-1/config['fps']),'source_job':clips[prev_key]['job_id']})
+                        {'url':clips[prev_key]['url'],'time_s':max(0,elapsed-1/config['fps']),'source_job':clips[prev_key]['job_id'],
+                         **({'at_end':True,'fps':config['fps']} if ending else {})})
                     im=j.result['images'][0]
                     refs.append({'id':'continuity:'+pred,'name':'Previous shot closing state','url':im['reference_url'],'media_id':im.get('media_id'),
                         'description':'Closing state of the preceding generated shot; use for pose/prop continuity only. Locked source facts and identity sheets take precedence; do not copy its camera angle or propagate contradictions.'})
@@ -320,8 +383,19 @@ def advance(s, run, project, all_jobs):
             body=writing_body(board,project.id,p,refs,atlas_receipts)
             # Validate all deterministic inputs before queuing paid text or video.
             jobs.validate_package(board,str(project.id),body)
-            j=_task(s,run,all_jobs,state,'write:'+key,'write','vid:'+key,'prompt',body.model_dump(mode='json'),
-                    {'base_prompt':next(n['data'].get('prompt','') for n in board['nodes'] if n.get('id')=='vid:'+key)})
+            if config['mode']=='render':
+                old=reuse_completed_clip(board,p,body,config,all_jobs,state)
+                if old:
+                    clips[key]={'url':old.result['url'],'job_id':str(old.id),'duration_s':sum(float(sh['duration_s']) for sh in p['shots']),'sequence_key':key}
+                    continue
+            video=next(n['data'] for n in board['nodes'] if n.get('id')=='vid:'+key)
+            payload=body.model_dump(mode='json')
+            if video.get('promptBy')=='manual':
+                if not video.get('prompt','').strip(): raise Blocked('Nhập prompt tự chỉnh trước khi chạy clip.')
+                payload.update(provided_prompt=video['prompt'],provided_end_state=video.get('endState') or '',
+                               provided_staging_decisions=video.get('stagingDecisions') or [])
+            j=_task(s,run,all_jobs,state,'write:'+key,'write','vid:'+key,'prompt',payload,
+                    {'base_prompt':video.get('prompt','')})
             if config['mode']=='prepare':
                 completed.add(key);continue
             out=j.result;ordered,issues=prompt_coverage.reference_slots([*body.characters,*([body.environment] if body.environment else []),*body.reference_assets])
@@ -341,7 +415,8 @@ def advance(s, run, project, all_jobs):
         state['stage']='assembly'
         try:
             j=_task(s,run,all_jobs,state,'assembly','assemble','production:assembly','',{'clips':[clips[p['sequence_key']] for p in packs],
-                'fps':config['fps'],'aspect_ratio':board.get('aspectRatio','16:9'),'resolution':config['resolution']})
+                'fps':config['fps'],'aspect_ratio':board.get('aspectRatio','16:9'),'resolution':config['resolution'],
+                'timing_policy':config.get('timing_policy','source_duration')})
         except Waiting:return state,'running'
         state['output']=j.result
     state['stage']='complete';return state,'succeeded'

@@ -306,6 +306,12 @@ STYLES: dict[str, dict[str, str]] = {
 
 
 def _style(name: Optional[str]) -> dict[str, str]:
+    from flowboard.services import film_styles
+    if film_styles.is_preset(name):
+        medium = film_styles.video_style(name)
+        return {**STYLES[film_styles.base_style(name)], 'video_style': medium,
+                'video_texture': medium,
+                'frame_tail': medium + ' {aspect} composition; no text, watermark or border.'}
     return STYLES.get(str(name or "realistic"), STYLES["realistic"])
 
 
@@ -317,6 +323,10 @@ def style_from_rules(visual_style: Optional[str]) -> str:
     it, because three places doing it slightly differently is how a board ends
     up generating anime sheets against 3D plates."""
     text = str(visual_style or "").lower()
+    from flowboard.services import film_styles
+    for key in film_styles.KEYS:
+        if key in text:
+            return key
     if "anime" in text or "2d" in text:
         return "anime"
     if "3d" in text or "cgi" in text or "pixar" in text or "render" in text:
@@ -876,6 +886,10 @@ def build_character_prompt(
     block describes it from scratch; with one, the sheet inherits that face and
     the block's whole job is to stop the model redrawing it.
     """
+    from flowboard.services import film_styles
+    if film_styles.is_preset(style):
+        return film_styles.sheet_prompt('character', {**character, **({'design': design} if design else {})},
+                                        state=state, has_reference=has_reference, style=style)
     if design:
         return build_design_character_prompt(
             character, design, state, has_reference=has_reference, style=style
@@ -924,6 +938,10 @@ def build_environment_prompt(
     design: Optional[dict[str, Any]] = None, has_reference: bool = False,
 ) -> str:
     """Assemble an establishing-plate prompt in the house shape."""
+    from flowboard.services import film_styles
+    if film_styles.is_preset(style):
+        return film_styles.sheet_prompt('environment', {**environment, **({'design': design} if design else {})},
+                                        has_reference=has_reference, style=style)
     if design:
         return build_design_environment_prompt(
             environment, design, aspect_ratio=aspect_ratio, style=style, has_reference=has_reference
@@ -1005,6 +1023,9 @@ async def generate_plate(
     reference_urls: Optional[list[str]] = None,
     variant_count: int = 1,
     image_size: Optional[str] = None,
+    style: str = '',
+    material_kind: str = '',
+    style_version: str = '',
 ) -> list[dict[str, Any]]:
     """Run one plate through Atrium and give it a home.
 
@@ -1022,6 +1043,14 @@ async def generate_plate(
         raise AutomationError("This node has no prompt yet.")
     size = capped_size(image_model, image_size)
     seedream = is_seedream(image_model)
+    from flowboard.services import film_styles
+    preset_sheet = film_styles.is_preset(style) and material_kind in ('character', 'environment', 'prop', 'background_group')
+    if preset_sheet:
+        if style_version and style_version != film_styles.version(style):
+            raise AutomationError('Style preset changed. Rebuild the material prompt before generation.')
+        if not seedream:
+            raise AutomationError('The approved film style presets use Seedream through Avis.')
+        aspect_ratio = '16:9'
 
     if seedream and not avis_api.is_configured():
         raise AutomationError("Avis is not configured — set AVIS_API_KEY in .env.")
@@ -1033,6 +1062,12 @@ async def generate_plate(
     try:
         if seedream:
             refs = await _fetch_reference_bytes(reference_urls or [])
+            if preset_sheet:
+                if len(refs) != len(reference_urls or []):
+                    raise AutomationError('A required identity/material reference could not be loaded; image slots were not shifted.')
+                style_reference = film_styles.reference_path(material_kind, style)
+                if style_reference is not None:
+                    refs.insert(0, style_reference.read_bytes())
             images = await avis_api.generate_image_variants(
                 prompt,
                 refs or None,

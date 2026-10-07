@@ -1126,6 +1126,24 @@ class AutomationProject(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=_utcnow, index=True)
 
 
+class AutomationAssistantTurn(SQLModel, table=True):
+    """Board-scoped chat and durable receipts; independent of canvas autosave."""
+    __tablename__ = "automation_assistant_turn"
+    __table_args__ = (UniqueConstraint("project_id", "request_key", name="uq_assistant_turn_request"),)
+    id: uuid.UUID = Field(default_factory=_uuid_pk, primary_key=True)
+    project_id: uuid.UUID = Field(foreign_key="automation_project.id", ondelete="CASCADE", index=True)
+    request_key: str
+    message: str
+    reply: str = ""
+    model: str = ""
+    status: str = Field(default="queued", index=True)
+    context: dict[str, Any] = Field(default_factory=dict, sa_column=_jsonb_dict())
+    events: list = Field(default_factory=list, sa_column=_jsonb_list())
+    error: str = ""
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+
 class VideoAnalysis(SQLModel, table=True):
     """A reference video broken down shot by shot — the "video mẫu" entry into /automation.
 

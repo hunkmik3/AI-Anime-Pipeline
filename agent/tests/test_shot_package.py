@@ -38,6 +38,37 @@ def test_pack_keeps_crowd_and_prop_without_asserting_visible():
     assert 'camera cut is not' in frame['prompt']
 
 
+@pytest.mark.parametrize('separator', ['\n', '\n\n'])
+def test_style_note_excludes_sheet_profile_and_dynamic_states(separator):
+    b = fixture()
+    b['nodes'][2]['data']['plate']['prompt'] = (
+        'STYLE\nSculpted cinematic CGI.' + separator + 'LAYOUT\nProp views.\n'
+        'PROFILE\n{"states":["Shot 1: the lid appears raised"]}')
+    p = pack.build(b, 'film', 'c1')
+    assert p['materials']['box:day']['style_note'] == 'Sculpted cinematic CGI.'
+    assert 'lid appears raised' not in str(p)
+
+
+def test_preset_material_style_comes_from_preset_not_generated_sheet_prose():
+    from flowboard.services import film_styles
+    b = fixture()
+    b['style'] = film_styles.KEY
+    b['nodes'][2]['data']['plate']['prompt'] = 'STYLE\nWrong medium\nPROFILE\nShot 1: lid raised'
+    p = pack.build(b, 'film', 'c1')
+    assert all(m['style_note'] == film_styles.rule_text(film_styles.KEY) for m in p['materials'].values())
+    assert 'lid raised' not in str(p)
+
+
+@pytest.mark.parametrize('prompt, expected', [
+    ('STYLE: Watercolour palette.\n\nPROFILE\nClosed box.', 'Watercolour palette.'),
+    ('STYLE\nWatercolour palette.\nPROFILE: Closed box.', 'Watercolour palette.'),
+    ('STYLE\n\nPROFILE\nClosed box.', ''),
+    ('## STYLE\nDrawn outlines.\nTwo cel tones.\n## LAYOUT\nTurnaround.', 'Drawn outlines.\nTwo cel tones.'),
+])
+def test_custom_style_section_boundaries(prompt, expected):
+    assert pack.material_style(prompt, 'anime') == expected
+
+
 def test_missing_material_and_wrong_reference_fail():
     b=fixture();b['nodes'][1]['data']['plate']={}
     p=pack.build(b,'film','c1');assert not p['ready']
@@ -57,6 +88,27 @@ def test_language_costume_change_and_dependency_cycle():
     b['productionAssets'][1]['depends_on_asset_ids']=['box'];b['productionAssets'][2]['depends_on_asset_ids']=['crowd']
     p=pack.build(b,'film','c1');codes={i['code'] for i in p['issues']}
     assert {'dialogue_not_english','missing_costume_sheet','multiple_costumes_in_clip'} <= codes
+
+
+def test_explicit_costume_references_must_match_each_state():
+    from flowboard.services import prompt_coverage
+    b=fixture();b['stateSpecificReferences']=True
+    hero=b['nodes'][0]['data']
+    hero['character']['states'].append({'key':'night','wardrobe':'red coat'})
+    hero['states']['night']={'referenceUrl':'https://test/red-coat','mediaId':'red-coat'}
+    b['nodes'][-1]['data']['shots'][1]['character_states']={'hero':'night'}
+    p=pack.build(b,'film','c1')
+    assert not any(i['code']=='multiple_costumes_in_clip' for i in p['issues'])
+    refs=[{'id':m['asset_id'],'state_key':m['state_key'],'ref_url':m['reference_url'],
+           'media_id':m['media_id'],'ref_label':f'@image{i}'} for i,m in enumerate(p['materials'].values(),1)]
+    assert not pack.check_bindings(p,refs)
+    assert not prompt_coverage.reference_slots(refs)[1]
+    wrong=deepcopy(refs)
+    red=next(r for r in wrong if r['id']=='hero' and r['state_key']=='night')
+    red['ref_url']='https://test/wrong'
+    assert pack.check_bindings(p,wrong)
+    red['state_key']='day'
+    assert prompt_coverage.reference_slots(wrong)[1]
 
 
 def test_unknown_offscreen_and_uncertain_do_not_require_phantom_material():
@@ -126,7 +178,8 @@ async def test_independent_review_receives_prepared_continuity(monkeypatch):
     from flowboard.services import prompt_writer as writer
     p=pack.build(fixture(),'film','c1')
     async def ask(system,payload,*args,**kwargs):
-        assert json.loads(payload)['shot_package']==p
-        return {'status':'verified','checked_requirement_ids':['r1'],'findings':[]}
+        supplied=json.loads(payload)
+        assert supplied['shot_package']==p
+        return {'status':'verified','checked_requirement_ids':[r['id'] for r in supplied['requirements']],'findings':[]}
     monkeypatch.setattr(writer.adapt_mod,'ask_json',ask)
     await writer.review_prompt('A prompt',[{'id':'r1'}],[],[],shot_package=p)

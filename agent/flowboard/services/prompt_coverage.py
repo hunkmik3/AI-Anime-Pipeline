@@ -75,6 +75,9 @@ def source_readiness_issues(shots: list[dict], source_verification: dict | None)
     the explicit scope label; partial-film readiness requires that label.
     """
     report = source_verification or {}
+    if report.get("method") == "one_pass_production":
+        from flowboard.services.video_analyzer.one_pass_film import readiness
+        return readiness(shots, report)
     if report.get("method") == "authored_script":
         from flowboard.services.authored_contract import readiness
         return readiness(shots, report)
@@ -146,6 +149,10 @@ def scope_model_context(shots: list[dict], production_assets: list[dict],
     scoped_assets = [a for a in production_assets if asset_id(a) in needed]
     report = {key: source_verification[key] for key in ("status", "method", "scope", "digest", "inventory_digest")
               if key in source_verification}
+    if source_verification.get('method') == 'one_pass_production':
+        report.update(observation_only=True, independent_review=False,
+                      structural_checks_passed=source_verification.get('structural_checks_passed', False),
+                      prepared_shots=[n for n in source_verification.get('prepared_shots', []) if str(n) in sources])
     report["reviewed_shots"] = [n for n in source_verification.get("reviewed_shots") or [] if str(n) in sources]
     report["unresolved_shots"] = [n for n in source_verification.get("unresolved_shots") or [] if str(n) in sources]
     report["evidence"] = [e for e in source_verification.get("evidence") or [] if str(e.get("id")) in evidence_ids]
@@ -165,7 +172,7 @@ def reference_slots(references: list[dict]) -> tuple[list[dict], list[str]]:
     is shared, and only if every binding agrees on its URL and media identity.
     """
     slots: dict[str, dict] = {}
-    bound: set[str] = set()
+    bound: dict[str, set[str]] = {}
     issues: list[str] = []
     for reference in references:
         label = reference.get("ref_label")
@@ -178,10 +185,11 @@ def reference_slots(references: list[dict]) -> tuple[list[dict], list[str]]:
         if not url:
             issues.append(f"Reference {label} has no image URL.")
         aid = asset_id(reference)
-        if aid and aid in bound:
+        state = str(reference.get('state_key') or '')
+        if aid and aid in bound and (not state or '' in bound[aid] or state in bound[aid]):
             issues.append(f"Asset {aid!r} has duplicate reference bindings.")
         if aid:
-            bound.add(aid)
+            bound.setdefault(aid, set()).add(state)
         if label in slots:
             first = slots[label]
             if first.get("ref_url") != url or (first.get("media_id") or "") != (reference.get("media_id") or ""):
@@ -195,8 +203,8 @@ def reference_slots(references: list[dict]) -> tuple[list[dict], list[str]]:
     ordered = sorted(slots.values(), key=lambda item: int(item["ref_label"][6:]))
     if [item["ref_label"] for item in ordered] != [f"@image{i}" for i in range(1, len(ordered) + 1)]:
         issues.append("Reference image slots must be contiguous @image1...@imageN.")
-    if len(ordered) > 9:
-        issues.append(f"Seedance supports at most 9 reference image slots; this clip has {len(ordered)}. Combine related assets into a labeled atlas.")
+    if len(ordered) > 30:
+        issues.append(f"Seedance 2.5 supports at most 30 reference image slots; this clip has {len(ordered)}. Combine related assets into a labeled atlas.")
     return ordered, list(dict.fromkeys(issues))
 
 
@@ -209,6 +217,9 @@ def validate_source_contract(shots: list[dict], production_assets: list[dict],
         return validate(shots, production_assets, source_verification, references)
     issues = source_readiness_issues(shots, source_verification)
     report = source_verification or {}
+    if report.get('method') == 'one_pass_production':
+        from flowboard.services.video_analyzer.one_pass_film import validate_locked
+        issues.extend(validate_locked(shots, report))
     # A reviewer who accepted the verifier's findings accepted the presences it
     # could not settle, too. Uncertain then asserts nothing on screen: it stops
     # blocking, and build_requirements asks no coverage for it.
@@ -324,13 +335,20 @@ def appearance_facts(appearances: list[dict]) -> list[dict]:
             for a in appearances]
 
 
-def build_requirements(rows: list[dict], shots: list[dict], production_assets: list[dict]) -> list[dict]:
+def build_requirements(rows: list[dict], shots: list[dict], production_assets: list[dict], *,
+                       include_in_frame: bool = False) -> list[dict]:
     """Every supplied fact survives. The model may paraphrase, but cannot drop it."""
     assets = {asset_id(a): a for a in production_assets}
     result: list[dict] = []
     for row, shot in zip(rows, shots):
         shot = production_adaptation.apply(shot)
         n = row["shot"]
+        # Freeform boards have no verified presence registry. Still account for
+        # silent cast members, rather than relying on action/dialogue mentioning them.
+        if include_in_frame:
+            for index, name in enumerate(row.get("in_frame") or [], 1):
+                result.append({"id": f"shot:{n}:in_frame:{index}", "shot": n,
+                               "kind": "presence", "name": name, "visibility": "visible"})
         for index, p in enumerate(shot.get("asset_presence") or [], 1):
             if p.get("visibility") == "uncertain":
                 continue  # only an accepted review lets one through; it asserts nothing
@@ -363,6 +381,11 @@ def build_requirements(rows: list[dict], shots: list[dict], production_assets: l
 
 
 def shot_blocks(prompt: str) -> dict[int, str]:
+    if "## REFERENCE CONTROL" in prompt:
+        timeline = prompt.split("\n## AUDIO", 1)[0]
+        heads = list(re.finditer(r"^# SHOT (\d+) \| [^\n]+$", timeline, re.M))
+        return {int(m.group(1)): timeline[m.end():heads[i + 1].start() if i + 1 < len(heads) else len(timeline)]
+                for i, m in enumerate(heads)}
     timeline = prompt.split("[SPECIFIC TIMELINE]", 1)[-1].split("[OVERALL SUPPLEMENT]", 1)[0]
     heads = list(re.finditer(r"^\[SHOT (\d+)\s*[—-][^\n]*\]\s*$", timeline, re.M))
     return {int(m.group(1)): timeline[m.end():heads[i + 1].start() if i + 1 < len(heads) else len(timeline)]

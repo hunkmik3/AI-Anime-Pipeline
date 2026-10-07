@@ -10,6 +10,8 @@
 import { create } from "zustand";
 
 import { api } from "../api/client";
+import { useAutomation } from "./automation";
+import { APPROVED_FILM_STYLES, type FilmStyle } from "../automation/filmStyles";
 import type { AssetKind, ProductionAsset, SceneInventory, SourceVerification } from "../automation/contracts";
 
 export type VideoStatus =
@@ -102,7 +104,21 @@ export interface Cast {
   usage?: Record<string, unknown>;
 }
 
+export interface AutoFilmOptions {
+  style: FilmStyle;
+  aspect_ratio: string;
+  resolution: string;
+  clip_seconds: number;
+  casting_request?: string;
+  review_masters?: boolean;
+  timing_policy?: 'full_take' | 'source_duration';
+  kyc: boolean;
+  unmoderated: boolean;
+}
+
 export interface VideoSummary {
+  auto_production?: { stage: string; board_ready?: boolean; run_id?: string; run_status?: string; run_stage?: string; output?: {filename?:string}; error?: string; settings: AutoFilmOptions };
+
   id: string;
   name: string;
   filename: string;
@@ -127,6 +143,10 @@ export interface SourceAnalysis {
   shot_size?: string;
   camera_angle?: string;
   camera_movement?: string;
+  camera_crop?: string;
+  camera_elevation?: string;
+  composition?: string;
+  subtitle_events?: {text: string; first_frame: string; last_frame: string}[];
   setting?: string;
   subjects?: string[];
   blocking?: string;
@@ -193,7 +213,7 @@ export interface Rules {
   sect_names: string;
   location_names: string;
   technique_names: string;
-  dialogue_mode: "literal" | "cinematic";
+  dialogue_mode: "literal" | "cinematic" | "verbatim";
   dialogue_language: string;
   preserve_editing: boolean;
 }
@@ -209,6 +229,8 @@ export interface DialogueLine {
 
 export interface VideoDetail extends VideoSummary {
   analysis: {
+    analysis_mode?: "standard" | "fast" | "one_pass";
+    dialogue_policy?: "legacy" | "audio_verbatim";
     scene_inventory?: SceneInventory;
     source_verification?: SourceVerification;
     video?: { duration: number; fps: number; width: number; height: number; aspect_ratio: string; has_audio: boolean };
@@ -234,31 +256,11 @@ export interface VideoDetail extends VideoSummary {
   cast: Cast;
 }
 
-/** Two looks the board's prompt builders know how to write. The text is what
- *  the adaptation model reads; the board picks its preset from it. */
-export const STYLE_PRESETS: { key: "anime" | "realistic" | "cg3d"; label: string; text: string }[] = [
-  {
-    key: "anime",
-    label: "Anime 2D",
-    text:
-      "Modern Japanese 2D anime. Clean thin line art, 2-3 solid cel-shading tones, minimal gradients. " +
-      "Live-action energy becomes hand-drawn impact frames, smears, speed lines and controlled bloom.",
-  },
-  {
-    key: "cg3d",
-    label: "3D CGI",
-    text:
-      "Modern 3D CGI animated feature. Stylised-realistic character design, physically based " +
-      "rendering, subsurface skin, simulated cloth and hair, soft global illumination and " +
-      "cinematic depth of field. Effects are rendered volumetrics and simulation, not drawn.",
-  },
-  {
-    key: "realistic",
-    label: "Live-action điện ảnh",
-    text:
-      "Cinematic realistic live-action drama. Natural skin and fabric detail, motivated practical lighting, " +
-      "shallow depth of field. Energy effects stay grounded and physical.",
-  },
+/** Selectable styles. Legacy keys remain supported when opening saved boards. */
+export const STYLE_PRESETS: { key: FilmStyle; label: string; text: string }[] = [
+  {key:"donghua_premium", label:"3D Donghua điện ảnh", text:
+    "PRESET donghua_premium. Premium modern 3D donghua cinematic drama; refined semi-realistic faces, age-faithful proportions, luminous non-waxy skin, groomed hair, physically based materials. Cinematic architectural 3D environments, motivated light, controlled highlights and readable shadows. Preserve source design and dialogue."},
+  ...APPROVED_FILM_STYLES,
 ];
 
 export const DEFAULT_RULES: Rules = {
@@ -279,6 +281,7 @@ export const STAGE_LABELS: Record<string, string> = {
   cuts: "dò điểm cắt",
   keyframes: "trích keyframe",
   speech: "nghe thoại",
+  joint_vision: "đọc gộp shot và danh mục nguồn",
   vision: "xem từng shot",
   story: "chia sequence, tìm tên riêng",
   glossary: "lập bảng tên",
@@ -322,7 +325,7 @@ interface VideoAnalysisStore {
   refiningId: string | null;
 
   loadVideos(projectId: string | null): Promise<void>;
-  upload(file: File, projectId: string | null, rules: Rules, detail?: "standard" | "deep"): Promise<void>;
+  upload(file: File, projectId: string | null, rules: Rules, detail?: "standard" | "deep", autoFilm?: AutoFilmOptions, analysisMode?: "standard" | "fast" | "one_pass"): Promise<void>;
   open(id: string | null): Promise<void>;
   refresh(): Promise<void>;
   adapt(rules: Rules, glossary?: Glossary, fresh?: boolean): Promise<void>;
@@ -347,12 +350,27 @@ interface VideoAnalysisStore {
 
 let pollTimer: ReturnType<typeof setTimeout> | undefined;
 
+const FILM_STAGES: Record<string, string> = {
+  queued:"Đang chờ", analysis:"Đọc video gốc", adaptation:"Chuẩn bị shotlist",
+  profiles:"Lập hồ sơ", casting:"Áp dụng tạo hình yêu cầu", design:"Thiết kế tạo hình", board:"Chuẩn bị board",
+  production:"Đang sản xuất", materials:"Gen material", raccord:"Lập liên tục cảnh",
+  prompts:"Viết prompt", videos:"Viết prompt / gen clip", assembly:"Ghép phim",
+  complete:"Phim đã hoàn thành", blocked:"Cần xử lý", paused:"Đã tạm dừng",
+};
+export function autoFilmLabel(v: VideoSummary): string {
+  const a=v.auto_production;
+  if(!a) return "";
+  if (a.run_stage === "master_review") return "Chờ chốt tạo hình chính";
+  const stage=["blocked","paused"].includes(a.run_status || "") ? a.run_status! : a.run_stage || a.stage;
+  return FILM_STAGES[stage] || stage;
+}
+
 export const useVideoAnalysis = create<VideoAnalysisStore>()((set, get) => {
   // Poll only while something is running, and only as fast as a stage moves.
   const schedule = (projectId: string | null) => {
     clearTimeout(pollTimer);
     const busy =
-      get().videos.some((v) => RUNNING.includes(v.status)) ||
+      get().videos.some((v) => RUNNING.includes(v.status) || v.auto_production?.run_status === "running" || !!v.auto_production && !["production","blocked"].includes(v.auto_production.stage)) ||
       (get().detail && RUNNING.includes(get().detail!.status));
     if (!busy) return;
     pollTimer = setTimeout(async () => {
@@ -375,14 +393,20 @@ export const useVideoAnalysis = create<VideoAnalysisStore>()((set, get) => {
       lastProject = projectId;
       try {
         const qs = projectId ? `?project_id=${projectId}` : "";
-        set({ videos: await api<VideoSummary[]>(`/api/automation/videos${qs}`) });
+        const videos = await api<VideoSummary[]>(`/api/automation/videos${qs}`);
+        set({ videos });
+        const state = useAutomation.getState();
+        if (videos.some(v => v.auto_production?.board_ready && v.automation_project_id === state.currentProjectId)
+            && !state.nodes.some(n => n.data.kind === "sequence") && state.currentProjectId) {
+          await state.openProject(state.currentProjectId);
+        }
       } catch (err) {
         set({ error: (err as Error).message });
       }
       schedule(projectId);
     },
 
-    upload(file, projectId, rules, detail = "standard") {
+    upload(file, projectId, rules, detail = "standard", autoFilm, analysisMode = "one_pass") {
       // XHR, not fetch: an upload of tens of megabytes needs a progress bar,
       // and fetch still cannot report upload progress.
       return new Promise<void>((resolve, reject) => {
@@ -392,6 +416,8 @@ export const useVideoAnalysis = create<VideoAnalysisStore>()((set, get) => {
         if (projectId) form.append("project_id", projectId);
         form.append("rules", JSON.stringify(rules));
         form.append("detail", detail);
+        form.append("analysis_mode", analysisMode);
+        if (autoFilm) form.append("auto_production", JSON.stringify(autoFilm));
         const xhr = new XMLHttpRequest();
         xhr.open("POST", "/api/automation/videos");
         xhr.upload.onprogress = (e) => {
@@ -401,7 +427,11 @@ export const useVideoAnalysis = create<VideoAnalysisStore>()((set, get) => {
           set({ uploading: null });
           if (xhr.status >= 200 && xhr.status < 300) {
             const created = JSON.parse(xhr.responseText) as VideoSummary;
-            await get().loadVideos(projectId);
+            if (autoFilm && created.automation_project_id) {
+              await useAutomation.getState().loadProjects();
+              await useAutomation.getState().openProject(created.automation_project_id);
+            }
+            await get().loadVideos(autoFilm ? created.automation_project_id : projectId);
             await get().open(created.id);
             resolve();
           } else {

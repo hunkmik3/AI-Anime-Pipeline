@@ -11,6 +11,23 @@ from flowboard.services import avis_text
 from flowboard.services.video_analyzer import source_inventory as inv
 
 
+def test_stage_model_override_does_not_reuse_another_models_response(tmp_path, monkeypatch):
+    called = []
+    async def ask(*args, **kwargs):
+        called.append(kwargs.get('model_override'))
+        return {'from_model': kwargs.get('model_override')}
+    monkeypatch.setattr(inv, '_ask', ask)
+    entry = {'usage': {}, 'trace': []}
+    async def run():
+        for model in ['visual-a', 'visual-a', 'visual-b']:
+            result = await inv._stage_call(entry, 'observe', 'instructions', {}, [], tmp_path,
+                                           asyncio.Semaphore(1), lambda: None, model_override=model)
+            assert result == {'from_model': model}
+    asyncio.run(run())
+    assert called == ['visual-a', 'visual-b']
+    assert entry['call_model_history']['observe'][0]['model'] == 'visual-a'
+
+
 def _source(tmp_path: Path, *, title: str = "market", count: int = 2):
     work = tmp_path / "analysis"
     frames = work / "frames"

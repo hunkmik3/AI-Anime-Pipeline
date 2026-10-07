@@ -7,7 +7,7 @@
  *
  * Its own board, not the shot canvas. Nothing here touches a real project.
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -17,12 +17,43 @@ import {
   SelectionMode,
 } from "@xyflow/react";
 
-import { ProductionPanel } from "../automation/ProductionPanel";
+import { ProductionPanel, ProductionControls } from "../automation/ProductionPanel";
 import { AutomationSidebar } from "../automation/AutomationSidebar";
+import { PrimaryMaterials } from "../automation/PrimaryMaterials";
+import { ClipCanvas } from "../automation/ClipCanvas";
+import { AutomationAssistant } from "../automation/AutomationAssistant";
 import { automationNodeTypes } from "../automation/nodes";
 import { VideoAnalysisPanel } from "../automation/VideoAnalysisPanel";
 import { IMAGE_MODEL_LABELS, useAutomation } from "../store/automation";
-import { useVideoAnalysis } from "../store/videoAnalysis";
+import { STYLE_PRESETS, useVideoAnalysis } from "../store/videoAnalysis";
+
+function BoardSettings({ title, logline, onClose, children }: {
+  title: string; logline: string; onClose(): void; children: ReactNode;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const element = dialog.current!;
+    element.showModal();
+    return () => element.close();
+  }, []);
+  return <dialog ref={dialog} className="auto-settings" aria-labelledby="auto-settings-title"
+    onCancel={onClose} onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
+    <div className="auto-settings__content">
+      <header className="auto-settings__head">
+        <h2 id="auto-settings-title">Cài đặt & công cụ</h2>
+        <button type="button" className="auto-btn" onClick={onClose} autoFocus>Đóng</button>
+      </header>
+      <div className="auto-settings__body">
+        <div className="auto-settings__film">
+          <strong>{title || "Chưa có phim"}</strong>
+          {logline && <p>{logline}</p>}
+        </div>
+        {children}
+      </div>
+      <footer className="auto-settings__foot">Các thay đổi được áp dụng ngay.</footer>
+    </div>
+  </dialog>;
+}
 
 export function AutomationPage() {
   const nodes = useAutomation((s) => s.nodes);
@@ -33,6 +64,8 @@ export function AutomationPage() {
 
   const title = useAutomation((s) => s.title);
   const logline = useAutomation((s) => s.logline);
+  const style = useAutomation((s) => s.style);
+  const setStyle = useAutomation((s) => s.setStyle);
   const imageModel = useAutomation((s) => s.imageModel);
   const aspectRatio = useAutomation((s) => s.aspectRatio);
   const clipSeconds = useAutomation((s) => s.clipSeconds);
@@ -56,12 +89,34 @@ export function AutomationPage() {
   const clipCount = useAutomation((s) => s.clipCount());
   const downloadPlates = useAutomation((s) => s.downloadPlates);
   const plateCount = useAutomation((s) => s.plateCount());
+  const [workspaceTab, setWorkspaceTab] = useState<"canvas" | "primary">("canvas");
+  const jobs = useAutomation(s => s.jobs);
+  const reviewRun = jobs.find(j => j.kind === "production_run" && j.status === "paused" && j.result.stage === "master_review");
+  const seenReview = useRef("");
+  useEffect(() => { setWorkspaceTab("canvas"); seenReview.current = ""; }, [currentProjectId]);
+  useEffect(() => {
+    if (reviewRun && seenReview.current !== reviewRun.id) { seenReview.current = reviewRun.id; setWorkspaceTab("primary"); }
+  }, [reviewRun?.id]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(true);
+  const [chatBusy, setChatBusy] = useState(false);
+  const [chatSelection, setChatSelection] = useState<string[]>([]);
+  const selectChatNodes = useCallback((ids: string[]) => setChatSelection(old => old.join("|") === ids.join("|") ? old : ids), []);
+  useEffect(() => { setChatSelection([]); }, [currentProjectId]);
   const [importError, setImportError] = useState<string | null>(null);
   const cutAll = useAutomation((s) => s.cutAll);
   const cuttingAll = useAutomation((s) => s.cuttingAll);
   const seqCount = useAutomation((s) => s.nodes.filter((n) => n.data.kind === "sequence").length);
   const [zipping, setZipping] = useState(false);
   const [zippingPlates, setZippingPlates] = useState(false);
+  const [boardView, setBoardView] = useState<"clips" | "nodes">(() => {
+    try { return localStorage.getItem("flowboard:automation-view") === "nodes" ? "nodes" : "clips"; }
+    catch { return "clips"; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("flowboard:automation-view", boardView); }
+    catch { /* View switching also works with storage disabled. */ }
+  }, [boardView]);
 
   const loadVideos = useVideoAnalysis((s) => s.loadVideos);
 
@@ -81,13 +136,31 @@ export function AutomationPage() {
       <AutomationSidebar />
       <div className="auto-page">
         <header className="auto-bar">
-          <div className="auto-bar__id">
-            <span className="auto-bar__eyebrow">Automation · production</span>
-            <h1 className="auto-bar__title">{title || "Chưa có phim"}</h1>
-            {logline && <p className="auto-bar__logline">{logline}</p>}
-          </div>
-
-          <div className="auto-bar__controls">
+          <h1 className="auto-bar__title" title={title || "Chưa có phim"}>{title || "Chưa có phim"}</h1>
+          <span className="auto-bar__summary">{seqCount} clip · {clipCount} video</span>
+          <button type="button" className="auto-btn" aria-expanded={chatOpen} onClick={() => setChatOpen(!chatOpen)}>
+            {chatBusy ? "◌ Agent đang làm" : "✧ Chat Agent"}
+          </button>
+          <button type="button" className="auto-btn auto-bar__settings" aria-haspopup="dialog"
+            disabled={chatBusy} aria-expanded={settingsOpen} onClick={() => setSettingsOpen(true)}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+              <path d="M4 7h16M4 17h16" /><circle cx="9" cy="7" r="3" fill="var(--panel)" /><circle cx="15" cy="17" r="3" fill="var(--panel)" />
+            </svg>
+            Cài đặt
+          </button>
+        </header>
+        {chatBusy && <div className="agent-work-status" role="status">Agent đang xử lý board này. Bạn có thể xem tiến độ hoặc dừng trong chat.</div>}
+        <div className="auto-workbench" ref={element => { element?.toggleAttribute('inert', chatBusy); }} aria-busy={chatBusy}>
+        {settingsOpen && <BoardSettings title={title} logline={logline} onClose={() => setSettingsOpen(false)}>
+          <section className="auto-settings__section" aria-labelledby="auto-settings-generation">
+            <h3 id="auto-settings-generation">Tạo hình & định dạng</h3>
+            <div className="auto-settings__grid">
+            <label className="auto-select" title="Sau khi đã gen tài sản, chọn style mới khi tải video vào project mới để giữ nguyên bản cũ.">
+              <span>Style</span><select value={style} disabled={plateCount>0 || clipCount>0 || useAutomation.getState().autoSourceFilm || useAutomation.getState().jobs.some(j=>["queued","preparing","submitting","running"].includes(j.status))} onChange={e=>setStyle(e.target.value as typeof style)}>
+                {!STYLE_PRESETS.some(p => p.key === style) && <option value={style} disabled hidden>Style cũ của project</option>}
+                {STYLE_PRESETS.map(p=><option key={p.key} value={p.key}>{p.label}</option>)}
+              </select>
+            </label>
             <label className="auto-select">
               <span>Model ảnh</span>
               <select value={imageModel} onChange={(e) => setImageModel(e.target.value)}>
@@ -123,8 +196,9 @@ export function AutomationPage() {
               </select>
             </label>
             <label className="auto-select">
-              <span>Khung bối cảnh</span>
+              <span>Khung phim</span>
               <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)}>
+                <option value="1:1">1:1 vuông</option>
                 <option value="16:9">16:9 ngang</option>
                 <option value="9:16">9:16 dọc</option>
               </select>
@@ -142,11 +216,40 @@ export function AutomationPage() {
             </label>
             <label
               className="auto-check"
-              title="Khoá mặt bằng KYC identity asset của Avis. Mạnh hơn ref thường, nhưng nhà cung cấp bỏ hết ref còn lại — plate bối cảnh không tới được model, chỉ còn mô tả bằng chữ."
+              title="Dùng identity asset KYC qua Avis, giữ thứ tự các reference nhân vật và bối cảnh của clip."
             >
               <input type="checkbox" checked={kyc} onChange={(e) => setKyc(e.target.checked)} />
               <span>KYC</span>
             </label>
+            </div>
+          </section>
+          <section className="auto-settings__section" aria-labelledby="auto-settings-canvas">
+            <h3 id="auto-settings-canvas">Canvas</h3>
+            <div className="auto-settings__actions">
+            <div className="auto-view-switch" role="group" aria-label="Cách hiển thị board">
+              <button type="button" className="auto-btn" aria-pressed={boardView === "clips"} onClick={() => setBoardView("clips")}>Khung clip</button>
+              <button type="button" className="auto-btn" aria-pressed={boardView === "nodes"} onClick={() => setBoardView("nodes")}>Node tự do</button>
+            </div>
+            <button
+              type="button"
+              className="auto-btn"
+              title={boardView === "clips" ? "Xếp lại khung và node bên trong theo thứ tự clip." : "Xếp lại mọi node theo cột."}
+              onClick={() => {
+                if (boardView === "nodes") relayout();
+                else useAutomation.setState(state => ({ nodes: state.nodes.map(n => {
+                  const { clipLayout: _layout, ...rest } = n;
+                  return rest;
+                }) }));
+                setSettingsOpen(false);
+              }}
+            >
+        {boardView === "clips" ? "Xếp lại khung" : "Xếp lại node"}
+            </button>
+            </div>
+          </section>
+          <section className="auto-settings__section" aria-labelledby="auto-settings-assets">
+            <h3 id="auto-settings-assets">Clip & material</h3>
+            <div className="auto-settings__actions">
             <button
               type="button"
               className="auto-btn auto-btn--primary"
@@ -202,14 +305,11 @@ export function AutomationPage() {
             >
               {zippingPlates ? "đang nén…" : `Tải tạo hình (${plateCount})`}
             </button>
-            <button
-              type="button"
-              className="auto-btn"
-              title="Xếp lại mọi node theo cột, giãn đủ chiều cao để không đè lên nhau. Alt + kéo để khoanh chọn nhiều node."
-              onClick={relayout}
-            >
-              Xếp lại node
-            </button>
+            </div>
+          </section>
+          <section className="auto-settings__section" aria-labelledby="auto-settings-files">
+            <h3 id="auto-settings-files">Dữ liệu board</h3>
+            <div className="auto-settings__actions">
             <button type="button" className="auto-btn" onClick={exportBoard}>
               Xuất file
             </button>
@@ -233,15 +333,18 @@ export function AutomationPage() {
             </label>
             <button
               type="button"
-              className="auto-btn"
+              className="auto-btn auto-settings__danger"
               onClick={() => {
                 if (confirm("Xoá sạch board hiện tại? Xuất file trước nếu muốn giữ.")) reset();
               }}
             >
               Xoá board
             </button>
-          </div>
-        </header>
+            </div>
+          </section>
+          <section className="auto-settings__section"><ProductionControls /></section>
+          {importError && <p className="auto-banner auto-banner--stop" role="alert">{importError}</p>}
+        </BoardSettings>}
         <ProductionPanel />
 
         {importError && <p className="auto-banner auto-banner--stop">{importError}</p>}
@@ -264,7 +367,13 @@ export function AutomationPage() {
           </p>
         )}
 
-        <div className="auto-canvas">
+              <nav className="auto-workspace-tabs" aria-label="Không gian làm việc">
+          <button type="button" aria-pressed={workspaceTab === "canvas"} onClick={() => setWorkspaceTab("canvas")}>Canvas</button>
+          <button type="button" aria-pressed={workspaceTab === "primary"} onClick={() => setWorkspaceTab("primary")}>Tạo hình chính {reviewRun && <span>Chờ chốt</span>}</button>
+        </nav>
+        {workspaceTab === "primary" && <PrimaryMaterials key={currentProjectId ?? "draft"} />}
+        <div className="auto-canvas-workspace" style={{ display: workspaceTab === "canvas" ? "flex" : "none" }}>
+        {boardView === "clips" ? <ClipCanvas key={currentProjectId ?? "draft"} onSelection={selectChatNodes} /> : <div className="auto-canvas">
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -288,9 +397,12 @@ export function AutomationPage() {
             <Controls showInteractive={false} />
             <MiniMap pannable zoomable />
           </ReactFlow>
+        </div>}
         </div>
         <VideoAnalysisPanel />
+        </div>
       </div>
+      <AutomationAssistant selectedIds={boardView === "clips" ? chatSelection : undefined} open={chatOpen} onClose={() => setChatOpen(false)} onBusy={setChatBusy} />
     </div>
   );
 }

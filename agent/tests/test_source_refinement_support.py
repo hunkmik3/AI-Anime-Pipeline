@@ -101,11 +101,24 @@ def test_compact_context_keeps_related_profiles_both_proposal_anchors_and_all_ow
     evidence.append({"id": "e1-extra", "shot": 1, "frame": "1-extra.jpg"})
     proposals = [{"id": "person", "name": "Proposed refinement", "evidence_ids": ["e2"]}]
     context, frames = support.build_visual_context(inv, _shots(), inventory, evidence, candidate_profiles=proposals)
-    assert {a["id"] for a in context["proposed_inventory"]["assets"]} == {"person", "photo"}
+    assert {a["id"] for a in context["proposed_inventory"]["assets"]} == {"person", "photo", "extra"}
     assert next(a for a in context["proposed_inventory"]["assets"] if a["id"] == "person")["name"] == "Canonical"
     assert context["candidate_profiles"][0]["name"] == "Proposed refinement"
-    assert {f["id"] for f in frames} == {"e0", "e1", "e1-extra", "e2"}
-    assert context["other_asset_index"][0]["id"] == "extra"
+    assert {f["id"] for f in frames} == {"e0", "e1", "e1-extra", "e2", "e3"}
+    assert not context["other_asset_index"]
+    assert context["proposed_inventory"]["shots"]["1"]["asset_presence"] == inventory["shots"]["1"]["asset_presence"]
     assert context["proposed_inventory"]["scenes"][0]["shot_ids"] == [1]
+    assert context["proposed_inventory"]["scenes"][0]["present_asset_ids"] == ["photo"]
+    assert context["scene_context"][0]["shot_ids"] == [1, 3]
+    assert context["scene_context"][0]["present_asset_ids"] == ["person", "photo", "extra"]
+    assert inventory["scenes"][0]["shot_ids"] == [1, 3]
     assert "dialogue" not in context["source_shots"][0]
     assert context["source_shots"][0]["source"]["subtitle"] == "Original subtitle"
+
+
+def test_repair_batches_split_scene_boundaries_and_noncontiguous_targets():
+    shots = [{"shot": n} for n in [10, 11, 12, 43, 44, 45, 46, 47]]
+    inventory = {"shots": {str(n): {"scene_id": "a" if n < 44 else "b"} for n in [10, 11, 12, 43, 44, 45, 46, 47]}}
+    result = support.contiguous_batches(shots, inventory, 3)
+    assert [[s['shot'] for s in batch] for batch in result] == [[10, 11, 12], [43], [44, 45, 46], [47]]
+    assert support.contiguous_batches([], inventory, 3) == []

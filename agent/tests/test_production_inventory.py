@@ -12,6 +12,39 @@ from flowboard.services import auth, prompt_coverage, prompt_writer
 from flowboard.services.video_analyzer import board, export, production, source_inventory
 
 
+def test_character_design_keeps_face_and_cited_wide_costume_views():
+    evidence = {str(i):{'frame':f'f{i}', 'shot':i} for i in range(1,9)}
+    shots = {str(i):{'source':{'shot_size':'WS' if i in (7,8) else 'CU'}} for i in range(1,9)}
+    frames = production.character_design_frames([f'f{i}' for i in range(1,9)], evidence, shots)
+    assert frames[:4] == ['f1','f2','f7','f8'] and len(frames) == 6
+
+
+def test_stale_generic_asset_mirror_does_not_duplicate_updated_design():
+    analysis = film()
+    cast = production.attach_inventory(analysis, {})
+    cast = deepcopy(cast)
+    cast['props'][0]['design'] = {'material': 'engraved brass'}
+    cast['assets'] = deepcopy(cast['background_groups'] + cast['props'])
+    cast['assets'][-1].pop('design', None)
+    result = production.attach_inventory(analysis, cast)
+    keys = [item['key'] for item in result['assets']]
+    assert len(keys) == len(set(keys))
+    prop = next(item for item in result['assets'] if item['kind'] == 'prop')
+    assert prop['design'] == {'material': 'engraved brass'}
+
+
+def test_verified_source_board_does_not_recreate_unused_character_candidate():
+    analysis = film()
+    obsolete = {**analysis['scene_inventory']['assets'][0], 'id':'unused-candidate'}
+    analysis['scene_inventory']['assets'].append(obsolete)
+    cast = production.attach_inventory(analysis, {})
+    cast['characters'] = [c for c in cast['characters'] if c['source_asset_id'] != 'unused-candidate']
+    cast['usage'] = {'method':'verified_source_inventory', 'unused_candidates':['unused-candidate']}
+    result = asyncio.run(board.build_board(analysis, {}, cast=cast))
+    assert 'unused-candidate' not in {c['source_asset_id'] for c in result['characters']}
+    assert 'unused-candidate' in {a['id'] for a in result['production_assets']}
+
+
 def film(prefix="harbor"):
     assets = [
         {
@@ -120,7 +153,7 @@ def test_scene_union_does_not_make_late_arrivals_present_earlier():
 def test_short_shot_merge_preserves_handoffs_and_evidence():
     analysis = film()
     result = asyncio.run(
-        board.build_board(analysis, {}, cast={"characters": [], "environments": []})
+        board.build_board(analysis, {}, cast={"characters": [], "environments": []}, preserve_source_shots=False)
     )
     first = result["shots"]["clip-01"][0]
     assert first["source_shots"] == [1, 2]
@@ -203,7 +236,7 @@ def test_separated_graphics_keep_source_metadata_through_board_shot_merge():
     assert cast["shots"]["1"]["source_graphics"] == [{**source_graphic, "source_shot": 1}]
     assert cast["shots"]["1"]["source_appearances"][0]["screen_graphics"] == [source_graphic]
     assert "source_graphics" not in cast["shots"]["1"]["source_appearances"][0]
-    result = asyncio.run(board.build_board(analysis, {}, cast=cast))
+    result = asyncio.run(board.build_board(analysis, {}, cast=cast, preserve_source_shots=False))
     first = result["shots"]["clip-01"][0]
     assert all(p["asset_id"] != graphic["id"] for p in first["asset_presence"])
     assert all(graphic["id"] not in row["scene_present_asset_ids"] for row in result["shots"]["clip-01"])
@@ -226,7 +259,7 @@ def test_verified_source_digests_survive_production_and_board_into_prompt_gate(h
     cast = production.attach_inventory(analysis, {})
     for n, observation in inventory["shots"].items():
         assert cast["shots"][n]["source_appearances"] == [{"source_shot": int(n), **observation}]
-    result = asyncio.run(board.build_board(analysis, {}, cast=cast))
+    result = asyncio.run(board.build_board(analysis, {}, cast=cast, preserve_source_shots=False))
     shots = result["shots"]["clip-01"]
     assert shots[0]["source_shots"] == [1, 2]  # exercise merged-shot provenance too
     references = [{"id": a["id"], "ref_label": f"@image{i}",

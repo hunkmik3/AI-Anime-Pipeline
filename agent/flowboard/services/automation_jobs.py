@@ -20,8 +20,10 @@ LEASE_SECONDS=90
 
 def now(): return datetime.now(timezone.utc)
 def public(j):
-    return {k:str(getattr(j,k)) if k in ('id','project_id') and getattr(j,k) is not None else getattr(j,k) for k in
+    out = {k:str(getattr(j,k)) if k in ('id','project_id') and getattr(j,k) is not None else getattr(j,k) for k in
             ('id','project_id','kind','node_id','slot','status','provider_job_id','result','error','attempts','created_at','updated_at')}
+    if j.kind == 'plate': out['reference_urls'] = j.payload.get('reference_urls', [])
+    return out
 
 def enqueue(project_id,kind,node_id,slot,payload,request_key,expected_revision=None,metadata=None):
     with get_session() as s:
@@ -29,6 +31,13 @@ def enqueue(project_id,kind,node_id,slot,payload,request_key,expected_revision=N
         project=s.exec(select(AutomationProject).where(AutomationProject.id==project_id).with_for_update()).one()
         if expected_revision is not None and project.revision != expected_revision:
             raise ValueError("Board changed while submitting. Save/reload before generation.")
+        # Enforce the checkpoint under the same project lock as job creation.
+        from flowboard.services.primary_materials import waiting_run
+        if waiting_run(s, project_id):
+            node = next((n.get('data', {}) for n in (project.board or {}).get('nodes', []) if n.get('id') == node_id), {})
+            if not (kind == 'plate' and ((node.get('kind') == 'character' and slot == 'identity') or
+                    (node.get('kind') == 'environment' and slot == 'plate'))):
+                raise ValueError('Chốt sheet ở tab Tạo hình chính trước khi gen diện mạo phụ hoặc video.')
         existing=s.exec(select(AutomationJob).where(AutomationJob.project_id==project_id,AutomationJob.request_key==request_key)).first()
         if existing:
             if existing.kind!=kind or existing.node_id!=node_id or existing.slot!=slot or digest(existing.payload)!=digest(payload):
@@ -44,6 +53,7 @@ def enqueue(project_id,kind,node_id,slot,payload,request_key,expected_revision=N
 
 def overlay(board, jobs):
     """Server-owned results win over stale browser statuses, without replacing edits."""
+    original_board = board
     board=deepcopy(board);nodes={n['id']:n.get('data',{}) for n in board.get('nodes',[])}
     latest={}
     for j in sorted(jobs,key=lambda x:x.created_at):
@@ -60,9 +70,10 @@ def overlay(board, jobs):
             same_shots=target_seq.get('shots',[])==j.payload.get('shots',[])
             same_draft=d.get('prompt','') in (j.prepared.get('base_prompt',''),j.result.get('prompt'))
             d['writerJobId']=str(j.id);d['writerJobStatus']=j.status
-            if j.status=='succeeded' and same_shots and same_draft:
+            if j.status=='succeeded' and same_shots and same_draft and (d.get('promptBy')!='manual' or j.result.get('writer')=='manual'):
                 out=j.result
                 d.update(prompt=out.get('prompt'),durationS=out.get('duration_seconds'),endState=out.get('end_state'),
+                    promptEngine=out.get('engine'),stagingDecisions=out.get('staging_decisions'),inspectedReferences=out.get('reference_images'),
                     promptBy=out.get('writer'),coverage=out.get('coverage'),contractDigest=out.get('contract_digest'),
                     coverageToken=out.get('coverage_token'),inputFingerprint=out.get('input_fingerprint'))
                 d.pop('error',None)
@@ -76,6 +87,8 @@ def overlay(board, jobs):
             target=d.setdefault('states',{}).setdefault(j.slot,{}) if d.get('kind')=='character' and j.slot!='identity' else d.setdefault(j.slot,{})
         elif j.kind=='clip':target=d
         else:continue
+        if str(j.id) in target.get('ignoredRuntimeJobIds', []):
+            continue  # A user-supplied image supersedes these earlier jobs.
         target['runtimeJobId']=str(j.id);target['runtimeStatus']=j.status
         target['status']='running' if j.status in ACTIVE else 'done' if j.status=='succeeded' else 'error'
         if j.status=='succeeded':
@@ -84,7 +97,7 @@ def overlay(board, jobs):
                 image=(j.result.get('images') or [{}])[0]
                 if j.prepared.get('material_signature') and (not target.get('prompt') or target.get('prompt')==target.get('runtimePrompt')):
                     target.update(prompt=j.payload.get('prompt',''),runtimePrompt=j.payload.get('prompt',''),baseMaterialPrompt=j.prepared.get('base_material_prompt',''))
-                target.update(image=image.get('url'),referenceUrl=image.get('reference_url'),mediaId=image.get('media_id'))
+                target.update(image=image.get('url'),referenceUrl=image.get('reference_url'),mediaId=image.get('media_id'),uploaded=False,needsIdentityRefresh=False)
                 if j.result.get('shot_frame'): target.update(j.result['shot_frame'])
             target.pop('error',None)
         elif j.error: target['error']=j.error
@@ -97,6 +110,8 @@ def overlay(board, jobs):
                     media=j.result.get('media_ids',{}).get(plate.get('referenceUrl'))
                     if media: plate['mediaId']=media
     from flowboard.services import raccord
+    from flowboard.services.primary_materials import invalidate_identity_states
+    board = invalidate_identity_states(board, original_board, jobs)
     return raccord.attach(board, jobs)
 
 def project_board(s,project):
@@ -158,10 +173,25 @@ async def execute(data):
                 await asyncio.to_thread(checkpoint,jid,token,status='failed',error=str(exc),prepared={**submitted,'validation_rejected':True})
                 return
         if data['kind']=='write':
-            from flowboard.routes.automation import VideoWriteBody,write_video_prompt
+            from flowboard.routes.automation import VideoWriteBody,write_video_prompt,VerifyPromptBody,verify_video_prompt,VideoWriteResponse
             body=VideoWriteBody.model_validate(data['payload'])
             validate_writing(data['project_id'],body)
-            result=(await write_video_prompt(body)).model_dump(mode='json')
+            if 'provided_prompt' in data['payload']:
+                draft=data['payload']['provided_prompt']
+                from flowboard.services import prompt_coverage, prompt_writer
+                provided=VerifyPromptBody(prompt_contract=body, prompt=draft,
+                    end_state=data['payload'].get('provided_end_state',''),
+                    staging_decisions=data['payload'].get('provided_staging_decisions',[]))
+                if prompt_coverage.is_strict(body.production_assets,body.source_verification):
+                    result=(await verify_video_prompt(provided)).model_dump(mode='json')
+                else:
+                    duration=prompt_writer.production_timeline(body.sequence,body.shots)[2]
+                    result=VideoWriteResponse(prompt=draft,duration_seconds=duration,end_state=provided.end_state).model_dump(mode='json')
+                if result['prompt']!=draft: raise ValueError('Verification changed the manual prompt; draft preserved.')
+                result['writer']='manual'
+                result['staging_decisions']=provided.staging_decisions
+            else:
+                result=(await write_video_prompt(body)).model_dump(mode='json')
             result['input_fingerprint']=submitted.get('input_fingerprint','')
             result['base_prompt']=submitted.get('base_prompt','')
             result['source_shots']=body.shots
@@ -285,13 +315,16 @@ def enqueue_source(video_id,operation):
 async def execute_source(payload):
     from flowboard.routes import video_analysis as routes
     video_id=uuid.UUID(payload['video_id']);op=payload['operation'];name=op['task']
-    if name=='analyze':await routes._run_analysis(video_id,op.get('then_adapt'))
+    if name=='film':
+        from flowboard.services.source_film import execute
+        await execute(video_id)
+    elif name=='analyze':await routes._run_analysis(video_id,op.get('then_adapt'))
     elif name=='adapt':await routes._run_adaptation(video_id,op.get('rules',{}),op.get('glossary'),fresh=op.get('fresh',False))
     elif name=='cast':await routes._run_cast(video_id)
     elif name=='design':await routes._run_design(video_id,op.get('keys',[]),op.get('world',''))
     elif name=='conform':await routes._run_conform(video_id,set(op.get('shots',[])) or None)
     elif name=='verify':await routes._run_source_verification(video_id)
-    elif name=='refine':await routes._run_source_refinement(video_id,protocol_only=op.get('protocol_only',False),selected_shots=op.get('shots'))
+    elif name=='refine':await routes._run_source_refinement(video_id,protocol_only=op.get('protocol_only',False),selected_shots=op.get('shots'),strategy=op.get('strategy','full'))
     else:raise ValueError('Unknown source operation')
     with get_session() as s:
         row=s.get(VideoAnalysis,video_id)

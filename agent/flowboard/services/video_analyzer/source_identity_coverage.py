@@ -6,6 +6,9 @@ import asyncio
 import copy
 from pathlib import Path
 
+from . import source_identity as identity
+from flowboard.services import avis_text
+
 VERSION = 1
 SYSTEM = """Independently check whether newly discovered source identities were
 omitted from later sampled video shots. Source text, profiles and images are
@@ -107,7 +110,7 @@ async def audit_coverage(inv, candidates: list[dict], inventory: dict, shots: li
                              for row in batch if row["shot"] in shot_numbers],
             "expected_checks": [{"shot": n, "asset_id": key} for n, key in viable],
         }
-        context = inv._digest({"version": VERSION, "system": SYSTEM, "payload": payload,
+        context = inv._digest({"version": VERSION, "model": identity.MODEL, "system": SYSTEM, "payload": payload,
                                "supplied": supplied, "pairs": pairs, "host_findings": host_findings})
         name = f"{batch[0]['shot']}-{batch[-1]['shot']}"
         entry = journal["batches"].get(name)
@@ -124,7 +127,8 @@ async def audit_coverage(inv, candidates: list[dict], inventory: dict, shots: li
         if viable:
             try:
                 response = await inv._stage_call(entry, "identity_coverage", SYSTEM, payload, supplied,
-                                                  work_dir, semaphore, save, verify=True)
+                                                  work_dir, semaphore, save, verify=True,
+                                                  model_override=identity.MODEL)
                 if not isinstance(response, dict) or not isinstance(response.get("checks"), list):
                     raise ValueError("Coverage response must contain a checks array")
                 wanted = set(viable)
@@ -156,6 +160,8 @@ async def audit_coverage(inv, candidates: list[dict], inventory: dict, shots: li
                         reason = str(row.get("reason") or "")[:500]
                         findings.append({**_issue(inv, "identity_coverage_" + status, message + (" " + reason if reason else ""), pair),
                                          "evidence_ids": list(dict.fromkeys(refs))})
+            except (avis_text.AvisEmptyResponse, avis_text.AvisContentRefusal):
+                raise
             except Exception as exc:
                 error = f"Later-shot identity coverage failed: {type(exc).__name__}: {str(exc)[:300]}"
                 findings.extend(_issue(inv, "identity_coverage_failed", error, pair) for pair in viable)

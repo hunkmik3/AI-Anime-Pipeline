@@ -41,6 +41,7 @@ def run(video: Path, work_dir: Path, *, deep: bool = False) -> dict:
     timings["probe"] = round(time.monotonic() - t, 1)
     t = time.monotonic()
 
+    _progress("probe", 1, 1)
     _progress("cuts", 0, 1)
     report = cuts.detect_cuts(video, fps_hint=meta.fps)
     spans = frames.spans_from_cuts(report.cuts, meta.duration)

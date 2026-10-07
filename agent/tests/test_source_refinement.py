@@ -35,7 +35,13 @@ def _mock(monkeypatch, *, disposition='resolved', omit=False, caption=False, unc
     async def complete(model,messages,**kwargs):
         payload=json.loads(messages[1]['content'][0]['text']);calls.append(payload)
         if fail_first and len(calls)==1:raise RuntimeError('provider unavailable')
-        if 'proposed_source_shots' in payload:
+        if 'targets' in payload:
+            data={'observations':[{'shot':s['shot'],'evidence_ids':[f"shot-{s['shot']}-frame-1"],
+                                   'people':['visible person']} for s in payload['targets']]}
+        elif 'per_shot_inventory' in payload:
+            data={'checks':[{'shot':s['shot'],'evidence_ids':[f"shot-{s['shot']}-frame-1"],
+                             'findings':[]} for s in payload['proposed_source_shots']]}
+        elif 'proposed_source_shots' in payload:
             checks.append(payload)
             rows=[]
             for s in payload['proposed_source_shots']:
@@ -68,11 +74,11 @@ def test_refinement_independent_resolution_preserves_speech_and_original_audit(t
     assert result['transcript']==original['transcript']
     assert result['source_refinement_history'][0]['prior_report']==original['source_verification']
     assert case[2]==original
-    assert len(calls)==2
+    assert len(calls)==4
     assert _run(case)==result
-    assert len(calls)==2
+    assert len(calls)==4
     _run((case[0],case[1],result))
-    assert len(calls)==2
+    assert len(calls)==4
 
 
 def test_cached_source_frames_work_without_movie_and_restoration_invalidates(tmp_path,monkeypatch):
@@ -95,11 +101,12 @@ def test_missing_movie_does_not_waive_unresolved_visual_fact(tmp_path,monkeypatc
     assert 1 in result['unresolved_shots']
 
 
-@pytest.mark.parametrize('change',['video','frame','model'])
+@pytest.mark.parametrize('change',['video','frame','model','transcript'])
 def test_completed_result_is_invalidated_by_source_or_model_change(tmp_path,monkeypatch,change):
     case=_case(tmp_path);calls,_=_mock(monkeypatch);result=_run(case);count=len(calls)
     if change=='video':case[0].write_bytes(b'new source')
     elif change=='frame':(case[1]/case[2]['shots'][0]['frames'][0]).write_bytes(b'changed evidence')
+    elif change=='transcript':result['transcript']['segments'][0]['text']='Changed narrative identity cue'
     else:monkeypatch.setattr(inv,'VERIFY_MODEL','different-model')
     _run((case[0],case[1],result))
     assert len(calls)>count
@@ -130,7 +137,7 @@ def test_provider_failure_can_resume_without_accepting_old_report(tmp_path,monke
     assert failed['shots']==case[2]['shots']
     result=_run(case)
     assert result['source_verification']['status']=='verified'
-    assert len(calls)==3
+    assert len(calls)==5
 
 
 @pytest.mark.parametrize('unconfirmed',[False,True])
@@ -230,7 +237,8 @@ def test_remaining_scope_keeps_verified_shot_and_original_speech(tmp_path, monke
     assert final['source_verification']['refinement']['scope']['retained_verified_shots']==[2]
     assert final['shots'][1]==before
     assert final['dialogue_track']==case[2]['dialogue_track']
-    assert len(calls)==2
+    assert len(calls)==4
+    assert checks[0]['fresh_observations']['observations'][0]['shot']==1
     assert [s['shot'] for s in checks[0]['proposed_source_shots']]==[1]
 
 
@@ -291,7 +299,7 @@ def test_writer_echoed_proven_alias_cannot_create_duplicate_person(tmp_path,monk
     async def echo(model,messages,**kwargs):
         reply=await original(model,messages,**kwargs)
         payload=json.loads(messages[1]['content'][0]['text'])
-        if 'proposed_source_shots' not in payload:
+        if 'draft_inventory' in payload:
             data=json.loads(reply.text)
             for row in data['shots'].values():
                 for presence in row['asset_presence']:

@@ -1,0 +1,231 @@
+Create a **19.867-second square 1:1 semi-realistic cinematic 3D sequence** inside the same occupied campus hallway during daylight.
+
+## REFERENCE CONTROL
+
+- **@image1 = THEO — PRIMARY CHARACTER REFERENCE.**
+  Preserve the approved adult face, swept wavy brown hair, clean-shaven jaw and lean proportions. Lock the charcoal-navy blazer, white shirt, grey/navy PLAID tie, charcoal-grey trousers and black lace-up shoes. His navy backpack remains on his anatomical RIGHT shoulder; the sheet's rear-view omission is not permission to remove it from the film. No mid-grey jacket variant. Theo and Noah are separate people, even though their existing sheets resemble each other.
+
+- **@image2 = AVA SHAW — PRIMARY CHARACTER REFERENCE.**
+  Preserve the adult face, long dark-brown waves, hair part and natural proportions. Lock the opaque powder-blue satin dress: broad shoulder straps, straight neckline, fitted bodice and knee-length A-line skirt. Preserve the short silver linked necklace, small drop earrings and closed-toe silver low heels. No thin-strap mini-dress variant, pink dress, pearl necklace or costume change between angles.
+
+- **@image3 = DANA — CHARACTER REFERENCE.**
+  Preserve her adult face and short dark pixie haircut, fitted black blazer, white high-neck blouse with the approved small triangular upper-chest opening, covered torso and waist, dark-brown straight trousers and black ankle boots. She is Ava's composed assistant, not a campus attendee. Keep her separate from the guards.
+
+- **@image4 = GRANT — CHARACTER REFERENCE.**
+  Preserve his mature adult face, square jaw, short brown hair, broad build, black suit, WHITE shirt, BLACK tie, black shoes and black aviator sunglasses. Keep the sunglasses on. He is distinct from all three supporting guards and remains silent in this clip.
+
+- **@image5 = CAMPUS HALLWAY — ENVIRONMENT / LIGHTING REFERENCE ONLY.**
+  Preserve the continuous cream-and-blue corridor, blue locker banks, wooden classroom doors, glazed wooden double doors, high windows, pendant ceiling fixtures and pale terrazzo floor. Use this image for architecture, materials and daylight, not its exact camera position. Its empty presentation does NOT mean an empty filmed corridor; populate the shot with the prescribed recurring ensemble.
+
+- **@image6 = CAMPUS ENSEMBLE — RECURRING BACKGROUND IDENTITIES.**
+  The six-person lineup defines six distinct adults, not six copies of one face. Left to right, the first three women are Nora (blonde bob), Lena (straight dark bob) and Ria (tied-back dark hair); keep the three men distinct. Preserve their navy campus outfits. Stage the established group along the corridor walls, leaving the central passage open. Show the subset admitted by each camera angle; people outside the crop remain in the scene. A pose or prop in the lineup is not an instruction to repeat that pose in every shot.
+
+- **@image7 = SUPPORTING SECURITY TEAM — SUPPORTING CAST REFERENCE.**
+  Preserve the three distinct mature guards and their black suits, white shirts and black ties: bald sunglasses-wearing guard at sheet-left, short-haired sunglasses-wearing guard at sheet-center, dark-haired guard without glasses at sheet-right. Keep the same people through the procession. These are supporting guards, separate from Grant; do not duplicate Grant's face across the team.
+
+- **@image8 = PROP ATLAS — ESTABLISHED OBJECTS, NOT A SCENE OR A SCALE CHART.**
+  Keep the same compact dark-green gift box, textured exterior, fitted lid seam and small gold ornament from the earlier clips. The two views depict ONE box. It remains small enough for one adult palm to support its base; never enlarge it into a book-sized case. The navy backpack is ONE bag. The oval silver hand mirror is ONE object shown from two sides. Use these cells to preserve construction and colour, not to duplicate objects. Papers, books, phones and binder remain only with already-established background holders if included by the camera; they must not appear in the lead characters' hands. Cell size does not define physical object scale. The timeline explicitly controls whether the same box is open or closed.
+
+- **@image9 = WATCH / TONIC ATLAS — INTERIOR AND DETAIL REFERENCE.**
+  Top-center and bottom-right define the green box's pale cream lining, fitted watch cushion and ONE silver-toned wristwatch with a round pale dial and articulated metal bracelet. Top-right shows the SAME watch alone for design inspection, not a second loose watch to add. Preserve the box exterior, footprint and hand-relative scale established by the main prop atlas; this sheet's larger presentation must not resize or replace it. The lid opens on one rear hinge; no detached lid, extra case or stacked box. The watch remains nested inside unless an action explicitly removes it; none does in these clips. Bottom-left shows two views of ONE small vivid-pink bottle with a light cream cap. Activate that bottle only in clip 6. The sheet is a design atlas: no panel borders, studio background, enlarged watch insert or automatic prop actions belong in the finished film.
+
+**Active prop selection for this clip:** the same green box and nested silver watch, navy backpack and silver hand mirror; the pink bottle is inactive.
+
+The references lock identities, approved wardrobe, object construction and architecture. The timeline controls poses, movement, visibility and lid states. Generate animated film shots, never moving reference panels. No reference video or storyboard keyframe is attached; do not invent an @video binding. Compose directly for a square frame, keeping essential hands, box contact and background depth visible rather than cropping a horizontal master.
+
+---
+
+## STYLE
+
+Premium semi-realistic cinematic 3D, matching the approved character sheets: natural adult anatomy, proportionate heads, restrained facial animation, sculpted facial planes, groomed hair, woven fabrics, subtle skin shading and believable physical weight. Keep a clearly rendered animated-feature appearance rather than live-action photography.
+
+Warm daylight enters through the glazed wooden doors and high windows; soft neutral ceiling fill preserves readable faces. Cream plaster, muted blue lockers, warm wood and pale terrazzo remain consistent through reverse angles. Use gentle depth of field without dissolving people or props. Maintain the same light direction in the physical corridor when the camera changes sides.
+
+Animate breathing, eye focus, weight shifts, cloth and hair as small motivated movements. Camera motion is smooth only where specified. No stepped 2D timing, cel shading, oversized cartoon eyes, childlike redesign, plastic skin, excessive beauty-filter smoothing or exaggerated comedy acting. Do not reproduce reference-sheet panels, labels or neutral studio backgrounds.
+
+**Dramatic intention:** Ava mistakes Theo for her hired boyfriend, takes his gift box and explains her publicity plan; Theo's good-natured confidence becomes puzzled silence.
+
+**Opening state:** Continue immediately after Theo's introduction. He faces Ava at the same blue lockers, right arm relaxed, LEFT hand supporting the same CLOSED green box and backpack on his RIGHT shoulder. Ava's forearms are loosely folded; her RIGHT fingers still hold the silver mirror against the outer forearm. Dana is behind and to Ava's side; Grant and the same supporting guards and campus ensemble keep their established positions. This is the same conversation, not a new scene.
+
+---
+
+# SHOT 1 | 00:00.000–00:01.967
+
+**Duration:** 1.967 seconds
+**Framing:** Medium close-up of Theo — slightly low angle
+**Camera:** Static.
+
+Theo continues facing Ava just outside the crop. He finishes his introduction with the same small amused smile. Keep his natural eyes, navy blazer, PLAID tie and the backpack strap on his anatomical RIGHT shoulder. His LEFT hand still supports the closed green box at waist level below the crop; his right arm is relaxed. Do not suddenly fold both arms and lose the box. The pale corridor wall and any admitted locker edge remain consistent with the previous reverse angle.
+
+## DIALOGUE
+
+THEO — SPOKEN ON CAMERA, CONTINUING FROM THE PREVIOUS CLIP:
+“and I have no followers on any social media.”
+
+**Delivery / audio:** Brisk, understated English, continuing his previous sentence without repeating his name, grades or skateboarding line. Only Theo lip-syncs.
+
+**End state:** Theo retains the closed box; Ava remains opposite.
+
+---
+
+# SHOT 2 | 00:01.967–00:06.300
+
+**Duration:** 4.333 seconds
+**Framing:** Over-the-shoulder past Theo toward Ava — eye level
+**Camera:** Static; leave the lower edge wide enough to read the small mirror handoff.
+
+Theo's shoulder/head edge frames the right foreground. Ava is centered; Dana remains behind her toward screen-left, Grant farther back toward screen-right with aviators on. The same campus attendees remain visible in the corridor depth; supporting guards retain their separate faces and positions.
+
+Ava unfolds her arms. In one small visible action at waist level, her RIGHT hand offers the silver mirror to Dana's LEFT hand; Dana takes its handle before Ava releases. Keep both people and the mirror in view through that transfer. Dana holds it low at her LEFT side for all subsequent shots. Ava's now-free right hand drops naturally. Ava brings her LEFT fingertips beneath her chin and studies Theo with mild amusement as she speaks. Let the transfer happen during the initial glance, without an extra cut or new dialogue.
+
+## DIALOGUE
+
+AVA — SPOKEN ON CAMERA:
+“Not exactly who I was expecting,”
+
+**Delivery / audio:** Thoughtful, conversational English, lightly amused. Theo, Dana and Grant remain silent.
+
+**End state:** Mirror is now with Dana, LEFT hand; Ava touches her chin with her LEFT. Theo still has the CLOSED box.
+
+---
+
+# SHOT 3 | 00:06.300–00:08.567
+
+**Duration:** 2.267 seconds
+**Framing:** Medium close-up of Ava — eye level
+**Camera:** Static.
+
+Continue the same chin-touch pose. Ava lowers her LEFT hand and folds her now-empty forearms once, settling into a confident social smile toward Theo. The mirror must not reappear in her hands: Dana retains it just outside this close crop. Keep Ava's broad blue straps, silver necklace and adult face unchanged. The same people remain behind her, softly visible where the angle admits them.
+
+## DIALOGUE
+
+AVA — SPOKEN ON CAMERA, CONTINUING:
+“but okay. I guess you're my new boyfriend.”
+
+**Delivery / audio:** One flowing English continuation, confident and matter-of-fact; no exaggerated flirtation or new pause before the last word.
+
+**End state:** Ava holds the folded-arm pose; Theo holds the box opposite her.
+
+---
+
+# SHOT 4 | 00:08.567–00:10.067
+
+**Duration:** 1.500 seconds
+**Framing:** Medium close-up of Theo — eye level
+**Camera:** Short restrained push-in.
+
+Start on Theo's slight smile. His brow furrows and his mouth parts as the misunderstanding lands. Preserve the visible right-shoulder backpack strap and the small shoulder-side edge of the bag. His LEFT palm still supports the box just below the crop. His right forearm can rest loosely across his lower torso, but do not lock both hands into a folded pose. Ava stays outside this frame; no extra person or box insert is added.
+
+## DIALOGUE
+
+THEO — SPOKEN ON CAMERA:
+“Boyfriend?”
+
+**Delivery / audio:** One puzzled English word, then a short silent held look. No repeat or comic double take.
+
+**End state:** He begins loosening the right forearm so the next insert can show a natural supporting grip.
+
+---
+
+# SHOT 5 | 00:10.067–00:10.900
+
+**Duration:** 0.833 seconds
+**Framing:** Tight insert of hands and the closed green box
+**Camera:** Static, eye level.
+
+Cut to the ONE compact box between them. Theo supports its base from screen-right, with his LEFT palm beneath it and his right fingertips briefly steadying the edge. Ava's LEFT hand enters from screen-left, grips the base and draws the whole CLOSED box toward her. Theo releases only once her hand supports its weight. End on his empty open hands at screen-right. Preserve the same green texture, lid seam and hand-relative dimensions; the box moves, it does not stretch. No watch is visible through the lid. Ava's RIGHT hand is free to assist after this transfer; the mirror stays with Dana.
+
+**End state:** Ava now holds the closed box; Theo has released it. One transfer, no duplicate case.
+
+---
+
+# SHOT 6 | 00:10.900–00:11.467
+
+**Duration:** 0.567 seconds
+**Framing:** Brief medium close-up of Theo past Ava’s blurred shoulder
+**Camera:** Static; a clear editorial cut from the hand insert.
+
+Theo holds a wide-eyed, slightly open-mouthed reaction, both now-empty hands open in a small unfinished gesture. Ava's dark hair and blue shoulder stay blurred at the left foreground edge. A small cropped green corner low at that edge belongs to the SAME box she just took; do not expand it into a second object. This is a brief silent reaction, not an added speech or title card.
+
+**End state:** Hold his startled look. Box stays closed with Ava; no dialogue.
+
+---
+
+# SHOT 7 | 00:11.467–00:14.467
+
+**Duration:** 3.000 seconds
+**Framing:** Medium close-up of Ava and the box — eye level
+**Camera:** Static.
+
+Ava holds the box low in front of her, LEFT palm supporting the base. Her RIGHT fingers lift its single hinged lid. Keep the lid attached at the same rear edge; opening changes its angle, not the size of either part. Pale cream lining becomes visible but the watch is indistinct from this view. She looks down with a pleased smile, then glances toward Theo while asking her question. The mirror is absent from her hands because Dana visibly received it earlier. Preserve the soft occupied corridor behind her.
+
+## DIALOGUE
+
+AVA — SPOKEN ON CAMERA:
+“What's wrong? I thought my messages were clear.”
+
+**Delivery / audio:** Warm, practical English. Let the opening action and glance accompany one uninterrupted line; no invented contents, brand reading or added giggle.
+
+**End state:** The box is OPEN, supported in Ava’s LEFT palm; her RIGHT fingertips control the raised lid.
+
+---
+
+# SHOT 8 | 00:14.467–00:16.767
+
+**Duration:** 2.300 seconds
+**Framing:** Close-up of Theo with Ava and the open box at lower-left
+**Camera:** Static, eye level.
+
+Theo stays center-right and silently lowers his eyes toward the box. Ava's partial dark-haired shoulder and hands remain at the left foreground; her mouth is outside this view. Her LEFT palm supports the same OPEN case low between them. The small silver watch is now visible nested on its cream cushion: one pale round dial and one linked bracelet. Do not detach the watch, place it on a wrist or change the box into a larger display case. Keep Theo's puzzled brow, normal eyes and right backpack strap.
+
+## DIALOGUE
+
+AVA — OFF SCREEN, CONTINUING:
+“A serious boyfriend will be good for my”
+
+**Delivery / audio:** Continue Ava’s English explanation over Theo’s silent reaction. Theo never lip-syncs her words. Carry the unfinished phrase across the cut.
+
+**End state:** Watch remains nested; open box stays with Ava.
+
+---
+
+# SHOT 9 | 00:16.767–00:19.867
+
+**Duration:** 3.100 seconds
+**Framing:** Over-the-shoulder past Theo toward Ava — medium close-up
+**Camera:** Static, eye level.
+
+The box starts OPEN and low in Ava's LEFT palm. While she finishes the sentence, her RIGHT fingertips lower the attached lid until its seam closes, then she lowers the whole CLOSED box slightly. Show this closure once before the box moves below the main crop. She lifts her gaze to Theo with a persuasive smile. His navy shoulder remains cropped and defocused at frame-right. Dana, Grant, the same guards and wall-side attendees remain in their established depth; soft focus does not replace them with an empty hall.
+
+## DIALOGUE
+
+AVA — SPOKEN ON CAMERA, CONTINUING:
+“image. We just have to be seen in public a few times.”
+
+**Delivery / audio:** The first word completes the previous sentence. English, brisk but clear; no repeated opening clause and no extra crowd reaction.
+
+**End state:** Box CLOSED with Ava, watch concealed inside. Dana holds mirror LEFT; Theo’s hands are empty, backpack RIGHT.
+
+---
+
+## AUDIO
+
+NO BGM. NO BACKGROUND MUSIC. NO SCORE.
+Keep low continuous corridor room tone, soft cloth movement and small hand/box sounds. The mirror transfer and lid movement are quiet physical details, not dramatic sound effects.
+Use only the quoted English dialogue. Theo speaks in Shots 1 and 4. Ava speaks in Shots 2–3 and 7–9; her line in Shot 8 is OFF SCREEN and continues into Shot 9. The brief insert and reaction in Shots 5–6 are silent. Dana, Grant, supporting guards and campus attendees have no intelligible lines. No repeated introductions, spoken title-card text, Chinese speech, captions, subtitles or floating names.
+
+---
+
+## CONTINUITY / NEGATIVE CONSTRAINTS
+
+Exactly 9 ordered film shots; the box-taking insert and silent reaction remain two distinct cuts. Follow the source timing without adding a separate mirror scene.
+
+Physical chain: Theo LEFT holds the CLOSED box at the opening. Ava RIGHT hands the mirror to Dana LEFT in Shot 2. Ava LEFT takes the CLOSED box once in Shot 5. She supports the base LEFT and opens the hinged lid RIGHT in Shot 7. The watch becomes readable inside in Shot 8. She closes the lid RIGHT in Shot 9 and still retains the whole box. Dana holds the mirror LEFT through the end. No other transfer occurs.
+
+The green case is one object across the general prop atlas and watch atlas. Keep its original exterior and palm-relative scale; use the latter only for lining, hinge and watch detail. Watch stays nested inside whether visible or concealed. No extra box, detached lid, watch-on-wrist action or tonic bottle.
+
+The camera changes angle inside one ongoing corridor conversation. Preserve the same crowd at the walls and the same entourage behind Ava. Dana remains available at Ava's side for the mirror transfer; Grant keeps his sunglasses and stays distinct from the three supporting guards. Reframing, focus or a foreground shoulder never resets their positions or removes them.
+
+Lock faces, opaque costumes, hairstyles and jewellery to their references. Ava wears the broad-strap powder-blue knee-length dress; Theo keeps the navy blazer, plaid tie and grey trousers. No crossed-arm pose that deletes an occupied hand, rubber fingers, extra limbs, duplicated dialogue or unmotivated orbit.
+
+Finish with Ava holding the CLOSED box low and smiling toward the puzzled Theo. Dana has the mirror; Theo has no gift in his hands. Keep the same positions for the next clip.

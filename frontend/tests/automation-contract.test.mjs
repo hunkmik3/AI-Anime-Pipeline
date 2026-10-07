@@ -57,6 +57,23 @@ const video = () => store.getState().nodes.find((n) => n.id === "vid:clip-01").d
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 test("asset import, coverage contract, and cross-film isolation", async (t) => {
+  await t.test("freeform cinematic writing includes crowd and prop reference bindings", async () => {
+    await importFilm("freeform");
+    store.setState({ productionAssets: [], sourceVerification: undefined });
+    const contract = store.getState().promptContract("clip-01");
+    assert.equal(contract.reference_assets.length, 2);
+    assert.deepEqual(contract.reference_assets.map((r) => r.kind).sort(), ["background_group", "prop"]);
+    assert.equal(contract.production_assets, undefined);
+  });
+  await t.test("default prompt creation always calls the writer", async () => {
+    await importFilm("default-writer");
+    handler = async (path) => path.endsWith("/video/write") ? written() : defaults(path);
+    calls.length = 0;
+    await store.getState().primeVideoPrompt("clip-01");
+    assert.equal(calls.filter((c) => c.path.endsWith("/video/write")).length, 1);
+    assert.equal(calls.filter((c) => c.path.endsWith("/video/prompt")).length, 0);
+    assert.equal(video().prompt, "Verified prompt");
+  });
   await t.test("hydrates all asset kinds and retains expected metadata without images", async () => {
     await importFilm("workshop");
     const state = store.getState();
@@ -79,6 +96,7 @@ test("asset import, coverage contract, and cross-film isolation", async (t) => {
     handler = async (path) => path.endsWith("/video/write") ? written()
       : path.endsWith("/video/clip") ? { url: "https://assets.invalid/clip.mp4", persisted: true, warnings: [] } : defaults(path);
     await store.getState().primeVideoPrompt("clip-01", { writer: true });
+    assert.equal(store.getState().promptContract("clip-01").sequence.preserve_source_shots, store.getState().preserveSourceShots);
     calls.length = 0;
     await store.getState().generateClip("clip-01");
     assert.equal(calls.filter((c) => c.path.endsWith("/video/write")).length, 0);
@@ -346,3 +364,36 @@ for (const previousPrompt of ["", "A manually approved prompt."]) {
     assert.match(video().error, /no usable content/);
   });
 }
+
+test('manual video edits invalidate receipts and are verified unchanged, never rewritten',async()=>{
+ await importFilm('manual');
+ store.setState({currentProjectId:null});
+ store.getState().editVideoPrompt('clip-01','User edited exact prompt');
+ assert.equal(video().promptBy,'manual');assert.equal(video().coverageToken,undefined);
+ calls.length=0;
+ handler=async(path,body)=>path.endsWith('/verify-prompt')?{...written(),prompt:body.prompt}
+  :path.endsWith('/video/clip')?{url:'https://test/manual-video',persisted:true}:defaults(path);
+ await store.getState().generateClip('clip-01');
+ assert.equal(calls.filter(c=>c.path.endsWith('/verify-prompt')).length,1);
+ assert.equal(calls.filter(c=>c.path.endsWith('/video/write')).length,0);
+ assert.equal(calls.find(c=>c.path.endsWith('/video/clip')).body.prompt,'User edited exact prompt');
+ assert.equal(video().prompt,'User edited exact prompt');assert.equal(video().promptBy,'manual');
+});
+
+test('failed manual verification cannot submit a clip or overwrite the draft',async()=>{
+ await importFilm('manual-fail');
+ store.getState().editVideoPrompt('clip-01','My incomplete prompt');calls.length=0;
+ handler=async(path)=>{if(path.endsWith('/verify-prompt'))throw new Error('Missing dialogue');return defaults(path)};
+ await store.getState().generateClip('clip-01');
+ assert.equal(video().prompt,'My incomplete prompt');assert.match(video().error,/Missing dialogue/);
+ assert.equal(calls.some(c=>c.path.endsWith('/video/write')||c.path.endsWith('/video/clip')),false);
+});
+
+test('editing during manual verification preserves the newest draft without stale receipt',async()=>{
+ await importFilm('manual-race');store.getState().editVideoPrompt('clip-01','First draft');
+ let finish;handler=async(path)=>path.endsWith('/verify-prompt')?new Promise(resolve=>{finish=resolve}):defaults(path);
+ const pending=store.getState().verifyVideoPrompt('clip-01');await tick();
+ store.getState().editVideoPrompt('clip-01','Newer draft');finish({...written(),prompt:'First draft'});
+ await assert.rejects(()=>pending,/đã thay đổi/);
+ assert.equal(video().prompt,'Newer draft');assert.equal(video().coverageToken,undefined);
+});

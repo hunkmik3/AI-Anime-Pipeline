@@ -109,17 +109,16 @@ def verify(project_id, package, receipts, references):
                 raise ValueError('Atlas result does not match its source manifest.')
             verified.append(supplied)
     material=apply(package['materials'],verified)
-    bound={r.get('source_asset_id') or r.get('id') or r.get('key'):r for r in references}
+    from flowboard.services.shot_package import material_reference
     for m in material.values():
-        ref=bound.get(m['asset_id'],{})
+        ref=material_reference(material,m,references)
         if ref.get('ref_url')!=m['reference_url'] or (m['media_id'] and ref.get('media_id')!=m['media_id']):
             raise ValueError('Atlas transport binding does not match '+m['asset_id'])
         if m.get('atlas_cell') and ref.get('atlas_cell')!=m['atlas_cell']:raise ValueError('Atlas cell label changed.')
     # Existing package verification still checks every original material.
     restored=deepcopy(references)
-    originals={m['asset_id']:m for m in package['materials'].values()}
-    for ref in restored:
-        aid=ref.get('source_asset_id') or ref.get('id') or ref.get('key')
-        if aid in originals:
-            ref.update(ref_url=originals[aid]['reference_url'],media_id=originals[aid]['media_id'])
+    for m in package['materials'].values():
+        ref=material_reference(package['materials'],m,restored)
+        if ref:
+            ref.update(ref_url=m['reference_url'],media_id=m['media_id'])
     return restored

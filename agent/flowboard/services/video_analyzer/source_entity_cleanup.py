@@ -10,13 +10,16 @@ import asyncio
 import copy
 from collections import Counter
 
+from flowboard.services import avis_text
+
 from . import source_identity as identity
 from .source_asset_layers import _invalidate_stage, _readable_evidence
 
-VERSION = 1
+VERSION = 2
 MAX_PAIRS = 256
 MAX_PAIRS_PER_ASSET = 4
 MAX_ANCHORS_PER_ASSET = 3
+MAX_PROPOSAL_IMAGES = 48
 ONSCREEN = {"visible", "partial", "occluded", "uncertain"}
 
 PROPOSE_SYSTEM = """Suggest possible duplicate source-film entities for IMAGE review.
@@ -33,6 +36,9 @@ person standing in the scene. Group identity requires the SAME established
 members, not just people at the same location or event. Empty pairs is valid.
 You cannot approve, rename, delete or merge an entity; independent image checks
 will decide each proposed pair. Do not infer names or unseen relationships.
+When character anchors are supplied, inspect them: draft age/name labels may be
+wrong. A child mislabelled as an adult in another camera angle still merits a
+visual comparison. A proposal is only a question, not an identity decision.
 """
 
 VISUAL_SYSTEM = """Compare TWO candidate entities in a fictional source film.
@@ -113,7 +119,8 @@ def _anchor_candidate(asset, inventory, readable):
         if not remaining:
             break
         _, ref = min(remaining, key=lambda item: (
-            item[0], readable[item[1]].get("shot") in used_shots, order(item[1])))
+            item[0], readable[item[1]].get("shot") in used_shots,
+            -readable[item[1]].get("timestamp_s", 0), item[1]))
         selected.append(ref)
     return {"asset": copy.deepcopy(asset), "anchor_evidence_ids": selected,
             "appearances": appearances}
@@ -208,6 +215,24 @@ def _coverage_hints(inventory, prior_findings):
     return sorted(hints, key=lambda hint: (-len(hint["omitted_shots"]), hint["asset_a"], hint["asset_b"]))
 
 
+def _shared_anchor_hints(inventory):
+    """Wrong draft names/ages must not prevent comparison of shared images.
+
+    An overlapping frame is only a candidate hint: two separate people can
+    inhabit one image. Co-occurrence guards and two image reviews still decide.
+    """
+    characters = [a for a in inventory.get("assets", []) if a.get("kind") == "character"]
+    result = []
+    for i, left in enumerate(characters):
+        for right in characters[i+1:]:
+            common = set(left.get("evidence_ids", [])) & set(right.get("evidence_ids", []))
+            if common:
+                result.append({"asset_a": left["id"], "asset_b": right["id"],
+                    "shared_evidence_ids": sorted(common),
+                    "reason": "These draft character profiles share source anchors. Check for duplicate identity despite conflicting draft names/ages; shared frames alone do not prove identity."})
+    return result
+
+
 def _pairs(response, assets, *, candidate_hints=None):
     if not isinstance(response, dict) or not isinstance(response.get("pairs"), list):
         raise ValueError("Entity proposal must contain a pairs array")
@@ -257,9 +282,12 @@ async def _check_pass(inv, role, pair, candidates, supplied, entry, work_dir, se
                "candidate_a": candidates[pair[0]], "candidate_b": candidates[pair[1]]}
     try:
         response = await inv._stage_call(entry, stage, REVIEW_SYSTEM if role == "review" else VISUAL_SYSTEM,
-                                         payload, supplied, work_dir, semaphore, save, verify=True)
+                                         payload, supplied, work_dir, semaphore, save, verify=True,
+                                         model_override=identity.MODEL)
         decision = _validate_decision(response, pair, candidates)
         return decision, None
+    except (avis_text.AvisEmptyResponse, avis_text.AvisContentRefusal):
+        raise
     except Exception as exc:
         problem = f"Independent visual {role} unresolved: {type(exc).__name__}: {str(exc)[:250]}"
         _invalidate_stage(entry, stage, problem)
@@ -350,15 +378,16 @@ findings; retaining separate IDs does not invalidate their existing shot facts.
     readable = await asyncio.to_thread(_readable_evidence, inv, evidence, work_dir)
     candidates = {key: _anchor_candidate(a, inventory, readable) for key, a in assets.items()}
     selected = {ref for c in candidates.values() for ref in c["anchor_evidence_ids"]}
-    hints = _coverage_hints(inventory, prior_findings) if prior_findings else []
+    hints = _shared_anchor_hints(inventory) + (_coverage_hints(inventory, prior_findings) if prior_findings else [])
     context = {"version": VERSION, "systems": [PROPOSE_SYSTEM, VISUAL_SYSTEM, REVIEW_SYSTEM],
                "models": [inv.MODEL, inv.VERIFY_MODEL], "inventory": inventory,
                "evidence": [readable[r] for r in sorted(selected)],
-               "limits": [MAX_PAIRS, MAX_PAIRS_PER_ASSET, MAX_ANCHORS_PER_ASSET]}
+               "limits": [MAX_PAIRS, MAX_PAIRS_PER_ASSET, MAX_ANCHORS_PER_ASSET, MAX_PROPOSAL_IMAGES]}
     # Keep the pre-hint cache contract byte-for-byte equivalent when no useful
     # hint exists. Relevant changed candidates must never reuse a stale run.
     if hints:
         context["candidate_hints"] = hints
+    context['identity_model'] = identity.MODEL
     digest = inv._digest(context)
     run = journal.setdefault("runs", {}).setdefault(digest, {"usage": {}, "trace": [], "calls": {}, "pairs": {}})
     if journal.get("active_digest") != digest:
@@ -369,6 +398,16 @@ findings; retaining separate IDs does not invalidate their existing shot facts.
                 "member_ids": a.get("member_ids", []), "depends_on_asset_ids": a.get("depends_on_asset_ids", []),
                 "appearance_shots": sorted(_numbers(inventory, a["id"]))}
                for a in sorted(assets.values(), key=lambda a: a["id"])]
+    # Text-only pair proposals could miss duplicates precisely because the
+    # extractor had given the same person contradictory age/name labels.
+    # Give the proposer bounded original character anchors; two independent
+    # pair decisions still provide the actual merge authorization.
+    character_candidates = [c for c in candidates.values() if c['asset'].get('kind') == 'character']
+    proposal_refs = list(dict.fromkeys(
+        c['anchor_evidence_ids'][i] for i in range(MAX_ANCHORS_PER_ASSET)
+        for c in character_candidates if len(c['anchor_evidence_ids']) > i))[:MAX_PROPOSAL_IMAGES]
+    proposal_anchors = {c['asset']['id']: [ref for ref in c['anchor_evidence_ids'] if ref in proposal_refs]
+                        for c in character_candidates}
     audit = {"version": VERSION, "input_digest": digest, "status": "complete",
              "aliases": {}, "pairs": [], "pending_pairs": [], "informational_findings": [], "originals": {},
              "limits": {"pairs": MAX_PAIRS, "per_asset": MAX_PAIRS_PER_ASSET}}
@@ -378,7 +417,9 @@ findings; retaining separate IDs does not invalidate their existing shot facts.
     save()
     try:
         response = await inv._stage_call(run, "entity_propose", PROPOSE_SYSTEM,
-                                         {"catalog": catalog}, [], work_dir, semaphore, save)
+                                         {"catalog": catalog, "character_anchor_ids": proposal_anchors},
+                                         [readable[ref] for ref in proposal_refs], work_dir, semaphore, save,
+                                         model_override=identity.MODEL)
         pairs, limited, ignored = _pairs(response, assets, candidate_hints=hints)
         audit["ignored_proposals"] = ignored
     except Exception as exc:

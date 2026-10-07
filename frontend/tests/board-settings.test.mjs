@@ -59,9 +59,12 @@ test("missing or invalid settings retain legacy defaults rather than poisoning t
   start();
   await store.getState().openProject("legacy");
   assert.deepEqual(selectSettings(store.getState()), landscape);
-  boards.invalid = project("invalid", { aspectRatio: "1:1", imageModel: "unknown", imageSize: "8K", clipSeconds: 999, unmoderated: "false", kyc: 1 });
+  boards.invalid = project("invalid", { aspectRatio: "2:1", imageModel: "unknown", imageSize: "8K", clipSeconds: 999, unmoderated: "false", kyc: 1 });
   await store.getState().openProject("invalid");
   assert.deepEqual(selectSettings(store.getState()), landscape);
+  boards.square = project("square", { ...landscape, aspectRatio: "1:1" });
+  await store.getState().openProject("square");
+  assert.deepEqual(selectSettings(store.getState()), { ...landscape, aspectRatio: "1:1" });
   finish();
 });
 

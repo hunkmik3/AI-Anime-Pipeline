@@ -1,182 +1,128 @@
-# Clip prompt standard — Seedance 2.5
+# Clip prompt standard — cinematic-v1
 
-How a clip prompt is written. This is the standard every clip prompt — hand-written
-or produced by the automation — is judged against.
+The owner approved this as the common video-prompt standard on 2026-10-01. Use it
+for **all new video prompts**, written manually or through Automation, for any
+project, shotlist, cast, setting, genre, style or aspect ratio. It supersedes the
+older six-section format, which is archived in `cinematic-prompts/legacy-standard.md`.
 
-Distilled from the owner's ten X-Ray prompts, kept verbatim in
-[`clip-prompts/xray/`](clip-prompts/xray/) (clip-01 … clip-10). Approved by the owner
-on 2026-09-24 after the first three were generated: *"khá tốt về mọi mặt"*.
+The structure is shared; all story content comes from the current project. This
+is not a preset for a particular film, a campus, adult 3D characters or 1:1 video.
+Image sheets keep their separately approved image-sheet layout.
 
-The only change from the owner's files: `grey blazer` → `school blazer`. Theo's
-approved sheet is a charcoal-navy blazer, and a prompt must never contradict the
-image it sends. The originals stay in the owner's own folder.
+## Inputs
 
----
+Use the ordered shotlist, exact dialogue, character profiles and approved designs,
+environment descriptions, principal props, background groups, actual reference
+images when supplied, and opening/previous end state plus scene context. Read the
+images rather than assuming their appearance from filenames. Profiles without
+optional images remain usable as text; do not invent image tags. Missing required
+references or genuinely contradictory facts must be reported.
 
-## What it delivered
+## Output structure
 
-Generated at 480p, 9:16, from the prompt files unchanged apart from the blazer
-fix. Speech was measured locally with faster-whisper; cuts by frame difference.
+```text
+Create a **<editorial duration>-second <orientation> <ratio> <project style> sequence** <setting>.
 
-| Clip | Length | Shots written → cut | Lines spoken | Note |
-|---|---:|---|---|---|
-| 01 | 23 s | 11 → ~11 | 3 / 3 | object see-through gag, clean |
-| 02 | 26 s | 11 → 11 | 7 / 7 | one line said **twice** (see *Slack*) |
-| 03 | 28 s | 8 → 8 + extra reaction cuts | 7 / 7 | "Rothwell", "Gullwing" heard as "Rothberry", "Gold Bay" |
+## REFERENCE CONTROL
+- **@image1 = <EXACT ASSET NAME> — <REFERENCE ROLE>.**
+  <Identity, wardrobe, materials, construction or architecture to preserve.>
+- **@image2 = ...**
+  <Interpret atlas cells and distinguish separate people from confirmed turnarounds.>
 
----
+## STYLE
+<Project medium, proportions, materials, motivated lighting and performance register.>
+**Dramatic intention:** <What changes emotionally in this clip.>
+**Opening state:** <Positions, eyelines, props, hands, contents and states carried in.>
 
-## The skeleton, in this order
+# SHOT 1 | MM:SS.mmm–MM:SS.mmm
+**Duration:** <seconds>
+**Framing:** <size, angle, subject, useful crop>
+**Camera:** <specified movement and focus>
+<Physical action from start through transition to end, with relevant scene members
+and props. Describe what remains off camera or occluded when continuity needs it.>
 
-```
-CLIP NN — TITLE
-DURATION: N seconds. SHOT COUNT: M.
+## DIALOGUE
+<NAME> — <SPOKEN ON CAMERA / OFF SCREEN / VOICE-OVER / CONTINUING>:
+“<Exact supplied line>”
+**Delivery / audio:** <Pace, intention, visible speaker mouth and sentence bridges.>
+**End state:** <Physical state retained after this shot.>
 
-[CREATIVES DESCRIPTION]
+# SHOT 2 | ...
+<Repeat for each supplied shot. Omit DIALOGUE for silent shots.>
 
-@image1 — NAME. <who they are in one line>. Preserve identity, face, hairstyle,
-  age and proportions, wardrobe. <what they hold / how they carry it through this clip>
-@image2 — …
-@imageK — LOCATION. Architectural, material and daylight reference. Create the
-  required new camera compositions within one coherent <place>.
-<anyone without a reference: described once, kept distinct, told whether they speak>
+## AUDIO
+<Room tone and motivated SFX. Explicitly lock the supplied dialogue language;
+for English lines: English dialogue only, no translation or dubbing.>
+NO BACKGROUND MUSIC. NO BGM. NO SCORE.
+No subtitles, captions, title cards or extra intelligible dialogue.
 
-<STYLE paragraph: medium, rendering, acting register, the age rule, what it is not>
-
-DURATION: N seconds. SHOT COUNT: M.
-Opening state: <positions, eyelines, which hand holds which prop, open or closed —
-  exactly where the previous clip ended>
-
-[ONE-SENTENCE SUMMARY]
-
-<who does what, and what changes by the end>
-
-[SPECIFIC TIMELINE]
-
-[SHOT 1 — 00:00–00:04]
-<size + angle + subject>. <one to four short physical sentences>.
-NAME: "line"
-<delivery: tone; how to pronounce numbers and names; where the sentence goes next>
-<who stays silent and does not lip-sync; the prop's state when the shot ends>
-SFX: <a few sounds, optional>
-
-[SHOT 2 — 00:04–00:07]
-…
-
-[OVERALL SUPPLEMENT]
-
-<eyeline axis> <performance arc> <prop chain A → B → C> <which sentence spans which
-shots, heard once> <who never speaks> <the state handed to the next clip>
-<audio bans> <content rules>
+## CONTINUITY / NEGATIVE CONSTRAINTS
+<Specific clothing/identity locks, crowd persistence, prop custody and scale,
+scene geography, eyelines, sentence continuation and final carry-forward state.>
 ```
 
----
+## Directing rules
 
-## The rules
+- Every new video prompt explicitly includes `NO BACKGROUND MUSIC. NO BGM. NO SCORE.`
+  in AUDIO, across all projects and visual styles. Keep supplied dialogue, room tone
+  and motivated sound effects only; do not recreate the original video's music.
+  The owner reaffirmed this default on 2026-10-07. A prompt requests this behavior;
+  it does not certify that the generated audio is music-free.
+- Preserve shot order and supplied actions, camera facts, dialogue and speaker labels.
+  Use the board's timing policy. With source preservation enabled, keep fractional
+  boundaries exactly; provider padding is a silent hold outside the editorial cut.
+- Declare every supplied image tag once and in binding order. A location sheet's
+  empty presentation does not imply an empty filmed scene. Reference poses do not
+  determine blocking; confirmed alternate prop views do not create extra objects.
+- A cut is not a scene change. Retain scene participants, crowds and objects until
+  an established entrance/exit, location change or time break changes their presence.
+  Show only the subset admitted by each composition rather than forcing everyone
+  into close-ups. Offscreen and absent are different states.
+- Keep clothing, accessories, prop size relative to hands, holders, occupied hands,
+  lid states and contents consistent. Explain visible transfers; never teleport or
+  silently drop an object to accommodate an action.
+- Use supplied profiles and actual images to preserve each project's visual style.
+  Do not default to the approved example's age, ethnicity, costume, place or medium.
+- Dialogue stays verbatim in its supplied language. Put each line in its shot,
+  with the correct speaker and delivery. An offscreen speaker can still have a
+  shoulder or hand visible; that does not require lip-sync or a change of camera.
+- Compatible choices for an unspecified free hand, framing, or small visible
+  transition can be logged as production staging. They must preserve known facts,
+  plot, cuts, exits and dialogue, and must not be described as source observations.
+- Do not fill gaps using a different film or example. If an uncertainty requires
+  no staging decision, leave it unspecified. If facts contradict, report the conflict.
+- Write performable action and concrete constraints. Do not promise artifact-free
+  rendering merely because the prompt describes continuity.
 
-### References
-- Every `@imageN` is declared once, **in the order the images are sent**. Seedance
-  binds by position, so the prompt's numbering is the contract: whoever generates
-  must send the images in exactly that order.
-- A character line names the role and what must be preserved. Colours and garments
-  come only from the approved design — or are left to the image. Never from the
-  reference video, never guessed.
-- The location is a reference for architecture, material and light. Every shot is
-  a new composition inside one coherent geography.
-- People without a reference are described once and kept distinct ("one additional
-  unnamed bodyguard; the second guard has no dialogue").
-- The style paragraph states the age rule: the teenagers stay teenagers, the adults
-  keep their reference ages.
+## Automation contract
 
-### Continuity between clips
-- **Opening state** picks up exactly where the previous clip ended: who stands on
-  which side, eyelines, which hand holds which prop, open or closed.
-- The supplement **ends by handing a state to the next clip** ("End with the box
-  ready in Theo's hand for the next clip").
-- A prop follows one explicit path, written once as a chain: *Theo's left hand →
-  left inner blazer pocket in Shot 2 → same pocket through the handshake → Theo's
-  left hand again in Shot 8.*
+The automatic one-pass film route mechanically serializes locked camera/framing,
+ordered action beats and exact dialogue/speakers into the same cinematic structure,
+including clip-local utterance windows. It uses the approved target projection when
+an adaptation is present. GPT still directs performance/staging from the supplied facts;
+the ordinary per-clip checks remain. Its source-readiness method is explicitly
+`one_pass_production/observed`, not independent source verification. See
+`ONE_PASS_SOURCE_ANALYSIS.md` for upload-to-film execution and bounded local repairs.
 
-### Dialogue
-- English, word for word from the script. Each line appears once, inside the shot
-  it is heard in.
-- Speaker labels are **cast names** — `GRANT`, `DANA` — never descriptions
-  (`BODYGUARD`, `SHORT-HAIRED WOMAN IN THE DARK BLAZER`).
-- Voices not in frame are marked: `NAME, OFF SCREEN:`, `NAME, VOICEOVER:`,
-  `NAME, VOICEOVER, CONTINUING:`. The listener "does not lip-sync" them.
-- A sentence split across a cut says where it cuts and that it carries on: *"Cut
-  after 'a,' carrying her voice across the cut"*, *"continue the sentence without
-  a restart or unnatural pause"*.
-- Numbers and unusual words get a pronunciation: *"Pronounce 4.0 as 'four point
-  oh.'"*, *"Pronounce 'four hundred million.'"*
-- Say who is silent: *"Only the blonde student speaks. The other two react
-  silently."*
-- The supplement repeats the spans: *"Grant's announcement spans Shots 6–8, each
-  spoken once without restarting."*
+The cinematic structure is shared, but video direction is medium-specific.
+`film_motion.py` supplies a separate production standard to the writer and reviewer:
+live action uses photographic materials and natural continuous acting; modern
+Japanese 2D uses stable drawn construction, cel tones and deliberate twos/holds with
+selective ones; American 2D uses expressive theatrical posing and controlled
+deformation; 3D uses stable modeled volumes, grounded weight and follow-through.
+The chosen design, age, wardrobe, source cameras, timing and dialogue stay fixed.
+Animation cadence in a prompt is a request, not an FPS API control or a guarantee.
+Material sheet masters are independent of these motion rules. Existing approved
+prompts are preserved; new production writing tasks carry the motion-rule version.
 
-### Timeline
-- Whole-second timecodes, contiguous from `00:00`; the last shot ends on the
-  `DURATION` value, and the clip is generated at exactly that length.
-- A shot is as long as its lines need (clip 03 runs 28 s against a 19 s reference
-  stretch). Seedance speaks English at about 2.2 words a second.
-- No shot under one second.
+The writer and independent reviewer use GPT through Avis (`gpt-6-luna` by default).
+The writer returns `prompt`, `end_state`, `staging_decisions`, and `source_issues`.
+Code validates structure, timing, reference order and exact dialogue. The separate
+review checks shot coverage and continuity; repairs are bounded. All app routes,
+including the older `/video/prompt` alias and production batch jobs, use this engine.
+Disabling the writer stops new prompt writing; it never substitutes a template.
+Existing approved prompts are not bulk rewritten by this policy.
 
-### Slack becomes repetition
-Clip 02, shot 4: five seconds for two short lines. The model said *"I can't believe
-she's in our school"* twice to fill it. A shot longer than its lines needs gets an
-action for the remaining time, or is shortened — never left empty.
-
-### Writing a shot
-- Size, angle and subject first; then short physical sentences a model can perform;
-  then the line and how it is delivered; then who is silent and where the prop is.
-- Negatives in plain words, inside the shot they belong to: *"Theo remains silent
-  and does not lip-sync her line."*
-
-### Content with a school-age cast
-A beat in the reference that sexualises a minor is **adapted, not reproduced**, and
-the adaptation keeps the beat's job in the story:
-
-| Clip | Reference | Written as |
-|---|---|---|
-| 01 | clothes turned see-through | see-through **objects**: pencil case, locker, bag, book — *"What color is the pen in my pencil case?"* |
-| 06 | X-ray body | holographic overlay of skull, mouth and throat only, ending above the collar |
-| 10 | lips close-up, thigh grab, neck kiss | brief closed-mouth kiss in a two-shot, an ordinary hand touch |
-
-The supplement says it outright: *"No undressing, clothing transparency, sexualized
-framing, body scanning, nudity or gore."*
-
-### Audio
-`No music, subtitles, captions, title cards or extra intelligible dialogue.`
-Background voices stay indistinct.
-
----
-
-## How the automation writes to this standard
-
-Since 2026-09-24 the clip prompt is written by a model, not assembled by a
-template: `POST /api/automation/video/write` →
-`agent/flowboard/services/prompt_writer.py` (`gpt-6-astra`, fallback
-`claude-opus-4-5`). It reads this file and two of the ten prompts
-(clip-02, clip-03) as examples, the clip's shots and lines from the board, each
-reference's look from its design brief, and the **end state** the previous clip's
-prompt handed on.
-
-Code fixes what the model may not change, and checks it after:
-
-- the `@imageN` tags, in the order the board sends the images;
-- whole-second shot times, never below what a shot's line takes to say, ending
-  on the clip length;
-- every line word for word, in its own shot;
-- no undressing in the timeline when the cast is school-age — a beat that needs
-  it is handed over marked `rewrite_required`, to be adapted as clip 01 was.
-
-A prompt that fails is sent back once with the problems named; if it fails again
-the template's prompt is used and the node says why. The board's **viết prompt**
-button and **Gen** both use the writer; Gen reuses a written (or hand-placed,
-`promptBy: "manual"`) prompt as long as the same people are referenced in the
-same order.
-
-Image prompts follow the same split: the writer rewrites the descriptive
-sections of a sheet or plate prompt from its design brief, and the technical
-sections — format, the 60/40 layout, pose, rendering, exclusions — stay the
-house text that made the approved sheets.
+Implementation and configuration: [cinematic-prompts/README.md](cinematic-prompts/README.md).
+The approved [example](cinematic-prompts/approved-example.txt) is an offline
+regression fixture, not story context sent to the model.

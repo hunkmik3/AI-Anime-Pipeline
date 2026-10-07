@@ -14,13 +14,35 @@ POLICY = (
     'A camera cut is not a costume change, exit or prop transfer. Keep recurring crowds in '
     'the same continuous scene; show only the subset allowed by the framing. Offscreen and '
     'inherited assets are not automatically visible. Prior screen-left/right positions are not world coordinates; '
-    'preserve set geometry across reverse angles without copying screen positions. Never invent a hand, holder, measurement or background position. Keep all dialogue in English exactly as supplied; no translated '
+    'preserve set geometry across reverse angles without copying screen positions. Never invent a hand, holder, measurement or background position. Keep all dialogue in its supplied original language exactly as supplied; no translated '
     'or additional speech. Flag conflicts rather than silently rewriting source facts.'
 )
 
 
 def _id(item):
     return item.get('source_asset_id') or item.get('id') or item.get('key')
+
+
+def material_style(prompt, style):
+    """A style note is rendering language, never the sheet's profile or layout."""
+    from flowboard.services import film_styles
+    if film_styles.is_preset(style):
+        return film_styles.rule_text(style)
+    # Older/custom sheets use either STYLE: or a bare heading and may omit
+    # blank lines before LAYOUT / PROFILE. Stop at the next section in both.
+    lines = prompt.splitlines()
+    for index, line in enumerate(lines):
+        heading = re.fullmatch(r'[ \t]*(?:#{1,6}[ \t]+)?STYLE[ \t]*(?::[ \t]*(.*))?', line)
+        if not heading:
+            continue
+        content = [heading.group(1)] if heading.group(1) else []
+        for following in lines[index + 1:]:
+            if not following.strip() or re.fullmatch(
+                    r'[ \t]*(?:#{1,6}[ \t]+)?[A-Z][A-Z /_&-]{2,}(?::.*)?[ \t]*', following):
+                break
+            content.append(following)
+        return '\n'.join(content).strip()
+    return ''
 
 
 def build(board, project_id='', sequence_key=''):
@@ -86,6 +108,7 @@ def build(board, project_id='', sequence_key=''):
                 kind = design.get('kind') or definition.get('kind') or d.get('kind', 'unknown')
                 state = (shot.get('character_states') or {}).get(design.get('key')) or d.get('activeState')
                 state_sheet = (d.get('states') or {}).get(state, {})
+                if state_sheet.get('needsIdentityRefresh'): state_sheet = {}
                 plate = (state_sheet if state_sheet.get('referenceUrl') else d.get('identity', {})) if kind == 'character' else d.get('plate', {})
                 material_key = aid + (':' + str(state) if state else '')
                 known_states = design.get('states') or []
@@ -96,7 +119,6 @@ def build(board, project_id='', sequence_key=''):
                         issues.append({'shot': row['id'], 'asset': aid, 'code': 'missing_costume_sheet', 'blocking': True})
                 if not plate.get('referenceUrl'):
                     issues.append({'shot': row['id'], 'asset': aid, 'code': 'missing_material', 'blocking': True})
-                style_match = re.search(r'(?:^|\n)STYLE[:\s]*\n?(.*?)(?=\n\s*\n|$)', plate.get('prompt', ''), re.S)
                 material = {
                     'asset_id': aid, 'kind': kind, 'name': design.get('name') or definition.get('name') or aid,
                     'state_key': state, 'version': record.get('version', ''),
@@ -106,10 +128,12 @@ def build(board, project_id='', sequence_key=''):
                     'identity_anchor': design.get('identity_anchor', ''),
                     'geometry_and_scale': design.get('dimensions') or definition.get('dimensions') or
                         'Match the same reference geometry and proportions relative to hands/body; no invented numeric dimensions.',
-                    'style_note': style_match.group(1).strip() if style_match else '',
+                    'style_note': material_style(plate.get('prompt', ''), board.get('style')),
                     'lighting': design.get('lighting', ''), 'layout_lock': design.get('lock', ''),
                 }
                 materials[material_key] = material
+                if plate.get('referenceScope'):
+                    material['reference_scope'] = deepcopy(plate['referenceScope'])
                 bindings.append(material_key)
             presence = {p['asset_id']: p for p in shot.get('asset_presence', []) if p.get('asset_id')}
             # No invented movement at the cut: opening observations belong to this angle;
@@ -122,7 +146,7 @@ def build(board, project_id='', sequence_key=''):
             if any(materials[b]['kind'] == 'background_group' for b in bindings): reasons.append('recurring_crowd')
             if any(materials[b]['kind'] == 'prop' for b in bindings): reasons.append('prop_geometry_and_hand_interaction')
             dialogue = deepcopy(shot.get('dialogue') or [])
-            if any(re.search(r'[\u3400-\u9fff]', str(d.get('line', ''))) for d in dialogue):
+            if board.get('dialogueLanguage','en') in ('en','English') and any(re.search(r'[\u3400-\u9fff]', str(d.get('line', ''))) for d in dialogue):
                 issues.append({'shot': row['id'], 'code': 'dialogue_not_english', 'blocking': True,
                                'message': 'Locked English dialogue contains CJK text; review translation explicitly.'})
             from flowboard.services.automation import speech_seconds
@@ -141,7 +165,10 @@ def build(board, project_id='', sequence_key=''):
                           'end_state': row['end_state'], 'transitions': row['transitions'],
                           'keyframe_recommended': bool(reasons), 'keyframe_reasons': reasons})
         for aid, states in variants.items():
-            if len(states) > 1:
+            explicit = board.get('stateSpecificReferences') and all(
+                m.get('state_key') and m.get('wardrobe')
+                for m in materials.values() if m['asset_id'] == aid)
+            if len(states) > 1 and not explicit:
                 issues.append({'asset': aid, 'code': 'multiple_costumes_in_clip', 'blocking': True,
                                'message': 'Split at the wardrobe change or bind state-specific references explicitly.'})
         plans = board.get('raccordPlans', {})
@@ -161,7 +188,9 @@ def build(board, project_id='', sequence_key=''):
             })
         package = {'schema_version': 1, 'project_id': project_id, 'sequence_key': key,
                    'style': board.get('style', 'realistic'), 'aspect_ratio': board.get('aspectRatio', '16:9'),
-                   'dialogue_language': 'en', 'policy': POLICY, 'raccord_versions': used_plans, 'scene_anchors': anchors, 'materials': materials, 'shots': shots, 'issues': issues,
+                   'dialogue_language': board.get('dialogueLanguage', 'en'),
+                   'policy': POLICY if board.get('dialogueLanguage', 'en') in ('en', 'English') else POLICY.replace('in English exactly as supplied', 'verbatim in its supplied language'),
+                   'raccord_versions': used_plans, 'scene_anchors': anchors, 'materials': materials, 'shots': shots, 'issues': issues,
                    'ready': bool(shots) and not any(i.get('blocking') for i in issues)}
         package['version'] = pm.digest(package)
         clips.append(package)
@@ -175,17 +204,25 @@ def build(board, project_id='', sequence_key=''):
 def check_bindings(package, references):
     """Verify actual prompt input against the material selections compiled on server."""
     errors = [i['code'] + ': ' + str(i.get('asset', i.get('shot', ''))) for i in package['issues'] if i.get('blocking')]
-    bound = {}
-    for ref in references:
-        aid = _id(ref)
-        if aid: bound[aid] = ref
     for material in package['materials'].values():
-        ref = bound.get(material['asset_id'], {})
+        ref = material_reference(package['materials'], material, references)
         if ref.get('ref_url') != material['reference_url'] or not ref.get('ref_url'):
             errors.append('Reference missing/changed for ' + material['asset_id'])
         if material['media_id'] and ref.get('media_id') != material['media_id']:
             errors.append('Media binding changed for ' + material['asset_id'])
     return list(dict.fromkeys(errors))
+
+
+def material_reference(materials, material, references):
+    """Resolve costume-specific bindings; legacy identity-only binding is unambiguous only once."""
+    aid = material['asset_id']
+    matches = [r for r in references if _id(r) == aid]
+    exact = [r for r in matches if r.get('state_key') == material.get('state_key')]
+    if len(exact) == 1:
+        return exact[0]
+    if sum(m['asset_id'] == aid for m in materials.values()) == 1 and len(matches) == 1 and not matches[0].get('state_key'):
+        return matches[0]
+    return {}
 
 
 def keyframe(package, shot_index, which='start'):

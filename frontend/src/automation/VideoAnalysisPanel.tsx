@@ -12,6 +12,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useAutomation } from "../store/automation";
 import { SOURCE_ISSUE_LABELS, SourceIssueSummary } from "./SourceIssueSummary";
 import {
+  autoFilmLabel,
   DEFAULT_RULES,
   IMAGE_MODEL_LABELS,
   RUNNING,
@@ -147,6 +148,14 @@ export function VideoAnalysisPanel() {
           <div className="va-head__id">
             <span className="auto-bar__eyebrow">Video mẫu</span>
             <h2 className="va-head__title">{detail?.name ?? "…"}</h2>
+            {detail?.auto_production && <div>
+              <p>Tự sản xuất: {autoFilmLabel(detail)}</p>
+              {detail.auto_production.error && <p className="auto-error">{detail.auto_production.error}</p>}
+              {detail.auto_production.board_ready && <button className="auto-btn" onClick={()=>{
+                if(detail.automation_project_id) void useAutomation.getState().openProject(detail.automation_project_id).then(()=>open(null));
+              }}>Mở board sản xuất</button>}
+              {detail.auto_production.output?.filename && <a href={`/api/automation/projects/${detail.automation_project_id}/production-runs/${detail.auto_production.run_id}/film`} target="_blank" rel="noreferrer">Mở / tải phim hoàn chỉnh</a>}
+            </div>}
             {analysis.video && (
               <p className="va-head__meta">
                 {shots.length} shot · {tc(duration)} · {analysis.video.aspect_ratio} · {analysis.video.fps.toFixed(0)} fps
@@ -171,9 +180,9 @@ export function VideoAnalysisPanel() {
           )}
 
           <div className="va-head__actions">
-            {(detail?.status === "interrupted" || (detail?.status === "failed" && !shots.length)) && (
+            {(detail?.status === "interrupted" || (detail?.status === "failed" && (!shots.length || !!detail.auto_production && !detail.auto_production.run_id))) && (
               <button type="button" className="auto-btn" onClick={() => void resume()}>
-                Chạy tiếp phân tích
+                {detail?.auto_production ? "Tiếp tục sản xuất sau khi xử lý" : "Chạy tiếp phân tích"}
               </button>
             )}
             <a
@@ -305,6 +314,9 @@ export function VideoAnalysisPanel() {
 
             {tab === "shots" && (
               <div className="va-scroll">
+                {analysis.analysis_mode === "one_pass" && <p className="auto-hint">
+                  Shotlist từ một lượt đọc ảnh. Thoại giữ theo audio; phụ đề trên ảnh hiển thị riêng. Không chạy đối chiếu độc lập toàn phim. {detail?.auto_production ? "Tiến độ tạo hồ sơ, material và video hiển thị ở mục Tự sản xuất." : "Lượt này chỉ phân tích, chưa sản xuất video."}
+                </p>}
                 {!shots.length && (
                   <p className="auto-hint va-empty">
                     {running ? "Đang phân tích — shotlist hiện ra khi xem xong từng shot." : "Chưa có shot nào."}
@@ -649,6 +661,7 @@ export function VideoAnalysisPanel() {
                       value={rules.dialogue_mode}
                       onChange={(e) => setRules({ ...rules, dialogue_mode: e.target.value as Rules["dialogue_mode"] })}
                     >
+                      <option value="verbatim">Giữ nguyên văn và ngôn ngữ gốc</option>
                       <option value="literal">Sát nghĩa từng câu</option>
                       <option value="cinematic">Gọn cho điện ảnh (không thêm câu)</option>
                     </select>
@@ -788,7 +801,12 @@ function ShotRow({
               {src.camera_movement && src.camera_movement !== "static" ? ` · ${src.camera_movement}` : ""}
               {conf < 0.6 && <span className="auto-tag auto-tag--warn">tin cậy {conf.toFixed(2)}</span>}
             </p>
+            {src.camera_crop && <p><b>Khung hình:</b> {src.camera_crop}</p>}
+            {(src.camera_elevation || src.composition) && <p><b>Góc / bố cục:</b> {[src.camera_elevation, src.composition].filter(Boolean).join(" · ")}</p>}
             <p>{src.action}</p>
+            {!!src.subtitle_events?.length && <details><summary>Phụ đề nguồn ({src.subtitle_events.length})</summary>
+              {src.subtitle_events.map((event,i)=><p key={i}>{event.text}</p>)}
+            </details>}
             {src.title_card && <p className="va-card">▣ {src.title_card}</p>}
             {shot.dialogue && <p className="va-dialogue">“{shot.dialogue}”</p>}
             {!shot.dialogue && shot.dialogue_continues != null && (

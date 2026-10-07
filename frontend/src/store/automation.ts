@@ -25,13 +25,15 @@ import {
 import { create, type StateCreator } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
-import { api } from "../api/client";
+import { api, uploadAutomationImage } from "../api/client";
+import { isFilmStylePreset, type FilmStyle } from "../automation/filmStyles";
 import { contractFingerprint, isStrictBoard, sameFingerprint, sourceReadyForShots, type AssetKind, type AssetPresence, type ProductionAsset, type PromptCoverage, type ReferenceAsset, type SourceVerification } from "../automation/contracts";
 
 export type AutoStatus = "idle" | "running" | "done" | "error";
 
 export interface RuntimeJob {
   id: string; kind: "clip" | "plate" | "write" | "source" | "raccord" | "production_run" | "extract_frame" | "assemble" | "ingest" | "material_binding" | "atlas"; node_id: string; slot: string; status: string;
+  reference_urls?: string[];
   provider_job_id: string; error: string; result: Record<string, any>;
 }
 
@@ -98,6 +100,7 @@ export interface ShotPackage {
 }
 
 export interface Sequence {
+  preserve_source_shots?: boolean;
   production_context?: Record<string, unknown>;
   shot_package?: ShotPackage;
   asset_keys?: string[];
@@ -171,6 +174,9 @@ export function asLines(value: string[] | string | undefined): string[] {
 
 /** One generated plate, plus the public copy downstream plates reference. */
 export interface Plate {
+  ignoredRuntimeJobIds?: string[];
+  needsIdentityRefresh?: boolean;
+  uploaded?: boolean;
   prompt: string;
   status: AutoStatus;
   error?: string;
@@ -248,6 +254,9 @@ export interface VideoRef {
  *  ~20s, which is the band our sequences already sit in; the shots inside
  *  become the timestamped slices of the prompt rather than separate clips. */
 export interface VideoNodeData extends Record<string, unknown> {
+  promptEngine?: string;
+  stagingDecisions?: { shot: number; kind: string; description: string; basis: string }[];
+  inspectedReferences?: { tag: string; media_id?: string; sha256: string }[];
   coverage?: PromptCoverage;
   contractDigest?: string;
   coverageToken?: string;
@@ -286,6 +295,21 @@ export interface VideoNodeData extends Record<string, unknown> {
   endState?: string;
 }
 
+/** Server-authored prompts can arrive before the browser has stored their refs.
+ * Reuse inspected media bindings for display without changing the approved
+ * prompt or its receipt; generation still verifies the current full contract. */
+export function videoDisplayRefs(video: VideoNodeData, available: VideoRef[]): VideoRef[] {
+  if (video.refs.length) return video.refs;
+  if (!video.prompt || !video.inspectedReferences?.length) return available;
+  const resolved = video.inspectedReferences.map((inspected) => {
+    const matches = available.filter((reference) => inspected.media_id && reference.mediaId === inspected.media_id);
+    return matches.length === 1 ? { ...matches[0], label: inspected.tag } : undefined;
+  });
+  // A missing or ambiguous inspected image must not acquire another image's tag.
+  return resolved.every((reference): reference is VideoRef => Boolean(reference))
+    ? resolved.sort((a, b) => Number(a.label.slice(6)) - Number(b.label.slice(6))) : [];
+}
+
 /** The pre-split node: one list for the whole film, wired to everything.
  *  Deliberately OUTSIDE AutoNodeData — nothing may create one any more, and
  *  only `ensureGraph` still knows the shape, purely to take it apart. */
@@ -308,7 +332,11 @@ export type AutoNodeData =
   | SequenceNodeData
   | VideoNodeData;
 
-export type AutoNode = Node<AutoNodeData>;
+export type AutoNode = Node<AutoNodeData> & {
+  /** Display-only positions of a clip frame and its children. Stored outside
+   * data so moving a frame never changes prompt inputs or film order. */
+  clipLayout?: Record<string, { x: number; y: number }>;
+};
 
 /** A saved board, as the sidebar lists it — no graph, so listing is cheap. */
 export interface ProjectSummary {
@@ -329,7 +357,7 @@ export const ENVIRONMENT_ASPECT = "21:9";
 
 /** The look every prompt on the board is written in. Premise boards are
  *  live-action; a reference video can be re-made as anime. */
-export type BoardStyle = "realistic" | "anime" | "cg3d";
+export type BoardStyle = FilmStyle;
 
 interface ReferenceBoardResponse extends BreakdownResponse {
   production_assets?: ProductionAsset[];
@@ -434,6 +462,10 @@ export const IMAGE_MODEL_LABELS: Record<string, string> = {
 };
 
 interface AutomationStore {
+  sourceVideoId?: string;
+  sourcePipeline?: "one_pass" | "verified_source";
+  dialogueLanguage?: string;
+  autoSourceFilm?: boolean;
   productionAssets: ProductionAsset[];
   sourceVerification?: SourceVerification;
   script: string;
@@ -489,6 +521,7 @@ interface AutomationStore {
 
   setScript(text: string): void;
   setRuntimeSeconds(seconds: number | null): void;
+  setStyle(style: BoardStyle): void;
   setImageModel(model: string): void;
   setImageSize(size: string): void;
   setAspectRatio(ratio: string): void;
@@ -512,6 +545,9 @@ interface AutomationStore {
   patchNode(id: string, patch: Partial<AutoNodeData>): void;
   setActiveState(id: string, stateKey: string): void;
   editPrompt(id: string, slot: string, prompt: string): void;
+  uploadPlate(id: string, slot: string, file: File): Promise<void>;
+  editVideoPrompt(sequenceKey: string, prompt: string): void;
+  verifyVideoPrompt(sequenceKey: string): Promise<void>;
   /** Fill any prompt still blank from the house template. */
   primePrompts(): Promise<void>;
   generate(id: string, slot: string): Promise<void>;
@@ -548,7 +584,7 @@ interface AutomationStore {
   /** Write a sequence's clip prompt. `writer` has the prompt writer (GPT)
    *  write it in the house standard, opening from the previous clip's end
    *  state; without it the template assembles it for free. */
-  primeVideoPrompt(sequenceKey: string, opts?: { writer?: boolean }): Promise<void>;
+  primeVideoPrompt(sequenceKey: string): Promise<void>;
   /** contractFingerprint(promptContract(key)), recomputed only when something
    *  the contract is built from has changed. Safe to call from a selector. */
   currentFingerprint(sequenceKey: string): string;
@@ -576,7 +612,7 @@ type GenerationSettings = Pick<AutomationStore,
  * fields retain the existing defaults; a project with saved settings owns them. */
 function boardSettings(board: Partial<GenerationSettings>, caps: Capabilities | null): Partial<GenerationSettings> {
   const settings: Partial<GenerationSettings> = {};
-  if (board.aspectRatio === "16:9" || board.aspectRatio === "9:16") settings.aspectRatio = board.aspectRatio;
+  if (board.aspectRatio === "16:9" || board.aspectRatio === "9:16" || board.aspectRatio === "1:1") settings.aspectRatio = board.aspectRatio;
   const models = caps?.image_models ?? Object.keys(IMAGE_MODEL_LABELS);
   if (typeof board.imageModel === "string" && models.includes(board.imageModel)) settings.imageModel = board.imageModel;
   if (typeof board.imageSize === "string" && ["1K", "2K", "4K"].includes(board.imageSize)) settings.imageSize = board.imageSize;
@@ -588,6 +624,10 @@ function boardSettings(board: Partial<GenerationSettings>, caps: Capabilities | 
 
 /** The board as it travels — to a file, and to the `board` JSON column. */
 export interface BoardFile extends Partial<GenerationSettings> {
+  sourceVideoId?: string;
+  sourcePipeline?: "one_pass" | "verified_source";
+  dialogueLanguage?: string;
+  autoSourceFilm?: boolean;
   preserveSourceShots?: boolean;
   productionAssets?: ProductionAsset[];
   sourceVerification?: SourceVerification;
@@ -847,7 +887,7 @@ function clearStuckRunning(nodes: AutoNode[]): AutoNode[] {
  *  so generate/edit do not each need a shape switch. */
 function readPlate(data: AutoNodeData, slot: string): Plate | undefined {
   if (data.kind === "character") {
-    return slot === "identity" ? data.identity : data.states[slot];
+    return slot === "identity" ? data.identity : data.states?.[slot];
   }
   if (data.kind === "environment" || data.kind === "asset") return data.plate;
   return undefined;
@@ -856,7 +896,7 @@ function readPlate(data: AutoNodeData, slot: string): Plate | undefined {
 function writePlate(data: AutoNodeData, slot: string, patch: Partial<Plate>): AutoNodeData {
   if (data.kind === "character") {
     if (slot === "identity") return { ...data, identity: { ...data.identity, ...patch } };
-    const current = data.states[slot] ?? emptyPlate();
+    const current = data.states?.[slot] ?? emptyPlate();
     return { ...data, states: { ...data.states, [slot]: { ...current, ...patch } } };
   }
   if (data.kind === "environment" || data.kind === "asset") return { ...data, plate: { ...data.plate, ...patch } };
@@ -864,6 +904,8 @@ function writePlate(data: AutoNodeData, slot: string, patch: Partial<Plate>): Au
 }
 
 let saveQueue: Promise<void> = Promise.resolve();
+let uploadSerial = 0;
+const uploadRequests = new Map<string, number>();
 class PendingJobError extends Error {}
 const runningJob = (status: string) => ["queued", "preparing", "submitting", "running"].includes(status);
 
@@ -879,20 +921,23 @@ export function applyRuntimeJobs(nodes: AutoNode[], jobs: RuntimeJob[]): AutoNod
       const sequenceKey = n.data.sequenceKey;
       const seq = output.find((item) => item.id === `seq:${sequenceKey}`);
       const sameShots = seq?.data.kind === "sequence" && JSON.stringify(seq.data.shots) === JSON.stringify(out.source_shots);
-      if (job.status === "succeeded" && sameShots && [out.base_prompt,out.prompt].includes(n.data.prompt)) {
+      if (job.status === "succeeded" && sameShots && [out.base_prompt,out.prompt].includes(n.data.prompt)
+        && (n.data.promptBy !== "manual" || out.writer === "manual")) {
         n.data={...n.data,prompt:out.prompt,durationS:out.duration_seconds,endState:out.end_state,promptBy:out.writer,
+          promptEngine:out.engine,stagingDecisions:out.staging_decisions,inspectedReferences:out.reference_images,
           coverage:out.coverage,contractDigest:out.contract_digest,coverageToken:out.coverage_token,inputFingerprint:out.input_fingerprint};
       }
       continue;
     }
     if (job.kind === "source" || job.kind === "raccord") continue;
+    if (job.kind === "plate" && readPlate(n.data, job.slot)?.ignoredRuntimeJobIds?.includes(job.id)) continue;
     const status: AutoStatus = runningJob(job.status) ? "running" : job.status === "succeeded" ? "done" : "error";
     const patch: Record<string, unknown> = { status, runtimeJobId: job.id, runtimeStatus: job.status, error: job.error || undefined };
     if (job.status === "succeeded") {
       if (job.kind === "clip") Object.assign(patch, { clipUrl: job.result.url, persisted: job.result.persisted, warnings: job.result.warnings, jobId: job.provider_job_id });
       else {
         const image = job.result.images?.[0];
-        if (image) Object.assign(patch, { image: image.url, referenceUrl: image.reference_url, mediaId: image.media_id });
+        if (image) Object.assign(patch, { image: image.url, referenceUrl: image.reference_url, mediaId: image.media_id, uploaded: false, needsIdentityRefresh: false });
       }
     }
     if (job.kind === "clip" && n.data.kind === "video") n.data = { ...n.data, ...patch } as AutoNodeData;
@@ -902,7 +947,27 @@ export function applyRuntimeJobs(nodes: AutoNode[], jobs: RuntimeJob[]): AutoNod
       n.data = { ...n.data, [job.slot]: { ...(n.data as any)[job.slot], ...patch } };
     else if (job.kind === "plate") n.data = writePlate(n.data, job.slot, patch as Partial<Plate>);
   }
-  return output;
+  return invalidateIdentityVariants(nodes, output, jobs);
+}
+
+function invalidateIdentityVariants(before: AutoNode[], after: AutoNode[], jobs: RuntimeJob[]): AutoNode[] {
+  return after.map(node => {
+    const data = node.data;
+    if (data.kind !== "character" || !data.identity.referenceUrl) return node;
+    const old = before.find(n => n.id === node.id)?.data;
+    if (old?.kind === "character" && old.identity.referenceUrl === data.identity.referenceUrl) return node;
+    const identityUrl = data.identity.referenceUrl;
+    const states = Object.fromEntries(Object.entries(data.states).map(([slot, plate]) => {
+      if (plate.uploaded) return [slot, plate];
+      const related = jobs.filter(j => j.kind === "plate" && j.node_id === node.id && j.slot === slot);
+      if (!plate.referenceUrl && !related.length) return [slot, plate];
+      const latest = related.filter(j => j.status === "succeeded" && !plate.ignoredRuntimeJobIds?.includes(j.id)).at(-1);
+      if (latest?.reference_urls?.includes(identityUrl)) return [slot, plate];
+      return [slot, { ...plate, needsIdentityRefresh: true,
+        ignoredRuntimeJobIds: [...new Set([...(plate.ignoredRuntimeJobIds ?? []), ...related.map(j => j.id)])] }];
+    }));
+    return { ...node, data: { ...data, states } };
+  });
 }
 
 async function durableRequest<T>(path: string, init: RequestInit, nodeId: string, slot: string): Promise<T> {
@@ -973,6 +1038,10 @@ export async function ensureRaccord(sequenceKey = ""): Promise<void> {
 }
 
 const createBoard: StateCreator<AutomationStore> = (set, get) => ({
+  sourceVideoId: undefined,
+  sourcePipeline: undefined,
+  dialogueLanguage: "en",
+  autoSourceFilm: false,
   script: "",
   runtimeSeconds: null,
   title: "",
@@ -982,7 +1051,7 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
   environments: [],
   productionAssets: [],
   sourceVerification: undefined,
-  style: "realistic",
+  style: "donghua_premium",
   nodes: [
     { id: "script", type: "autoScript", position: { x: 0, y: 0 }, data: { kind: "script" } },
   ],
@@ -1044,6 +1113,10 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
         currentProjectId: id,
         projectRevision: p.revision ?? 0,
         jobs: [],
+        sourceVideoId: board.sourceVideoId,
+        sourcePipeline: board.sourcePipeline,
+        dialogueLanguage: board.dialogueLanguage ?? "en",
+        autoSourceFilm: board.autoSourceFilm ?? false,
         preserveSourceShots: board.preserveSourceShots ?? true,
         title: p.title ?? "",
         logline: p.logline ?? "",
@@ -1053,7 +1126,7 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
         sourceVerification: board.sourceVerification,
         characters: board.characters ?? [],
         environments: board.environments ?? [],
-        style: board.style ?? "realistic",
+        style: board.style ?? (board.nodes?.length ? "realistic" : "donghua_premium"),
         ...boardSettings(board, get().capabilities),
         nodes: board.nodes?.length ? clearStuckRunning(board.nodes) : [BLANK_SCRIPT_NODE],
         edges: board.edges ?? [],
@@ -1107,6 +1180,10 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
           // handful of 4K data URLs is tens of megabytes of JSON per save.
           board: {
             ...boardSettings(s, s.capabilities),
+            sourceVideoId: s.sourceVideoId,
+            sourcePipeline: s.sourcePipeline,
+            dialogueLanguage: s.dialogueLanguage,
+            autoSourceFilm: s.autoSourceFilm,
             preserveSourceShots: s.preserveSourceShots,
             productionAssets: s.productionAssets,
             sourceVerification: s.sourceVerification,
@@ -1132,6 +1209,20 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
 
   setScript: (text) => set({ script: text }),
   setRuntimeSeconds: (seconds) => set({ runtimeSeconds: seconds }),
+  setStyle: (style) => {
+    if (style === get().style || get().autoSourceFilm || get().jobs.some(j => ["queued", "running", "polling", "submitting"].includes(j.status))) return;
+    if (get().nodes.some(n => n.data.kind === "video" && n.data.clipUrl
+      || n.data.kind === "character" && (n.data.identity.referenceUrl || Object.values(n.data.states).some(p=>p.referenceUrl))
+      || (n.data.kind === "environment" || n.data.kind === "asset") && n.data.plate.referenceUrl)) return;
+    boardEpoch += 1;
+    const nodes=get().nodes.map(n=>{
+      if(n.data.kind==="character") return {...n,data:{...n.data,identity:emptyPlate(),states:Object.fromEntries(Object.keys(n.data.states).map(k=>[k,emptyPlate()]))}};
+      if(n.data.kind==="environment"||n.data.kind==="asset")return {...n,data:{...n.data,plate:emptyPlate()}};
+      return n;
+    }) as AutoNode[];
+    set({style,nodes,...(isFilmStylePreset(style) ? {imageModel:"dola-seedream-5-0-pro",imageSize:"2K"} : {})});
+    void get().primePrompts();
+  },
   setImageModel: (model) => set({ imageModel: model }),
   setImageSize: (size) => set({ imageSize: size }),
   setClipSeconds: (seconds) => set({ clipSeconds: seconds }),
@@ -1177,6 +1268,7 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
         runtimeSeconds: out.runtime_seconds || runtimeSeconds,
         productionAssets: [],
         sourceVerification: undefined,
+        sourcePipeline: undefined,
         breakdownStatus: "done",
       });
       void get().primePrompts();
@@ -1216,12 +1308,17 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
         environments: out.environments,
         productionAssets: out.production_assets ?? [],
         sourceVerification: out.source_verification,
+        sourceVideoId: videoId,
+        sourcePipeline: out.source_verification?.method === "one_pass_production" ? "one_pass"
+          : out.source_verification?.method === "source_frames" ? "verified_source" : undefined,
+        autoSourceFilm: false,
+        dialogueLanguage: "source",
         style: out.style,
         runtimeSeconds: out.runtime_seconds,
         // Place plates in the reference's own frame, so a vertical short re-makes vertical.
-        aspectRatio: out.aspect_ratio === "9:16" || out.aspect_ratio === "16:9" ? out.aspect_ratio : get().aspectRatio,
-        // An anime cast is not a real person; the identity path would only get in the way.
-        kyc: out.style !== "realistic" ? false : get().kyc,
+        aspectRatio: out.aspect_ratio === "9:16" || out.aspect_ratio === "16:9" || out.aspect_ratio === "1:1" ? out.aspect_ratio : get().aspectRatio,
+        // Retain the user's provider/identity choices for every visual style.
+        kyc: get().kyc,
         breakdownStatus: "done",
       });
       void get().primePrompts();
@@ -1235,6 +1332,10 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
   reset: () => {
     boardEpoch += 1;
     set({
+      sourceVideoId: undefined,
+      sourcePipeline: undefined,
+      dialogueLanguage: "en",
+      autoSourceFilm: false,
       preserveSourceShots: true,
       jobs: [],
       title: "",
@@ -1243,7 +1344,7 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
       environments: [],
       productionAssets: [],
       sourceVerification: undefined,
-      style: "realistic",
+      style: "donghua_premium",
       breakdownStatus: "idle",
       breakdownError: undefined,
       nodes: [
@@ -1280,7 +1381,69 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
       ),
     }),
 
+  async uploadPlate(id, slot, file) {
+    const epoch = boardEpoch;
+    const projectId = get().currentProjectId;
+    if (!projectId) throw new Error("Tạo hoặc mở board trước khi upload ảnh.");
+    const original = get().nodes.find(n => n.id === id);
+    if (!original || !["character", "environment", "asset"].includes(original.data.kind)) throw new Error("Không tìm thấy material.");
+    if (readPlate(original.data, slot)?.status === "running") throw new Error("Chờ lượt tạo ảnh hiện tại hoàn tất trước khi thay ảnh.");
+    const key = `${projectId}:${id}:${slot}`;
+    const request = ++uploadSerial;
+    uploadRequests.set(key, request);
+    const result = await uploadAutomationImage(file, projectId);
+    if (epoch !== boardEpoch || get().currentProjectId !== projectId || uploadRequests.get(key) !== request) return;
+    if (!result.persisted || !result.reference_url || !result.media_id) throw new Error("Ảnh chưa được lưu đầy đủ; giữ nguyên ảnh cũ.");
+    const current = get().nodes.find(n => n.id === id);
+    if (!current) return;
+    const previous = readPlate(current.data, slot);
+    if (previous?.status === "running") throw new Error("Material vừa bắt đầu tạo ảnh; ảnh upload chưa được áp dụng.");
+    const runtimeId = (previous as Plate & { runtimeJobId?: string } | undefined)?.runtimeJobId;
+    const ignoredRuntimeJobIds = [...new Set([...(previous?.ignoredRuntimeJobIds ?? []),
+      ...(runtimeId ? [runtimeId] : []), ...get().jobs.filter(j => j.kind === "plate" && j.node_id === id && j.slot === slot).map(j => j.id)])];
+    const beforeNodes = get().nodes;
+    get().patchNode(id, writePlate(current.data, slot, { image: result.url, referenceUrl: result.reference_url,
+      mediaId: result.media_id, status: "done", error: undefined, uploaded: true, needsIdentityRefresh: false, ignoredRuntimeJobIds }));
+    set({ nodes: invalidateIdentityVariants(beforeNodes, get().nodes, get().jobs) });
+    await get().saveNow();
+    if (get().saveState === "error") throw new Error(get().saveError ?? "Chưa lưu được board.");
+  },
+
+  editVideoPrompt(sequenceKey, prompt) {
+    const id = `vid:${sequenceKey}`;
+    const node = get().nodes.find(n => n.id === id);
+    if (node?.data.kind !== "video" || node.data.prompt === prompt || node.data.status === "running") return;
+    get().patchNode(id, { prompt, promptBy: "manual", coverage: undefined, contractDigest: undefined,
+      coverageToken: undefined, inputFingerprint: undefined, error: undefined } as Partial<VideoNodeData>);
+  },
+
+  async verifyVideoPrompt(sequenceKey) {
+    const epoch = boardEpoch;
+    const id = `vid:${sequenceKey}`;
+    const node = get().nodes.find(n => n.id === id);
+    if (node?.data.kind !== "video" || !node.data.prompt.trim()) throw new Error("Nhập prompt trước khi kiểm tra.");
+    const draft = node.data.prompt;
+    const contract = get().promptContract(sequenceKey);
+    const fingerprint = contractFingerprint(contract);
+    const out = await api<{ prompt: string; duration_seconds: number; end_state: string; engine?: string;
+      warnings?: string[]; coverage?: PromptCoverage; contract_digest?: string; coverage_token?: string;
+    }>("/api/automation/video/verify-prompt", { method: "POST", body: JSON.stringify({
+      prompt_contract: contract, prompt: draft, end_state: node.data.endState ?? "", staging_decisions: node.data.stagingDecisions ?? [],
+    }) });
+    if (epoch !== boardEpoch) return;
+    const current = get().nodes.find(n => n.id === id);
+    if (current?.data.kind !== "video" || current.data.prompt !== draft || !sameFingerprint(fingerprint, get().currentFingerprint(sequenceKey)))
+      throw new Error("Prompt hoặc reference đã thay đổi trong lúc kiểm tra; giữ nguyên bản bạn đang sửa.");
+    if (out.prompt !== draft) throw new Error("Kết quả kiểm tra đã thay đổi câu chữ; giữ nguyên prompt của bạn.");
+    get().patchNode(id, { refs: get().collectVideoRefs(sequenceKey).refs, durationS: out.duration_seconds,
+      promptBy: "manual", promptEngine: out.engine, coverage: out.coverage, contractDigest: out.contract_digest,
+      coverageToken: out.coverage_token, inputFingerprint: fingerprint, warnings: out.warnings, error: undefined,
+    } as Partial<VideoNodeData>);
+  },
+
   async primePrompts() {
+    // The source-to-film controller owns material payloads and their dependency refs.
+    if (get().autoSourceFilm) return;
     const epoch = boardEpoch;
     const { nodes } = get();
     // Ask for every blank prompt at once. They are pure assembly on the
@@ -1297,15 +1460,15 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
               body: JSON.stringify({
                 kind: "character",
                 character,
-                state: character.states[0] ?? {},
+                state: character.states?.[0] ?? {},
                 has_reference: false,
                 style: get().style,
               }),
             }).then(({ prompt }) => { if (epoch === boardEpoch) get().editPrompt(node.id, "identity", prompt); }),
           );
         }
-        for (const state of character.states) {
-          if (states[state.key]?.prompt) continue;
+        for (const state of character.states ?? []) {
+          if (states?.[state.key]?.prompt) continue;
           asks.push(
             api<{ prompt: string }>("/api/automation/prompt", {
               method: "POST",
@@ -1539,7 +1702,10 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
       const stateKey = shots.map((shot) => shot.character_states?.[d.character.key]).find(Boolean) ?? d.activeState;
       const state = d.character.states.find((st) => st.key === stateKey);
       const selected = d.states[stateKey];
-      const plate = selected?.referenceUrl ? selected : d.identity;
+      // A single costume is already represented by its identity sheet. Distinct
+      // costumes require their own published sheet, as in backend shot packages.
+      const plate = selected?.referenceUrl && !selected.needsIdentityRefresh ? selected
+        : !stateKey || d.character.states.length <= 1 ? d.identity : undefined;
       const label = add(id, d.character.name, "character", plate, false);
       if (!styleNote) styleNote = styleSection(plate?.prompt ?? "");
       // Expected metadata survives even when its image has not been generated.
@@ -1580,7 +1746,8 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
           : candidate.data.kind === "asset" && (candidate.data.asset.id ?? candidate.data.asset.key) === id);
       const data = node?.data;
       const plate = data?.kind === "character"
-        ? (data.states[data.activeState]?.referenceUrl ? data.states[data.activeState] : data.identity)
+        ? (data.states[data.activeState]?.referenceUrl && !data.states[data.activeState]?.needsIdentityRefresh ? data.states[data.activeState]
+          : !data.activeState || data.character.states.length <= 1 ? data.identity : undefined)
         : data?.kind === "environment" || data?.kind === "asset" ? data.plate : undefined;
       return { id, name: entry?.name ?? id, kind: entry?.kind ?? "prop", ref_label: `@image${index + 1}`,
         ref_url: plate?.referenceUrl ?? "", media_id: plate?.mediaId };
@@ -1597,6 +1764,7 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
       shots: seqNode.data.shots, characters, environment, style: state.style,
       aspect_ratio: state.aspectRatio, style_note: styleNote,
       previous_state: previousVideo(state.nodes, sequenceKey)?.endState ?? "",
+      ...(referenceAssets.length ? { reference_assets: referenceAssets } : {}),
       ...(isStrictBoard(state.productionAssets, state.sourceVerification) ? {
         production_assets: state.productionAssets, source_verification: state.sourceVerification,
         reference_assets: referenceAssets,
@@ -1723,7 +1891,7 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
     }
   },
 
-  async primeVideoPrompt(sequenceKey, opts) {
+  async primeVideoPrompt(sequenceKey) {
     const epoch = boardEpoch;
     const { nodes } = get();
     const node = nodes.find((n) => n.id === `vid:${sequenceKey}`);
@@ -1731,11 +1899,17 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
     if (!node || node.data.kind !== "video") return;
     if (!seqNode || seqNode.data.kind !== "sequence") return;
 
-    if (get().currentProjectId && opts?.writer) {
+    // Capture the board's timing choice only on an explicit new writer run.
+    // Reading an old contract must not invalidate an already approved prompt.
+    get().patchNode(seqNode.id, {
+      sequence: { ...seqNode.data.sequence, preserve_source_shots: get().preserveSourceShots },
+    } as Partial<AutoNodeData>);
+
+    if (get().currentProjectId) {
       await ensureRaccord(sequenceKey);
       if (epoch !== boardEpoch) return;
     }
-    if (get().currentProjectId && (opts?.writer || seqNode.data.sequence.shot_package)) {
+    if (get().currentProjectId) {
       await get().saveNow();
       if (get().saveState === "error") throw new Error(get().saveError ?? "Save failed");
       const pack = await api<ShotPackage>(`/api/automation/projects/${get().currentProjectId}/shot-packages?sequence_key=${encodeURIComponent(sequenceKey)}`);
@@ -1770,63 +1944,54 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
     }
     const body = get().promptContract(sequenceKey);
     const inputFingerprint = contractFingerprint(body);
-    if (opts?.writer) {
-      const out = await durableRequest<{
-        prompt: string;
-        duration_seconds: number;
-        end_state: string;
-        writer: string;
-        warnings: string[];
-        coverage?: PromptCoverage;
-        contract_digest?: string;
-        coverage_token?: string;
-      }>("/api/automation/video/write", {
-        method: "POST",
-        body: JSON.stringify(body),
-      }, node.id, "prompt").catch((error: Error) => {
-        if (epoch === boardEpoch) {
-          // Sheets can finish or change while writing. Keep the available
-          // references visible on failure; leave the prior prompt untouched.
-          try { refs = get().collectVideoRefs(sequenceKey).refs; } catch { /* keep last valid bindings */ }
-          get().patchNode(node.id, { refs, error: error.message } as Partial<AutoNodeData>);
-        }
-        throw error;
-      });
-      if (epoch !== boardEpoch) return;
-      const shotsNow=get().nodes.find((n)=>n.id===seqNode.id);
-      if (shotsNow?.data.kind!=="sequence" || JSON.stringify(shotsNow.data.shots)!==JSON.stringify(body.shots)) {
-        throw new Error("Shotlist đã thay đổi; prompt mới được giữ trong lịch sử job để bạn xem lại.");
+    const out = await durableRequest<{
+      prompt: string;
+      duration_seconds: number;
+      end_state: string;
+      writer: string;
+      warnings: string[];
+      engine?: string;
+      staging_decisions?: VideoNodeData["stagingDecisions"];
+      reference_images?: VideoNodeData["inspectedReferences"];
+      coverage?: PromptCoverage;
+      contract_digest?: string;
+      coverage_token?: string;
+    }>("/api/automation/video/write", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }, node.id, "prompt").catch((error: Error) => {
+      if (epoch === boardEpoch) {
+        // Sheets can finish or change while writing. Keep the available
+        // references visible on failure; leave the prior prompt untouched.
+        try { refs = get().collectVideoRefs(sequenceKey).refs; } catch { /* keep last valid bindings */ }
+        get().patchNode(node.id, { refs, error: error.message } as Partial<AutoNodeData>);
       }
-      const draftNow=get().nodes.find((n)=>n.id===node.id);
-      if (draftNow?.data.kind==="video" && draftNow.data.prompt!==node.data.prompt && draftNow.data.prompt!==out.prompt) {
-        throw new Error("Prompt mới đã lưu trong lịch sử job; giữ bản bạn đang sửa trên board.");
-      }
-      get().patchNode(node.id, {
-        prompt: out.prompt,
-        refs,
-        durationS: out.duration_seconds,
-        endState: out.end_state || undefined,
-        promptBy: out.writer,
-        warnings: out.warnings,
-        coverage: out.coverage,
-        contractDigest: out.contract_digest,
-        coverageToken: out.coverage_token,
-        inputFingerprint,
-        error: undefined,
-      } as Partial<AutoNodeData>);
-      return;
-    }
-    const out = await api<{ prompt: string; duration_seconds: number }>(
-      "/api/automation/video/prompt",
-      { method: "POST", body: JSON.stringify(body) },
-    );
+      throw error;
+    });
     if (epoch !== boardEpoch) return;
+    const shotsNow=get().nodes.find((n)=>n.id===seqNode.id);
+    if (shotsNow?.data.kind!=="sequence" || JSON.stringify(shotsNow.data.shots)!==JSON.stringify(body.shots)) {
+      throw new Error("Shotlist đã thay đổi; prompt mới được giữ trong lịch sử job để bạn xem lại.");
+    }
+    const draftNow=get().nodes.find((n)=>n.id===node.id);
+    if (draftNow?.data.kind==="video" && draftNow.data.prompt!==node.data.prompt && draftNow.data.prompt!==out.prompt) {
+      throw new Error("Prompt mới đã lưu trong lịch sử job; giữ bản bạn đang sửa trên board.");
+    }
     get().patchNode(node.id, {
       prompt: out.prompt,
       refs,
       durationS: out.duration_seconds,
-      promptBy: "template",
-      coverage: undefined, contractDigest: undefined, coverageToken: undefined, inputFingerprint,
+      endState: out.end_state || undefined,
+      promptBy: out.writer,
+      promptEngine: out.engine,
+      stagingDecisions: out.staging_decisions,
+      inspectedReferences: out.reference_images,
+      warnings: out.warnings,
+      coverage: out.coverage,
+      contractDigest: out.contract_digest,
+      coverageToken: out.coverage_token,
+      inputFingerprint,
+      error: undefined,
     } as Partial<AutoNodeData>);
   },
 
@@ -1860,10 +2025,16 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
       const upToDate = current.inputFingerprint
         ? sameFingerprint(current.inputFingerprint, get().currentFingerprint(sequenceKey))
         : !strictBoard && sameRefs;
-      if (written && upToDate) {
+      if (current.promptBy === "manual") {
+        if (!current.prompt.trim()) throw new Error("Nhập prompt trước khi gen video.");
+        // Verify the user's exact text; never silently replace it with an AI draft.
+        if (strictBoard && (!upToDate || current.coverage?.status !== "verified" || !current.coverageToken))
+          await get().verifyVideoPrompt(sequenceKey);
+        else get().patchNode(id, { refs: wanted } as Partial<VideoNodeData>);
+      } else if (written && upToDate) {
         get().patchNode(id, { refs: wanted } as Partial<AutoNodeData>);
       } else {
-        await get().primeVideoPrompt(sequenceKey, { writer: true });
+        await get().primeVideoPrompt(sequenceKey);
       }
       if (epoch !== boardEpoch) return;
       const fresh = get().nodes.find((n) => n.id === id);
@@ -2034,7 +2205,7 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
     const node = get().nodes.find((n) => n.id === id);
     if (!node) return;
     const plate = readPlate(node.data, slot);
-    if (!plate?.prompt.trim() || plate.status === "running") return;
+    if (!plate?.prompt?.trim() || plate.status === "running") return;
 
     // A state sheet inherits the master face. Without that reference it is a
     // fresh person wearing the right clothes, so refuse rather than burn a
@@ -2065,6 +2236,7 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
 
     try {
       const { imageModel } = get();
+      const materialRefs = dependencies.length ? dependencies.map((dependency) => dependency.ref_url) : referenceUrl ? [referenceUrl] : [];
       const out = await durableRequest<PlateResponse>("/api/automation/plate", {
         method: "POST",
         body: JSON.stringify({
@@ -2074,8 +2246,10 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
           // Neither of these follows the film's own ratio. A turnaround sheet
           // is a studio document that wants width for four full-body views; an
           // environment plate is a set drawing, read across at 21:9.
-          aspect_ratio: node.data.kind === "environment" ? ENVIRONMENT_ASPECT : "16:9",
-          reference_urls: dependencies.length ? dependencies.map((dependency) => dependency.ref_url) : referenceUrl ? [referenceUrl] : [],
+          aspect_ratio: isFilmStylePreset(get().style) ? "16:9" : node.data.kind === "environment" ? ENVIRONMENT_ASPECT : "16:9",
+          style: get().style,
+          material_kind: node.data.kind === "asset" ? node.data.asset.kind : node.data.kind,
+          reference_urls: isFilmStylePreset(get().style) ? [...new Set(materialRefs)] : materialRefs,
         }),
       }, id, slot);
       if (epoch !== boardEpoch) return;
@@ -2085,6 +2259,8 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
       get().patchNode(id, {
         ...writePlate(latest.data, slot, {
           status: "done",
+          uploaded: false,
+          needsIdentityRefresh: false,
           image: first?.url,
           referenceUrl: first?.reference_url ?? undefined,
           mediaId: first?.media_id ?? undefined,
@@ -2196,6 +2372,10 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
         JSON.stringify(
           {
             version: 1,
+            sourceVideoId: s.sourceVideoId,
+            sourcePipeline: s.sourcePipeline,
+            dialogueLanguage: s.dialogueLanguage,
+            autoSourceFilm: s.autoSourceFilm,
             preserveSourceShots: s.preserveSourceShots,
             ...boardSettings(s, s.capabilities),
             title: s.title,
@@ -2242,6 +2422,10 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
       sourceVerification: d.sourceVerification,
       characters: d.characters ?? [],
       environments: d.environments ?? [],
+      sourceVideoId: d.sourceVideoId,
+      sourcePipeline: d.sourcePipeline,
+      dialogueLanguage: d.dialogueLanguage ?? "en",
+      autoSourceFilm: d.autoSourceFilm ?? false,
       style: d.style ?? "realistic",
       ...boardSettings(d, get().capabilities),
       nodes: clearStuckRunning(d.nodes),

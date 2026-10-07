@@ -137,7 +137,9 @@ def _frame_stats(path: Path) -> tuple[np.ndarray, np.ndarray, float]:
         small = cv2.resize(frame, _THUMB, interpolation=cv2.INTER_AREA)
         thumbs.append(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY))
         # TransNetV2 is trained on 48x27 RGB and takes nothing else.
-        tiny.append(cv2.resize(frame[:, :, ::-1], (48, 27), interpolation=cv2.INTER_AREA))
+        # Resize before swapping channels: the same per-channel pixels, without
+        # copying a full-resolution noncontiguous RGB array for every frame.
+        tiny.append(cv2.resize(frame, (48, 27), interpolation=cv2.INTER_AREA)[:, :, ::-1])
     cap.release()
     return (
         np.stack(thumbs) if thumbs else np.empty((0, _THUMB[1], _THUMB[0]), np.uint8),

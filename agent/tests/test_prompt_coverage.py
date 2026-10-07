@@ -74,7 +74,7 @@ def _review(ask, findings=None):
 def _run(data):
     seq, shots, cast, extra, assets, report = data
     return asyncio.run(writer.write_clip_prompt(seq, shots, characters=cast, environment=None,
-                        production_assets=assets, reference_assets=extra, source_verification=report))
+                        production_assets=assets, reference_assets=extra, source_verification=report, cinematic=False))
 
 
 @pytest.mark.parametrize("space", [False, True])

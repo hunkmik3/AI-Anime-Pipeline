@@ -112,6 +112,8 @@ async def lifespan(app: FastAPI):
     # loudly. The bundled SQLite build has no Alembic, so init_db() creates the
     # schema from SQLModel.metadata on first run (no-op on Postgres).
     init_db()
+    from flowboard.services.automation_assistant import recover as recover_assistant
+    recover_assistant()
     # Multi-user (Phase 9): seed the first admin from FLOWBOARD_ADMIN_USER/
     # PASSWORD when the accounts table is empty. No-op once any user exists.
     from flowboard.services import user_service
@@ -294,6 +296,8 @@ async def _security_headers(request: FastAPIRequest, call_next):
 app.include_router(nodes.router)
 app.include_router(edges.router)
 app.include_router(chat.router)
+from flowboard.routes import automation_assistant
+app.include_router(automation_assistant.router)
 app.include_router(account.router)
 app.include_router(admin.router)
 app.include_router(projects.router)

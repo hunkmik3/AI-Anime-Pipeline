@@ -1,0 +1,40 @@
+MASTER ENVIRONMENT GENERATION PROMPT
+PREMIUM PRODUCTION ENVIRONMENT PLATE — SELECTED STYLE
+
+Create ONE production-ready ENVIRONMENT PLATE from the ENVIRONMENT PROFILE below, using only text input.
+
+INPUT HIERARCHY
+The ENVIRONMENT PROFILE is the absolute source of truth for location identity, story period, interior/exterior, architecture, layout, scale, circulation, entrance/exit relationships, windows, furniture zones, materials, actual time of day, weather, story function and continuity locks.
+The SELECTED STYLE changes visual representation, drawing/rendering, material treatment and lighting interpretation only. It must not relocate the story, substitute a style-associated country or time period, add magical architecture or convert a school into a palace.
+Use the requested view/state in the profile; otherwise create an establishing wide that clearly communicates the supplied space. No image references are supplied. Do not invent a binding to an image.
+
+CORE GOAL
+Create a reusable film location with understandable geography and action space, not merely a decorative picture. Follow specified spatial anchors exactly. Where dimensions or counts are unspecified, make a restrained coherent visual proposal without labelling it as a source fact. Repeat visible architectural modules consistently; do not create impossible openings or passages.
+
+SELECTED STYLE
+Modern Japanese 2D anime feature-film aesthetic; precise hand-drawn contours, controlled line-weight variation, expressive anime facial construction and clearly designed hair shapes. Preserve each character’s specified age, identity, facial proportions and silhouette. Use clean colour fills with two or three deliberate cel-shading tones and selective graphic highlights. Suggest materials through folds, linework, colour and shadow shapes rather than photographic microtexture. Maintain a consistently drawn 2D appearance across characters, props and effects. Avoid photoreal skin, sculpted CGI faces, glossy 3D shading and unrequested chibi transformations.
+
+Environments should use richly painted anime backgrounds with coherent perspective, selective texture and atmospheric depth. Match background detail and colour design to the characters so both belong to the same scene. Follow the project’s established period, architecture, costumes and props. When present, magical effects should use designed 2D shapes, controlled glow and readable silhouettes without overwhelming the acting.
+
+For narrative scenes, translate motivated light sources into clear cel-shadow shapes, deliberate colour relationships and restrained compositing. Keep eyes, expressions and silhouettes legible. Establish depth primarily through staging, overlap, scale and atmospheric perspective; use selective background softness sparingly. For white-background asset references, use clean model-sheet presentation, neutral colours, minimal cel shading and consistent proportions across views.
+
+ABSOLUTE QUALITY FLOOR
+Even simple or worn locations deserve coherent perspective, clear shapes, controlled composition and carefully executed light. Do not turn ordinary settings into luxury environments. Use material rendering appropriate to the chosen medium, preserving the profile's actual colours and material identities. In 2D, suggest surface detail through purposeful paint/line/shadow design, not photographic texture pasted onto a drawing.
+
+TIME / LIGHTING / MOOD
+Actual time of day, weather and light-source locations come from the profile. Apply the selected style's cinematic quality without changing day to night or adding unsupported fog, fire, magic or coloured effects. Keep important action areas and face-height illumination readable, with a coherent light direction and sensible contact shadows. Environmental objects should be grounded and belong to the same visual medium as future characters.
+
+PRODUCTION GEOGRAPHY
+Clearly communicate the entrance, exits, circulation direction, key action zone, staging space and stable spatial anchors as specified. Preserve wall-side relationships, door/locker rhythm, floor continuity and plausible human scale. Leave usable space for actors and the camera. The view must support later wides, medium shots, OTS, reverses and inserts in the same setting.
+
+CAMERA / OUTPUT
+One single 16:9 landscape environment plate. Full-frame establishing wide, eye-level, level horizon, coherent approximately 28mm-equivalent perspective and believable verticals unless the profile explicitly specifies another view. Readable foreground, middle ground and background, with useful focus through staging areas. No collage, multipanel sheet, floorplan inset, captions, logo or watermark.
+
+POPULATION
+For this reusable asset plate, show the clean unoccupied setting unless the profile explicitly requests a populated plate. Do not add hero characters, human silhouettes, character turnarounds or invented animals. An unoccupied location reference never means the story crowd has exited; population is assembled later using the shotlist and cast.
+
+ARTIFACT / CONTINUITY CHECK
+Avoid warped walls, conflicting vanishing points, implausible duplicated openings, impossible stairs, floating objects, melted furniture, broken reflections, irrational shadows, pattern glitches, random text, oversharpening and fake HDR. Preserve architecture, geography, materials and lighting relationships under the selected visual style.
+
+ENVIRONMENT PROFILE:
+{{PROFILE}}
