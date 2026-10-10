@@ -36,20 +36,24 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional
 
-from flowboard.services import automation, prompt_coverage, production_adaptation
+from flowboard.services import approved_accessories, automation, avis_text, prompt_coverage, production_adaptation
 from flowboard.services import cinematic_prompt, film_styles
 from flowboard.services.video_analyzer import adapt as adapt_mod
 
 logger = logging.getLogger(__name__)
 
-# Both writer and reviewer use the existing Avis gateway. Keep cross-model
-# fallback opt-in so a Luna request cannot silently be answered by another AI.
+# Both writer and reviewer use the existing Avis gateway. When the provider declines
+# or cannot answer the writer, the fallback (another GPT model, per AGENTS.md) writes
+# the clip; the result names the model that wrote it, so it is never silent. Chosen on
+# 2026-10-09 by writing one real declined clip with every Avis text model: gpt-5-4 was
+# the fastest to pass all checks. FLOWBOARD_PROMPT_WRITER_FALLBACK="" turns it off.
 TIMING_POLICY_VERSION = 2
 
 WRITER_MODEL = os.getenv("FLOWBOARD_PROMPT_WRITER_MODEL", "gpt-6-luna")
-WRITER_FALLBACK = os.getenv("FLOWBOARD_PROMPT_WRITER_FALLBACK", "")
+WRITER_FALLBACK = os.getenv("FLOWBOARD_PROMPT_WRITER_FALLBACK", "gpt-5-4")
 WRITER_ON = os.getenv("FLOWBOARD_PROMPT_WRITER", "on").strip().lower() not in ("off", "0", "false", "no")
 REVIEW_MODEL = os.getenv("FLOWBOARD_PROMPT_REVIEW_MODEL", WRITER_MODEL)
+REVIEW_FALLBACK = os.getenv("FLOWBOARD_PROMPT_REVIEW_FALLBACK", WRITER_FALLBACK)
 # Shared production standard. Old environment settings must not select the old
 # format for a new clip; legacy formatting remains only for regression tooling.
 CLIP_ENGINE = "cinematic"
@@ -622,7 +626,8 @@ def check_clip_prompt(prompt: str, *, refs: list[tuple[str, str]], duration: int
                       speakers: Optional[list[tuple[int, str, str]]] = None,
                       max_characters: int = 12000) -> list[str]:
     """What is wrong with a written clip prompt, as sentences the writer can act on."""
-    cinematic = cinematic_prompt.is_cinematic(prompt)
+    # A cinematic draft with one malformed header is still cinematic: its repair asks for the cinematic form.
+    cinematic = cinematic_prompt.is_cinematic(prompt) or "## REFERENCE CONTROL" in prompt
     if cinematic:
         prompt = cinematic_prompt.canonical(prompt, duration)
     prompt = unicodedata.normalize("NFC", prompt)
@@ -695,6 +700,77 @@ def check_clip_prompt(prompt: str, *, refs: list[tuple[str, str]], duration: int
     return problems
 
 
+def bind_speakers(shots: list[dict], characters: list[dict],
+                  production_assets: Optional[list[dict]] = None) -> list[dict]:
+    """Speaker labels become the cast's current names, joined by ``speaker_id``.
+
+    The catalog binds every line to a character id; its ``who`` is whatever label the
+    catalog wrote then ("Dark-haired bearded man"). A renamed or redesigned character
+    keeps its id, so the line keeps its speaker. Names of the clip's characters win over
+    catalog names; a line with no id, or an id no one carries, keeps its label.
+    """
+    names: dict[str, str] = {}
+    for asset in production_assets or []:
+        if isinstance(asset, dict) and asset.get("id") and asset.get("name"):
+            names[str(asset["id"])] = str(asset["name"])
+    for c in characters:
+        aid = prompt_coverage.asset_id(c)
+        if aid and c.get("name"):
+            names[aid] = str(c["name"])
+    out = []
+    for shot in shots:
+        dialogue = shot.get("dialogue")
+        if isinstance(dialogue, list) and any(isinstance(d, dict) and str(d.get("speaker_id") or "") in names
+                                              for d in dialogue):
+            shot = {**shot, "dialogue": [{**d, "who": names[str(d["speaker_id"])]}
+                                         if isinstance(d, dict) and str(d.get("speaker_id") or "") in names else d
+                                         for d in dialogue]}
+        out.append(shot)
+    return out
+
+
+WHITE_MODEL_POLICY = (
+    "This clip is rendered from a white-model motion video of the source sequence (attached at generation "
+    "as @video1): it carries every shot's framing, camera, blocking, positions and set layout. Do not "
+    "restate or invent positions, backgrounds or set geometry; write the performance, the exact dialogue "
+    "and delivery, wardrobe, held props and the reference identities.")
+
+
+def white_model_view(shots: list[dict]) -> list[dict]:
+    """In a reskin from a white-model motion video, the clay carries where everyone is and what
+    stands behind them; the text copies of those facts only invite contradictions with it (and with
+    an approved restyle). The writer's copies drop them; the locked contract keeps them."""
+    out = []
+    for shot in shots:
+        shot = {**shot}
+        for field in ('background', 'staging', 'framing_note', 'scene_layout'):
+            if shot.get(field):
+                shot[field] = ''
+        out.append(shot)
+    return out
+
+
+def white_model_package(package: Optional[dict]) -> Optional[dict]:
+    """The package copy a reskin writer and its reviewer read: no positions, backgrounds or
+    layouts beside the white-model video either (see white_model_view)."""
+    if not isinstance(package, dict):
+        return package
+    package = deepcopy(package)
+    for shot in package.get('shots') or []:
+        for field in ('background', 'staging', 'composition', 'scene_layout'):
+            if shot.get(field):
+                shot[field] = ''
+        raccord = shot.get('raccord')
+        if isinstance(raccord, dict):          # the raccord plan's blocking and set layouts, too
+            shot['raccord'] = {**raccord, **{k: ('' if k == 'direction' else []) for k in ('direction', 'set_layouts')
+                                             if raccord.get(k)}}
+    for anchor in (package.get('scene_anchors') or {}).values():
+        if isinstance(anchor, dict):
+            anchor.update({k: ('' if k == 'source_staging' else []) for k in ('source_staging', 'sheet_geometry')
+                           if anchor.get(k)})
+    return package
+
+
 def _payload(sequence: dict, shots: list[dict], slots: list[tuple[int, int]], duration: int, *,
              characters: list[dict], environment: Optional[dict], look: str,
              aspect_ratio: Optional[str], previous_state: str, unsafe: dict[int, str],
@@ -719,14 +795,28 @@ def _payload(sequence: dict, shots: list[dict], slots: list[tuple[int, int]], du
                      "keep": (_strict_preserve_line(c) if strict else
                               automation._preserve_line(c) or _wardrobe_line(c.get("wardrobe")))})
     if environment and environment.get("ref_label"):
+        design = environment.get("design") if isinstance(environment.get("design"), dict) else {}
+        # The attached location image is the room's layout. Its design text (layout, depth,
+        # view) drew that image and is not repeated here as a second, possibly conflicting lock.
         refs.append({"tag": environment["ref_label"], "name": str(environment.get("name") or "").upper(),
                      "kind": "location", "id": prompt_coverage.asset_id(environment),
-                     "description": environment.get("description") or environment.get("summary") or ""})
+                     "description": environment.get("description") or environment.get("summary") or "",
+                     **({"view": environment["view"]} if environment.get("view") else {}),
+                     **({"target_look": environment["target_look"]} if environment.get("target_look") else {}),
+                     **({"light": design["light"]} if isinstance(design.get("light"), str) and design["light"].strip() else {})})
     for asset in reference_assets or []:
-        if asset.get("ref_label"):
+        if not asset.get("ref_label"):
+            continue
+        if asset.get("kind") == "environment" and asset.get("view"):
+            # The same set seen from the other direction: one location, not a second place.
             refs.append({"tag": asset["ref_label"], "name": str(asset.get("name") or "").upper(),
-                         "kind": asset.get("kind") or "prop", "id": prompt_coverage.asset_id(asset),
-                         "keep": asset.get("description") or ""})
+                         "kind": "location", "id": prompt_coverage.asset_id(asset), "view": asset["view"],
+                         "description": asset.get("description") or asset.get("summary") or "",
+                         **({"target_look": asset["target_look"]} if asset.get("target_look") else {})})
+            continue
+        refs.append({"tag": asset["ref_label"], "name": str(asset.get("name") or "").upper(),
+                     "kind": asset.get("kind") or "prop", "id": prompt_coverage.asset_id(asset),
+                     "keep": asset.get("description") or ""})
     source_refs=[*characters,*([environment] if environment else []),*(reference_assets or [])]
     for ref in refs:
         source_ref=next((r for r in source_refs if prompt_coverage.asset_id(r)==ref.get('id') and r.get('ref_label')==ref['tag']),{})
@@ -775,6 +865,11 @@ def _payload(sequence: dict, shots: list[dict], slots: list[tuple[int, int]], du
                                               automation._camera_line(s.get("camera"))) if x)),
             "placement": (s.get("framing_note") or "") if strict else automation._first_clause(s.get("framing_note"), firsts),
             "in_frame": [names.get(k, k) for k in s.get("character_keys") or []],
+            **({"background": str(s["background"]).strip()} if str(s.get("background") or "").strip() else {}),
+            # Where each person is relative to the set, read from the source; kept like the camera.
+            **({"staging": str(s["staging"]).strip()} if str(s.get("staging") or "").strip() else {}),
+            # Which of the set's two reference views the camera looks along.
+            **({"set_view": s["set_view"]} if s.get("set_view") in ("master", "reverse") else {}),
             "action": list(s.get("action") or []) if strict else list(s.get("action") or [])[:4],
             "notes": [x for x in ((list(s.get("performance") or []) if strict else list(s.get("performance") or [])[:2]) + [s.get("edit_note") or ""]) if x],
             "dialogue": said,
@@ -895,7 +990,16 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
         )
         if issues:
             raise WriterError("Source contract needs review: " + "; ".join(issues[:12]))
-    target_shots = [production_adaptation.apply(s) for s in shots]
+    target_shots = bind_speakers([production_adaptation.apply(s) for s in shots], characters, production_assets)
+    # Owner rule: the approved design governs accessories. Mentions no approved sheet carries
+    # leave the model-facing copies, with receipts; the locked contract is already validated.
+    sheets = [*characters, *([environment] if environment else []), *(reference_assets or [])]
+    target_shots, accessory_receipts = approved_accessories.apply(target_shots, sheets)
+    from flowboard.services import set_restyle
+    target_shots = set_restyle.project_shots(target_shots, sheets)
+    reskin = sequence.get('motion_reference') == 'white_model'
+    if reskin:
+        target_shots = white_model_view(target_shots)
     fitted, slots, duration = production_timeline(sequence, target_shots)
     unsafe_map = {n: words for n, words in (unsafe or [])
                   if not (1 <= n <= len(shots) and shots[n - 1].get("production_adaptation"))}
@@ -904,12 +1008,22 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
                    look=look, aspect_ratio=aspect_ratio, previous_state=previous_state,
                    unsafe=unsafe_map, school_age=school_age, style_note=style_note,
                    reference_assets=reference_assets, strict=strict or cinematic)
+    if accessory_receipts:
+        for key in ('shot_package', 'production_context'):
+            if ask.get(key):
+                ask[key] = approved_accessories.scrub_copy(ask[key], sheets)
     observed_source = (source_verification or {}).get('method') == 'one_pass_production'
     if observed_source:
         ask['source_modality_policy'] = cinematic_prompt.OBSERVED_SOURCE_MODALITY_POLICY
         ask['production_context'] = cinematic_prompt.source_model_context(ask.get('production_context'))
     from flowboard.services.target_casting import POLICY as casting_policy
     ask['target_casting_policy']=casting_policy
+    if any(r.get('target_look') for r in [*([environment] if environment else []), *(reference_assets or [])]):
+        from flowboard.services.set_restyle import POLICY as restyle_policy
+        ask['set_restyle_policy'] = restyle_policy
+    if reskin:
+        ask['motion_reference_policy'] = WHITE_MODEL_POLICY
+        ask['shot_package'] = white_model_package(ask.get('shot_package'))
     refs = [(r["tag"], r["name"]) for r in ask["references"]]
     # Shots the payload marked for intimate words join the refused ones: their
     # lines may change, and the rest of the checks stand.
@@ -977,15 +1091,28 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
     resumed_draft = (_load_writer_draft(digest) if cinematic and
                      (source_verification or {}).get('method') == 'one_pass_production' else None)
     allow_final_semantic_repair = False
+    writer = WRITER_MODEL     # becomes WRITER_FALLBACK for the rest of the clip once the provider declines
+
+    async def ask_writer():
+        nonlocal writer
+        kwargs = dict(temperature=0.4, attempts=1, max_tokens=output_budget,
+                      **({"image_parts": image_parts} if cinematic else {}))
+        try:
+            return await adapt_mod.ask_json(system, user, stats, model=writer,
+                                            fallback=WRITER_FALLBACK if writer != WRITER_FALLBACK else "", **kwargs)
+        except avis_text.AvisContentRefusal:
+            if not WRITER_FALLBACK or writer == WRITER_FALLBACK:
+                raise
+            logger.warning("clip writer %s: %s declined; %s writes this clip", label, writer, WRITER_FALLBACK)
+            writer = WRITER_FALLBACK
+            return await adapt_mod.ask_json(system, user, stats, model=writer, fallback="", **kwargs)
+
     for round_ in (1, 2, 3):
         if round_ == 3 and not allow_final_semantic_repair:
             break
         semantic_prompt_defect = False
         try:
-            data = resumed_draft if round_ == 1 and resumed_draft else await adapt_mod.ask_json(system, user, stats, model=WRITER_MODEL,
-                                            fallback=WRITER_FALLBACK, temperature=0.4,
-                                            attempts=1, max_tokens=output_budget,
-                                            **({"image_parts": image_parts} if cinematic else {}))
+            data = resumed_draft if round_ == 1 and resumed_draft else await ask_writer()
         except Exception as exc:  # noqa: BLE001
             diagnostic = _response_diagnostic(stats)
             reason = str(stats.last_response.get("finish_reason") or "")
@@ -1000,14 +1127,15 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
                     "The previous response was incomplete or invalid JSON. Do not generate a coverage list or repeat quotations."]}, ensure_ascii=False)
                 continue
             raise WriterError(f"no answer: {exc}; response metadata={diagnostic}") from exc
-        writer_model = next(iter(stats.answered_by), WRITER_MODEL)
+        writer_model = writer if writer != WRITER_MODEL else next(iter(stats.answered_by), WRITER_MODEL)
         data = _clip_response(data)
         if (strict or cinematic) and isinstance(data, dict) and data.get("source_issues"):
             raise WriterError("Source contract needs review: " + str(data["source_issues"]))
         prompt_value = data.get("prompt") if isinstance(data, dict) else None
         prompt = prompt_value.strip() if isinstance(prompt_value, str) else ""
         if cinematic:
-            prompt = cinematic_prompt.enforce_audio_policy(prompt)
+            prompt = cinematic_prompt.normalize_heads(
+                cinematic_prompt.single_reference_mentions(cinematic_prompt.enforce_audio_policy(prompt)))
         if cinematic and (source_verification or {}).get('method') == 'one_pass_production':
             prompt = cinematic_prompt.serialize_source_locks(prompt, fitted, slots)
         if not cinematic:
@@ -1064,6 +1192,7 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
                                 "verification_method": "deterministic_shot_evidence_and_semantic_review",
                                 "evidence_scope": "full_shot",
                                 "writer_rounds": round_,
+                                **({"appearance_rewrites": accessory_receipts} if accessory_receipts else {}),
                                 **({"resumed_saved_draft": True, "writer_rounds": round_ - 1} if resumed_draft else {}),
                                 **({"engine": cinematic_prompt.ENGINE, "staging_decisions": staging, "reference_images": inspected} if cinematic else {})}
         if not problems:
@@ -1083,7 +1212,8 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
     if problems:
         raise WriterError("; ".join(problems[:4]))
     model = writer_model or WRITER_MODEL
-    warnings = []
+    warnings = [f"Shot {r['shot']}: bỏ chi tiết {r['accessory']} khỏi mô tả — thiết kế đã duyệt không có."
+                for r in accessory_receipts]
     if model != WRITER_MODEL:
         warnings.append(f"Viết bằng {model} ({WRITER_MODEL} không trả lời được).")
     return Written(prompt=prompt + "\n", duration=duration, end_state=end_state, model=model,
@@ -1115,7 +1245,8 @@ async def verify_provided_clip_prompt(prompt: str, sequence: dict[str, Any], sho
     issues = prompt_coverage.validate_source_contract(shots, production_assets or [], source_verification, references)
     if issues:
         raise WriterError("Source contract needs review: " + "; ".join(issues[:12]))
-    target_shots = [production_adaptation.apply(shot) for shot in shots]
+    target_shots = bind_speakers([production_adaptation.apply(shot) for shot in shots], characters, production_assets)
+    target_shots, accessory_receipts = approved_accessories.apply(target_shots, references)
     fitted, slots, duration = production_timeline(sequence, target_shots)
     unsafe_map = {n: words for n, words in automation.unsafe_shots(shots, characters, environment)
                   if not (1 <= n <= len(shots) and shots[n - 1].get("production_adaptation"))}
@@ -1124,6 +1255,10 @@ async def verify_provided_clip_prompt(prompt: str, sequence: dict[str, Any], sho
                    look=look, aspect_ratio=aspect_ratio, previous_state=previous_state,
                    unsafe=unsafe_map, school_age=school_age, style_note=style_note,
                    reference_assets=reference_assets, strict=True)
+    if accessory_receipts:
+        for key in ('shot_package', 'production_context'):
+            if ask.get(key):
+                ask[key] = approved_accessories.scrub_copy(ask[key], references)
     if (source_verification or {}).get('method') == 'one_pass_production':
         ask['production_context'] = cinematic_prompt.source_model_context(ask.get('production_context'))
     unsafe_map.update({row["shot"]: row["rewrite_required"] for row in ask["shots"]
@@ -1216,18 +1351,25 @@ async def review_prompt(prompt: str, requirements: list[dict], references: list[
     blocks = prompt_coverage.shot_blocks(prompt)
     shot_texts = {str(n): blocks.get(n, '') for n in sorted(
         {r['shot'] for r in requirements if isinstance(r.get('shot'), int)})}
+    review_system = (_REVIEW_SYSTEM + (cinematic_prompt.REVIEW_ADDENDUM if staging_decisions is not None else "")
+                     + ('\n' + cinematic_prompt.OBSERVED_SOURCE_MODALITY_POLICY if observed_source else ''))
+    review_input = json.dumps({"prompt": prompt, "requirements": supplied,
+                               "shot_texts": shot_texts,
+                               "references": references, "production_assets": production_assets,
+                               "opening_state": opening_state, "end_state": end_state,
+                               "shot_package": shot_package, "staging_decisions": staging_decisions,
+                               "production_context": production_context,
+                               "production_standard": production_standard}, ensure_ascii=False)
     try:
-        review = await adapt_mod.ask_json(
-            _REVIEW_SYSTEM + (cinematic_prompt.REVIEW_ADDENDUM if staging_decisions is not None else "")
-            + ('\n' + cinematic_prompt.OBSERVED_SOURCE_MODALITY_POLICY if observed_source else ''), json.dumps({"prompt": prompt, "requirements": supplied,
-                                        "shot_texts": shot_texts,
-                                        "references": references, "production_assets": production_assets,
-                                        "opening_state": opening_state, "end_state": end_state,
-                                        "shot_package": shot_package, "staging_decisions": staging_decisions,
-                                        "production_context": production_context,
-                                        "production_standard": production_standard}, ensure_ascii=False),
-            adapt_mod.TextStats(), model=REVIEW_MODEL, fallback="", attempts=1, temperature=0.0,
-        )
+        try:
+            review = await adapt_mod.ask_json(review_system, review_input, adapt_mod.TextStats(),
+                                              model=REVIEW_MODEL, fallback="", attempts=1, temperature=0.0)
+        except avis_text.AvisContentRefusal:
+            # A declined review is no verdict; the fallback model reviews instead.
+            if not REVIEW_FALLBACK or REVIEW_FALLBACK == REVIEW_MODEL:
+                raise
+            review = await adapt_mod.ask_json(review_system, review_input, adapt_mod.TextStats(),
+                                              model=REVIEW_FALLBACK, fallback="", attempts=1, temperature=0.0)
     except Exception as exc:  # noqa: BLE001
         raise WriterError(f"Independent prompt review failed: {exc}") from exc
     if not isinstance(review, dict) or not isinstance(review.get("findings"), list):

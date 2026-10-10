@@ -45,13 +45,19 @@ class Line:
     text: str
     first_shot: int
     last_shot: int
-    source: str                    # "subtitle" | "asr"
+    source: str                    # "subtitle" | "asr" | "caption"
     start: Optional[float] = None
     end: Optional[float] = None
     pieces: list[str] = field(default_factory=list)
+    # One-pass lines only: a stable id, the part spoken inside each shot (split at the
+    # cuts by word time), review flags, and the timed words the line was built from.
+    id: str = ""
+    spans: list[dict] = field(default_factory=list)
+    flags: list[str] = field(default_factory=list)
+    words: list[dict] = field(default_factory=list, repr=False)
 
     def as_dict(self) -> dict:
-        return {
+        out = {
             "text": self.text,
             "first_shot": self.first_shot,
             "last_shot": self.last_shot,
@@ -59,6 +65,9 @@ class Line:
             "start": self.start,
             "end": self.end,
         }
+        if self.id:
+            out.update(id=self.id, spans=self.spans, flags=self.flags)
+        return out
 
 
 def _norm(text: str) -> str:
@@ -178,21 +187,39 @@ def audio_sentences(transcript: dict, shots: list[dict]) -> list[Line]:
     current=[]
     def flush():
         if current:
-            segments.append({'start':current[0]['start'],'end':current[-1]['end'],
-                             'text':''.join(w['word'] for w in current).strip()})
+            text=''.join(w['word'] for w in current).strip()
+            # A recognised dash or music note alone ("-", "♪") is no utterance: never a line.
+            if re.search(r'\w',text):
+                segments.append({'start':current[0]['start'],'end':current[-1]['end'],
+                                 'text':text,'words':list(current)})
             current.clear()
     previous_language=None
     for seg in transcript.get('segments') or []:
         words=seg.get('words') or []
         if not words:
-            flush();segments.append(seg);continue
+            flush()
+            if re.search(r'\w',str(seg.get('text') or '')):segments.append(seg)
+            continue
+        if seg.get('source') in ('guided_caption','guided_window'):
+            # Recovered speech overlapping another speaker's running sentence is its own
+            # utterance; never splice it into the sentence it overlaps.
+            flush();current.extend(words);flush();continue
         language=seg.get('language')
         if previous_language and language and previous_language!=language:flush()
         previous_language=language
         for word in words:
-            if current and word['start']-current[-1]['end']>.8:flush()
+            if current:
+                gap=word['start']-current[-1]['end']; span=current[-1]['end']-current[0]['start']
+                # An unpunctuated run (the recognition's habit with quick exchanges and with
+                # narration) breaks at a clear pause once it is long, and at any pause past
+                # ~8 s: one line should not carry several sentences or speakers.
+                if (gap>.8 or word['start']<current[-1]['end']-.3
+                        or (gap>=.5 and span>=3.) or (gap>=.25 and span>=8.)):flush()
             current.append(word)
-            if _SENTENCE_END.search(word['word']) or word.get('source_sentence_end'):flush()
+            # A boundary taken from a caption (not the speech's own punctuation) never
+            # leaves a one-word fragment: a rolling caption's "and..." joins what follows.
+            if (_SENTENCE_END.search(word['word']) or word.get('voice_turn_end')
+                    or (word.get('source_sentence_end') and len(current)>1)):flush()
         # Do not join an interrupted turn to the next segment/speaker. Check
         # only the segment boundary, so hyphenated words inside a segment (even
         # when the decoder tokenizes their hyphen separately) stay intact.
@@ -200,10 +227,126 @@ def audio_sentences(transcript: dict, shots: list[dict]) -> list[Line]:
                 or _INTERRUPTION_END.search(str(words[-1].get('word') or ''))):
             flush()
     flush()
-    return from_transcript({'segments':segments},shots)
+    lines=from_transcript({'segments':segments},shots)
+    timed={(round(float(s['start']),3),round(float(s['end']),3)):s.get('words') or [] for s in segments}
+    for line in lines:
+        line.words=timed.get((round(float(line.start),3),round(float(line.end),3)),[])
+    return lines
 
 
-def build_track(shots: list[dict], transcript: dict, *, policy: str = 'legacy') -> list[Line]:
+def _shot_at(shots: list[dict], t: float) -> Optional[int]:
+    for s in shots:
+        if float(s['start']) <= t < float(s['end']):
+            return s['shot']
+    if shots and t >= float(shots[-1]['end']):
+        return shots[-1]['shot']
+    return shots[0]['shot'] if shots else None
+
+
+def _absorb_edge_words(groups: list[tuple], shots: list[dict], *, max_s: float = 0.35, edge_s: float = 0.25) -> list[tuple]:
+    """A single word a line starts just before a cut joins the rest of the line after it.
+
+    Editors lead the picture with the voice (a J-cut): "As | of this moment…" puts one
+    word on the outgoing shot, which is not a performable beat. A voice that carries on
+    over the next shot (an L-cut) stays a continuation piece of that shot."""
+    ends = {s['shot']: float(s['end']) for s in shots}
+    if len(groups) > 1:
+        n, ws = groups[0]
+        if (len(ws) == 1 and float(ws[0]['end']) - float(ws[0]['start']) <= max_s
+                and ends[n] - float(ws[0]['end']) <= edge_s):
+            groups = [(groups[1][0], ws + groups[1][1])] + groups[2:]
+    return groups
+
+
+def split_at_cuts(line: Line, shots: list[dict]) -> list[dict]:
+    """The part of ``line`` spoken inside each shot, by each word's midpoint.
+
+    A line without word timings (a caption kept for review) goes whole to the shot that
+    holds most of its visible span.
+    """
+    if line.words:
+        groups: list[tuple[int, list[dict]]] = []
+        for w in line.words:
+            n = _shot_at(shots, (float(w['start']) + float(w['end'])) / 2)
+            if groups and groups[-1][0] == n:
+                groups[-1][1].append(w)
+            else:
+                groups.append((n, [w]))
+        groups = _absorb_edge_words(groups, shots)
+        # A group of punctuation only (the dash of "nine months-" falling past the cut) is
+        # no utterance of its own: it stays with the words it punctuates.
+        merged: list[tuple[int, list[dict]]] = []
+        for n, ws in groups:
+            if merged and not re.search(r'\w', ''.join(x['word'] for x in ws)):
+                merged[-1][1].extend(ws)
+            elif merged and not re.search(r'\w', ''.join(x['word'] for x in merged[-1][1])):
+                merged[-1] = (n, merged[-1][1] + ws)
+            else:
+                merged.append((n, list(ws)))
+        groups = merged
+        spans = [{'shot': n, 'text': ''.join(x['word'] for x in ws).strip(),
+                  'start': round(float(ws[0]['start']), 3), 'end': round(float(ws[-1]['end']), 3)}
+                 for n, ws in groups if ''.join(x['word'] for x in ws).strip()]
+    else:
+        best, overlap = line.first_shot, -1.0
+        for s in shots:
+            o = min(float(s['end']), float(line.end or 0)) - max(float(s['start']), float(line.start or 0))
+            if o > overlap:
+                best, overlap = s['shot'], o
+        spans = [{'shot': best, 'text': line.text, 'start': line.start, 'end': line.end}]
+    for i, span in enumerate(spans):
+        span['cont'] = i > 0
+    return spans
+
+
+_TURN_MATCH = 0.6
+
+
+def split_caption_turns(lines: list[Line], cues: list[dict], shots: list[dict]) -> list[Line]:
+    """Split an audio line where it runs from one on-screen caption into the next.
+
+    Speech recognition drops the punctuation between quick exchanges, so two speakers'
+    turns can come out as one sentence. When a line holds two captions one after the
+    other — each with at least 60% of its words found, in order — it is cut right after
+    the last word of the first. A narrator's sentence spread over two captions becomes
+    two lines by the same voice, which costs nothing. Translated captions never match.
+    """
+    from difflib import SequenceMatcher
+    from .source_integrity import comparison_tokens
+    out = []
+    for line in lines:
+        flat = [(i, t) for i, w in enumerate(line.words) for t in comparison_tokens(w['word'])]
+        if line.source == 'caption' or len(flat) < 6:
+            out.append(line)
+            continue
+        a, b = float(line.words[0]['start']), float(line.words[-1]['end'])
+        found, cursor = [], 0
+        for cue in cues:
+            if len(cue['tokens']) < 3 or cue['end'] <= a - .75 or cue['start'] >= b + .75:
+                continue
+            m = SequenceMatcher(None, cue['tokens'], [t for _, t in flat[cursor:]], autojunk=False)
+            blocks = [x for x in m.get_matching_blocks() if x.size]
+            if not blocks or sum(x.size for x in blocks) < _TURN_MATCH * len(cue['tokens']):
+                continue
+            found.append((flat[cursor + blocks[0].b][0], flat[cursor + blocks[-1].b + blocks[-1].size - 1][0]))
+            cursor += blocks[-1].b + blocks[-1].size
+        cuts = sorted({prev[1] + 1 for prev, nxt in zip(found, found[1:]) if nxt[0] > prev[1]})
+        if not cuts:
+            out.append(line)
+            continue
+        bounds = [0, *cuts, len(line.words)]
+        for x, y in zip(bounds, bounds[1:]):
+            words = line.words[x:y]
+            mid = lambda w: (float(w['start']) + float(w['end'])) / 2
+            out.append(Line(text=' '.join(''.join(w['word'] for w in words).split()),
+                            first_shot=_shot_at(shots, mid(words[0])), last_shot=_shot_at(shots, mid(words[-1])),
+                            source=line.source, start=float(words[0]['start']), end=float(words[-1]['end']),
+                            flags=[*line.flags, 'split_at_caption_turn'], words=list(words)))
+    return out
+
+
+def build_track(shots: list[dict], transcript: dict, *, policy: str = 'legacy', deep: bool = False,
+                names: set[str] | None = None) -> list[Line]:
     """Subtitles when the video burns them in, speech recognition otherwise.
 
     Not a mix: the two disagree on spelling constantly ("kiếm cận tu tiên" vs
@@ -212,8 +355,46 @@ def build_track(shots: list[dict], transcript: dict, *, policy: str = 'legacy') 
     """
     if policy == 'audio_verbatim':
         # Translated burned-in captions must never replace the original speech.
-        # Even an empty ASR result remains empty: expose a gap, do not invent a dub.
-        return audio_sentences(transcript, shots)
+        # Only VERBATIM captions (same language as the speech, measured by
+        # dialogue_fusion.classify) may fix a misheard word or keep, flagged, a
+        # caption line the audio pass could not confirm.
+        from . import dialogue_fusion, subtitle_cues
+        lines = audio_sentences(transcript, shots)
+        recovery = transcript.get('caption_recovery') or {}
+        cues = subtitle_cues.build(shots, deep=deep)
+        # Caption turns are sentence boundaries the audio may not punctuate.
+        lines = split_caption_turns(lines, cues, shots)
+        if recovery.get('mode') == 'verbatim':
+            heard = dialogue_fusion.vocabulary(transcript)
+            for k, line in enumerate(lines):
+                if not line.words:
+                    continue
+                # Lines said within two seconds either side are context for the alignment.
+                before = lines[k - 1].words if k and lines[k - 1].words and \
+                    float(line.words[0]['start']) - float(lines[k - 1].words[-1]['end']) <= 2.0 else []
+                after = lines[k + 1].words if k + 1 < len(lines) and lines[k + 1].words and \
+                    float(lines[k + 1].words[0]['start']) - float(line.words[-1]['end']) <= 2.0 else []
+                own = (len(before), len(before) + len(line.words))
+                fixed, receipts = dialogue_fusion.correct_words(before + line.words + after, cues, own=own,
+                                                                heard=heard, names=names or set())
+                if receipts:
+                    # Word timings stay those of the audio; only the misheard spelling changes.
+                    line.words = fixed[own[0]:own[1]]
+                    line.text = ' '.join(''.join(w['word'] for w in line.words).split())
+                    line.flags.append('caption_corrected')
+            for fb in recovery.get('fallbacks') or []:
+                first = _shot_at(shots, float(fb['start'])) or (fb.get('shots') or [None])[0]
+                last = _shot_at(shots, max(float(fb['start']), float(fb['end']) - 1e-3)) or first
+                lines.append(Line(text=fb['text'], first_shot=first, last_shot=last, source='caption',
+                                  start=float(fb['start']), end=float(fb['end']), flags=['audio_unconfirmed']))
+        lines.sort(key=lambda l: (float(l.start if l.start is not None else 1e12), l.first_shot))
+        for i, line in enumerate(lines, start=1):
+            line.id = f'L{i:04d}'
+            line.spans = split_at_cuts(line, shots)
+            if line.spans:
+                line.first_shot = line.spans[0]['shot']
+                line.last_shot = line.spans[-1]['shot']
+        return lines
     if policy != 'legacy':
         raise ValueError('Unknown dialogue source policy')
     subtitles = from_subtitles(shots)
@@ -236,6 +417,9 @@ def attach(shots: list[dict], track: list[Line]) -> None:
     ``dialogue_heard``  whatever speech recognition caught inside this shot,
                         kept for timing and for a reader comparing to the video.
     """
+    if any(line.spans for line in track):
+        _attach_pieces(shots, track)
+        return
     starts: dict[int, list[Line]] = {}
     running: dict[int, int] = {}
     for line in track:
@@ -253,3 +437,32 @@ def attach(shots: list[dict], track: list[Line]) -> None:
         # `dialogue` stays the field everything downstream reads, and is now a
         # whole line rather than a slice of one.
         shot["dialogue"] = " ".join(shot["dialogue_lines"])
+
+
+def _attach_pieces(shots: list[dict], track: list[Line]) -> None:
+    """One-pass: each shot holds exactly the words spoken inside it.
+
+    ``dialogue_lines``     the pieces of lines spoken in this shot, in time order —
+                           a line crossing a cut contributes one piece per shot.
+    ``dialogue_pieces``    the same pieces with their line id, timing, whether the
+                           piece continues a line begun in an earlier shot, and flags.
+    ``dialogue_continues`` the shot where a continued line began, else None.
+    ``dialogue_heard``     the pieces confirmed by audio (caption-only lines excluded).
+    """
+    per: dict[int, list[dict]] = {}
+    began = {line.id: line.first_shot for line in track}
+    for line in track:
+        for span in line.spans:
+            per.setdefault(span['shot'], []).append({
+                'line_id': line.id, 'text': span['text'], 'start': span['start'], 'end': span['end'],
+                'cont': bool(span['cont']), 'source': line.source,
+                **({'flags': list(line.flags)} if line.flags else {})})
+    for shot in shots:
+        pieces = sorted(per.get(shot['shot'], []),
+                        key=lambda p: float(p['start']) if p['start'] is not None else float(shot['start']))
+        shot['dialogue_pieces'] = pieces
+        shot['dialogue_lines'] = [p['text'] for p in pieces]
+        continued = next((p for p in pieces if p['cont']), None)
+        shot['dialogue_continues'] = began.get(continued['line_id']) if continued else None
+        shot['dialogue_heard'] = ' '.join(p['text'] for p in pieces if p['source'] != 'caption')
+        shot['dialogue'] = ' '.join(shot['dialogue_lines'])

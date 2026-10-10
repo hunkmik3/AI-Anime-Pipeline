@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-VERSION = 1
+VERSION = 2
 RATE = 16000
 
 
@@ -79,13 +79,16 @@ def run(audio: str, model_name: str, language: str | None = None) -> dict:
         probes.sort(key=lambda p:p['center'])
         runs=language_runs(probes,duration)
     detection_elapsed=time.monotonic()-started
-    segments=[]; windows=[]; findings=[]
+    segments=[]; windows=[]; findings=[]; skipped=[]
     for run in runs:
         start=run['start']
         while start < run['end']:
             end=min(start+28,run['end'])
             a,b=max(0,start-1),min(duration,end+1)
-            if spoken(start,end)<.2:
+            if spoken(start,end)<.05:
+                # Only a window with essentially no detected voice is skipped, and it is
+                # recorded: quiet or overlapped lines can sit under a weak VAD response.
+                skipped.append({'start':start,'end':end,'voiced_s':round(spoken(start,end),3)})
                 start=end; continue
             t=time.monotonic()
             decoded,info=model.transcribe(samples[int(a*RATE):int(b*RATE)],language=run['language'],
@@ -106,14 +109,79 @@ def run(audio: str, model_name: str, language: str | None = None) -> dict:
     return {'version':VERSION,'method':'language_runs_v1','model':model_name,
             'language':languages[0] if len(languages)==1 else 'mixed','languages':languages,
             'segments':segments,'language_probes':probes,'language_runs':runs,'windows':windows,
-            'findings':findings,'source_duration_s':duration,
+            'findings':findings,'skipped_windows':skipped,'source_duration_s':duration,
             'timings_s':{'language_detection_and_load':round(detection_elapsed,3)},
             'elapsed_s':round(time.monotonic()-started,3)}
 
 
+def guided(audio: str, model_name: str, language: str | None = None, prompt: str = '') -> dict:
+    """Decode one short window with no voice-activity gating.
+
+    Used where a same-language caption shows speech that the film-wide pass did not
+    transcribe: quiet or overlapped speech is exactly what VAD drops. ``prompt`` (the
+    caption) is optional; the caller decides whether the words are real speech.
+    """
+    from faster_whisper import WhisperModel
+    from faster_whisper.audio import decode_audio
+    started=time.monotonic()
+    samples=decode_audio(audio, sampling_rate=RATE)
+    duration=len(samples)/RATE
+    model=WhisperModel(model_name,device='cpu',compute_type='int8',cpu_threads=4)
+    decoded,info=model.transcribe(samples,language=language or None,word_timestamps=True,vad_filter=False,
+        condition_on_previous_text=False,beam_size=5,initial_prompt=prompt or None,
+        no_speech_threshold=0.9,log_prob_threshold=-2.0)
+    rows=owned_segments(decoded,0.,duration+1.,0.,info.language)
+    return {'version':VERSION,'method':'guided_window_v1','model':model_name,'language':info.language,
+            'prompted':bool(prompt),'segments':rows,'source_duration_s':duration,
+            'elapsed_s':round(time.monotonic()-started,3)}
+
+
+def guided_batch(audio: str, model_name: str, jobs: list[dict]) -> dict:
+    """Several short windows of one audio file, model loaded once.
+
+    Each job ``{id,start,end,language,prompt}`` is decoded with no voice-activity gating,
+    unprompted and — when a prompt is given — prompted; the caller accepts or rejects.
+    """
+    from faster_whisper import WhisperModel
+    from faster_whisper.audio import decode_audio
+    started=time.monotonic()
+    samples=decode_audio(audio, sampling_rate=RATE)
+    duration=len(samples)/RATE
+    model=WhisperModel(model_name,device='cpu',compute_type='int8',cpu_threads=4)
+    out={}
+    for job in jobs:
+        a,b=max(0.,float(job['start'])),min(duration,float(job['end']))
+        if b-a<.2: out[job['id']]={'plain':[],'prompted':[]}; continue
+        clip=samples[int(a*RATE):int(b*RATE)]
+        variants={}
+        for name,prompt in (('plain',None),('prompted',job.get('prompt') or None)):
+            if name=='prompted' and not prompt: variants[name]=[]; continue
+            decoded,info=model.transcribe(clip,language=job.get('language') or None,word_timestamps=True,
+                vad_filter=False,condition_on_previous_text=False,beam_size=5,initial_prompt=prompt,
+                no_speech_threshold=0.9,log_prob_threshold=-2.0)
+            variants[name]=owned_segments(decoded,a,b+1.,a,info.language)
+        out[job['id']]=variants
+    return {'version':VERSION,'method':'guided_batch_v1','model':model_name,'results':out,
+            'elapsed_s':round(time.monotonic()-started,3)}
+
+
 def main(argv):
-    result=run(argv[1],argv[3] if len(argv)>3 else 'medium',argv[4] if len(argv)>4 and argv[4] else None)
-    target=Path(argv[2]); tmp=target.with_suffix('.tmp')
+    if len(argv)>1 and argv[1]=='--guided-batch':
+        # --guided-batch <audio> <out> <model> <jobs.json>
+        result=guided_batch(argv[2],argv[4],json.loads(Path(argv[5]).read_text()))
+        target=Path(argv[3])
+        tmp=target.with_suffix('.tmp')
+        tmp.write_text(json.dumps(result,ensure_ascii=False,indent=2));tmp.replace(target)
+        return 0
+    if len(argv)>1 and argv[1]=='--guided':
+        # --guided <audio> <out> <model> <language or ''> <prompt or ''>
+        language=argv[5] if len(argv)>5 and argv[5] else None
+        result=guided(argv[2],argv[4],language,argv[6] if len(argv)>6 else '')
+        target=Path(argv[3])
+    else:
+        result=run(argv[1],argv[3] if len(argv)>3 else 'medium',argv[4] if len(argv)>4 and argv[4] else None)
+        target=Path(argv[2])
+    tmp=target.with_suffix('.tmp')
     tmp.write_text(json.dumps(result,ensure_ascii=False,indent=2));tmp.replace(target)
     return 0
 

@@ -813,11 +813,17 @@ def frame(video_id: uuid.UUID, name: str, user=Depends(get_optional_user)) -> Fi
     if not _FRAME_NAME.match(name):
         raise HTTPException(status_code=404)
     with get_session() as s:
-        _load(s, video_id, user)
-    path = _work_dir(video_id) / "frames" / name
-    if not path.is_file():
-        raise HTTPException(status_code=404)
-    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+        row = _load(s, video_id, user)
+        # Keyframes live in the folder the analysis recorded (frames-v<N>-<key>/ since
+        # cut detection v3; frames/ before). The client asks by file name only.
+        folders = {Path(rel).parent.as_posix() for shot in (row.analysis or {}).get("shots") or []
+                   for rel in shot.get("frames") or [] if isinstance(rel, str)}
+    work = _work_dir(video_id)
+    for folder in [*sorted(f for f in folders if f not in (".", "frames")), "frames"]:
+        path = work / folder / name
+        if path.resolve().is_relative_to(work.resolve()) and path.is_file():
+            return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+    raise HTTPException(status_code=404)
 
 
 @router.get("/{video_id}/source")

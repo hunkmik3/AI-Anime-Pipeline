@@ -32,8 +32,9 @@ import { contractFingerprint, isStrictBoard, sameFingerprint, sourceReadyForShot
 export type AutoStatus = "idle" | "running" | "done" | "error";
 
 export interface RuntimeJob {
-  id: string; kind: "clip" | "plate" | "write" | "source" | "raccord" | "production_run" | "extract_frame" | "assemble" | "ingest" | "material_binding" | "atlas"; node_id: string; slot: string; status: string;
+  id: string; kind: "clip" | "clip_quality" | "plate" | "write" | "source" | "raccord" | "production_run" | "extract_frame" | "assemble" | "ingest" | "material_binding" | "atlas"; node_id: string; slot: string; status: string;
   reference_urls?: string[];
+  source_job?: string;
   provider_job_id: string; error: string; result: Record<string, any>;
 }
 
@@ -65,6 +66,8 @@ export interface Environment {
   lighting: string;
   mood: string;
   lock: string;
+  /** The set drawn as two views: its master and the camera turned around (one-pass boards). */
+  views?: { master: string; reverse: string };
 }
 
 interface ImportedPlate {
@@ -90,6 +93,11 @@ export interface Asset {
 export interface DialogueLine {
   who: string;
   line: string;
+  /** The speaking character's catalog id: the writer prints that character's current name. */
+  speaker_id?: string;
+  /** The rest of a line begun in the previous shot. */
+  cont?: boolean;
+  delivery?: "on_camera" | "offscreen" | "voice_over";
 }
 
 export interface ShotPackage {
@@ -206,6 +214,8 @@ export interface EnvironmentNodeData extends Record<string, unknown> {
   kind: "environment";
   environment: Environment;
   plate: Plate;
+  /** The reverse view of the same set, drawn from the master plate. */
+  reverse?: Plate;
 }
 
 export interface AssetNodeData extends Record<string, unknown> {
@@ -285,6 +295,7 @@ export interface VideoNodeData extends Record<string, unknown> {
   status: AutoStatus;
   error?: string;
   clipUrl?: string;
+  qualityCheck?: { status: string; findings?: { code: string; message?: string; note?: string }[]; source_job?: string; url?: string };
   /** False when the clip is only a short-lived provider link (no R2). */
   persisted?: boolean;
   warnings?: string[];
@@ -503,6 +514,7 @@ interface AutomationStore {
   projectRevision: number;
   jobs: RuntimeJob[];
   preserveSourceShots: boolean;
+  stateSpecificReferences: boolean;
   setPreserveSourceShots: (value: boolean) => void;
   refreshJobs: () => Promise<void>;
   currentProjectId: string | null;
@@ -629,6 +641,7 @@ export interface BoardFile extends Partial<GenerationSettings> {
   dialogueLanguage?: string;
   autoSourceFilm?: boolean;
   preserveSourceShots?: boolean;
+  stateSpecificReferences?: boolean;
   productionAssets?: ProductionAsset[];
   sourceVerification?: SourceVerification;
   characters?: Character[];
@@ -889,6 +902,7 @@ function readPlate(data: AutoNodeData, slot: string): Plate | undefined {
   if (data.kind === "character") {
     return slot === "identity" ? data.identity : data.states?.[slot];
   }
+  if (data.kind === "environment" && slot === "reverse") return data.reverse ?? emptyPlate();
   if (data.kind === "environment" || data.kind === "asset") return data.plate;
   return undefined;
 }
@@ -899,6 +913,7 @@ function writePlate(data: AutoNodeData, slot: string, patch: Partial<Plate>): Au
     const current = data.states?.[slot] ?? emptyPlate();
     return { ...data, states: { ...data.states, [slot]: { ...current, ...patch } } };
   }
+  if (data.kind === "environment" && slot === "reverse") return { ...data, reverse: { ...(data.reverse ?? emptyPlate()), ...patch } };
   if (data.kind === "environment" || data.kind === "asset") return { ...data, plate: { ...data.plate, ...patch } };
   return data;
 }
@@ -929,7 +944,7 @@ export function applyRuntimeJobs(nodes: AutoNode[], jobs: RuntimeJob[]): AutoNod
       }
       continue;
     }
-    if (job.kind === "source" || job.kind === "raccord") continue;
+    if (job.kind === "source" || job.kind === "raccord" || job.kind === "clip_quality") continue;
     if (job.kind === "plate" && readPlate(n.data, job.slot)?.ignoredRuntimeJobIds?.includes(job.id)) continue;
     const status: AutoStatus = runningJob(job.status) ? "running" : job.status === "succeeded" ? "done" : "error";
     const patch: Record<string, unknown> = { status, runtimeJobId: job.id, runtimeStatus: job.status, error: job.error || undefined };
@@ -946,6 +961,15 @@ export function applyRuntimeJobs(nodes: AutoNode[], jobs: RuntimeJob[]): AutoNod
     else if (job.kind === "plate" && n.data.kind === "video" && ["startFrame", "endFrame"].includes(job.slot))
       n.data = { ...n.data, [job.slot]: { ...(n.data as any)[job.slot], ...patch } };
     else if (job.kind === "plate") n.data = writePlate(n.data, job.slot, patch as Partial<Plate>);
+  }
+  for (const node of output) {
+    if (node.data.kind !== "video") continue;
+    const clip=latest.get(`${node.id}:clip:`);
+    const quality=latest.get(`${node.id}:clip_quality:quality`);
+    node.data.qualityCheck=quality && clip && quality.source_job===clip.id
+      ? quality.status==="succeeded" && quality.result.url===node.data.clipUrl ? {...quality.result,status:String(quality.result.status)}
+        : {status:runningJob(quality.status)?"running":"needs_review",findings:[{code:"quality_job",message:quality.error||"Đang kiểm tra clip."}]}
+      : undefined;
   }
   return invalidateIdentityVariants(nodes, output, jobs);
 }
@@ -1068,6 +1092,7 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
   projectRevision: 0,
   jobs: [],
   preserveSourceShots: true,
+  stateSpecificReferences: false,
   setPreserveSourceShots: (value) => set({ preserveSourceShots: value }),
   async refreshJobs() {
     const projectId = get().currentProjectId;
@@ -1118,6 +1143,7 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
         dialogueLanguage: board.dialogueLanguage ?? "en",
         autoSourceFilm: board.autoSourceFilm ?? false,
         preserveSourceShots: board.preserveSourceShots ?? true,
+        stateSpecificReferences: board.stateSpecificReferences ?? false,
         title: p.title ?? "",
         logline: p.logline ?? "",
         script: p.script ?? "",
@@ -1185,6 +1211,7 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
             dialogueLanguage: s.dialogueLanguage,
             autoSourceFilm: s.autoSourceFilm,
             preserveSourceShots: s.preserveSourceShots,
+            stateSpecificReferences: s.stateSpecificReferences,
             productionAssets: s.productionAssets,
             sourceVerification: s.sourceVerification,
             characters: s.characters,
@@ -1337,6 +1364,7 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
       dialogueLanguage: "en",
       autoSourceFilm: false,
       preserveSourceShots: true,
+      stateSpecificReferences: false,
       jobs: [],
       title: "",
       logline: "",
@@ -1694,11 +1722,16 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
       return label;
     };
     const characterKeys = new Set([...(seq.character_keys ?? []), ...shots.flatMap((shot) => shot.character_keys ?? [])]);
+    const speakerIds = new Set(shots.flatMap((shot) => (shot.dialogue ?? []).map((line) => line.speaker_id).filter(Boolean)));
     for (const node of nodes) {
       if (node.data.kind !== "character") continue;
       const d = node.data;
       const id = d.character.source_asset_id ?? d.character.key;
-      if (!characterKeys.has(d.character.key) && !needed.has(id)) continue;
+      if (!characterKeys.has(d.character.key) && !needed.has(id)) {
+        // A speaker heard but not seen: named for the writer, never drawn (no reference image).
+        if (speakerIds.has(id)) characters.push({ ...d.character, source_asset_id: id });
+        continue;
+      }
       const stateKey = shots.map((shot) => shot.character_states?.[d.character.key]).find(Boolean) ?? d.activeState;
       const state = d.character.states.find((st) => st.key === stateKey);
       const selected = d.states[stateKey];
@@ -2214,11 +2247,20 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
     const isStateSheet = node.data.kind === "character" && !isIdentity;
     const referenceUrl =
       isStateSheet && node.data.kind === "character" ? node.data.identity.referenceUrl : undefined;
+    // A set's reverse view is drawn from its approved master plate.
+    const isReverse = node.data.kind === "environment" && slot === "reverse";
+    const masterUrl = node.data.kind === "environment" && isReverse ? node.data.plate.referenceUrl : undefined;
     const dependencies = node.data.kind === "asset" ? get().collectAssetDependencies(node.data.asset) : [];
     const missing = dependencies.filter((dependency) => !dependency.ref_url);
     if (missing.length) {
       get().patchNode(id, writePlate(node.data, slot, { status: "error",
         error: `Gen reference thành phần trước: ${missing.map((dependency) => dependency.name).join(", ")}.` }));
+      return;
+    }
+
+    if (isReverse && !masterUrl) {
+      get().patchNode(id, writePlate(node.data, slot, { status: "error",
+        error: "Gen ảnh master của bối cảnh trước — góc ngược được vẽ từ ảnh đó." }));
       return;
     }
 
@@ -2236,7 +2278,8 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
 
     try {
       const { imageModel } = get();
-      const materialRefs = dependencies.length ? dependencies.map((dependency) => dependency.ref_url) : referenceUrl ? [referenceUrl] : [];
+      const materialRefs = dependencies.length ? dependencies.map((dependency) => dependency.ref_url)
+        : referenceUrl ? [referenceUrl] : masterUrl ? [masterUrl] : [];
       const out = await durableRequest<PlateResponse>("/api/automation/plate", {
         method: "POST",
         body: JSON.stringify({
@@ -2377,6 +2420,7 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
             dialogueLanguage: s.dialogueLanguage,
             autoSourceFilm: s.autoSourceFilm,
             preserveSourceShots: s.preserveSourceShots,
+            stateSpecificReferences: s.stateSpecificReferences,
             ...boardSettings(s, s.capabilities),
             title: s.title,
             logline: s.logline,
@@ -2414,6 +2458,7 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
     boardEpoch += 1;
     set({
       preserveSourceShots: d.preserveSourceShots ?? true,
+      stateSpecificReferences: d.stateSpecificReferences ?? false,
       title: d.title ?? "",
       logline: d.logline ?? "",
       script: d.script ?? "",
@@ -2536,6 +2581,7 @@ useAutomation.subscribe((state, prev) => {
     state.productionAssets !== prev.productionAssets ||
     state.sourceVerification !== prev.sourceVerification ||
     state.preserveSourceShots !== prev.preserveSourceShots ||
+    state.stateSpecificReferences !== prev.stateSpecificReferences ||
     state.aspectRatio !== prev.aspectRatio ||
     state.imageModel !== prev.imageModel ||
     state.imageSize !== prev.imageSize ||

@@ -21,7 +21,7 @@ def build(board: dict, project_id: str = '') -> dict:
         if not key: continue
         record = assets.setdefault(key, {'definition': {}, 'references': {}})
         record['design'] = deepcopy(item)
-        plates = {'identity': d.get('identity'), 'plate': d.get('plate'), **(d.get('states') or {})}
+        plates = {'identity': d.get('identity'), 'plate': d.get('plate'), 'reverse': d.get('reverse'), **(d.get('states') or {})}
         record['references'] = {k: {f:v[f] for f in ('referenceUrl', 'mediaId', 'prompt', 'referenceScope') if v.get(f)}
                                 for k,v in plates.items() if isinstance(v,dict)}
     for record in assets.values(): record['version'] = digest(record)

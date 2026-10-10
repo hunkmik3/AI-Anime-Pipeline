@@ -4,7 +4,7 @@ import pytest
 from sqlmodel import select
 from flowboard.db import get_session
 from flowboard.db.models import AutomationProject,AutomationJob
-from flowboard.services import automation_jobs as jobs, production_run as run, raccord
+from flowboard.services import automation_jobs as jobs, production_run as run, raccord, production_quality
 from flowboard.routes import automation as routes
 from tests.test_shot_package import fixture as base_fixture
 
@@ -39,6 +39,9 @@ def finish(j):
         out['version']=run.pm.digest(out);complete(j,out)
     elif j.kind=='write':complete(j,{'prompt':'A complete English film prompt.','duration_seconds':8,'writer':'test','source_shots':j.payload['shots']})
     elif j.kind=='clip':complete(j,{'url':'https://test/'+str(j.id)+'.mp4','persisted':True})
+    elif j.kind=='clip_quality':complete(j,{'version':production_quality.VERSION,'status':'checks_passed','source_job':j.payload['source_job'],
+        'url':j.payload['url'],'package_version':j.payload['package']['version'],'media_sha256':'test-only-media-hash',
+        'audio':{'speech_end_s':0},'findings':[]})
     elif j.kind in ('plate','extract_frame'):complete(j,{'images':[{'reference_url':'https://test/'+str(j.id)+'.png','url':'https://test/'+str(j.id)+'.png','media_id':str(j.id)}]})
     elif j.kind=='ingest':complete(j,{'media_ids':{url:'media-ingested' for url in j.payload['urls']}})
     elif j.kind=='assemble':complete(j,{'filename':'film.mp4'})
@@ -162,6 +165,9 @@ def test_cross_clip_dependency_extracts_at_editorial_boundary_before_next_writer
     out['shots'][-1]['predecessor_shot_id']=out['shots'][-2]['shot_id'];out['version']=run.pm.digest(out);complete(j,out)
     tick(a['id']);assert [j.node_id for j in pending(pid)]==['vid:c1']
     finish(pending(pid)[0]);tick(a['id']);first_clip=next(j for j in pending(pid) if j.kind=='clip');finish(first_clip)
+    tick(a['id'])
+    assert not any(j.kind=='extract_frame' for j in pending(pid))
+    finish(next(j for j in pending(pid) if j.kind=='clip_quality'))
     tick(a['id']);extract=next(j for j in pending(pid) if j.kind=='extract_frame')
     assert extract.payload['time_s']==pytest.approx(8-1/24)
     assert not any(j.kind=='write' and j.node_id=='vid:c2' for j in all_jobs(pid))
@@ -183,9 +189,12 @@ def test_failed_task_counts_and_links_survive_blocked_controller():
     tick(a['id']);writers=pending(pid)
     with get_session() as s:
         item=s.get(AutomationJob,writers[0].id);item.status='failed';item.error='test error';s.add(item);s.commit()
+    # A prepare run still writes the other clip, then reports the refusal with it.
+    tick(a['id']);assert get(a['id']).status=='running'
+    for job in pending(pid):finish(job)
     tick(a['id']);out=get(a['id']);assert out.status=='blocked'
     assert out.result['created_counts']['text']>=2
-    assert out.result['tasks']['write:c1']['status']=='failed'
+    assert out.result['tasks']['write:c1']['status']=='failed' and out.result['tasks']['write:c2']['status']=='succeeded'
 
 
 def test_new_run_reuses_unaffected_clip_after_target_design_change():
@@ -269,3 +278,43 @@ def test_concurrent_controller_ticks_schedule_each_request_once():
     tasks=all_jobs(pid)
     assert len([j for j in tasks if j.kind=='raccord'])==1
     assert len({j.request_key for j in tasks})==len(tasks)
+
+
+def test_the_next_clip_of_one_scene_sees_the_set_as_the_previous_clip_filmed_it():
+    pid=project(two_clips());a=start(pid,mode='render');tick(a['id'])
+    for _ in range(12):
+        writes=[j for j in all_jobs(pid) if j.kind=='write' and j.node_id=='vid:c2']
+        if writes:break
+        for j in pending(pid):finish(j)
+        tick(a['id'])
+    # The second writer starts only once the first clip is reviewed and its closing frame taken.
+    reviewed=[j for j in all_jobs(pid) if j.kind=='clip_quality' and j.node_id=='vid:c1' and j.status=='succeeded']
+    frame=next(j for j in all_jobs(pid) if j.kind=='extract_frame' and j.slot.startswith('setframe:'))
+    assert reviewed and frame.payload['time_s']==pytest.approx(8-1/24)
+    ref=writes[0].payload['reference_assets'][-1]
+    assert ref['kind']=='continuity_frame' and ref['name']=='Set as already filmed'
+    assert drive(pid,a['id']).status=='succeeded'
+    # Turned off, two clips of one scene are generated independently again.
+    pid=project(two_clips());b=start(pid,mode='render',set_continuity=False);tick(b['id'])
+    for j in pending(pid):finish(j)
+    tick(b['id']);assert len([j for j in pending(pid) if j.kind=='write'])==2
+
+
+def test_a_clip_the_review_does_not_clear_is_held_and_the_rest_are_still_generated(monkeypatch):
+    def held(j):
+        if j.kind=='clip_quality' and j.node_id=='vid:c1':
+            complete(j,{'version':production_quality.VERSION,'status':'needs_review','source_job':j.payload['source_job'],
+                'url':j.payload['url'],'package_version':j.payload['package']['version'],'media_sha256':'x',
+                'audio':{'speech_end_s':0},'findings':[{'code':'visual_output_fail','note':'background differs'}]})
+        else:finish(j)
+    pid=project(two_clips());a=start(pid,mode='render')
+    for _ in range(30):
+        tick(a['id'])
+        if get(a['id']).status!='running':break
+        for j in pending(pid):held(j)
+    out=get(a['id'])
+    assert out.status=='blocked' and out.result['stage']=='quality'
+    assert [h.split(':')[0] for h in out.result['quality_holds']]==['c1']
+    clips={j.node_id for j in all_jobs(pid) if j.kind=='clip' and j.status=='succeeded'}
+    assert clips=={'vid:c1','vid:c2'}                       # c2 was generated after c1's hold
+    assert not any(j.kind=='assemble' for j in all_jobs(pid))

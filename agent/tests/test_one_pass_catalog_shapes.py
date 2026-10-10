@@ -83,7 +83,7 @@ async def test_repeated_malformed_container_stops_after_one_repair(tmp_path, mon
     monkeypatch.setattr(film.inv, '_initial_evidence', lambda *args: [
         {'id': 'frame-1', 'shot': 1, 'frame': 'frame.jpg'}])
     analysis = {'video': {'duration': 4., 'fps': 30.}, 'shots': [
-        {'shot': 1, 'start': 0., 'end': 4., 'source': {'action': 'Empty room.'}}]}
+        {'shot': 1, 'start': 0., 'end': 4., 'source': {'action': 'Empty room.', 'shot_size': 'WS'}}]}
     with pytest.raises(ValueError, match='One-pass catalog needs attention'):
         await film.prepare(analysis, tmp_path, 'Film', {})
     assert len(calls) == 2 and calls[1]['repair'] is True

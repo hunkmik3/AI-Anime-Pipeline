@@ -7,7 +7,7 @@ from flowboard.services.video_analyzer import one_pass_film as film
 def fixture():
     appearance = {'source_shot': 1, 'asset_presence': [{'asset_id': 'woman', 'state': 'dark hair', 'visibility': 'visible'}]}
     shot = {'source_shot': 1, 'duration_s': 2,
-            'framing': 'CU', 'camera': 'static', 'framing_note': 'face',
+            'framing': 'CU', 'camera': 'static', 'framing_note': 'face', 'background': '', 'staging': '',
             'action': ['her lips move'], 'character_states': {'woman': 'day'},
             'dialogue': [{'who': 'Man', 'line': 'Hello.', 'delivery': 'on_camera'}],
             'source_appearances': [appearance],

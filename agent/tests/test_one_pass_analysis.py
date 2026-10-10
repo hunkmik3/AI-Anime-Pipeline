@@ -34,7 +34,8 @@ def test_audio_wins_over_translated_caption_and_repetition_survives():
            {'start':1.5,'end':1.7,'word':" Let's"},{'start':1.8,'end':2.2,'word':' go.'}]
     transcript={'segments':[{'start':.1,'end':2.2,'text':"Let's go. Let's go.",'words':words}]}
     track=dialogue.build_track(shots,transcript,policy='audio_verbatim')
-    assert [(l.text,l.first_shot,l.last_shot) for l in track]==[("Let's go.",1,2),("Let's go.",2,3)]
+    # Shots are owned by each word's midpoint: the first "go." (0.5–1.2 s) is spoken in shot 1.
+    assert [(l.text,l.first_shot,l.last_shot) for l in track]==[("Let's go.",1,1),("Let's go.",2,3)]
     analysis={'shots':shots,'transcript':transcript,'dialogue_policy':'audio_verbatim'}
     pipeline.ensure_dialogue(analysis)
     assert all(l['source']=='asr' for l in analysis['dialogue_track'])

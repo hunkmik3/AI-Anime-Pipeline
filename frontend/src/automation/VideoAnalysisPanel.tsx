@@ -25,6 +25,7 @@ import {
   type CastEnvironment,
   type Glossary,
   type Rules,
+  type ShotlistAudit,
 } from "../store/videoAnalysis";
 
 const tc = (s: number) => {
@@ -371,6 +372,9 @@ export function VideoAnalysisPanel() {
                   {` · ${sourceVerification?.reviewed_shots?.length ?? 0}/${shots.length} shot đã xem`}</p>
                 {sourceVerification?.issue_summary && <SourceIssueSummary report={sourceVerification} />}
                 <p className="auto-hint">Âm thanh và lời thoại: chưa được Agent 1 kiểm chứng độc lập. Chuyển động liên tục giữa các khung hình lấy mẫu cũng chưa được xác minh đầy đủ.</p>
+                {analysis.shotlist_audit && <ShotlistAuditSummary audit={analysis.shotlist_audit} onShot={(n) => {
+                  const shot = shots.find((s) => s.shot === n); if (shot) seek(shot);
+                }} />}
                 {!!sourceVerification?.unresolved_shots?.length && <p>Shot chưa giải quyết: {sourceVerification.unresolved_shots.join(", ")}</p>}
                 {sourceVerification?.review && <p className="auto-hint">
                   Đã duyệt bởi {sourceVerification.review.accepted_by} lúc {new Date(sourceVerification.review.accepted_at).toLocaleString()}
@@ -1019,6 +1023,86 @@ function ShotChips({ shots, onSeek }: { shots: number[]; onSeek(shot: number): v
       ))}
       {shots.length > shown.length && <span className="auto-hint">+{shots.length - shown.length}</span>}
     </p>
+  );
+}
+
+/** Why caption recovery left a caption out of the dialogue. */
+const CAPTION_REASONS: Record<string, string> = {
+  repeated_caption: "phụ đề lặp lại (đọc nhầm hoặc chữ trên màn hình)",
+  no_speech_heard: "không có tiếng nói",
+  transcribed_differently: "lời nghe được khác phụ đề",
+  other_language: "lời nói ngôn ngữ khác",
+};
+
+const WARDROBE_LABELS: Record<string, string> = {
+  unexplained_wardrobe_change: "đổi đồ không rõ căn cứ",
+  state_contradicts_observation: "mô tả trái trạng thái",
+  partial_view_state: "trạng thái chỉ thấy một phần",
+  duplicate_state: "trạng thái trùng",
+  identity_contradicts_profile: "nhận dạng khác hồ sơ",
+};
+
+/** The shotlist's own measurements: how much of the visible speech it holds, where, and who says it. */
+function ShotlistAuditSummary({ audit, onShot }: { audit: ShotlistAudit; onShot(shot: number): void }) {
+  const d = audit.dialogue;
+  const v = audit.voices ?? {};
+  const pct = (x: number | null | undefined) => (x == null ? "—" : `${(x * 100).toFixed(1)}%`);
+  const shotsOf = (items: { shot?: number; shots?: number[]; first_shot?: number }[]) =>
+    [...new Set(items.flatMap((x) => x.shots ?? [x.shot ?? x.first_shot ?? 0]).filter(Boolean))];
+  return (
+    <section className="va-audit">
+      <h4>Kiểm shotlist (tự động, không gọi model)</h4>
+      <p className="auto-hint">
+        Phụ đề {d.captions_verbatim ? "cùng ngôn ngữ với lời nói" : d.caption_language_match == null ? "không có" : "là bản dịch — chỉ dùng để chia câu"}
+        {d.captions_verbatim && ` · lời trong phụ đề có trong thoại: ${pct(d.caption_coverage)}`}
+        {` · ${d.shots_with_lines}/${d.shots} shot có thoại · ${d.short_shots} shot dưới 1 giây`}
+      </p>
+      {!!d.missing_caption_lines.length && <>
+        <p>Câu phụ đề chưa có trong thoại ({d.missing_caption_lines.length})</p>
+        <ul className="va-findings">{d.missing_caption_lines.map((m, i) => <li key={i} className="va-finding">
+          <span>“{m.text}”</span>{m.reason && <code>{CAPTION_REASONS[m.reason] ?? m.reason}</code>}<ShotChips shots={m.shots} onSeek={onShot} /></li>)}</ul>
+      </>}
+      {!!d.speech_shots_without_lines.length && <>
+        <p>Shot thấy phụ đề nhưng không có thoại ({d.speech_shots_without_lines.length})</p>
+        <ShotChips shots={d.speech_shots_without_lines} onSeek={onShot} />
+      </>}
+      {!!d.overlong_shots.length && <>
+        <p>Shot phải nói lâu hơn độ dài shot ({d.overlong_shots.length})</p>
+        <ShotChips shots={shotsOf(d.overlong_shots)} onSeek={onShot} />
+      </>}
+      {!!d.merged_turn_lines.length && <>
+        <p>Một câu gộp lượt nói của nhiều người ({d.merged_turn_lines.length})</p>
+        <ShotChips shots={shotsOf(d.merged_turn_lines)} onSeek={onShot} />
+      </>}
+      {v.status === "measured" && <p className="auto-hint">
+        Giọng nói: {v.voices} giọng · chắc chắn {v.confidence?.high ?? 0} / gợi ý {v.confidence?.low ?? 0} / không rõ {v.confidence?.none ?? 0} câu
+        {v.listening === "completed" ? " · câu khó đã nghe lại" : ""}
+        {v.speakers_changed_by_voice ? ` · ${v.speakers_changed_by_voice} câu đổi người nói theo giọng` : ""}
+      </p>}
+      {!!v.voices_given_to_several_people?.length && <ul className="va-findings">
+        {v.voices_given_to_several_people.map((x) => <li key={x.voice} className="va-finding">
+          <code>{x.voice}</code><span>một giọng đang được gán cho nhiều người: {Object.entries(x.speakers).map(([who, n]) => `${who} (${n})`).join(", ")}</span>
+        </li>)}
+      </ul>}
+      {!!audit.wardrobe?.examples?.length && <details>
+        <summary>Trang phục &amp; nhận dạng cần xem ({Object.values(audit.wardrobe.counts ?? {}).reduce((x, y) => x + y, 0)})</summary>
+        <ul className="va-findings">{audit.wardrobe.examples.map((x, i) => <li key={i} className="va-finding">
+          <code>{WARDROBE_LABELS[x.code] ?? x.code}</code>
+          {x.shot != null && <button type="button" className="va-link" onClick={() => onShot(x.shot!)}>shot {x.shot}</button>}
+          <span>{x.message}</span>
+        </li>)}</ul>
+      </details>}
+      {!!audit.wardrobe?.faces_not_matching?.length && <>
+        <p>Khuôn mặt không khớp nhân vật ở cảnh trước — có thể là hai người bị gộp ({audit.wardrobe.faces_not_matching.length})</p>
+        <ul className="va-findings">{audit.wardrobe.faces_not_matching.map((f, i) => <li key={i} className="va-finding">
+          <code>{f.character}</code><span>cảnh {f.scene} · độ giống {f.similarity.toFixed(2)} (cùng người ≈ 0.8)</span>
+          <ShotChips shots={f.shots} onSeek={onShot} />
+        </li>)}</ul>
+      </>}
+      {audit.speakers.lines != null && <p className="auto-hint">
+        Người nói gắn mã nhân vật: {audit.speakers.lines_with_speaker_id}/{audit.speakers.lines} câu
+      </p>}
+    </section>
   );
 }
 

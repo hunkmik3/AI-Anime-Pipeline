@@ -1,6 +1,7 @@
 """Owner-requested appearance changes, separated from immutable source facts."""
 from copy import deepcopy
 import json
+import os
 import re
 from pydantic import BaseModel, ConfigDict, Field
 from flowboard.services import avis_text, production_manifest as pm, production_adaptation
@@ -68,6 +69,12 @@ def project_text(text, fields):
     return text
 
 
+MODEL = 'gpt-6-luna'
+# A model that declines the mapping (it touches ethnicity) leaves a known, unbilled outcome:
+# the fallback may answer it. Same rule as the clip writer's refusal fallback.
+FALLBACK = os.getenv('FLOWBOARD_CASTING_FALLBACK', os.getenv('FLOWBOARD_PROMPT_WRITER_FALLBACK', 'gpt-5-4'))
+
+
 async def resolve(request, cast, work):
     """One durable text request; restart never repurchases an ambiguous outcome."""
     from flowboard.services.video_analyzer.one_pass_film import atomic
@@ -75,19 +82,32 @@ async def resolve(request, cast, work):
               for c in cast.get('characters',[])]
     key=pm.digest({'version':1,'request':request,'profiles':profiles,'system':SYSTEM})
     path=work/'target-casting'/f'{key}.json'
-    if path.exists():
-        saved=json.loads(path.read_text())
-        if saved.get('state')!='completed':raise ValueError('Casting request has an incomplete checkpoint; not resubmitted automatically.')
+    saved=json.loads(path.read_text()) if path.exists() else {}
+    if saved.get('state')=='completed':
         raw=saved['output']
+    elif saved and saved.get('state')!='refused':
+        raise ValueError('Casting request has an incomplete checkpoint; not resubmitted automatically.')
     else:
-        atomic(path,{'state':'in_flight','input_digest':key})
-        response=await avis_text.complete('gpt-6-luna',[
-            {'role':'system','content':SYSTEM},
-            {'role':'user','content':json.dumps({'owner_request':request,'source_cast':profiles},ensure_ascii=False)}],max_tokens=5000,attempts=1)
-        atomic(path,{'state':'response_received','raw_text':response.text,'input_digest':key})
-        raw=avis_text.extract_json(response.text)
-        atomic(path,{'state':'completed','output':raw,'input_digest':key,
-                     'usage':{'input':response.prompt_tokens,'output':response.completion_tokens}})
+        declined=list(saved.get('refused_by') or [])
+        models=[m for m in dict.fromkeys([MODEL, FALLBACK]) if m and m not in declined]
+        if not models:raise ValueError('Casting request was declined by '+', '.join(declined)+'.')
+        for model in models:
+            atomic(path,{'state':'in_flight','input_digest':key,'model':model,'refused_by':declined})
+            try:
+                response=await avis_text.complete(model,[
+                    {'role':'system','content':SYSTEM},
+                    {'role':'user','content':json.dumps({'owner_request':request,'source_cast':profiles},ensure_ascii=False)}],max_tokens=5000,attempts=1)
+            except avis_text.AvisContentRefusal:
+                declined.append(model)
+                atomic(path,{'state':'refused','input_digest':key,'refused_by':declined})
+                continue
+            atomic(path,{'state':'response_received','raw_text':response.text,'input_digest':key,'model':model})
+            raw=avis_text.extract_json(response.text)
+            atomic(path,{'state':'completed','output':raw,'input_digest':key,'model':model,'refused_by':declined,
+                         'usage':{'input':response.prompt_tokens,'output':response.completion_tokens}})
+            break
+        else:
+            raise ValueError('Casting request was declined by '+', '.join(declined)+'.')
     parsed=Selection.model_validate(raw)
     ids={c.get('source_asset_id') or c['key'] for c in cast.get('characters',[])}
     chosen=[c.asset_id for c in parsed.changes]
@@ -97,6 +117,19 @@ async def resolve(request, cast, work):
     if any(not any(c.appearance.model_dump().values()) for c in parsed.changes):
         raise ValueError('Casting has no requested appearance attributes.')
     return {'request':request,'input_digest':key,**parsed.model_dump()}
+
+
+def project_label(character, fields):
+    """A descriptive label stands in for a name the source never gave ("Woman with dark hair
+    in a bun"); it follows the target appearance, or a prompt declares dark hair beside a
+    blonde sheet. A real name ("Lina") is never touched; the source label is kept."""
+    name = character.get('name')
+    if character.get('source_name') or not isinstance(name, str):
+        return
+    projected = project_text(name, fields)
+    if projected != name:
+        character.setdefault('source_label', name)
+        character['name'] = projected[:1].upper() + projected[1:]
 
 
 def apply_cast(cast, receipt):
@@ -112,6 +145,7 @@ def apply_cast(cast, receipt):
         c['target_appearance']=fields
         for key in ('summary','looks_like','identity_anchor'):
             if isinstance(c.get(key),str):c[key]=project_text(c[key],fields)
+        project_label(c,fields)
         c['identity_anchor']=(c.get('identity_anchor') or '')+'\nApproved target casting: '+appearance_text(fields)
         for st in c.get('states',[]):st['look']=project_text(st.get('look',''),fields)
         c.pop('design',None);c.pop('design_error',None)
@@ -128,6 +162,7 @@ def apply_board(board, receipt):
         if fields:
             for key in ('description','summary','identity_anchor','looks_like'):
                 if key in character:character[key]=project_text(character[key],fields)
+            project_label(character,fields)
     for node in result.get('nodes',[]):
         d=node.get('data',{})
         if d.get('kind')!='sequence':continue

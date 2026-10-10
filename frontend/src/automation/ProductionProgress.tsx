@@ -11,7 +11,7 @@ type Report = { project_id: string; run_id: string | null; status: string; mode:
   jobs: {id:string;kind:string;name:string;slot:string;status:string;error:string;created_at:string}[] };
 const labels: Record<string,string> = {waiting:"Chưa chạy",queued:"Đang xếp hàng",running:"Đang chạy",preparing:"Đang chuẩn bị",submitting:"Đang gửi",
   succeeded:"Hoàn tất",failed:"Có lỗi",blocked:"Cần xử lý",unknown:"Cần đối soát",paused:"Đã tạm dừng",waiting_user:"Chờ bạn chốt",skipped:"Không cần chạy",cancelled:"Đã hủy"};
-const kinds: Record<string,string> = {plate:"Tạo ảnh",clip:"Gen clip",write:"Viết prompt",raccord:"Liên tục cảnh",source:"Đọc nguồn",assemble:"Ghép phim",atlas:"Ghép reference",ingest:"Chuẩn bị reference",extract_frame:"Trích ảnh nối cảnh"};
+const kinds: Record<string,string> = {plate:"Tạo ảnh",clip:"Gen clip",clip_quality:"Kiểm tra clip thực tế",write:"Viết prompt",raccord:"Liên tục cảnh",source:"Đọc nguồn",assemble:"Ghép phim",atlas:"Ghép reference",ingest:"Chuẩn bị reference",extract_frame:"Trích ảnh nối cảnh"};
 
 export function ProductionProgress({ jobError = "" }: { jobError?: string }) {
   const pid = useAutomation(s => s.currentProjectId);

@@ -191,3 +191,15 @@ def test_overlay_flows_to_writer_and_reviewer_without_approving_source(monkeypat
     changed = deepcopy(shot)
     changed["production_adaptation"]["asset_presence"][0]["state"] = "Different target costume."
     assert coverage.contract_digest({}, [shot], cast, None) != coverage.contract_digest({}, [changed], cast, None)
+
+
+def test_a_dialogue_override_may_carry_its_speaker_id_and_nothing_else_new():
+    from flowboard.services import production_adaptation
+    ok = [{"who": "LILY", "line": "Hi.", "speaker_id": "woman-1"}]
+    bad = [{"who": "LILY", "line": "Hi.", "speaker_id": 7}]
+    extra = [{"who": "LILY", "line": "Hi.", "voice": "V1"}]
+    def problems(dialogue):
+        return [i for i in production_adaptation.validate(
+            {"production_adaptation": {"shot_overrides": {"dialogue": dialogue}}}, None)
+            if "override 'dialogue'" in i]
+    assert problems(ok) == [] and problems(bad) and problems(extra)

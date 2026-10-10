@@ -186,7 +186,9 @@ def reference_slots(references: list[dict]) -> tuple[list[dict], list[str]]:
             issues.append(f"Reference {label} has no image URL.")
         aid = asset_id(reference)
         state = str(reference.get('state_key') or '')
-        if aid and aid in bound and (not state or '' in bound[aid] or state in bound[aid]):
+        # A set's reverse view beside its master view is one set in two directions, not a duplicate.
+        others = bound.get(aid, set()) - {'reverse'}
+        if aid and aid in bound and (state in bound[aid] or state != 'reverse' and (not state and others or '' in others)):
             issues.append(f"Asset {aid!r} has duplicate reference bindings.")
         if aid:
             bound.setdefault(aid, set()).add(state)

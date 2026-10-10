@@ -223,19 +223,29 @@ async def design_character(entry: dict, work_dir: Path, rules: dict,
         "target_style": rules.get("visual_style"),
     }
     system=_CHARACTER_REIMAGINE if world else _CHARACTER_SYSTEM
-    if entry.get('target_appearance'):
+    change = entry.get('target_appearance') or {}
+    # A recast to another ethnicity or skin tone is a different person: the actor's frames
+    # are no evidence for them, and providers refuse a real person's photos sent with a
+    # change of race. The brief is written from the role, the wardrobe states and the
+    # requested appearance; hair/eye-only changes still design from the frames.
+    recast = bool(change.get('ethnicity') or change.get('skin_tone'))
+    if change:
         from flowboard.services.target_casting import POLICY
-        known['target_appearance']=entry['target_appearance']
+        known['target_appearance']=change
         system+='\nEXPLICIT OWNER CASTING EXCEPTION\n'+POLICY
     if world:
         known["world_brief"] = world
         known.pop("identity_anchor", None)   # the old face is not evidence here
         known.pop("seen_as", None)
+    if recast:
+        known.pop("seen_as", None)
+        system += ('\nThis is a recast: no source frames are supplied. Invent the face within the target '
+                   'appearance; keep the role, age, build, hairstyle and every wardrobe state as described.')
     return await _design(
         system,
         known,
-        [] if world else _frame_parts(work_dir, entry.get("frames") or []),
-        stats, label=str(entry.get("key")), need_frames=not world,
+        [] if (world or recast) else _frame_parts(work_dir, entry.get("frames") or []),
+        stats, label=str(entry.get("key")), need_frames=not (world or recast),
     )
 
 

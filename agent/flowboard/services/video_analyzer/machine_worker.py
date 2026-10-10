@@ -13,12 +13,13 @@ inside the long-lived server.
 It also keeps a 60s per-frame decode loop from holding the server's GIL.
 
 Protocol: progress on stdout as ``PROGRESS <stage> <done> <total>`` lines, the
-result written to ``<work_dir>/machine.json``, and a non-zero exit with the
+result written to ``<work_dir>/machine-v<VERSION>.json``, and a non-zero exit with the
 reason on stderr on failure.
 """
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 import time
 from dataclasses import asdict
@@ -50,13 +51,18 @@ def run(video: Path, work_dir: Path, *, deep: bool = False) -> dict:
     _progress("cuts", 1, 1)
 
     _progress("keyframes", 0, len(spans))
-    frames.extract_keyframes(video, spans, work_dir / "frames", meta.fps, deep=deep)
+    signature={"path":str(video.resolve()),"size":video.stat().st_size,"mtime_ns":video.stat().st_mtime_ns}
+    frame_key=hashlib.sha256(json.dumps({**signature,'deep':deep},sort_keys=True).encode()).hexdigest()[:12]
+    frames.extract_keyframes(video, spans, work_dir / f"frames-v{cuts.VERSION}-{frame_key}", meta.fps, deep=deep)
     timings["keyframes"] = round(time.monotonic() - t, 1)
     _progress("keyframes", len(spans), len(spans))
 
     return {
+        "measurement_version": cuts.VERSION,
+        "source_signature": signature,
         "video": meta.as_dict(),
         "cuts": {
+            "measurement_version": cuts.VERSION,
             "kept": [round(c, 3) for c in report.cuts],
             "candidates": report.candidates,
             "rejected": [asdict(c) for c in report.rejected],
@@ -84,7 +90,8 @@ def main(argv: list[str]) -> int:
     deep = "--deep" in argv[3:]
     work_dir.mkdir(parents=True, exist_ok=True)
     result = run(video, work_dir, deep=deep)
-    (work_dir / "machine.json").write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    from flowboard.services.video_analyzer.cuts import VERSION
+    (work_dir / f"machine-v{VERSION}.json").write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
     return 0
 
 

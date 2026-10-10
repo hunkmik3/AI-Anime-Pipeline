@@ -70,6 +70,7 @@ from typing import Optional
 import numpy as np
 
 logger = logging.getLogger(__name__)
+VERSION = 3
 
 # Frame statistics are read at thumbnail size. A cut is a change of camera, and
 # that survives any amount of downscaling; the detail it throws away is exactly
@@ -103,6 +104,9 @@ class Cut:
     unchanged: float = 0.0     # sim(±8); near one = the picture never changed
     kept: bool = True
     reason: str = ""
+    adjacent_similarity: float = 0.0
+    change_ratio: float = 0.0
+    motion_match: float = 0.0
 
 
 @dataclass
@@ -240,6 +244,101 @@ def _continuity(thumbs: np.ndarray, frame: int, near: int = 1, far: int = 4) -> 
 _HARD_CUT_SIM = 0.25
 
 
+def motion_evidence(thumbs, frame):
+    """Distinguish an abrupt edit from ordinary motion on both sides of it.
+
+    Detector agreement is correlated evidence, not permission to skip this test.
+    This only proposes a motion check; an image registration must also agree.
+    """
+    if frame < 6 or frame + 6 >= len(thumbs):
+        return 0.0, 9999.0, 0.0
+    at = lambda k: thumbs[frame + k]
+    adjacent = _similarity(at(-1), at(0))
+    changes = [1 - _similarity(at(i-1), at(i)) for i in range(-5, 7)]
+    baseline = max(.005, float(np.median(changes[:4] + changes[8:])))
+    return adjacent, (1-adjacent)/baseline, _continuity(thumbs, frame)
+
+
+def flash_transition(thumbs, frame):
+    """A white/black transition may peak after the detector's boundary frame.
+
+    Registering two early frames can match the OLD shot perfectly while missing
+    the transition immediately after. Retain candidates near a flat flash/fade.
+    """
+    window=thumbs[max(0,frame-8):min(len(thumbs),frame+13)]
+    return any(float(f.std())<12 and (float(f.mean())>210 or float(f.mean())<30) for f in window)
+
+
+def _registered(first, second) -> float:
+    """Registration score of two consecutive BGR frames (see registered_motion)."""
+    import cv2
+    images = []
+    for image in (first, second):
+        h, w = image.shape[:2]
+        image = cv2.resize(image, (240, max(32, round(240 * h / w))))
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        images.append(image[:max(24, round(image.shape[0] * .75))])
+    a, b = images
+    if min(float(a.std()), float(b.std())) < 12: return 0.0
+    delta, response = cv2.phaseCorrelate(a.astype(np.float32), b.astype(np.float32))
+    if response < .1: return 0.0
+    matrix = np.array([[1, 0, delta[0]], [0, 1, delta[1]]], dtype=np.float32)
+    try:
+        cc, matrix = cv2.findTransformECC(a, b, matrix, cv2.MOTION_TRANSLATION,
+            (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 100, 1e-5))
+    except cv2.error: return 0.0
+    if cc < .94 or float(np.linalg.norm(matrix[:, 2])) < 2: return 0.0
+    h, w = a.shape
+    warped = cv2.warpAffine(a, matrix, (w, h))
+    valid = cv2.warpAffine(np.ones_like(a), matrix, (w, h)) > 0
+    if valid.mean() < .7: return 0.0
+    return _similarity(warped[valid], b[valid])
+
+
+_SEEK_GAP = 150   # further than this, seeking beats decoding every frame in between
+
+
+def registered_motions(path, frames) -> dict:
+    """``registered_motion`` for many candidate frames with ONE capture, read in order.
+
+    Reopening and seeking the file for every candidate is what made long films time
+    out; one pass decodes forward and seeks only across long gaps.
+    """
+    import cv2
+    out = {}
+    wanted = sorted({int(f) for f in frames})
+    if not wanted:
+        return out
+    cap = cv2.VideoCapture(str(path))
+    pos = 0                                   # index of the frame the next read returns
+    try:
+        for frame in wanted:
+            start = frame - 1
+            if start < 0:
+                out[frame] = 0.0; continue
+            if start < pos or start - pos > _SEEK_GAP:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, start); pos = start
+            while pos < start and cap.grab():
+                pos += 1
+            ok_a, a = cap.read()
+            ok_b, b = cap.read() if ok_a else (False, None)
+            pos += int(ok_a) + int(ok_b)
+            out[frame] = _registered(a, b) if ok_a and ok_b and pos - 2 == start else 0.0
+    finally:
+        cap.release()
+    return out
+
+
+def registered_motion(path, frame):
+    """Strong translation registration for continuous pans, including motion blur.
+
+    Require independent phase-correlation support, converged image registration,
+    large valid overlap and whole-image agreement. A similar static frame alone
+    cannot establish motion. Flat flashes/fades are checked by the caller.
+    """
+    return registered_motions(path, [frame]).get(int(frame), 0.0)
+
+
 def detect_cuts(path: Path, *, fps_hint: float = 0.0, continuity_threshold: float = 0.12) -> CutReport:
     """Return the cut times, in seconds, for ``path``.
 
@@ -294,9 +393,18 @@ def detect_cuts(path: Path, *, fps_hint: float = 0.0, continuity_threshold: floa
         add(transnet, "transnet")
     candidates.sort(key=lambda c: c.at)
 
+    return refine_candidates(path, thumbs, fps, candidates, continuity_threshold)
+
+
+def refine_candidates(path, thumbs, fps, candidates, continuity_threshold=.12):
+    """Rerun local evidence rules without re-running detector/model inference."""
+    tol = _DEDUPE_FRAMES / fps
     kept: list[float] = []
     kept_detail: list[Cut] = []
     rejected: list[Cut] = []
+    # Local evidence first, so every candidate that needs full-resolution motion
+    # registration is read in one pass over the file.
+    suspects = {}
     for cut in candidates:
         frame = int(round(cut.at * fps))
         cut.unchanged = _unchanged(thumbs, frame)
@@ -309,6 +417,19 @@ def detect_cuts(path: Path, *, fps_hint: float = 0.0, continuity_threshold: floa
             if len(thumbs)
             else 1.0
         )
+        cut.adjacent_similarity, cut.change_ratio, decay = motion_evidence(thumbs, frame)
+        if (cut.adjacent_similarity > .35 and decay > .12 and cut.change_ratio < 2.5
+                and not flash_transition(thumbs,frame)):
+            suspects[id(cut)] = frame
+    motions = registered_motions(path, suspects.values()) if suspects else {}
+    for cut in candidates:
+        if id(cut) in suspects:
+            cut.motion_match = motions.get(suspects[id(cut)], 0.0)
+            if cut.motion_match >= .94:
+                cut.kept = False
+                cut.reason = 'continuous registered camera motion; detector votes do not establish an edit'
+                rejected.append(cut)
+                continue
         # The veto outranks every opinion: nothing happened here.
         if cut.unchanged > _VETO_SIM:
             cut.kept = False
@@ -343,8 +464,7 @@ def detect_cuts(path: Path, *, fps_hint: float = 0.0, continuity_threshold: floa
         kept_detail.append(cut)
 
     logger.info(
-        "video_analyzer.cuts: adaptive=%d content=%d transnet=%s candidates=%d kept=%d rejected=%d",
-        len(adaptive), len(content), "off" if transnet is None else len(transnet),
+        "video_analyzer.cuts: candidates=%d kept=%d rejected=%d",
         len(candidates), len(kept), len(rejected),
     )
     return CutReport(cuts=kept, rejected=rejected, candidates=len(candidates),

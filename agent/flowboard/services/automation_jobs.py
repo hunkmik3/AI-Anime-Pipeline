@@ -23,6 +23,7 @@ def public(j):
     out = {k:str(getattr(j,k)) if k in ('id','project_id') and getattr(j,k) is not None else getattr(j,k) for k in
             ('id','project_id','kind','node_id','slot','status','provider_job_id','result','error','attempts','created_at','updated_at')}
     if j.kind == 'plate': out['reference_urls'] = j.payload.get('reference_urls', [])
+    if j.kind == 'clip_quality': out['source_job'] = j.payload.get('source_job')
     return out
 
 def enqueue(project_id,kind,node_id,slot,payload,request_key,expected_revision=None,metadata=None):
@@ -109,6 +110,15 @@ def overlay(board, jobs):
                 for plate in plates:
                     media=j.result.get('media_ids',{}).get(plate.get('referenceUrl'))
                     if media: plate['mediaId']=media
+    for node_id,d in nodes.items():
+        if d.get('kind')!='video':continue
+        d.pop('qualityCheck',None)
+        clip=latest.get((node_id,'clip',''));quality=latest.get((node_id,'clip_quality','quality'))
+        if quality and clip and quality.payload.get('source_job')==str(clip.id):
+            if quality.status=='succeeded' and quality.result.get('url')==d.get('clipUrl'):
+                d['qualityCheck']=deepcopy(quality.result)
+            else:d['qualityCheck']={'status':'running' if quality.status in ACTIVE else 'needs_review',
+                'findings':[{'code':'quality_job','message':quality.error or 'Output inspection pending.'}]}
     from flowboard.services import raccord
     from flowboard.services.primary_materials import invalidate_identity_states
     board = invalidate_identity_states(board, original_board, jobs)
@@ -201,6 +211,9 @@ async def execute(data):
         elif data['kind']=='raccord':
             from flowboard.services import raccord
             result=await raccord.plan(data['payload'])
+        elif data['kind']=='clip_quality':
+            from flowboard.services import production_quality
+            result=await production_quality.inspect(data['payload'])
         elif data['kind'] in ('extract_frame','assemble'):
             from flowboard.services import production_media
             result=await getattr(production_media,data['kind'])(data['payload'])
@@ -244,6 +257,7 @@ async def execute(data):
             await asyncio.to_thread(checkpoint,jid,token,status='submitting');submitting=True
             images=await automation.generate_plate(**body.model_dump())
             result={'images':images, 'shot_frame': submitted.get('shot_frame')};submitting=False
+        if data['kind']=='clip':result['quality_status']='not_checked'
         # Job result is authoritative even if a tab has an old board in memory.
         await asyncio.to_thread(checkpoint,jid,token,status='succeeded',result=result,error='')
     except asyncio.CancelledError:

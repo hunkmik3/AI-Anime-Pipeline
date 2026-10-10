@@ -60,7 +60,8 @@ def validate(shot: dict, report: dict | None = None) -> list[str]:
             elif key == "dialogue":
                 valid = isinstance(value, list) and all(isinstance(x, dict)
                     and isinstance(x.get("who"), str) and isinstance(x.get("line"), str)
-                    and not (set(x) - {"who", "line", "cont", "delivery"}) for x in value)
+                    and isinstance(x.get("speaker_id", ""), str)
+                    and not (set(x) - {"who", "line", "cont", "delivery", "speaker_id"}) for x in value)
             elif key in {"camera", "lighting"}:
                 valid = isinstance(value, str) or isinstance(value, dict)
             elif key == "vfx":

@@ -112,7 +112,7 @@ def reference_path(kind, key=KEY):
 
 def profile_data(item):
     # Generated media, source frame paths and other outfit states are not design instructions.
-    return {
+    profile = {
         k: v
         for k, v in item.items()
         if k
@@ -129,8 +129,16 @@ def profile_data(item):
             "source_asset_presence",
             "observed_states",  # Shot evidence constrains the designer, not a static sheet layout.
             "source_appearance_profile",
+            "source_description",  # an owner restyle's provenance, not the target look
         }
     }
+    design = profile.get("design")
+    if isinstance(design, dict) and design.get("signature_state") and len(item.get("states") or []) > 1:
+        # A "second state the sheet must also show" is another outfit when the catalog
+        # gives the person several: each has its own sheet, and the dry uniform's sheet
+        # must not show the damp one.
+        profile["design"] = {k: v for k, v in design.items() if k != "signature_state"}
+    return profile
 
 
 def sheet_prompt(kind, item, *, state=None, has_reference=False, style=KEY):
@@ -240,6 +248,14 @@ def _profile_sheet_prompt(style, kind, item, *, state=None, has_reference=False)
                        "for rendering only. The explicitly selected costume/state takes precedence over "
                        "the anchor outfit. Additional supplied subject views are design evidence only.\n")
         master = master.replace("{{PROFILE}}", json.dumps(profile, ensure_ascii=False, indent=2))
+        if kind == "character" and state and (state.get("wardrobe") or state.get("label")):
+            # Buried in a long profile, a wet or stained state was drawn dry from the anchor's
+            # clean outfit. Say it first, plainly, as what this sheet shows.
+            master = ("SELECTED STATE — THIS SHEET SHOWS EXACTLY THIS\n"
+                      + f"{state.get('label') or state.get('key')}: {state.get('wardrobe') or ''}\n"
+                      "Every view shows this outfit in this physical condition (wet, stained, torn or "
+                      "undressed exactly as written), even where the identity anchor wears it clean or "
+                      "wears something else.\n\n" + master)
     else:
         layout = (
             "One ensemble sheet of only the profile's recurring members, full body, distinct faces, "

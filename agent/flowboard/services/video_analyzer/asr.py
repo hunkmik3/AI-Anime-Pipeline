@@ -71,6 +71,48 @@ async def transcribe(audio: Path, work_dir: Path, *, language: Optional[str] = N
     return json.loads(out.read_text(encoding="utf-8"))
 
 
+async def transcribe_window(audio: Path, out: Path, *, language: Optional[str] = None, prompt: str = "") -> dict:
+    """One short window decoded with no voice-activity gating (see asr_multilingual_worker.guided)."""
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "flowboard.services.video_analyzer.asr_multilingual_worker",
+        "--guided", str(audio), str(out), DEFAULT_MODEL, language or "", prompt or "",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, err = await asyncio.wait_for(proc.communicate(), timeout=300)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        raise RuntimeError("Guided ASR window timed out after 300s")
+    if proc.returncode != 0 or not out.exists():
+        tail = (err or b"").decode(errors="replace").strip().splitlines()[-3:]
+        raise RuntimeError("Guided ASR failed: " + " | ".join(tail)[:400])
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+async def transcribe_windows(audio: Path, out: Path, jobs: list[dict]) -> dict:
+    """Many short windows of one file, each decoded without VAD (asr_multilingual_worker.guided_batch)."""
+    jobs_file = out.with_suffix(".jobs.json")
+    jobs_file.write_text(json.dumps(jobs, ensure_ascii=False), encoding="utf-8")
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "flowboard.services.video_analyzer.asr_multilingual_worker",
+        "--guided-batch", str(audio), str(out), DEFAULT_MODEL, str(jobs_file),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, err = await asyncio.wait_for(proc.communicate(), timeout=max(300, 20 * len(jobs)))
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        raise RuntimeError("Guided ASR batch timed out")
+    if proc.returncode != 0 or not out.exists():
+        tail = (err or b"").decode(errors="replace").strip().splitlines()[-3:]
+        raise RuntimeError("Guided ASR batch failed: " + " | ".join(tail)[:400])
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
 def lines_for_shot(transcript: dict, start: float, end: float) -> list[Line]:
     """Dialogue that overlaps a shot, cut to the words actually inside it.
 

@@ -25,7 +25,8 @@ async def test_cached_local_decode_preserves_both_boundary_words_and_language(tm
         'findings': [{'code':'uncertain_asr_segment','start':2.,'end':2.5}],
         'segments':[{'start':0.,'end':4.5,'text':'Avant. incorrect Après.','words':words}]}
     a,b = 1.2,3.3
-    key = digest({'source':'source-1','start':a,'end':b,'language':'fr','model':audio.asr.DEFAULT_MODEL})
+    from flowboard.services.video_analyzer.asr_multilingual_worker import VERSION as worker
+    key = digest({'source':'source-1','start':a,'end':b,'language':'fr','model':audio.asr.DEFAULT_MODEL,'worker':worker})
     cache = tmp_path/'one-pass-audio'/key/'result.json';cache.parent.mkdir(parents=True)
     cache.write_text(json.dumps({'segments':[{'start':.8,'end':1.3,'text':'Bonjour.',
         'words':[{'word':'Bonjour.','start':.8,'end':1.3}]}],'findings':[]}))
@@ -45,6 +46,16 @@ async def test_cached_local_decode_preserves_both_boundary_words_and_language(tm
 async def test_unknown_audio_findings_are_not_auto_accepted(tmp_path):
     with pytest.raises(ValueError,match='Unresolved audio'):
         await audio.repair({'transcript':{'findings':[{'code':'language_conflict'}]}},tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_exhausted_local_repair_is_retained_not_widened_and_repeated(tmp_path,monkeypatch):
+    async def forbidden(*a,**kw):raise AssertionError('Repeated a bounded decode')
+    monkeypatch.setattr(audio.asr,'transcribe',forbidden)
+    segments=[{'start':0,'end':1,'text':'Still uncertain.'}]
+    a={'transcript':{'segments':segments,'repair_output_digest':digest(segments),
+        'findings':[{'code':'uncertain_asr_segment','start':0,'end':1,'local_repair_exhausted':True}]}}
+    assert await audio.repair(a,tmp_path)==a
 
 
 def test_redecode_can_retain_sentence_ends_without_changing_words_or_times():
@@ -70,3 +81,27 @@ def test_sentence_end_is_not_transferred_to_a_distant_or_different_phrase():
                         {'word':'thank','end':5.}, {'word':' you','end':5.3}]}]
     out, receipts=audio.retain_sentence_boundaries(original,repaired)
     assert out==repaired and receipts==[]
+
+
+@pytest.mark.asyncio
+async def test_local_repair_cannot_replace_correct_phrase_with_new_caption_conflict(tmp_path,monkeypatch):
+    async def forbidden(*a,**kw):raise AssertionError('Cached decode must not be repeated')
+    monkeypatch.setattr(audio.asr,'transcribe',forbidden)
+    (tmp_path/'source.mp4').write_bytes(b'cache-only')
+    phrase='Give him my number.'
+    words=[{'word':' '+w,'start':i*.3,'end':(i+1)*.3} for i,w in enumerate(phrase.split())]
+    original={'start':0.,'end':1.2,'text':phrase,'words':words}
+    transcript={'cache_signature':'regression','segments':[original],
+        'findings':[{'code':'uncertain_asr_segment','start':0.,'end':1.2}]}
+    source={'video':{'duration':3.},'transcript':transcript,'shots':[{'shot':1,'start':0.,'end':3.,
+        'source':{'action':'She replies.','shot_size':'CU','subtitle':phrase}}]}
+    from flowboard.services.video_analyzer.asr_multilingual_worker import VERSION as worker
+    key=digest({'source':'regression','start':0,'end':2.,'language':None,'model':audio.asr.DEFAULT_MODEL,'worker':worker})
+    cache=tmp_path/'one-pass-audio'/key/'result.json';cache.parent.mkdir(parents=True)
+    candidate=deepcopy(original);candidate['text']='Give of my number.';candidate['words'][1]['word']=' of'
+    cache.write_text(json.dumps({'segments':[candidate],'findings':[]}))
+    result=await audio.repair(source,tmp_path)
+    assert [w['word'] for s in result['transcript']['segments'] for w in s['words']]==[w['word'] for w in words]
+    assert result['transcript']['findings'][0]['origin_code']=='audio_repair_regression'
+    assert result['transcript']['local_repairs']==[] and cache.exists()
+    assert await audio.repair(result,tmp_path)==result

@@ -23,14 +23,38 @@ MAX_REFERENCE_IMAGES = 30  # Seedance 2.5 capability; not the older 2.0 nine-ima
 HEAD = re.compile(r"^# SHOT (\d+) \| (\d\d:\d\d(?:\.\d{1,3})?)–(\d\d:\d\d(?:\.\d{1,3})?)\s*$", re.M)
 SECTIONS = ["## REFERENCE CONTROL", "## STYLE", "## AUDIO", "## CONTINUITY / NEGATIVE CONSTRAINTS"]
 NO_MUSIC = 'NO BACKGROUND MUSIC. NO BGM. NO SCORE.'
+DIALOGUE_LOCK = """MANDATORY PROMPT COMPLIANCE — EXACT DIALOGUE ONLY
+Follow all supplied shot, action, performance, continuity and audio instructions exactly. Speak ONLY the verbatim utterances explicitly listed in DIALOGUE, with their assigned speakers, language, order and delivery. Do not invent, add, paraphrase, complete or repeat speech beyond what is explicitly supplied. A line continuing across a cut is one continuous utterance, never a restart. All headings, labels, action descriptions and acting/delivery directions are unspoken production instructions: NEVER read, narrate or turn them into dialogue. Where no speech is specified, keep the characters silent; do not fill pauses or trailing holds with words. No improvised narration, commentary, ad-libs or additional voices. Preserve the specified acting without adding spoken words.
+""".strip()
 
 
 def enforce_audio_policy(prompt):
     """Apply the owner's invariant only to newly written cinematic drafts."""
+    if not prompt.strip():
+        return prompt
+    if not prompt.startswith(DIALOGUE_LOCK):
+        prompt = DIALOGUE_LOCK + '\n\n' + prompt
     audio=re.search(r'^## AUDIO\s*\n(.*?)(?=^## |\Z)',prompt,re.M|re.S)
     if audio and NO_MUSIC not in audio[1]:
         prompt=prompt[:audio.start(1)]+NO_MUSIC+'\n'+prompt[audio.start(1):]
     return prompt
+
+def single_reference_mentions(prompt):
+    """Each @imageN stays only in its REFERENCE CONTROL declaration, as the format
+    requires; a later mention in the prose reads "reference image N" (the same binding,
+    spelled out). Tags not declared exactly once are left for validation."""
+    declared = {}
+    for m in re.finditer(r'^- \*\*(@image[1-9]\d*) = ', prompt, re.M):
+        declared.setdefault(m[1], []).append(m.start(1))
+
+    def spell(m):
+        tag = m.group(0)
+        spots = declared.get(tag)
+        if not spots or len(spots) != 1 or m.start() == spots[0]:
+            return tag
+        return 'reference image ' + tag[len('@image'):]
+    return re.sub(r'@image[1-9]\d*(?!\d)', spell, prompt)
+
 
 OBSERVED_SOURCE_MODALITY_POLICY = """The one-pass visual observer saw sampled images,
 not audio. 'Speaking' in visual action/start/end descriptions means visible mouth
@@ -82,8 +106,10 @@ def serialize_source_locks(prompt: str, shots: list[dict], slots: list | None = 
     Only applies to the opt-in one-pass film path. The independent prompt review
     still evaluates the resulting directing prose; no missing action is certified.
     """
-    prompt = re.sub(r'^\*\*DIALOGUE\*\*\s*$', '## DIALOGUE', prompt, flags=re.M)
-    prompt = re.sub(r'^Create a (\d+(?:\.\d+)?-second[^\n]*?sequence)(?=\s|\.)',r'Create a **\1**',prompt,count=1)
+    prompt = normalize_heads(re.sub(r'^\*\*DIALOGUE\*\*\s*$', '## DIALOGUE', prompt, flags=re.M))
+    # "- **@image1 — NAME.**" is the declaration with a dash for its "=": the same line, normalised.
+    prompt = re.sub(r'^- \*\*(@image[1-9]\d*)\s+[—–]\s+', r'- **\1 = ', prompt, flags=re.M)
+    prompt = re.sub(r'^Create (an?) (\d+(?:\.\d+)?-second[^\n]*?sequence)(?=\s|\.)',r'Create \1 **\2**',prompt,count=1,flags=re.M)
     if slots and len(slots) == len(shots):
         heads = list(re.finditer(r'^# SHOT (\d+) \|[^\n]*', prompt, re.M))
         # Timing is already locked data, not a creative task. Never fabricate,
@@ -108,6 +134,17 @@ def serialize_source_locks(prompt: str, shots: list[dict], slots: list | None = 
                          lambda _: f'**Duration:** {b-a:.3f} seconds', block, flags=re.M)
         block=re.sub(r'^\*\*Framing:\*\*[^\n]*',lambda _:f"**Framing:** {shot.get('framing','')}. {shot.get('framing_note','')}",block,flags=re.M)
         block=re.sub(r'^\*\*Camera:\*\*[^\n]*',lambda _:f"**Camera:** {shot.get('camera','')}",block,flags=re.M)
+        # The source's own view behind the people at this angle, locked like the camera.
+        background=' '.join(str(shot.get('background') or '').split())
+        if background:
+            block=re.sub(r'^\*\*Background:\*\*[^\n]*\n?','',block,flags=re.M)
+            block=re.sub(r'^(\*\*Camera:\*\*[^\n]*)$',lambda m:m.group(1)+'\n**Background:** '+background,block,count=1,flags=re.M)
+        # Where each person is relative to the set (the source scene's staging), locked too.
+        staging=' '.join(str(shot.get('staging') or '').split())
+        if staging:
+            block=re.sub(r'^\*\*Staging:\*\*[^\n]*\n?','',block,flags=re.M)
+            anchor=r'^(\*\*Background:\*\*[^\n]*)$' if re.search(r'^\*\*Background:\*\*',block,re.M) else r'^(\*\*Camera:\*\*[^\n]*)$'
+            block=re.sub(anchor,lambda m:m.group(1)+'\n**Staging:** '+staging,block,count=1,flags=re.M)
         # The observer already supplied the ordered start/action/end beats.
         # Rewriting them on every semantic repair can drop a previously correct
         # detail. Preserve them as instructions, while retaining GPT's prose so
@@ -129,8 +166,10 @@ def serialize_source_locks(prompt: str, shots: list[dict], slots: list | None = 
             else:delivery=''
             if lines:
                 labels={'on_camera':'SPOKEN ON CAMERA','offscreen':'OFF SCREEN','voice_over':'VOICE-OVER'}
+                # A line carried over the cut is one utterance: its label says so (CONTINUING).
                 text='## DIALOGUE\n'+'\n'.join(
-                    f"{x['who'].upper()} — {labels.get(x.get('delivery'),'SPOKEN ON CAMERA')}:\n“{x['line']}”" for x in lines)
+                    f"{x['who'].upper()} — {labels.get(x.get('delivery'),'SPOKEN ON CAMERA')}"
+                    f"{', CONTINUING' if x.get('cont') else ''}:\n“{x['line']}”" for x in lines)
                 text+='\n**Delivery / audio:** '+(delivery or 'Preserve exact supplied language, speaker and utterance windows.')+'\n'
                 block=block.replace('**End state:**',text+'**End state:**',1)
             timing=' '.join(shot.get('performance') or [])
@@ -169,6 +208,14 @@ design or visibly repeated identity supports that reading, never from layout alo
 Sheet pose, empty environment presentation and front-view-only accessory display
 do not determine video blocking. Where an image and approved textual design really
 conflict, report source_issues; do not silently choose a different outfit.
+A shot's appearance record describes the source film's frames, in their light and grading;
+the approved reference sheet and design set how the target's garments look: colours, trims,
+embroidery, pockets, accessories and where they sit. A different shade or detail of the
+same garment (grey vs charcoal, an emblem on the pocket vs the waistband) is no conflict:
+follow the approved reference. An accessory the approved reference leaves out (a ring, a
+watch, an earring) stays out even where a shot's action or appearance names it; keep the
+rest of that action. Only a different garment or physical state (wet/dry, jacket on/off,
+clothed/bare) that the approved references cannot show is a source_issue.
 Apply each sheet only to its declared subject and role. Incidental hands, people,
 clothes or scenery in a PROP sheet demonstrate that prop's scale; they do not
 replace the separate character/wardrobe/location references. Multiple prop views
@@ -214,6 +261,8 @@ OUTPUT JSON: {"prompt":"full prompt", "end_state":"precise 2–5 sentence carry-
 Use [] when no staging decisions or source issues exist. Do not return coverage proofs.
 
 Use this EXACT prompt structure (Markdown, natural English directing prose):
+""" + DIALOGUE_LOCK + """
+
 Create a **<timeline end>-second <square/vertical/horizontal as applicable> <aspect ratio>
 <actual film style> sequence** <setting>.
 ## REFERENCE CONTROL
@@ -230,8 +279,15 @@ end state unless scene context establishes an actual break. No unsupported reset
 **Duration:** supplied shot duration in seconds
 **Framing:** supplied size, angle, subject and useful crop
 **Camera:** movement/focus exactly as supplied; do not add a needless orbit
+**Background:** the shot's supplied background exactly (what this angle shows behind
+and around the people); omit the line only when none is supplied
+**Staging:** the shot's supplied staging exactly: where each person is relative to the set
+(inside or outside which space, by which door, pillar or fixture) and the states of doors
+and openings; omit the line only when none is supplied
 Physical action with start → transition → end; name locally visible people/props,
-explain meaningful occlusion, occupied hands and recurring background where needed.
+explain meaningful occlusion, occupied hands, and place the background in the
+location's layout (its attached image and set geometry): which wall, window, door or
+fixture is behind whom, on which side.
 ## DIALOGUE
 NAME — SPOKEN ON CAMERA:
 “Exact given line”
@@ -249,6 +305,19 @@ language here: for English lines write "English dialogue only; no translation or
 dubbing into another language." Use the equivalent lock for other supplied
 languages. Never speak descriptive labels.
 ## CONTINUITY / NEGATIVE CONSTRAINTS
+Set continuity: one room per location — its walls, windows, doors, fixtures and light
+direction stay where the location's image and set geometry put them across every cut and
+clip; a reverse angle shows the opposite side of the same room, never a redesigned one.
+A location may carry two images with a view: its master view and its reverse (the camera
+turned around in the same room). They are one place, never two: a shot's set_view (and the
+"Location view" in its Staging) says which of them its background comes from, and "Behind
+them" says what stands behind its people; declare both images as that one location. Whoever
+the staging puts outside a space (a lift cabin, a car) stays outside it in every shot.
+A location's target_look is an owner-approved restyle: it sets the colours, materials and décor
+in every shot, over old colour/material words in source text, which still fix layout and positions.
+Staging continuity: people keep the places the staging gives them relative to the set (an
+argument held outside an open lift stays outside it; doors held open stay open) until the
+staging says they move; action prose never relocates a person the staging places.
 Concrete prop custody chain, clothing/identity locks, persistent crowd/scene layout,
 eyeline direction, sentence bridges and final state. Target the actual failure modes,
 not a generic adjective list. No exact object dimensions unless supplied; lock scale
@@ -264,7 +333,12 @@ Respect each reference_scope: head-only references cannot prove clothes, feet,
 hands or full-body pose. Judge unshown details against the supplied profile.
 Explicit target_appearance attributes are owner-requested casting, not source
 errors. Historical source labels keep their wording but do not override those
-target colours/ethnicity. All other source facts and exact dialogue stay locked.
+target colours/ethnicity. A prop's own approved reference sheet governs its shape, size and
+look over any description of it inside a character's design or wardrobe; that is no conflict.
+A location's target_look is an owner-approved restyle, not a
+source error: it sets that location's colours, materials and décor over old colour/material
+words in the source text, which still fix layout, positions and states. All other source facts
+and exact dialogue stay locked.
 For a cinematic director draft, supplied staging_decisions are explicit target-film
 production choices, NOT observations or edits of the original source. Check each
 choice against every locked known hand/holder/state, shot timing, scene raccord and
@@ -281,6 +355,12 @@ look or copying conventions from another medium. Report contradictions or missin
 motion direction as prompt_issue. Do not demand a frame-rate API setting or claim
 that a prompt can certify the generated video's actual cadence.
 """
+
+
+def normalize_heads(prompt: str) -> str:
+    """"# SHOT 1 — 00:00–00:02.3" is the shot header with a dash for its "|": the same line, normalised."""
+    return re.sub(r'^#{1,3}\s*SHOT\s+(\d+)\s*[—–:-]\s*(\d\d:\d\d(?:\.\d{1,3})?)\s*[–—-]\s*(\d\d:\d\d(?:\.\d{1,3})?)\s*$',
+                  r'# SHOT \1 | \2–\3', prompt, flags=re.M)
 
 
 def is_cinematic(prompt: str) -> bool:
@@ -317,7 +397,8 @@ def validate(prompt: str, ask: dict, slots: list) -> list[str]:
     for field in ("**Dramatic intention:**", "**Opening state:**"):
         if field not in prompt:
             issues.append("Missing " + field)
-    first = re.search(r"^Create a \*\*(\d+(?:\.\d+)?)-second\b([^\n]*)", prompt)
+    opening = prompt[len(DIALOGUE_LOCK):].lstrip() if prompt.startswith(DIALOGUE_LOCK) else prompt
+    first = re.search(r"^Create an? \*\*(\d+(?:\.\d+)?)-second\b([^\n]*)", opening)
     if not first or abs(float(first[1]) - slots[-1][1]) > 0.002:
         issues.append("Opening duration must equal editorial timeline end " + str(slots[-1][1]))
     ratio = ask["clip"].get("aspect_ratio")

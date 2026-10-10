@@ -23,6 +23,24 @@ def _id(item):
     return item.get('source_asset_id') or item.get('id') or item.get('key')
 
 
+def has_views(data):
+    """An environment node whose set is drawn as a master view and its reverse."""
+    views = ((data or {}).get('environment') or {}).get('views')
+    return (data or {}).get('kind') == 'environment' and isinstance(views, dict) \
+        and all(isinstance(views.get(v), str) and views[v].strip() for v in ('master', 'reverse'))
+
+
+def environment_geography(design: dict | None) -> str:
+    """A location's stable layout in words, from its design profile: architecture, depth
+    planes and the reference view's orientation — what lets every angle show one room."""
+    design = design or {}
+    if design.get('lock'):
+        return str(design['lock'])
+    parts = [('Layout', design.get('architecture')), ('Depth', design.get('depth')),
+             ('Reference view', design.get('camera'))]
+    return ' '.join(f'{label}: {str(text).strip()}' for label, text in parts if isinstance(text, str) and text.strip())
+
+
 def material_style(prompt, style):
     """A style note is rendering language, never the sheet's profile or layout."""
     from flowboard.services import film_styles
@@ -85,21 +103,31 @@ def build(board, project_id='', sequence_key=''):
         for index, row in enumerate(rows):
             shot = row['definition']
             # Use observed/last-known scope, not the whole film's scene asset union.
-            needed = set(row['start_state']) | set(row['end_state'])
+            explicit_scope = (board.get('sourceVerification') or {}).get('method') == 'one_pass_production'
+            # Last-known state preserves continuity, but is NOT a request to
+            # depict every prop from previous angles. Observed one-pass shots
+            # have their own visibility list; legacy sparse boards retain the
+            # conservative inheritance behavior.
+            needed = set() if explicit_scope else set(row['start_state']) | set(row['end_state'])
             needed.update(p['asset_id'] for p in shot.get('asset_presence', [])
                           if p.get('asset_id') and p.get('visibility') in ('visible', 'partial', 'occluded'))
-            needed.update(aliases.get(k, k) for k in shot.get('character_keys', []))
+            if not explicit_scope:
+                needed.update(aliases.get(k, k) for k in shot.get('character_keys', []))
             env_key = shot.get('environment_key') or seq['sequence'].get('environment_key')
             if env_key:
                 needed.add(aliases.get(env_key, env_key))
             pending = list(needed)
             while pending:
                 definition = assets.get(pending.pop(), {}).get('definition', {})
-                for dep in definition.get('depends_on_asset_ids', []) + definition.get('member_ids', []):
+                # Dependencies build a sheet; they need not all be pictured in
+                # the final shot (e.g. a tray's offscreen owner).
+                dependencies = [] if explicit_scope else definition.get('depends_on_asset_ids', []) + definition.get('member_ids', [])
+                for dep in dependencies:
                     if dep not in needed:
                         needed.add(dep)
                         pending.append(dep)
             bindings = []
+            home = aliases.get(env_key, env_key) if env_key else None
             for aid in sorted(needed):
                 record = assets.get(aid, {})
                 d = nodes.get(aid, {})
@@ -109,7 +137,10 @@ def build(board, project_id='', sequence_key=''):
                 state = (shot.get('character_states') or {}).get(design.get('key')) or d.get('activeState')
                 state_sheet = (d.get('states') or {}).get(state, {})
                 if state_sheet.get('needsIdentityRefresh'): state_sheet = {}
-                plate = (state_sheet if state_sheet.get('referenceUrl') else d.get('identity', {})) if kind == 'character' else d.get('plate', {})
+                # A prop built into this shot's set (a lift door) is pictured by the set's master view.
+                fixture = home if kind != 'character' and home in (design.get('fixture_of') or []) and home in nodes else None
+                plate = ((state_sheet if state_sheet.get('referenceUrl') else d.get('identity', {})) if kind == 'character'
+                         else nodes[fixture].get('plate', {}) if fixture else d.get('plate', {}))
                 material_key = aid + (':' + str(state) if state else '')
                 known_states = design.get('states') or []
                 costume = next((s for s in known_states if s.get('key') == state), {})
@@ -123,18 +154,34 @@ def build(board, project_id='', sequence_key=''):
                     'asset_id': aid, 'kind': kind, 'name': design.get('name') or definition.get('name') or aid,
                     'state_key': state, 'version': record.get('version', ''),
                     'reference_url': plate.get('referenceUrl', ''), 'media_id': plate.get('mediaId', ''),
-                    'description': design.get('target_description') or design.get('description') or design.get('summary') or definition.get('description', ''),
+                    'description': ((f"Approved target look: {design['target_look']} Layout as the source: " if kind == 'environment' and design.get('target_look') else '')
+                                    + (design.get('target_description') or design.get('description') or design.get('summary') or definition.get('description', ''))),
                     'wardrobe': costume.get('wardrobe', ''),
                     'identity_anchor': design.get('identity_anchor', ''),
                     'geometry_and_scale': design.get('dimensions') or definition.get('dimensions') or
                         'Match the same reference geometry and proportions relative to hands/body; no invented numeric dimensions.',
                     'style_note': material_style(plate.get('prompt', ''), board.get('style')),
-                    'lighting': design.get('lighting', ''), 'layout_lock': design.get('lock', ''),
+                    'lighting': design.get('lighting') or ((design.get('design') or {}).get('light', '') if kind == 'environment' else ''),
+                    'layout_lock': (design.get('lock') or environment_geography(design.get('design'))) if kind == 'environment' else design.get('lock', ''),
                 }
                 materials[material_key] = material
                 if plate.get('referenceScope'):
                     material['reference_scope'] = deepcopy(plate['referenceScope'])
+                if fixture:
+                    material['fixture_of'] = fixture
                 bindings.append(material_key)
+                if kind == 'environment' and has_views(d):
+                    # One set, two reference views: the master and the camera turned around.
+                    views = design['views']
+                    material['view'] = 'master: ' + views['master']
+                    reverse = d.get('reverse') or {}
+                    if not reverse.get('referenceUrl'):
+                        issues.append({'shot': row['id'], 'asset': aid, 'code': 'missing_material', 'blocking': True})
+                    materials[aid + ':reverse'] = {
+                        **material, 'state_key': 'reverse', 'view': 'reverse: ' + views['reverse'],
+                        'reference_url': reverse.get('referenceUrl', ''), 'media_id': reverse.get('mediaId', ''),
+                        'style_note': material_style(reverse.get('prompt', ''), board.get('style'))}
+                    bindings.append(aid + ':reverse')
             presence = {p['asset_id']: p for p in shot.get('asset_presence', []) if p.get('asset_id')}
             # No invented movement at the cut: opening observations belong to this angle;
             # prior screen coordinates are kept separately as context, not copied across axes.
@@ -159,6 +206,8 @@ def build(board, project_id='', sequence_key=''):
                           'duration_s': row['duration_s'], 'framing': shot.get('framing', ''),
                           'camera': shot.get('camera', ''), 'lens_mm': shot.get('lens_mm', ''),
                           'composition': shot.get('framing_note', ''), 'lighting': shot.get('lighting', ''),
+                          'background': shot.get('background', ''),
+                          'staging': shot.get('staging', ''), 'scene_layout': shot.get('scene_layout', ''),
                           'action': shot.get('action', []), 'dialogue': dialogue,
                           'material_keys': bindings, 'visible_asset_ids': visible, 'inherited_asset_ids': inherited,
                           'observed': list(presence.values()), 'previous_state': row['start_state'],
@@ -178,14 +227,28 @@ def build(board, project_id='', sequence_key=''):
             if plan:
                 direction = next((r for r in plan['shots'] if r['shot_id'] == shot['id']), None)
                 if direction:
-                    shot['raccord'] = {**direction, 'scene_rule': plan['scene_rule'], 'mode': plan['mode']}
+                    shot['raccord'] = {**direction, 'scene_rule': plan['scene_rule'],
+                        'set_layouts':deepcopy(plan.get('set_layouts',[])), 'mode': plan['mode']}
                     used_plans[shot['continuity_scope']] = plan['version']
         anchors = {}
         for shot in shots:
-            anchors.setdefault(shot['continuity_scope'], {
-                'environment_materials': [k for k in shot['material_keys'] if materials[k]['kind'] == 'environment'],
+            anchor = anchors.setdefault(shot['continuity_scope'], {
+                'environment_materials': [], 'layout_locks': {},
+                'sheet_geometry':deepcopy(shot.get('raccord',{}).get('set_layouts',[])),
+                # The source scene's own staging: landmarks, their states, who is where.
+                'source_staging':shot.get('scene_layout', ''),
                 'policy': 'Use the same approved set geometry and light sources across camera angles. Do not mirror the set or reset crowd identities at a cut.',
             })
+            # A layout read from the approved image (sheet_geometry) is the room's one layout;
+            # the design text it was drawn from is not a second, competing lock.
+            imaged = {g.get('asset_id') for g in anchor['sheet_geometry'] if isinstance(g, dict)}
+            for k in shot['material_keys']:
+                # A reverse view is the same set as its master: one layout, not a second lock.
+                if materials[k]['kind'] == 'environment' and materials[k].get('state_key') != 'reverse' \
+                        and k not in anchor['environment_materials']:
+                    anchor['environment_materials'].append(k)
+                    if k not in imaged:
+                        anchor['layout_locks'][k] = materials[k]['layout_lock']
         package = {'schema_version': 1, 'project_id': project_id, 'sequence_key': key,
                    'style': board.get('style', 'realistic'), 'aspect_ratio': board.get('aspectRatio', '16:9'),
                    'dialogue_language': board.get('dialogueLanguage', 'en'),
@@ -249,7 +312,7 @@ def keyframe(package, shot_index, which='start'):
         'REFERENCE BINDINGS:', *declarations,
         'RACCORD DIRECTION (production intent, not source evidence): ' + json.dumps(shot.get('raccord', {}), ensure_ascii=False),
         'SET ANCHOR: ' + json.dumps(package['scene_anchors'].get(shot['continuity_scope'], {}), ensure_ascii=False),
-        'SHOT DIRECTION: ' + json.dumps({k:shot[k] for k in ('framing','camera','lens_mm','composition','lighting','action')},ensure_ascii=False),
+        'SHOT DIRECTION: ' + json.dumps({k:shot.get(k, '') for k in ('framing','camera','lens_mm','composition','background','staging','lighting','action')},ensure_ascii=False),
         'Freeze the ' + ('opening setup before the listed action unfolds.' if which=='start' else 'closing state after the listed action; do not add a new beat.'),
         'OBSERVED IN THIS ANGLE: ' + json.dumps(shot['observed'],ensure_ascii=False),
         'CONTINUITY CONTEXT (not additional visible people): ' + json.dumps(shot['previous_state'],ensure_ascii=False),

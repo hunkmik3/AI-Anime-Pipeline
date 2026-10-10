@@ -160,6 +160,9 @@ def test_new_wardrobe_states_remain_available():
            'wardrobe': 'red dress', 'posture': 'Standing.'}
     data['assets'][0]['states'].append(new)
     data['shots']['2']['character_states']['woman'] = 'red'
+    # Same scene as shot 1: the change has to be one the frames show.
+    data['shots']['2']['wardrobe_changes'] = [{'asset_id': 'woman', 'from_state': 'uniform', 'to_state': 'red',
+                                               'basis': 'She comes back changed into a red dress.'}]
     patch, issues = film.normalize(data, [{'shot': 2}], known,
                                   [{'id': 'frame-2', 'shot': 2}])
     assert not issues
@@ -176,7 +179,8 @@ def test_posture_restatement_does_not_waive_unresolved_source_findings():
     data['shots']['2']['findings'] = [finding]
     _, issues = film.normalize(data, [{'shot': 2}], known,
                               [{'id': 'frame-2', 'shot': 2}])
-    assert finding in issues
+    # Still reported; an identity finding is a reviewer note once one repair has looked.
+    assert [{k: v for k, v in i.items() if k != 'kind'} for i in issues] == [finding]
 
 
 @pytest.mark.asyncio
@@ -211,3 +215,33 @@ async def test_preparation_keeps_restatement_provenance_without_repair_call(tmp_
     metadata = prepared['scene_inventory']['discarded_wardrobe_metadata_restatements']
     assert metadata[0]['fields']['look'] == {'retained': 'dark hair', 'discarded': 'dark hair and glasses'}
     film.validate_prepared(prepared)
+
+
+def test_a_person_introduced_with_one_outfit_is_bound_to_it_when_the_answer_forgets():
+    data = catalog(1)
+    data['shots']['1']['character_states'] = {}
+    empty = {'schema_version': 1, 'assets': [], 'scenes': [], 'shots': {}}
+    patch, issues = film.normalize(data, [{'shot': 1}], empty, [{'id': 'frame-1', 'shot': 1}])
+    assert not [i for i in issues if i['code'] == 'missing_character_state']
+    assert patch['shots']['1']['character_states'] == {'woman': 'uniform'}
+
+
+def test_an_offscreen_speaker_must_be_someone_in_the_scene():
+    known = first_catalog()
+    data = catalog(2)
+    data['assets'].append({'id': 'man', 'kind': 'character', 'name': 'Man', 'description': 'Adult man, dark hair.',
+                           'evidence_ids': ['frame-2'], 'states': [{'key': 'suit', 'label': 'Suit', 'look': 'dark hair',
+                                                                    'wardrobe': 'black suit', 'posture': 'upright'}]})
+    data['shots']['2']['speakers'] = [{'asset_id': 'man', 'label': 'Man', 'delivery': 'offscreen'}]
+    batch, frames = [{'shot': 2, 'dialogue_lines': ["That's all I can say."]}], [{'id': 'frame-2', 'shot': 2}]
+    _, issues = film.normalize(data, batch, known, frames)
+    assert [(i['code'], i['asset_id']) for i in issues] == [('speaker_not_in_scene', 'man')]
+    # Unresolved after the repair, the one reading left is a voice from outside the scene.
+    settled, receipts = film.settle_delivery(data, issues)
+    assert settled['shots']['2']['speakers'][0]['delivery'] == 'voice_over'
+    assert receipts == [{'shot': 2, 'speaker': 0, 'asset_id': 'man', 'from': 'offscreen', 'to': 'voice_over',
+                         'reason': 'not in the scene'}]
+    assert film.normalize(settled, batch, known, frames)[1] == []
+    # Someone in the scene may speak from offscreen.
+    data['shots']['2']['speakers'] = [{'asset_id': 'woman', 'label': 'Woman', 'delivery': 'offscreen'}]
+    assert film.normalize(data, batch, known, frames)[1] == []

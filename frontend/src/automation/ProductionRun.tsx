@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api } from "../api/client";
 import { useAutomation } from "../store/automation";
 
-const stages: Record<string,string> = { master_review:"Chờ chốt tạo hình chính", materials:"Tạo material", raccord:"Lập raccord", prompts:"Viết prompt", videos:"Viết prompt / gen video", assembly:"Ghép phim", complete:"Hoàn thành", blocked:"Cần xử lý đầu vào" };
+const stages: Record<string,string> = { master_review:"Chờ chốt tạo hình chính", materials:"Tạo material", raccord:"Lập raccord", prompts:"Viết prompt", videos:"Viết prompt / gen video", quality:"Kiểm tra video thực tế", assembly:"Ghép phim", complete:"Hoàn tất lượt chạy", blocked:"Cần xử lý" };
 export function ProductionRun() {
   const pid=useAutomation(s=>s.currentProjectId);
   const runs=useAutomation(s=>s.jobs).filter(j=>j.kind==="production_run");
@@ -49,7 +49,7 @@ export function ProductionRun() {
     <p><label>Song song ảnh/video <input type="number" min={1} max={32} value={parallel} onChange={e=>setParallel(Number(e.target.value))} style={{width:60}}/></label>{" "}
       <label>Tối đa ảnh mới <input type="number" min={0} value={maxImages} onChange={e=>setMaxImages(Number(e.target.value))} style={{width:70}}/></label>{" "}
       <label>Tối đa video mới <input type="number" min={0} value={maxVideos} onChange={e=>setMaxVideos(Number(e.target.value))} style={{width:70}}/></label></p>
-    <p>Dùng lại kết quả có cùng đầu vào. Giữ nút KYC/người thật của board. Giới hạn trên là số lượt mới trong lần chạy, không phải dự toán tiền. Không tự kiểm tra hoặc gen lại để sửa lỗi video.</p>
+    <p>Dùng lại kết quả có cùng đầu vào. Kiểm tra thoại và mẫu hình của clip đã gen trước khi ghép; nếu có lỗi sẽ giữ file và báo vị trí cần sửa. Đối chiếu hình có dùng lượt LLM. Không tự gen lại video. Giới hạn trên là số lượt gen mới, không phải dự toán tiền.</p>
     <button disabled={!pid||busy} onClick={()=>void preview()}>Kiểm tra kế hoạch (không gen)</button>{" "}
     <button disabled={!pid||busy||runs.some(r=>r.status==="running" || r.status==="paused" && r.result.stage==="master_review")} onClick={()=>void start()}>Bắt đầu — có dùng lượt gen</button>
     {error&&<p role="alert">{error}</p>}
@@ -57,6 +57,8 @@ export function ProductionRun() {
     {runs.slice(-5).reverse().map(r=>{const tasks=Object.values(r.result.tasks||{}) as {status:string}[];return <div key={r.id} style={{marginTop:12}}>
       <strong>{stages[r.result.stage]||r.result.stage}</strong> · {r.status} · {tasks.filter(t=>t.status==="succeeded").length}/{tasks.length} tác vụ đã lên lịch hoàn tất
       {r.error&&<p role="alert">{r.error}</p>}
+      {r.result.quality_results&&Object.entries(r.result.quality_results as Record<string,any>).filter(([,q])=>q.status!=="checks_passed").map(([key,q])=><details key={key}><summary>{key} · cần kiểm tra</summary><ul>{q.findings?.map((f:any,i:number)=><li key={i}>{f.message||f.note||f.code}{f.differences&&<pre>{JSON.stringify(f.differences,null,2)}</pre>}</li>)}</ul></details>)}
+      {r.result.quality_status==="automated_checks_passed"&&<small>Đối chiếu tự động đạt. Giọng diễn, nhạc nền và chi tiết giữa các frame mẫu vẫn cần xem/nghe khi duyệt bản giao.</small>}
       {r.status==="running"&&<button onClick={()=>void control(r.id,"pause")}>Dừng xếp thêm việc</button>}
       {["paused","blocked"].includes(r.status)&&r.result.stage!=="master_review"&&<button onClick={()=>void control(r.id,"resume")}>Tiếp tục sau khi xử lý</button>}
       {r.result.stage==="master_review"&&<p>Mở tab Tạo hình chính để upload hoặc gen sheet, rồi chốt để tiếp tục.</p>}

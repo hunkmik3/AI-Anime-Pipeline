@@ -32,7 +32,7 @@ from flowboard.services import avis_text
 # Deliberately NOT importing cuts: it pulls in scenedetect, and scenedetect pulls
 # in PyAV next to OpenCV. That half runs in machine_worker's process.
 from flowboard.services.video_analyzer import asr, dialogue as dialogue_mod, frames, source_inventory, vision
-from flowboard.services.video_analyzer.probe import VideoMeta, timecode
+from flowboard.services.video_analyzer.probe import VideoMeta, probe as probe_video, timecode
 from flowboard.services.video_analyzer.validate import validate
 
 logger = logging.getLogger(__name__)
@@ -40,6 +40,16 @@ logger = logging.getLogger(__name__)
 Progress = Callable[[str, int, int], None]
 
 _MEASURE_TIMEOUT_S = 1800
+
+
+def measure_timeout(duration: float) -> float:
+    """Cut detection reads the whole film several times, so its time limit grows with
+    the film: 1.5x its length, never under 30 minutes. FLOWBOARD_MEASURE_TIMEOUT
+    (seconds) overrides."""
+    override = os.getenv("FLOWBOARD_MEASURE_TIMEOUT", "").strip()
+    if override:
+        return float(override)
+    return max(_MEASURE_TIMEOUT_S, 1.5 * float(duration or 0))
 
 STAGES = ["probe", "cuts", "keyframes", "speech", "joint_vision", "vision", "story", "inventory", "source_verify", "glossary", "adapt", "validate"]
 
@@ -68,9 +78,18 @@ def _meta_from(data: dict) -> VideoMeta:
 
 async def _measure(video: Path, work_dir: Path, on_progress: Progress, *, deep: bool = False) -> dict:
     """Probe, cuts and keyframes, in the machine worker process."""
-    out = work_dir / "machine.json"
+    from .cuts import VERSION as measurement_version
+    out = work_dir / f"machine-v{measurement_version}.json"
     if out.exists():
-        return json.loads(out.read_text(encoding="utf-8"))
+        saved = json.loads(out.read_text(encoding="utf-8"))
+        signature = {"path": str(video.resolve()), "size": video.stat().st_size, "mtime_ns": video.stat().st_mtime_ns}
+        if saved.get('source_signature') == signature and saved.get('deep', False) == deep:
+            return {**saved,'cache_reused':True}
+    try:
+        duration = (await asyncio.to_thread(probe_video, video)).duration
+    except Exception:  # the worker probes again and reports a broken file itself
+        duration = 0.0
+    timeout = measure_timeout(duration)
     proc = await asyncio.create_subprocess_exec(
         sys.executable, "-m", "flowboard.services.video_analyzer.machine_worker",
         str(video), str(work_dir), *(["--deep"] if deep else []),
@@ -86,11 +105,11 @@ async def _measure(video: Path, work_dir: Path, on_progress: Progress, *, deep: 
                 on_progress(parts[1], int(parts[2]), int(parts[3]))
 
     try:
-        _, err = await asyncio.wait_for(asyncio.gather(pump(), proc.stderr.read()), timeout=_MEASURE_TIMEOUT_S)  # type: ignore[union-attr]
+        _, err = await asyncio.wait_for(asyncio.gather(pump(), proc.stderr.read()), timeout=timeout)  # type: ignore[union-attr]
         await proc.wait()
     except asyncio.TimeoutError:
         proc.kill()
-        raise RuntimeError(f"cut detection timed out after {_MEASURE_TIMEOUT_S}s")
+        raise RuntimeError(f"cut detection timed out after {timeout:.0f}s")
     if proc.returncode != 0 or not out.exists():
         # Skip the objc duplicate-class chatter; the traceback's last lines say what broke.
         lines = [l for l in err.decode(errors="replace").splitlines() if l.strip() and not l.startswith("objc[")]
@@ -106,7 +125,8 @@ async def _speech(video: Path, work_dir: Path, language: Optional[str], *, multi
             digest=hashlib.sha256()
             with video.open('rb') as fh:
                 for block in iter(lambda:fh.read(1024*1024),b''):digest.update(block)
-            return {'source_sha256':digest.hexdigest(),'language':language,'model':asr.DEFAULT_MODEL,'version':1}
+            from .asr_multilingual_worker import VERSION as worker_version
+            return {'source_sha256':digest.hexdigest(),'language':language,'model':asr.DEFAULT_MODEL,'version':worker_version}
         signature=await asyncio.to_thread(signature_for_source)
     if done.exists():
         cached=json.loads(done.read_text(encoding="utf-8"))
@@ -200,7 +220,6 @@ async def analyze(video: Path, work_dir: Path, *, language: Optional[str] = None
     wall_started = time.monotonic()
     work_dir.mkdir(parents=True, exist_ok=True)
     timer = _Timer()
-    machine_reused = (work_dir/'machine.json').exists()
 
     # Measuring the picture and transcribing the sound share nothing, so they
     # run side by side, each in its own process. A video with no audio track
@@ -213,6 +232,7 @@ async def analyze(video: Path, work_dir: Path, *, language: Optional[str] = None
     )
     if isinstance(measured, BaseException):
         raise measured
+    machine_reused=bool(measured.get('cache_reused'))
     on_progress("speech", 1, 1)
     timer.stages.update(measured["timings_s"])
     if analysis_mode=='one_pass' and machine_reused:
@@ -291,7 +311,10 @@ async def analyze(video: Path, work_dir: Path, *, language: Optional[str] = None
     # burned-in subtitles are known, rebuild it as whole lines, each owned by
     # one shot — see dialogue.py for why a per-shot slice repeats itself.
     dialogue_policy='audio_verbatim' if analysis_mode=='one_pass' else 'legacy'
-    track = dialogue_mod.build_track(shots, transcript, policy=dialogue_policy)
+    if analysis_mode=='one_pass':
+        from . import source_integrity
+        transcript=source_integrity.align_audio(transcript,shots)
+    track = dialogue_mod.build_track(shots, transcript, policy=dialogue_policy, deep=deep)
     dialogue_mod.attach(shots, track)
 
     on_progress("story", 0, 2)
@@ -368,6 +391,7 @@ async def analyze(video: Path, work_dir: Path, *, language: Optional[str] = None
         "timings_s": timer.stages,
     }
     if analysis_mode=='one_pass':
+        result['source_integrity']=source_integrity.report(result)
         result['cache_usage']={'machine_reused':machine_reused,'transcript_reused':bool(transcript.get('cache_reused')),
                               'cached_preprocessing_timings_s':measured['timings_s'] if machine_reused else {}}
     # The original extractor is a draft. Final quality repair has its own
@@ -605,7 +629,10 @@ def ensure_dialogue(analysis: dict) -> None:
     shots = analysis.get("shots") or []
     if not shots:
         return
-    track = dialogue_mod.build_track(shots, analysis.get("transcript") or {}, policy=analysis.get('dialogue_policy','legacy'))
+    from . import dialogue_fusion
+    track = dialogue_mod.build_track(shots, analysis.get("transcript") or {}, policy=analysis.get('dialogue_policy','legacy'),
+                                     deep=bool(analysis.get("deep")),
+                                     names=dialogue_fusion.known_names(analysis.get("entities")))
     dialogue_mod.attach(shots, track)
     analysis["dialogue_track"] = [l.as_dict() for l in track]
 

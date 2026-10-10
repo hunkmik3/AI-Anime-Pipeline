@@ -46,6 +46,11 @@ os.environ["FLOWBOARD_DRIVE_TOKEN"] = os.path.join(_TMPDIR, "no-drive-token.json
 # credential env vars that may have leaked in from the shell. Tests
 # that need a key monkeypatch it explicitly.
 os.environ["FLOWBOARD_DISABLE_DOTENV"] = "1"
+# Local measuring workers that load downloaded models stay off unless a test turns
+# them on (face fingerprints in the one-pass catalog; Gemini voice listening).
+os.environ["FLOWBOARD_FACE_CHECK"] = "0"
+os.environ["FLOWBOARD_VOICE_LISTEN"] = "0"
+os.environ["FLOWBOARD_SCENE_STAGING"] = "0"   # a paid vision pass; tests opt in with a fake call
 for _v in (
     "BYTEPLUS_KEY",
     "DREAMINA_API_KEY",

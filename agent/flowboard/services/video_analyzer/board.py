@@ -105,7 +105,7 @@ def plan_clips(
 
 
 def plan_dialogue_clips(shots, sequences, dialogue_track, max_clip_s, *, character_states=None,
-                        state_specific_references=False):
+                        state_specific_references=False, max_shots=None):
     """Never cut a spoken sentence between independent generation requests.
 
     Keep every source shot. Select a shorter safe boundary, or a bounded longer
@@ -131,6 +131,9 @@ def plan_dialogue_clips(shots, sequences, dialogue_track, max_clip_s, *, charact
             if end-start > HARD_MAX_S + .001: break
             crosses = any(d['start'] < end-.001 and d['end'] > end+.001 for d in dialogue_track)
             if not crosses: safe.append(j)
+            # Shorter requests reduce omitted cuts/acting beats. A sentence
+            # crossing this target still stays intact: use its next safe cut.
+            if max_shots and j-i+1 >= max_shots and safe: break
             if end-start >= max_clip_s and safe: break
         preferred = [j for j in safe if shots[j]['end']-start <= max_clip_s+.001]
         if not safe:
@@ -392,6 +395,13 @@ def board_shot(n_in_clip: int, shot: dict, adapted: dict, cast: dict[int, dict])
         "lens_mm": str(adapted.get("lens_mm") or ""),
         "camera": camera,
         "framing_note": adapted.get("framing_note") or "",
+        # The source's own view behind the people at this angle (vision "setting").
+        "background": adapted.get("background") or str(src.get("setting") or "").strip(),
+        # Where each person is relative to the set, and the scene's layout (source staging).
+        "staging": adapted.get("staging") or "",
+        "scene_layout": adapted.get("scene_layout") or "",
+        # Which of its set's two reference views (master/reverse) the camera looks along.
+        "set_view": adapted.get("set_view") or "",
         "lighting": adapted.get("lighting") or "",
         "action": action,
         "dialogue": [d for d in adapted.get("dialogue") or [] if isinstance(d, dict) and d.get("line")],
@@ -692,7 +702,7 @@ async def build_board(analysis: dict, adaptation: dict, cast: Optional[dict] = N
     if one_pass_film:
         clips = plan_dialogue_clips(analysis['shots'], sequences_src, analysis.get('dialogue_track') or [], max_clip_s,
                                    character_states={n: row.get('character_states') or {} for n, row in per_shot.items()},
-                                   state_specific_references=True)
+                                   state_specific_references=True, max_shots=4)
     else:
         clips = plan_clips(analysis["shots"], sequences_src, max_clip_s=max_clip_s)
 
@@ -724,6 +734,15 @@ async def build_board(analysis: dict, adaptation: dict, cast: Optional[dict] = N
             board_shots = _carry_lines(board_shots)
         else:
             for shot in board_shots:
+                pieces = by_n[shot['source_shot']].get('dialogue_pieces')
+                if pieces is not None:
+                    # The part of each line spoken inside this shot, split at the cuts.
+                    shot['performance'] = [
+                        f"Clip audio {float(p['start'])-first['start']:.3f}–{float(p['end'])-first['start']:.3f}s: " +
+                        ('continue the line begun in the previous shot; never restart it.' if p.get('cont')
+                         else 'speak this line once.')
+                        for p in pieces if p.get('start') is not None]
+                    continue
                 shot['performance'] = [
                     f"Clip audio {line['start']-first['start']:.3f}–{line['end']-first['start']:.3f}s: " +
                     ('start assigned dialogue once; continue seamlessly across following cuts.'

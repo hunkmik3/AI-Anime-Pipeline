@@ -128,3 +128,17 @@ def test_sheet_profile_keeps_design_but_not_temporal_source_records():
     assert 'observed_states' not in profile
     assert profile['description'] == 'Small red box'
     assert profile['design']['reference_variants'] == ['Closed three-quarter reference']
+
+
+def test_a_person_with_several_outfits_never_gets_a_second_state_on_one_sheet():
+    from flowboard.services import film_styles
+    maid = {'name': 'Maid', 'states': [{'key': 'dry', 'wardrobe': 'Dry black uniform.'},
+                                       {'key': 'damp', 'wardrobe': 'Damp black uniform.'}],
+            'design': {'hair': 'High bun.', 'signature_state': 'Also show the same uniform visibly damp.'}}
+    profile = film_styles.profile_data(maid)
+    assert profile['design'] == {'hair': 'High bun.'}
+    prompt = film_styles.sheet_prompt('character', maid, state=maid['states'][0], style='live_action_feature')
+    assert 'visibly damp' not in prompt and 'Dry black uniform.' in prompt
+    # One outfit: the second visible state (a mask coming off) is still the sheet's to show.
+    hero = {**maid, 'states': maid['states'][:1]}
+    assert film_styles.profile_data(hero)['design']['signature_state'] == 'Also show the same uniform visibly damp.'

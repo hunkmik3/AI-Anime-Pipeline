@@ -42,7 +42,8 @@ def record_source(video_id, stage, done, total):
 def make_plan(specs, packs):
     return {'materials': [{'key': key, 'node': sp['node_id'], 'slot': sp['slot'],
         'name': sp['item'].get('name', sp['asset_id']),
-        'group': 'masters' if sp['kind'] == 'environment' or sp['kind'] == 'character' and sp['slot'] == 'identity' else 'variants'}
+        # A set's reverse view is drawn from its master, like a costume from the identity sheet.
+        'group': 'masters' if sp['kind'] == 'environment' and sp['slot'] != 'reverse' or sp['kind'] == 'character' and sp['slot'] == 'identity' else 'variants'}
         for key, sp in specs.items()], 'clips': [p['sequence_key'] for p in packs]}
 
 
@@ -113,7 +114,7 @@ def run_stages(run, board, all_jobs):
         'error': by_id[t['id']].error if t.get('id') in by_id else ''} for k,t in result.get('tasks', {}).items()}
     nodes = {n['id']: n.get('data', {}) for n in board.get('nodes', [])}
     phase = result.get('stage'); finished = run.status == 'succeeded'; ready = set(result.get('ready_materials', []))
-    passed_materials = phase in {'raccord','prompts','videos','assembly','complete'}
+    passed_materials = phase in {'raccord','prompts','videos','quality','assembly','complete'}
     out = []
     def status_for(records, started=False):
         statuses = {r.get('status') for r in records}
@@ -153,9 +154,18 @@ def run_stages(run, board, all_jobs):
     out.append(stage('raccord', 'Liên tục cảnh / raccord', raccord_total if finished and raccord_total is not None else raccord_done,
         raccord_total, 'skipped' if raccord_total == 0 else status_for(raccord_tasks, phase == 'raccord'), 'cảnh'))
     keys = plan['clips']
-    for prefix, label in [('write','Viết prompt video'),('clip','Gen video')]:
-        if prefix == 'clip' and cfg.get('mode') != 'render': continue
+    for prefix, label in [('write','Viết prompt video'),('clip','Gen video'),('quality','Kiểm tra video thực tế')]:
+        if prefix in {'clip','quality'} and cfg.get('mode') != 'render': continue
         recs = [tasks[prefix+':'+key] for key in keys if prefix+':'+key in tasks]
+        if prefix=='quality':
+            recs=[{**t,'status':'blocked'} if t.get('id') in by_id and by_id[t['id']].status=='succeeded'
+                and by_id[t['id']].result.get('status')!='checks_passed' else t for t in recs]
+            count=sum(t['status']=='succeeded' for t in recs)
+            status='blocked' if any(t['status']=='blocked' for t in recs) else status_for(recs,phase=='quality')
+            out.append(stage(prefix,label,count,len(keys),status,'clip',
+                note='Đối chiếu thoại ASR và mẫu hình thực tế; không phải chứng nhận mọi khung hình/giọng diễn.',
+                failed=sum(t['status'] in {'blocked','failed','unknown'} for t in recs)))
+            continue
         count = sum(finished or tasks.get(prefix+':'+key, {}).get('status') == 'succeeded' or
             prefix == 'write' and tasks.get('clip:'+key, {}).get('status') == 'succeeded' for key in keys)
         out.append(stage(prefix, label, count, len(keys), status_for(recs, phase in {'prompts','videos'}), 'clip',

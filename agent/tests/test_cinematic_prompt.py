@@ -851,3 +851,86 @@ def test_source_model_context_removes_sheet_prompts_without_changing_film_facts(
     projected["shots"][0]["observed"][0]["state"] = "changed only in model payload"
     projected["assets"]["rhea"]["design"]["states"][0]["wardrobe"] = "changed only in model payload"
     assert context == original
+
+
+def test_a_line_carried_over_the_cut_is_serialized_as_continuing_and_passes():
+    payload = ask()
+    payload["shots"][0]["dialogue"][0]["continues_from_previous_shot"] = True
+    shots = [{"framing": "Medium shot.", "framing_note": "", "camera": "Static.",
+              "dialogue": [{"who": "Rhea", "line": "Here it is.", "delivery": "on_camera", "cont": True}]}]
+    prompt = cp.serialize_source_locks(good(), shots, [(0, 4)])
+    assert "RHEA — SPOKEN ON CAMERA, CONTINUING:\n“Here it is.”" in prompt
+    assert not [x for x in cp.validate(prompt, payload, [(0, 4)]) if "CONTINUING" in x]
+
+
+def test_the_opening_may_say_an_eleven_second_sequence():
+    prompt = good().replace("Create a **4-second", "Create an **11.466-second")
+    issues = cp.validate(prompt, ask(), [(0, 11.466)])
+    assert not [x for x in issues if x.startswith("Opening")]
+    assert cp.serialize_source_locks("Create an 11.466-second square 1:1 sequence in a hall.", []) \
+        .startswith("Create an **11.466-second square 1:1 sequence**")
+
+
+def test_a_clip_the_provider_declines_is_written_by_the_fallback_and_says_so(monkeypatch):
+    from flowboard.services import avis_text
+    sequence, shots, chars = inputs()
+    asked = []
+
+    async def images(refs):
+        return [{"type": "text", "text": "image evidence"}], [{"tag": "@image1", "sha256": "digest"}]
+
+    async def fake(system, user, stats, **kw):
+        asked.append(kw["model"])
+        if kw["model"] == writer.WRITER_MODEL:
+            raise avis_text.AvisContentRefusal("Provider declined this content request")
+        stats.answered_by[kw["model"]] = 1
+        return {"prompt": good(), "end_state": "Rhea retains the closed parcel.", "staging_decisions": []}
+
+    async def review(prompt, req, refs, assets, **kw):
+        return {"status": "verified", "checked_requirement_ids": [r["id"] for r in req], "findings": []}
+
+    monkeypatch.setattr(cp, "reference_images", images)
+    monkeypatch.setattr(adapt, "ask_json", fake)
+    monkeypatch.setattr(writer, "review_prompt", review)
+    monkeypatch.setattr(writer, "WRITER_FALLBACK", "gpt-5-4")
+    result = asyncio.run(writer.write_clip_prompt(sequence, shots, characters=chars, environment=None,
+                                                  aspect_ratio="1:1", look="cg3d", cinematic=True))
+    assert asked == [writer.WRITER_MODEL, "gpt-5-4"]
+    assert result.model == "gpt-5-4" and any("gpt-5-4" in w for w in result.warnings)
+    # Without a fallback the refusal still stops the clip, visibly.
+    asked.clear()
+    monkeypatch.setattr(writer, "WRITER_FALLBACK", "")
+    with pytest.raises(writer.WriterError, match="declined"):
+        asyncio.run(writer.write_clip_prompt(sequence, shots, characters=chars, environment=None,
+                                             aspect_ratio="1:1", look="cg3d", cinematic=True))
+    assert asked == [writer.WRITER_MODEL]
+
+
+def test_a_reference_tag_repeated_in_the_prose_is_spelled_out_and_passes():
+    drafted = good().replace("Rhea holds the closed parcel and looks up.",
+                             "Rhea (@image1) holds the closed parcel and looks up.")
+    kw = dict(refs=[("@image1", "RHEA")], duration=4, slots=[(0, 4)], lines=[(1, "Here it is.")],
+              speakers=[(1, "RHEA", "Here it is.")], exempt_shots=set(), school_age=False)
+    assert any("exactly once" in x for x in writer.check_clip_prompt(drafted, **kw))
+    fixed = cp.single_reference_mentions(drafted)
+    assert "Rhea (reference image 1) holds" in fixed and fixed.count("@image1") == 1
+    assert writer.check_clip_prompt(fixed, **kw) == []
+    assert cp.single_reference_mentions(fixed) == fixed
+
+
+def test_a_reference_declared_with_a_dash_is_normalised_to_the_standard_form():
+    draft = "## REFERENCE CONTROL\n- **@image1 — LIGHT BROWN-HAIRED BEARDED MAN.** Use for him.\n"
+    assert cp.serialize_source_locks(draft, [], None).startswith("## REFERENCE CONTROL\n- **@image1 = LIGHT BROWN-HAIRED BEARDED MAN.**")
+
+
+def test_a_dash_shot_header_is_the_same_header_normalised():
+    text = '# SHOT 1 — 00:00–00:02.300\nx\n# SHOT 2 - 00:02.300 – 00:04\ny\n# SHOT 3 | 00:04–00:05\n'
+    assert cp.normalize_heads(text) == '# SHOT 1 | 00:00–00:02.300\nx\n# SHOT 2 | 00:02.300–00:04\ny\n# SHOT 3 | 00:04–00:05\n'
+
+
+def test_a_cinematic_draft_with_a_bad_header_is_told_the_cinematic_form():
+    prompt = good().replace('# SHOT 1 |', '# SHOT 1 ~', 1)
+    problems = writer.check_clip_prompt(prompt, refs=[('@image1', 'RHEA')], duration=4, slots=[(0, 4)],
+                                        lines=[], exempt_shots=set(), school_age=False)
+    assert not any(p.startswith('@image1 must be declared') for p in problems)
+    assert any('# SHOT 1 |' in p for p in problems)

@@ -10,7 +10,7 @@ from sqlmodel import select
 
 from flowboard.db import get_session
 from flowboard.db.models import AutomationJob, AutomationProject
-from flowboard.services import reference_atlas, material_dependencies, automation, automation_jobs as jobs, production_manifest as pm, shot_package, raccord, prompt_coverage
+from flowboard.services import reference_atlas, material_dependencies, automation, automation_jobs as jobs, production_manifest as pm, shot_package, raccord, prompt_coverage, set_restyle
 
 KIND = 'production_run'
 RUNNING = {'running'}
@@ -36,15 +36,17 @@ def input_version(board):
             seq = {k:v for k,v in d.get('sequence', {}).items() if k not in ('shot_package','production_context')}
             nodes.append({'id':n['id'],'sequence':seq,'shots':d.get('shots',[]),'function':d.get('functionOf'), 'raccord':d.get('raccord')})
         elif kind in ('character','environment','asset'):
-            uploads={k:v.get('referenceUrl') for k,v in {'identity':d.get('identity',{}),'plate':d.get('plate',{}),**d.get('states',{})}.items() if v.get('uploaded')}
+            # A set with two views has a reverse slot (older boards keep their version).
+            slots={'identity':d.get('identity',{}),'plate':d.get('plate',{}),**({'reverse':d.get('reverse',{})} if shot_package.has_views(d) else {}),**d.get('states',{})}
+            uploads={k:v.get('referenceUrl') for k,v in slots.items() if v.get('uploaded')}
             nodes.append({'id':n['id'],'definition':d.get(kind),'activeState':d.get('activeState'),
                           **({'uploads':uploads} if uploads else {}),
-                          'prompts':{k:authored_prompt(v) for k,v in {'identity':d.get('identity',{}),'plate':d.get('plate',{}),**d.get('states',{})}.items()}})
+                          'prompts':{k:authored_prompt(v) for k,v in slots.items()}})
         elif kind=='video' and d.get('promptBy')=='manual':
             nodes.append({'id':n['id'],'manual_prompt':d.get('prompt',''),'end_state':d.get('endState') or '',
                           'staging_decisions':d.get('stagingDecisions') or []})
     return pm.digest({'schema':SCHEMA,'style_version':style_version(board),'video_standard_version':film_motion.version(board.get('style')),'nodes':nodes, **{k:board.get(k) for k in
-        ('productionAssets','sourceVerification','preserveSourceShots','style','aspectRatio','imageModel','imageSize','kyc','unmoderated','dialogueLanguage','targetCasting')}})
+        ('productionAssets','sourceVerification','preserveSourceShots','style','aspectRatio','imageModel','imageSize','kyc','unmoderated','dialogueLanguage','targetCasting','motionReference')}})
 
 
 def selected_packages(board, pid, keys):
@@ -71,7 +73,9 @@ def material_specs(board, packs):
         data = node['data']; definition = data[data['kind']]
         if aid in assets and 'generation_depends_on_asset_ids' in definition:
             assets[aid]['generation_depends_on_asset_ids'] = list(definition['generation_depends_on_asset_ids'])
-    required = {(m['asset_id'],m.get('state_key')) for p in packs for m in p['materials'].values()}
+    # A prop built into a set is drawn in that set's master view; it needs no sheet of its own.
+    required = {(m['fixture_of'],None) if m.get('fixture_of') else (m['asset_id'],m.get('state_key'))
+                for p in packs for m in p['materials'].values()}
     available={}
     for aid,n in nodes.items():
         d=n['data'];plate=(d.get('states',{}).get(d.get('activeState'),{}) or d.get('identity',{})) if d['kind']=='character' else d.get('plate',{})
@@ -87,7 +91,7 @@ def material_specs(board, packs):
         node=nodes.get(aid)
         if not node: raise ValueError('Missing material node: '+aid)
         d=node['data']; kind=d['kind']; item=d[kind]
-        slot=(state or 'identity') if kind=='character' else 'plate'
+        slot=(state or 'identity') if kind=='character' else 'reverse' if kind=='environment' and state=='reverse' else 'plate'
         key=node['id']+':'+slot
         if key in trail: raise ValueError('Cyclic material dependency: '+' → '.join((*trail,key)))
         if key in specs: return key
@@ -97,8 +101,10 @@ def material_specs(board, packs):
             return add(aid,None,trail)
         deps=[]
         if kind=='character' and slot!='identity': deps.append(add(aid,None,(*trail,key)))
+        # The reverse view is drawn from the approved master view of the same set.
+        if slot=='reverse': deps.append(add(aid,None,(*trail,key)))
         definition=assets.get(aid,{})
-        for dep in sorted(dependency_graph.get(aid,set())):
+        for dep in ([] if slot=='reverse' else sorted(dependency_graph.get(aid,set()))):
             other=nodes.get(dep,{}).get('data',{})
             deps.append(add(dep,other.get('activeState') if other.get('kind')=='character' else None,(*trail,key)))
         specs[key]={'key':key,'node_id':node['id'],'asset_id':aid,'slot':slot,'kind':kind,'item':item,'plate':plate,'deps':deps,'related_ids':related.get(aid,[]),'dependency_notes':notes}
@@ -155,6 +161,9 @@ def start(pid, revision, config, request_key):
 
 class Waiting(Exception): pass
 class Blocked(Exception): pass
+class QualityHold(Exception):
+    """A generated clip the automated review did not clear: kept for the reviewer, not
+    delivered, and no reason to stop generating the rest of the run."""
 
 
 def _task(s, run, all_jobs, state, key, kind, node, slot, payload, metadata=None):
@@ -170,12 +179,13 @@ def _task(s, run, all_jobs, state, key, kind, node, slot, payload, metadata=None
         busy=next((j for j in all_jobs if j.kind==kind and j.node_id==node and j.slot==slot and j.status in jobs.ACTIVE|{'unknown'}),None)
         if busy: raise Blocked('Target already has an active/unresolved job: '+node+' '+slot)
         config=run.payload['config'];counts=state.setdefault('created_counts',{})
-        category='images' if kind=='plate' else 'videos' if kind=='clip' else 'text' if kind in ('write','raccord') else 'local'
+        category='images' if kind=='plate' else 'videos' if kind=='clip' else 'text' if kind in ('write','raccord','clip_quality') else 'local'
         cap=config.get('max_'+category)
         if cap is not None and counts.get(category,0)>=cap: raise Blocked('Run limit reached: '+category)
         active=[j for j in all_jobs if j.status in jobs.ACTIVE and j.kind!=KIND]
         limit=config['image_parallel'] if kind=='plate' else config['video_parallel'] if kind=='clip' else config['text_parallel']
-        family={'write','raccord'} if kind in ('write','raccord') else {kind}
+        family={'write','raccord','clip_quality'} if kind in ('write','raccord','clip_quality') else {kind}
+        if kind=='clip_quality':limit=min(2,limit)  # Bound concurrent local Whisper processes.
         if sum(j.kind in family for j in active)>=limit: raise Waiting()
         existing=AutomationJob(project_id=run.project_id,kind=kind,node_id=node,slot=slot,payload=payload,
                     request_key=request,prepared={**(metadata or {}),'run_id':str(run.id)})
@@ -190,15 +200,100 @@ def _task(s, run, all_jobs, state, key, kind, node, slot, payload, metadata=None
     return existing
 
 
+def set_fixtures(board, env_id):
+    """Props built into a set (a lift door, a window): drawn in its reference views."""
+    out=[]
+    for n in board.get('nodes',[]):
+        d=n.get('data',{})
+        if d.get('kind')!='asset':continue
+        item=d.get('asset') or {}
+        if env_id in (item.get('fixture_of') or []):
+            out.append({'name':item.get('name',''),'description':item.get('description') or item.get('summary') or ''})
+    return sorted(out,key=lambda f:f['name'])
+
+
+def view_item(item, view):
+    """The set's profile for one of its two reference views. The view, read from the source's
+    own coverage, sets the direction; the design's camera and depth chose a view of their own
+    (a lengthwise establishing shot) and would compete with it."""
+    views=item.get('views') or {}
+    out={k:v for k,v in item.items() if k not in ('views','set_states')}
+    if isinstance(out.get('design'),dict):
+        out['design']={k:v for k,v in out['design'].items() if k not in ('camera','depth')}
+    out['requested_view']=f"{view.upper()} VIEW: {views.get(view,'')}"
+    if item.get('set_states'):out['requested_state']=item['set_states']
+    return out
+
+
+def view_prompt(item, view, fixtures, anchored, master='@image1'):
+    """What the plate prompt adds for a set drawn as a master view and its reverse. ``master``
+    is the reverse's tag for the approved master view (after a bundled style image, if any).
+
+    The two views follow the scene's own coverage: the master looks at the scene's focus (the
+    lift a man holds open); the reverse stands at that focus and looks back, so the focus is
+    behind its camera. A reverse that still shows the focus gives a video model a second place
+    to put the people in."""
+    views={k:str(v).strip().rstrip('.') for k,v in (item.get('views') or {}).items() if isinstance(v,str)}
+    states=str(item.get('set_states') or '').strip().rstrip('.')
+    lines=[f'{view.upper()} VIEW',
+           'People named in a view only place its camera; draw the location empty of people.']
+    if view=='reverse':
+        lines.append(f"{master} is this location's approved master view: {views.get('master','')}. Draw the SAME location "
+                     f"as its reverse: the camera stands at what {master} looks at, its focus, and looks back the opposite way: "
+                     f"{views.get('reverse','')}. The focus of {master} is behind this camera and out of view; do not show it "
+                     f"again. Keep every material, colour, moulding, fixture design, light source and the time of day of "
+                     f"{master}. Never mirror {master} or repeat its view.")
+        if anchored:
+            lines.append('The later images are frames of the source film looking this way: keep their architecture, layout, '
+                         'fixture positions and light direction; leave out their people, reflections of people and any '
+                         'on-screen captions or text.')
+    else:
+        lines.append(f"This plate is the location's master view: {views.get('master','')}. The camera looks at the scene's "
+                     'focus from where most of its coverage stands, wide enough to show that whole side of the place. '
+                     'A second plate shows the reverse from the focus; keep this one to this direction.')
+    if states:
+        lines.append(f"LANDMARK STATES: {states}. These states win over the profile's avoid list where it "
+                     'forbids what they need: an open door shows the space behind it.')
+    if fixtures:
+        lines.append('BUILT INTO THIS SET (draw them as part of the location, in these states): '+
+                     '; '.join(f"{f['name']} — {f['description']}" if f['description'] else f['name'] for f in fixtures))
+    return '\n'+'\n'.join(lines)
+
+
 def material_payload(spec, deps, board):
     from flowboard.services.video_analyzer.production import build_asset_prompt
     item=spec['item'];kind=spec['kind'];style=board.get('style','realistic')
     refs=list(dict.fromkeys(d['reference_url'] for d in deps));prompt=authored_prompt(spec['plate'])
+    anchored=False
+    view=('reverse' if spec['slot']=='reverse' else 'master') if kind=='environment' and item.get('views') else ''
+    if not prompt and kind=='environment':
+        # The source film's own widest, emptiest frames of this location anchor its
+        # geography; the plate restyles the room and leaves the people out. A set with two
+        # views anchors each on the frames that look its way.
+        from flowboard.services import set_anchor
+        anchors=[u for u in set_anchor.anchor_urls(board,item,view=view) if u not in refs]
+        refs+=anchors;anchored=bool(anchors)
     if not prompt:
         if kind=='character':
             state=next((a for a in item.get('states',[]) if a['key']==spec['slot']),None) or next(iter(item.get('states',[])),{'key':'identity','wardrobe':''})
             prompt=automation.build_character_prompt(item,state,has_reference=bool(refs),style=style,design=item.get('design'))
-        elif kind=='environment': prompt=automation.build_environment_prompt(item,aspect_ratio=board.get('aspectRatio','16:9'),style=style,design=item.get('design'),has_reference=bool(refs))
+        elif kind=='environment' and view:
+            shown=view_item(item,view)
+            prompt=automation.build_environment_prompt(shown,aspect_ratio=board.get('aspectRatio','16:9'),style=style,design=shown.get('design'),has_reference=bool(refs))
+            if anchored and view=='master':
+                prompt+=('\nLOCATION ANCHOR FRAMES\nThe supplied location images are frames of the source film. Keep their '
+                         'architecture, layout, fixture positions and light direction; leave out their people, reflections '
+                         'of people and any on-screen captions or text. Later frames are further views of the same room.')
+            from flowboard.services import film_styles
+            prompt+=view_prompt(item,view,set_fixtures(board,spec['asset_id']),anchored,'@image2' if style==film_styles.KEY else '@image1')
+            prompt+=set_restyle.plate_block(item)
+        elif kind=='environment':
+            prompt=automation.build_environment_prompt(item,aspect_ratio=board.get('aspectRatio','16:9'),style=style,design=item.get('design'),has_reference=bool(refs))
+            if anchored:
+                prompt+=('\nLOCATION ANCHOR FRAMES\nThe supplied location images are frames of the source film. Keep their '
+                         'architecture, layout, fixture positions and light direction; leave out their people, reflections '
+                         'of people and any on-screen captions or text. Later frames are further views of the same room.')
+            prompt+=set_restyle.plate_block(item)
         else:
             bindings=[{'id':d['asset_id'],'name':d['name'],'ref_label':f'@image{refs.index(d["reference_url"])+1}','ref_url':d['reference_url']} for i,d in enumerate(deps)]
             prompt=build_asset_prompt({**item,'dependency_references':bindings},kind=item['kind'],style=style,
@@ -221,17 +316,21 @@ def writing_body(board, pid, package, continuity_refs, atlas_receipts=None):
         if url not in urls: urls.append(url)
         return {'ref_label':f'@image{urls.index(url)+1}','ref_url':url,'media_id':m['media_id']}
     materials=list(reference_atlas.apply(package['materials'],atlas_receipts or []).values())
-    materials.sort(key=lambda m:({'character':0,'environment':1}.get(m['kind'],2),m['asset_id']))
+    # A set's master view precedes its reverse; a built-in prop shares the master's image.
+    materials.sort(key=lambda m:({'character':0,'environment':1}.get(m['kind'],2),m['asset_id'],m.get('state_key')=='reverse'))
     for m in materials:
         node=nodes[m['asset_id']]['data'];item=node[node['kind']]
         ref={**item,'source_asset_id':m['asset_id'],'id':m['asset_id'],
              'state_key':m.get('state_key'),**binding(m)}
+        if m.get('view'):
+            # "Hotel corridor — reverse view": the same location, named as one place in two directions.
+            ref.update(view=m['view'],name=f"{item.get('name') or m['asset_id']} — {m['view'].split(':')[0]} view")
         if m.get('reference_scope'):
             ref['reference_scope']=deepcopy(m['reference_scope'])
         if m.get('atlas_instruction'):
             ref.update(atlas_cell=m['atlas_cell'],description='ORIGINAL SOURCE SHEET DESIGN (cell numbers here are INNER sheet coordinates): '+m['description']+'\n'+m['atlas_instruction'])
         if m['kind']=='character': characters.append({**ref,'wardrobe':m['wardrobe']})
-        elif m['kind']=='environment' and environment is None: environment=ref
+        elif m['kind']=='environment' and environment is None and m.get('state_key')!='reverse': environment=ref
         else: extras.append(ref)
     for r in continuity_refs:
         extras.append({'id':r['id'],'kind':'continuity_frame','name':r['name'],
@@ -241,7 +340,8 @@ def writing_body(board, pid, package, continuity_refs, atlas_receipts=None):
     sequence={**seq['sequence'],'function':seq.get('functionOf',[]),'raccord':seq.get('raccord',[]),
         'video_standard_version':film_motion.version(board.get('style')),
         'preserve_source_shots':board.get('preserveSourceShots',True),'shot_package':package,'timing_policy_version':TIMING_POLICY_VERSION,'reference_format_version':1,
-        'production_context':pm.context(pm.build(board,str(pid)),key),'continuity_references':continuity_refs,'reference_atlases':atlas_receipts or []}
+        'production_context':pm.context(pm.build(board,str(pid)),key),'continuity_references':continuity_refs,'reference_atlases':atlas_receipts or [],
+        **({'motion_reference':board['motionReference']} if board.get('motionReference') else {})}
     # Source state is already complete and deterministic; independent writers need not wait for a previous writer.
     return VideoWriteBody(sequence=sequence,shots=seq['shots'],characters=characters,environment=environment,
         reference_assets=extras,production_assets=board.get('productionAssets') if prompt_coverage.is_strict(board.get('productionAssets'),board.get('sourceVerification')) else None,
@@ -291,14 +391,23 @@ def advance(s, run, project, all_jobs):
     board=jobs.overlay(project.board or {},all_jobs);config=run.payload['config']
     if input_version(board)!=run.payload['input_version']: raise Blocked('Production inputs changed. Start a new run to reuse matching tasks and rebuild affected outputs.')
     packs=selected_packages(board,project.id,config.get('sequence_keys',[]));specs=material_specs(board,packs)
+    # Re-check before ANY material call, including resumed runs. Previously the
+    # source gate lived only in preview/prompt dispatch, after image spending.
+    if prompt_coverage.is_strict(board.get('productionAssets'),board.get('sourceVerification')):
+        for p in packs:
+            seq=next(n['data'] for n in board['nodes'] if n.get('id')=='seq:'+p['sequence_key'])
+            source_errors=prompt_coverage.source_readiness_issues(seq['shots'],board.get('sourceVerification'))
+            if source_errors: raise Blocked('; '.join(source_errors))
     from flowboard.services.production_progress import make_plan
     state['progress_plan'] = make_plan(specs, packs)
     ready={};waiting=False;errors=[]
     state['stage']='materials'
     for key,spec in specs.items():
         if any(d not in ready for d in spec['deps']): waiting=True;continue
+        fixtures=set_fixtures(board,spec['asset_id']) if spec['kind']=='environment' else []
         deps=[ready[d] for d in spec['deps']];plate=spec['plate'];signature=pm.digest({'item':spec['item'],'deps':[{k:v for k,v in d.items() if k!='media_id'} for d in deps],'slot':spec['slot'],
-            'prompt':authored_prompt(plate),'model':board.get('imageModel'),'size':board.get('imageSize'),'style':board.get('style'),'style_version':style_version(board)})
+            'prompt':authored_prompt(plate),'model':board.get('imageModel'),'size':board.get('imageSize'),'style':board.get('style'),'style_version':style_version(board),
+            **({'fixtures':fixtures} if fixtures else {})})
         old=next((j for j in reversed(all_jobs) if j.kind in ('plate','material_binding') and j.node_id==spec['node_id'] and j.slot==spec['slot'] and j.status=='succeeded'),None)
         fresh=plate.get('referenceUrl') and not plate.get('needsIdentityRefresh') and (plate.get('uploaded') or not old or not old.prepared.get('material_signature') or old.prepared['material_signature']==signature)
         try:
@@ -343,6 +452,22 @@ def advance(s, run, project, all_jobs):
     if blockers: raise Blocked(json.dumps(blockers,ensure_ascii=False))
     shots={sh['id']:(p,sh) for p in packs for sh in p['shots']}
     clips={};completed=set();state['stage']='prompts' if config['mode']=='prepare' else 'videos'
+    generated={};holds={}     # reviewed takes (continuity frames come from these) / takes held for review
+    def checked_clip(job, package):
+        from flowboard.services import production_quality as quality
+        key=package['sequence_key']
+        clip={'url':job.result['url'],'job_id':str(job.id),
+            'duration_s':sum(float(sh['duration_s']) for sh in package['shots']), 'sequence_key':key}
+        state['stage']='quality'
+        q=_task(s,run,all_jobs,state,'quality:'+key,'clip_quality','vid:'+key,'quality',
+            {'version':quality.VERSION,'model':quality.MODEL,'source_job':clip['job_id'],'url':clip['url'],
+             'package':package,'timing_policy':config.get('timing_policy','source_duration')})
+        state.setdefault('quality_results',{})[key]=q.result
+        # Reviewed, cleared or not: a continuity frame may be taken from it now.
+        generated[key]={'url':clip['url'],'job_id':clip['job_id']}
+        try:quality.require_pass(q.result,clip,package['version'])
+        except ValueError as exc:raise QualityHold(str(exc)) from exc
+        return {**clip,'quality_job':str(q.id),'package_version':package['version']}
     for p in packs:
         key=p['sequence_key'];refs=[]
         try:
@@ -363,15 +488,32 @@ def advance(s, run, project, all_jobs):
                     if pred not in shots: raise Blocked('Required predecessor is outside the selected clips: '+pred)
                     if shots[pred][0]['sequence_key']==key: continue
                     prev_pack,prev_shot=shots[pred];prev_key=prev_pack['sequence_key']
-                    if prev_key not in clips: raise Waiting()
+                    if prev_key not in generated: raise Waiting()
                     elapsed=sum(float(x['duration_s']) for x in prev_pack['shots'][:prev_shot['index']+1])
                     ending = config.get('timing_policy')=='full_take' and prev_shot['index']==len(prev_pack['shots'])-1
                     j=_task(s,run,all_jobs,state,'handoff:'+pred,'extract_frame','vid:'+prev_key,'handoff:'+pred,
-                        {'url':clips[prev_key]['url'],'time_s':max(0,elapsed-1/config['fps']),'source_job':clips[prev_key]['job_id'],
+                        {'url':generated[prev_key]['url'],'time_s':max(0,elapsed-1/config['fps']),'source_job':generated[prev_key]['job_id'],
                          **({'at_end':True,'fps':config['fps']} if ending else {})})
                     im=j.result['images'][0]
                     refs.append({'id':'continuity:'+pred,'name':'Previous shot closing state','url':im['reference_url'],'media_id':im.get('media_id'),
                         'description':'Closing state of the preceding generated shot; use for pose/prop continuity only. Locked source facts and identity sheets take precedence; do not copy its camera angle or propagate contradictions.'})
+                # Consecutive clips of one continuous scene: the next generation sees the set as
+                # the previous one filmed it, or the cut between them redesigns the room.
+                index=packs.index(p);prev_pack=packs[index-1] if index else None
+                if (config.get('set_continuity',True) and not refs and prev_pack and prev_pack['shots'] and p['shots']
+                        and prev_pack['shots'][-1].get('continuity_scope')==p['shots'][0].get('continuity_scope')):
+                    prev_key=prev_pack['sequence_key']
+                    if prev_key not in generated: raise Waiting()
+                    elapsed=sum(float(x['duration_s']) for x in prev_pack['shots'])
+                    ending=config.get('timing_policy')=='full_take'
+                    j=_task(s,run,all_jobs,state,'setframe:'+prev_key,'extract_frame','vid:'+prev_key,'setframe:'+prev_pack['shots'][-1]['id'],
+                        {'url':generated[prev_key]['url'],'time_s':max(0,elapsed-1/config['fps']),'source_job':generated[prev_key]['job_id'],
+                         **({'at_end':True,'fps':config['fps']} if ending else {})})
+                    im=j.result['images'][0]
+                    refs.append({'id':'set:'+prev_key,'name':'Set as already filmed','url':im['reference_url'],'media_id':im.get('media_id'),
+                        'description':'Closing frame of the previous clip of this continuous scene. Keep this room as it was filmed: '
+                                      'walls, doorways, materials, fixtures, light and where the people stand in it. The camera angle '
+                                      'may differ; locked shot facts and identity sheets take precedence.'})
             atlas_receipts=[];atlas_waiting=False
             packing=reference_atlas.plan(p['materials'],len({r['url'] for r in refs}))
             for page in packing['pages']:
@@ -386,7 +528,7 @@ def advance(s, run, project, all_jobs):
             if config['mode']=='render':
                 old=reuse_completed_clip(board,p,body,config,all_jobs,state)
                 if old:
-                    clips[key]={'url':old.result['url'],'job_id':str(old.id),'duration_s':sum(float(sh['duration_s']) for sh in p['shots']),'sequence_key':key}
+                    clips[key]=checked_clip(old,p)
                     continue
             video=next(n['data'] for n in board['nodes'] if n.get('id')=='vid:'+key)
             payload=body.model_dump(mode='json')
@@ -406,19 +548,32 @@ def advance(s, run, project, all_jobs):
                 aspect_ratio=p['aspect_ratio'],resolution=config['resolution'],project_id=project.id,sequence_key=key,
                 prompt_contract=body,coverage=out.get('coverage'),contract_digest=out.get('contract_digest',''),coverage_token=out.get('coverage_token',''))
             j=_task(s,run,all_jobs,state,'clip:'+key,'clip','vid:'+key,'',clip.model_dump(mode='json'))
-            clips[key]={'url':j.result['url'],'job_id':str(j.id),'duration_s':sum(float(sh['duration_s']) for sh in p['shots']),'sequence_key':key}
+            clips[key]=checked_clip(j,p)
         except Waiting: continue
-        except (Blocked,ValueError) as exc: errors.append(key+': '+str(exc))
-    if errors: state['errors']=errors;return state,'blocked'
-    if len(completed if config['mode']=='prepare' else clips)!=len(packs):return state,'running'
+        except QualityHold as exc:
+            holds[key]=key+': '+str(exc)
+        except (Blocked,ValueError) as exc:
+            errors.append(key+': '+str(exc))
+            # Prompts are independent; renders continue from the clips before them.
+            if config['mode']!='prepare':break
+    # A prepare run blocks once every other clip has its prompt; it reports all refusals together.
+    if errors and (config['mode']!='prepare' or len(completed)+len(errors)==len(packs)):
+        state['errors']=errors;return state,'blocked'
+    if errors: state['errors']=errors
+    if len(completed if config['mode']=='prepare' else set(clips)|set(holds))!=len(packs):return state,'running'
+    if holds:
+        # Every clip is generated; those the review did not clear wait for the reviewer.
+        state['quality_holds']=list(holds.values());state['errors']=list(holds.values());state['stage']='quality'
+        return state,'blocked'
     if config['mode']=='render' and config['assemble']:
         state['stage']='assembly'
         try:
             j=_task(s,run,all_jobs,state,'assembly','assemble','production:assembly','',{'clips':[clips[p['sequence_key']] for p in packs],
                 'fps':config['fps'],'aspect_ratio':board.get('aspectRatio','16:9'),'resolution':config['resolution'],
-                'timing_policy':config.get('timing_policy','source_duration')})
+                'timing_policy':config.get('timing_policy','source_duration'),'require_quality':True})
         except Waiting:return state,'running'
         state['output']=j.result
+    if config['mode']=='render':state['quality_status']='automated_checks_passed'
     state['stage']='complete';return state,'succeeded'
 
 

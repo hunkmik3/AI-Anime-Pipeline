@@ -58,6 +58,18 @@ async def extract_frame(payload):
 async def assemble(payload):
     clips=payload['clips'];fps=int(payload['fps']);ratio=payload.get('aspect_ratio','16:9')
     if not clips:raise ValueError('No clips to assemble.')
+    quality_receipts={}
+    if payload.get('require_quality'):
+        from flowboard.db import get_session
+        from flowboard.db.models import AutomationJob
+        from flowboard.services.production_quality import require_pass
+        with get_session() as session:
+            for clip in clips:
+                job=session.get(AutomationJob,uuid.UUID(clip['quality_job']))
+                if not job or job.kind!='clip_quality' or job.status!='succeeded':
+                    raise ValueError('Missing completed quality inspection for '+clip['sequence_key'])
+                require_pass(job.result,clip,clip['package_version'])
+                quality_receipts[clip['job_id']]=job.result
     policy=payload.get('timing_policy','source_duration')
     if policy not in {'source_duration','full_take'}:raise ValueError('Unknown assembly timing policy.')
     a,b=map(float,ratio.split(':'));short=int(str(payload.get('resolution','720p')).rstrip('p'))
@@ -70,11 +82,18 @@ async def assemble(payload):
         for index,clip in enumerate(clips):
             source=root/f'{index}-source.mp4';out=root/f'{index}.mp4'
             await fetch(clip['url'],source);info=await probe(source)
+            if payload.get('require_quality'):
+                import hashlib
+                quality=quality_receipts[clip['job_id']]
+                if hashlib.sha256(source.read_bytes()).hexdigest()!=quality['media_sha256']:
+                    raise ValueError('Generated media changed after quality inspection.')
             editorial=float(clip['duration_s']);duration=float(info['format']['duration'])
             if duration+1/fps<editorial:raise ValueError(f"{clip['sequence_key']}: generated clip is shorter than the editorial duration.")
             # Never assume provider padding is silent. Full-take mode retains
             # both audio and video, rounding UP to a whole output frame.
             seconds=math.ceil(duration*fps-0.0001)/fps if policy=='full_take' else editorial
+            if payload.get('require_quality') and quality['audio']['speech_end_s']>seconds+.04:
+                raise ValueError('Assembly would cut inspected speech in '+clip['sequence_key'])
             has_audio=any(s.get('codec_type')=='audio' for s in info['streams'])
             args=['ffmpeg','-v','error','-y','-i',str(source)]
             if not has_audio:args+=['-f','lavfi','-i','anullsrc=r=48000:cl=stereo']
@@ -86,7 +105,8 @@ async def assemble(payload):
             segment_info=await probe(out)
             receipts.append({'sequence_key':clip['sequence_key'],'source_job':clip['job_id'],
                 'editorial_duration_s':editorial,'provider_duration_s':duration,
-                'duration_s':float(segment_info['format']['duration'])})
+                'duration_s':float(segment_info['format']['duration']),
+                **({'quality_job':clip['quality_job']} if payload.get('require_quality') else {})})
         listing=root/'concat.txt';listing.write_text(''.join(f"file '{p.name}'\n" for p in segments))
         assembled=root/'film.mp4'
         # AAC packets need not end on a video frame; normalize the final PTS too.
@@ -96,5 +116,6 @@ async def assemble(payload):
         final_info=await probe(assembled)
         shutil.move(assembled,target/name)
     return {'filename':name,'duration_s':float(final_info['format']['duration']),'fps':fps,
+            'quality_status':'automated_checks_passed' if payload.get('require_quality') else 'not_checked',
             'width':width,'height':height,'timing_policy':policy,
             'editorial_duration_s':sum(float(c['duration_s']) for c in clips),'clips':receipts}

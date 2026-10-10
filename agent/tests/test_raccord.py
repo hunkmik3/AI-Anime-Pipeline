@@ -75,6 +75,77 @@ def test_unknown_asset_and_invented_transfer_rejected():
     with pytest.raises(ValueError):raccord.validate(answer,scene)
 
 
+@pytest.mark.asyncio
+async def test_one_pass_continuity_reads_approved_set_and_binds_layout(monkeypatch,tmp_path):
+    from flowboard.services.video_analyzer import adapt
+    from flowboard.services import production_media
+    from PIL import Image
+    async def fetch(url,path):
+        assert url=='https://test/hall'
+        Image.new('RGB',(40,40),'gray').save(path,format='PNG')
+    monkeypatch.setattr(production_media,'fetch',fetch);monkeypatch.setattr(raccord,'REFERENCE_ROOT',tmp_path)
+    board=cross_clip();board['sourceVerification']={'method':'one_pass_production'}
+    scene=next(iter(raccord.scene_inputs(board,'film').values()))
+    async def ask(*args,**kw):
+        images=[p for p in kw['image_parts'] if p['type']=='imageBase64']
+        assert len(images)==1 and images[0]['data'] and images[0]['mediaType']=='image/jpeg'
+        assert kw['transport_attempts']==1
+        answer=response(scene)
+        answer['set_layouts']=[{'asset_id':'hall','reference_url':'https://test/hall',
+            'anchors':'One door beside the window in this reference view; same wall fixtures.',
+            'unknowns':'Reverse wall is not visible.'}]
+        return answer
+    monkeypatch.setattr(adapt,'ask_json',ask)
+    plan=await raccord.plan(scene)
+    assert plan['set_layouts'][0]['asset_id']=='hall'
+    board['raccordPlans']={scene['scope']:plan}
+    p=shot_package.build(board,'film','c2')
+    assert next(iter(p['scene_anchors'].values()))['sheet_geometry']==plan['set_layouts']
+    changed=response(scene);changed['set_layouts']=[{**plan['set_layouts'][0],'reference_url':'https://wrong'}]
+    with pytest.raises(ValueError,match='stale'):raccord.validate(changed,scene)
+
+
+@pytest.mark.asyncio
+async def test_one_pass_bad_layout_stops_without_paid_retry_or_generic_pass(monkeypatch):
+    from flowboard.services.video_analyzer import adapt
+    board=fixture();board['sourceVerification']={'method':'one_pass_production'}
+    scene=next(iter(raccord.scene_inputs(board,'film').values()));calls=[]
+    async def ask(*args,**kw):calls.append(kw['model']);return response(scene)
+    async def image_parts(*args):return []
+    monkeypatch.setattr(raccord,'environment_image_parts',image_parts)
+    monkeypatch.setattr(adapt,'ask_json',ask)
+    monkeypatch.setattr(raccord,'FALLBACK_MODEL','')
+    with pytest.raises(ValueError,match='no generic fallback'):await raccord.plan(scene)
+    assert calls==[raccord.MODEL]
+    # With a fallback model: one more attempt there, then still no generic pass.
+    calls.clear();monkeypatch.setattr(raccord,'FALLBACK_MODEL','claude-opus-5-5')
+    with pytest.raises(ValueError,match='no generic fallback'):await raccord.plan(scene)
+    assert calls==[raccord.MODEL,'claude-opus-5-5']
+
+
+@pytest.mark.asyncio
+async def test_one_pass_layout_the_primary_cannot_give_comes_from_the_fallback_model(monkeypatch):
+    from flowboard.services import avis_text
+    from flowboard.services.video_analyzer import adapt
+    board=fixture();board['sourceVerification']={'method':'one_pass_production'}
+    scene=next(iter(raccord.scene_inputs(board,'film').values()));calls=[]
+    good=response(scene)
+    good['set_layouts']=[{'asset_id':aid,'reference_url':url,'anchors':'One door beside the window.',
+                          'unknowns':'Reverse wall is not visible.'} for aid,url in scene['environment_references'].items()]
+    async def ask(*args,**kw):
+        calls.append(kw['model'])
+        if kw['model']==raccord.MODEL:raise avis_text.AvisContentRefusal('Provider declined this content request')
+        assert kw['temperature'] is None   # one request: no parameter the fallback may refuse
+        return good
+    async def image_parts(*args):return []
+    monkeypatch.setattr(raccord,'environment_image_parts',image_parts)
+    monkeypatch.setattr(adapt,'ask_json',ask)
+    monkeypatch.setattr(raccord,'FALLBACK_MODEL','claude-opus-5-5')
+    plan=await raccord.plan(scene)
+    assert calls==[raccord.MODEL,'claude-opus-5-5'] and plan['model']=='claude-opus-5-5'
+    assert 'declined' in plan['fallback_reason']
+
+
 def test_scene_reset_and_untrusted_client_plan():
     board=fixture();board['nodes'][-1]['data']['shots'][1]['continuity_break']=True
     assert len(raccord.scene_inputs(board,'film'))==2

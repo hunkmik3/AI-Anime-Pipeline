@@ -227,6 +227,35 @@ export interface DialogueLine {
   source: "subtitle" | "asr";
 }
 
+/** What a person checking the shotlist against the video would count (backend shotlist_audit). */
+export interface ShotlistAudit {
+  version: number;
+  dialogue: {
+    shots: number; shots_with_captions: number; shots_with_lines: number; caption_cues: number;
+    caption_language_match: number | null; captions_verbatim: boolean; caption_coverage: number | null;
+    missing_caption_lines: { shots: number[]; text: string; heard_share: number; reason?: string }[];
+    speech_shots_without_lines: number[];
+    overlong_shots: { shot: number; speech_s: number; shot_s: number }[];
+    merged_turn_lines: { first_shot: number; caption_shots: number[]; text: string }[];
+    short_shots: number;
+  };
+  speakers: { lines?: number; lines_with_speaker_id?: number; distinct_labels?: number; unknown_speaker_ids?: string[] };
+  voices: {
+    status?: string; voices?: number; lines?: number;
+    confidence?: { high: number; low: number; none: number };
+    listening?: string | null; speakers_changed_by_voice?: number;
+    voices_given_to_several_people?: { voice: string; speakers: Record<string, number> }[];
+  };
+  wardrobe?: {
+    counts?: Record<string, number>;
+    examples?: { code: string; message: string; shot?: number }[];
+    states_per_character?: Record<string, number>;
+    notes_left_by_catalog?: number;
+    faces_not_matching?: { character: string; scene: string; similarity: number; shots: number[] }[];
+    face_scenes_checked?: number | null;
+  };
+}
+
 export interface VideoDetail extends VideoSummary {
   analysis: {
     analysis_mode?: "standard" | "fast" | "one_pass";
@@ -245,6 +274,7 @@ export interface VideoDetail extends VideoSummary {
     validation?: Validation;
     usage?: Record<string, unknown>;
     timings_s?: Record<string, number>;
+    shotlist_audit?: ShotlistAudit;
   };
   adaptation: {
     rules?: Rules;

@@ -23,6 +23,12 @@ dependencies = [
     # It pulls PyAV, whose bundled libavdevice clashes with OpenCV's copy when
     # both load into one process on macOS.
     "faster-whisper>=1.1",
+    # Voice fingerprints (services/video_analyzer/voice_id_worker), also imported
+    # only in a child process. faster-whisper already pulls these three; they are
+    # named because the speaker step depends on them directly.
+    "onnxruntime>=1.17",
+    "numpy>=1.24",
+    "huggingface-hub>=0.20",
 ]
 
 [tool.uv]

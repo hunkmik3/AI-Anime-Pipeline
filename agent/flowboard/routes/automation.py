@@ -1163,6 +1163,9 @@ class ProductionRunConfig(BaseModel):
     mode: str = Field(default='prepare', pattern='^(prepare|render)$')
     sequence_keys: list[str] = Field(default_factory=list, max_length=2000)
     boundary_frames: bool = False
+    # Consecutive clips of one continuous scene see the previous clip's closing frame as the
+    # set already filmed, so an independent generation does not redesign the room at the cut.
+    set_continuity: bool = True
     review_masters: bool = False
     assemble: bool = True
     timing_policy: str = Field(default='source_duration', pattern='^(source_duration|full_take)$')

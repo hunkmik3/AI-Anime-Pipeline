@@ -222,3 +222,14 @@ def test_the_sheets_style_note_becomes_the_clips_style_and_a_look_names_the_cost
                                  school_age=True, style_note="Premium stylized 3D donghua.")
     assert ask["clip"]["style"] == "Premium stylized 3D donghua."
     assert ask["references"][1]["keep"] == "Light grey school suit jacket, white shirt"
+
+
+def test_lines_are_spoken_under_the_casts_current_name_joined_by_speaker_id():
+    shots = [{"dialogue": [{"who": "Dark-haired bearded man", "line": "Get in.", "speaker_id": "man-1"},
+                           {"who": "Lily Davenport", "line": "Damian!", "speaker_id": "woman-1"},
+                           {"who": "Stranger", "line": "Hello?"}]}]
+    characters = [{"key": "damian", "source_asset_id": "man-1", "name": "Damian Cross"}]
+    assets = [{"id": "woman-1", "name": "Lily"}, {"id": "man-1", "name": "Bearded man"}]
+    bound = prompt_writer.bind_speakers(shots, characters, assets)
+    assert [d["who"] for d in bound[0]["dialogue"]] == ["Damian Cross", "Lily", "Stranger"]
+    assert shots[0]["dialogue"][0]["who"] == "Dark-haired bearded man"      # the input is not changed

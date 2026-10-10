@@ -40,7 +40,16 @@ def retain_sentence_boundaries(original_segments, repaired_segments):
 async def repair(analysis, work):
     from .one_pass_film import atomic, digest
     transcript = analysis.get('transcript') or {}
-    findings = transcript.get('findings') or []
+    if transcript.get('repair_output_digest') == digest(transcript.get('segments') or []):
+        return deepcopy(analysis)  # Same repaired words: never widen/redecode unresolved windows on resume.
+    findings = deepcopy(transcript.get('findings') or [])
+    from . import source_integrity
+    if analysis.get('shots'):
+        for item in source_integrity.findings(analysis):
+            if item['code'] in {'caption_without_audio','caption_audio_disagreement','audio_timing_suspect'}:
+                findings.append({**item,'code':'uncertain_asr_segment','origin_code':item['code'],
+                    'start':min(item['start'],item.get('audio_start',item['start'])),
+                    'end':max(item['end'],item.get('audio_end',item['end']))})
     if not findings: return deepcopy(analysis)
     unsupported = [f for f in findings if f.get('code') not in {'uncertain_asr_segment','speech_without_transcript'}]
     if unsupported: raise ValueError('Unresolved audio findings: '+str(unsupported)[:700])
@@ -55,10 +64,16 @@ async def repair(analysis, work):
     # Bound each local correction rather than repeatedly transcribing the film.
     if any(b-a > 60 for a,b in windows):
         raise ValueError('Uncertain audio spans exceed the local repair limit; source findings retained.')
-    result=deepcopy(analysis);segments=deepcopy(transcript.get('segments') or []);repairs=[]
+    result=deepcopy(analysis);segments=deepcopy(transcript.get('segments') or []);repairs=[];unresolved=[]
+    def audio_conflicts(candidate):
+        probe={**analysis,'transcript':{**transcript,'segments':candidate}}
+        return {digest({k:f.get(k) for k in ('code','shot','caption','captions')}) for f in source_integrity.findings(probe)
+            if f['code'] in {'caption_without_audio','caption_audio_disagreement'}}
     for a,b in windows:
         language=next((r.get('language') for r in transcript.get('language_runs',[]) if r['start']<=a and r['end']>=b),None)
-        key=digest({'source':transcript.get('cache_signature') or digest(transcript),'start':a,'end':b,'language':language,'model':asr.DEFAULT_MODEL})
+        from .asr_multilingual_worker import VERSION as worker_version
+        key=digest({'source':transcript.get('cache_signature') or digest(transcript),'start':a,'end':b,'language':language,
+                    'model':asr.DEFAULT_MODEL,'worker':worker_version})
         folder=work/'one-pass-audio'/key;folder.mkdir(parents=True,exist_ok=True)
         cache=folder/'result.json'
         if cache.exists(): out=json.loads(cache.read_text())
@@ -71,7 +86,10 @@ async def repair(analysis, work):
             out=await asr.transcribe(wav,folder,language=language,multilingual=True)
             atomic(cache,out)
         if out.get('findings') or not out.get('segments'):
-            raise ValueError(f'Audio remains uncertain at {a:.2f}–{b:.2f}s after one local decode; checkpoint retained.')
+            unresolved.append({'code':'uncertain_asr_segment','start':a,'end':b,
+                'message':'Audio remains uncertain after one local decode; original words and checkpoint retained.',
+                'local_repair_exhausted':True,'cache':str(cache.relative_to(work))})
+            continue  # Inspect remaining windows; do not discard successful local repairs.
         # Word midpoint ownership protects words in segments crossing either edge.
         kept=[]
         for seg in segments:
@@ -91,12 +109,20 @@ async def repair(analysis, work):
             elif seg.get('text','').strip() and 0 <= seg['start'] < seg['end'] <= b-a+.05:
                 kept.append({**seg,'start':round(seg['start']+a,3),'end':round(seg['end']+a,3)})
             else: raise ValueError('Local audio repair returned unusable segment timing; source retained.')
-        segments=sorted(kept,key=lambda s:s['start'])
+        candidate=sorted(kept,key=lambda s:s['start'])
+        if audio_conflicts(candidate)-audio_conflicts(segments):
+            unresolved.append({'code':'uncertain_asr_segment','start':a,'end':b,
+                'message':'Local ASR repair introduced new caption/audio conflicts; original words retained, candidate kept for review.',
+                'local_repair_exhausted':True,'origin_code':'audio_repair_regression','cache':str(cache.relative_to(work))})
+            continue
+        segments=candidate
         repairs.append({'start':a,'end':b,'cache':str(cache.relative_to(work))})
     segments, boundaries = retain_sentence_boundaries(transcript.get('segments') or [], segments)
-    result['transcript']={**transcript,'segments':segments,'findings':[],
+    result['transcript']={**transcript,'segments':segments,'findings':unresolved,
                           'original_findings':findings,'local_repairs':repairs,
                           'retained_sentence_boundaries': boundaries}
+    result['transcript']=source_integrity.align_audio(result['transcript'], result.get('shots') or [])
+    result['transcript']['repair_output_digest']=digest(result['transcript'].get('segments') or [])
     track=dialogue.build_track(result['shots'],result['transcript'],policy='audio_verbatim')
     dialogue.attach(result['shots'],track)
     from dataclasses import asdict

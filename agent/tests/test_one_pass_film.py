@@ -59,7 +59,8 @@ async def test_catalog_to_board_to_production_has_real_readiness_and_locks(tmp_p
     seq=out['shots']['clip-01']
     refs=[{'asset_id':a['id'],'ref_label':f'@image{i}','ref_url':f'https://example.test/{i}.png'} for i,a in enumerate(out['production_assets'],1)]
     assert not prompt_coverage.validate_source_contract(seq,out['production_assets'],out['source_verification'],refs)
-    assert seq[0]['dialogue']==[{'who':'Lina','line':'Bonjour.','delivery':'on_camera'}]
+    # The catalog's character id travels with the line, so the writer can bind it by id.
+    assert seq[0]['dialogue']==[{'who':'Lina','line':'Bonjour.','delivery':'on_camera','speaker_id':'woman'}]
     assert seq[1]['dialogue']==[]
     assert seq[0]['character_states']=={'woman':'green'}
     preview = production_run.preview(b,'test',{'sequence_keys':[]})

@@ -251,11 +251,22 @@ export function AutoEnvironmentNode({ id, data, selected }: NodeViewProps) {
       )}
       <PlatePanel
         plate={d.plate}
-        label="Plate"
+        label={d.environment.views ? "Master" : "Plate"}
+        hint={d.environment.views?.master}
         onEdit={(t) => editPrompt(id, "plate", t)}
         onGenerate={() => void generate(id, "plate")}
         onUpload={file => useAutomation.getState().uploadPlate(id, "plate", file)}
       />
+      {(d.environment.views || d.reverse) && (
+        <PlatePanel
+          plate={d.reverse ?? { prompt: "", status: "idle" }}
+          label="Góc ngược"
+          hint={d.environment.views?.reverse}
+          onEdit={(t) => editPrompt(id, "reverse", t)}
+          onGenerate={() => void generate(id, "reverse")}
+          onUpload={file => useAutomation.getState().uploadPlate(id, "reverse", file)}
+        />
+      )}
     </Shell>
   );
 }
@@ -658,6 +669,8 @@ export function AutoVideoNode({ data, selected }: NodeViewProps) {
       {d.clipUrl && (
         <>
           <video className="auto-clip nodrag" src={d.clipUrl} controls preload="metadata" />
+          <p className="auto-hint">{d.qualityCheck?.status === "checks_passed" ? "Đối chiếu tự động đạt · cần xem/nghe duyệt bản giao" : d.qualityCheck?.status === "running" ? "Đang kiểm tra clip thực tế…" : d.qualityCheck ? "Clip cần kiểm tra lại trước khi ghép" : "Đã gen · chưa kiểm tra chất lượng"}</p>
+          {d.qualityCheck?.findings?.map((f,i)=><p key={`quality-${i}`} className="auto-hint">{f.message||f.note||f.code}</p>)}
           {d.persisted === false && (
             <p className="auto-hint">
               Link tạm của nhà cung cấp — sẽ hết hạn. Tải về nếu muốn giữ.

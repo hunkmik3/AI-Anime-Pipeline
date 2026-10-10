@@ -118,6 +118,17 @@ def test_unknown_offscreen_and_uncertain_do_not_require_phantom_material():
     assert not any(m['asset_id'] in {'voice','maybe'} for m in p['materials'].values())
 
 
+def test_explicit_one_pass_scope_retains_custody_without_offscreen_reference_images():
+    b=fixture();b['sourceVerification']={'method':'one_pass_production'}
+    p=pack.build(b,'film','c1')
+    second=p['shots'][1]
+    assert second['previous_state']['box']['hand']=='left'
+    assert 'box' in second['inherited_asset_ids']
+    assert {p['materials'][k]['asset_id'] for k in second['material_keys']}=={'hero','hall'}
+    # Clip 1 still needs the box/crowd, where they really appeared in its first shot.
+    assert {m['asset_id'] for m in p['materials'].values()}=={'hero','hall','box','crowd'}
+
+
 def test_state_change_invalidates_package_but_layout_does_not():
     b=fixture();p=pack.build(b,'film','c1')
     b['nodes'][0]['position']={'x':100,'y':200}

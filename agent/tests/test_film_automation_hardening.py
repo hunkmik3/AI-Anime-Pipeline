@@ -227,3 +227,52 @@ async def test_casting_then_design_then_board_then_single_production_handoff(tmp
     monkeypatch.setattr(production_run,'start',start_run)
     await source_film.execute(vid);await source_film.execute(vid)
     assert steps==['design','board','production']
+
+
+def test_a_descriptive_label_follows_the_casting_and_a_real_name_never_changes():
+    cast = {'characters': [
+        {'key': 'w', 'source_asset_id': 'w', 'name': 'Woman with dark hair in a bun', 'states': []},
+        {'key': 'l', 'source_asset_id': 'l', 'name': 'Lina', 'source_name': 'Lina', 'states': []}]}
+    receipt = {'request': 'both blonde', 'input_digest': 't', 'changes': [
+        {'asset_id': 'w', 'appearance': {'hair_colour': 'blonde'}, 'basis': 'lead'},
+        {'asset_id': 'l', 'appearance': {'hair_colour': 'blonde'}, 'basis': 'Lina'}]}
+    out = target_casting.apply_cast(cast, receipt)
+    assert out['characters'][0]['name'] == 'Woman with blonde hair in a bun'
+    assert out['characters'][0]['source_label'] == 'Woman with dark hair in a bun'
+    assert out['characters'][1]['name'] == 'Lina' and 'source_label' not in out['characters'][1]
+
+
+@pytest.mark.asyncio
+async def test_a_declined_casting_mapping_goes_to_the_fallback_once(tmp_path, monkeypatch):
+    cast = {'characters': [{'key': 'hero', 'source_asset_id': 'hero', 'role': 'lead'}]}
+    calls = []
+
+    async def complete(model, *a, **kw):
+        calls.append(model)
+        if model == target_casting.MODEL:
+            raise avis_text.AvisContentRefusal('declined')
+        return SimpleNamespace(text=json.dumps({'changes': [{'asset_id': 'hero', 'appearance': {'hair_colour': 'blonde'},
+                                                             'basis': 'the lead'}]}), prompt_tokens=2, completion_tokens=3)
+
+    monkeypatch.setattr(avis_text, 'complete', complete)
+    receipt = await target_casting.resolve('lead blonde', cast, tmp_path)
+    assert receipt['changes'][0]['asset_id'] == 'hero' and calls == [target_casting.MODEL, target_casting.FALLBACK]
+    await target_casting.resolve('lead blonde', cast, tmp_path)          # completed: never asked again
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_recast_to_another_ethnicity_is_designed_without_the_actors_frames(tmp_path, monkeypatch):
+    from flowboard.services.video_analyzer import design
+    seen = []
+
+    async def fake(system, known, frames, stats, **kw):
+        seen.append((frames, kw.get('need_frames'), 'recast' in system))
+        return {'face': 'x'}
+
+    monkeypatch.setattr(design, '_design', fake)
+    monkeypatch.setattr(design, '_frame_parts', lambda work, names: ['frame-part'])
+    entry = {'key': 'm', 'name': 'Man', 'frames': ['a.jpg'], 'states': []}
+    await design.design_character({**entry, 'target_appearance': {'ethnicity': 'White European'}}, tmp_path, {}, None)
+    await design.design_character({**entry, 'target_appearance': {'hair_colour': 'blonde'}}, tmp_path, {}, None)
+    assert seen == [([], False, True), (['frame-part'], True, False)]
