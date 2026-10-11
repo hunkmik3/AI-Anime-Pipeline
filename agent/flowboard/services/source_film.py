@@ -6,6 +6,7 @@ ambiguous provider request. Every upload owns a new project.
 """
 
 from copy import deepcopy
+from typing import Optional
 from pydantic import BaseModel, Field, ConfigDict
 from sqlmodel import select
 from flowboard.db import get_session
@@ -26,6 +27,9 @@ class FilmOptions(BaseModel):
     review_masters: bool = True
     kyc: bool = True
     unmoderated: bool = True
+    # Generate only the first N seconds: the upload keeps N + 30 s of the source for the
+    # whole analysis (cuts, speech, vision, catalog), so nothing past it is read or paid for.
+    generate_seconds: Optional[float] = Field(default=None, ge=10, le=36000)
     # 'fast' renders the white-model video with coarser depth at 24 fps (long films).
     motion_profile: str = Field(default='standard', pattern='^(standard|fast)$')
     image_parallel: int = Field(default=8, ge=1, le=32)

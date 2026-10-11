@@ -116,6 +116,8 @@ export interface AutoFilmOptions {
   timing_policy?: 'full_take' | 'source_duration';
   /** Reskin only: "fast" renders the motion video with coarser depth at 24 fps. */
   motion_profile?: 'standard' | 'fast';
+  /** Generate (and analyse) only the first N seconds of the source. */
+  generate_seconds?: number;
   kyc: boolean;
   unmoderated: boolean;
 }

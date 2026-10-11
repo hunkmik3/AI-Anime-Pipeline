@@ -37,6 +37,9 @@ export function VideoSourceInput() {
   const [reskin, setReskin] = useState(true);
   const [fullTakes, setFullTakes] = useState(true);
   const [fastMotion, setFastMotion] = useState(false);
+  const [openingMinutes, setOpeningMinutes] = useState("");
+  const opening = Number(openingMinutes.replace(",", "."));
+  const generateSeconds = openingMinutes.trim() && Number.isFinite(opening) && opening > 0 ? Math.max(10, Math.round(opening * 60)) : undefined;
   const [deep, setDeep] = useState(false);
   const [speechLanguage, setSpeechLanguage] = useState("");
   const [fastAnalysis, setFastAnalysis] = useState(false);
@@ -73,7 +76,8 @@ export function VideoSourceInput() {
         clip_seconds: reskin ? 15 : useAutomation.getState().clipSeconds, kyc: reskin || filmKyc, unmoderated: filmPeople,
         environment_request: environmentRequest.trim(),
         review_masters: reviewMasters, casting_request: castingRequest.trim(), timing_policy: fullTakes ? "full_take" : "source_duration",
-        ...(reskin ? { motion_profile: fastMotion ? "fast" as const : "standard" as const } : {}) } : undefined,
+        ...(reskin ? { motion_profile: fastMotion ? "fast" as const : "standard" as const } : {}),
+        ...(generateSeconds ? { generate_seconds: generateSeconds } : {}) } : undefined,
       mode, speechLanguage).catch(() => undefined);
   }
 
@@ -114,6 +118,11 @@ export function VideoSourceInput() {
       </label>
     </div>}
 
+    {autoFilm && <label className="source-input__field"><span>Chỉ làm đoạn đầu (phút)</span>
+      <input type="number" min={0.5} step={0.5} inputMode="decimal" value={openingMinutes} placeholder="Cả phim"
+        onChange={event => setOpeningMinutes(event.target.value)} aria-label="Chỉ làm đoạn đầu, tính bằng phút" />
+    </label>}
+    {autoFilm && generateSeconds && <p className="source-input__hint">Chỉ phân tích và gen {Math.round(generateSeconds / 6) / 10} phút đầu (đọc thêm 30 giây để khép cảnh cuối). Phần còn lại không tốn lượt đọc.</p>}
     {autoFilm && <SourceToggle label="Chốt tạo hình chính trước" checked={reviewMasters} onChange={setReviewMasters}
       hint="Dừng sau shotlist để bạn upload hoặc gen sheet chính; chỉ tạo diện mạo phụ khi bạn bấm tiếp tục." />}
     {autoFilm && <SourceToggle label="Reskin bám chuyển động gốc" checked={reskin} onChange={v=>{setReskin(v);if(v && filmResolution==='1080p')setFilmResolution('720p')}}

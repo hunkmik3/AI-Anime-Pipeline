@@ -415,6 +415,30 @@ def analysis_capabilities(user=Depends(get_optional_user)) -> dict:
             'one_pass_analysis_only': False, 'one_pass_auto_production': True}
 
 
+ANALYSIS_CONTEXT_S = 30.0
+
+
+def _keep_opening(target: Path, seconds: float) -> float:
+    """Replace the stored source by its first ``seconds`` (stream copy, no re-encode);
+    the full upload stays beside it as source-original. Returns the kept duration, or
+    None when the cut failed and the whole upload stays the source."""
+    import subprocess
+    original = target.with_name('source-original' + target.suffix)
+    target.replace(original)
+    try:
+        subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', str(original), '-t', f'{seconds:.3f}',
+                        '-map', '0:v:0', '-map', '0:a?', '-c', 'copy', '-avoid_negative_ts', 'make_zero',
+                        str(target)], check=True, timeout=600)
+        out = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0',
+                              str(target)], check=True, capture_output=True, text=True, timeout=60)
+        return round(float(out.stdout.strip()), 3)
+    except (subprocess.SubprocessError, ValueError, OSError):
+        logger.exception('Keeping the opening of %s failed; the whole upload is analysed', target)
+        target.unlink(missing_ok=True)
+        original.replace(target)                       # still generate only the opening
+        return None
+
+
 @router.post("")
 async def upload(
     file: UploadFile = File(...),
@@ -498,6 +522,21 @@ async def upload(
                 s.commit()
         raise
 
+    window = (auto_settings or {}).get('generate_seconds')
+    if window:
+        # Only the generated opening is analysed: keep the upload as source-original and
+        # read N + 30 s of it (the context lets the last generated clip close its scene).
+        trimmed = await asyncio.to_thread(_keep_opening, target, float(window) + ANALYSIS_CONTEXT_S)
+        with get_session() as s:
+            row = s.get(VideoAnalysis, video_id)
+            auto = dict(row.options['auto_production'])
+            auto['generation_scope'] = {'analysis': 'full', 'source_start_seconds': 0,
+                                        'source_end_seconds': float(window),
+                                        'boundary_policy': 'complete_clips_at_or_before_end'}
+            if trimmed:
+                auto['analysis_window'] = {'kept_seconds': trimmed, 'original': f'source-original{ext}'}
+            row.options = {**row.options, 'auto_production': auto}
+            s.add(row); s.commit()
     _start(video_id, _run_analysis(video_id, then_adapt), operation={"task":"film"} if auto_settings else {"task":"analyze","then_adapt":then_adapt})
     with get_session() as s:
         return _summary(s.get(VideoAnalysis, video_id))
