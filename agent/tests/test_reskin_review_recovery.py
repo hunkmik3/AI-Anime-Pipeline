@@ -19,22 +19,58 @@ def setup(monkeypatch, tmp_path):
     return b,rows,root/'receipt.json'
 
 
+def atrium(monkeypatch, answers):
+    """Mock the excerpt upload and Atrium: each request gets the next answer text."""
+    from flowboard.services.flowstudio import r2
+    async def command(*args):args[-1].write_bytes(b'excerpt')
+    monkeypatch.setattr(review.media,'command',command)
+    monkeypatch.setattr(r2,'upload_file',lambda _: 'https://test/excerpt.mp4')
+    monkeypatch.setenv('ATRIUM_CLIENT_ID','test-client-id')
+    monkeypatch.setenv('ATRIUM_CLIENT_SECRET','test-secret-value')
+    calls=[]
+    def handler(request):
+        if request.method=='GET':return httpx.Response(200,content=b'excerpt')
+        calls.append(request)
+        return httpx.Response(200,json={'candidates':[{'finishReason':'STOP','content':{'parts':[{'text':answers[len(calls)-1]}]}}]})
+    client=httpx.AsyncClient
+    monkeypatch.setattr(httpx,'AsyncClient',lambda **kw:client(transport=httpx.MockTransport(handler),**kw))
+    return calls
+
+
 @pytest.mark.asyncio
-async def test_missing_summary_keeps_observations_without_fabricated_approval(monkeypatch,tmp_path):
+async def test_missing_summary_is_asked_once_more_and_never_becomes_approval(monkeypatch,tmp_path):
     b,rows,journal=setup(monkeypatch,tmp_path)
     answer=observations(rows);answer.pop('limitations');answer.pop('findings')
     journal.write_text(json.dumps({'state':'completed','answer':answer}))
     before=journal.read_bytes()
+    calls=atrium(monkeypatch,[json.dumps(answer)])
     with pytest.raises(review.ReviewIncomplete) as caught:
         await review.inspect(b,tmp_path)
     report=caught.value.report
+    assert len(calls)==1
     assert {k:report['counts'][k] for k in ('received','validated','total')}=={'received':1,'validated':0,'total':1}
     assert report['counts']['blocked_clips']==['c1'] and report['status']=='needs_review'
     assert report['receipts'][0]['observations']==answer
     assert report['errors'][0]['kind']=='invalid_response'
-    assert journal.read_bytes()==before
+    first=journal.parent/'receipt.attempt-1.json'
+    assert json.loads(first.read_text())['answer']==json.loads(before)['answer']
+    assert json.loads(journal.read_text())['retry_of']==str(first)
     b['reskinSourceReview']=report
     assert reskin.readiness(b,packages(b))
+    # The chain has had its one retry: a later review reads it without asking again.
+    with pytest.raises(review.ReviewIncomplete):
+        await review.inspect({**b,'reskinSourceReview':{}},tmp_path)
+    assert len(calls)==1
+
+
+@pytest.mark.asyncio
+async def test_an_answer_missing_evidence_is_replaced_by_a_complete_second_answer(monkeypatch,tmp_path):
+    b,rows,journal=setup(monkeypatch,tmp_path)
+    incomplete=observations(rows);incomplete.pop('findings')
+    journal.write_text(json.dumps({'state':'completed','answer':incomplete}))
+    calls=atrium(monkeypatch,[json.dumps(observations(rows))])
+    report=await review.inspect(b,tmp_path)
+    assert len(calls)==1 and report['status']=='reviewed'
 
 
 @pytest.mark.asyncio

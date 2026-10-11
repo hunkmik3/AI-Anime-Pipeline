@@ -315,13 +315,24 @@ async def inspect(board, work: Path, on_progress=None, *, parallel=None):
             record=await ask(archive(record))
         if record.get('state')!='completed':
             raise ValueError(pending_error(record))
-        validation_error=None
-        try:
-            found=validate(record['answer'],rows,offset)
-        except (ValueError,KeyError,TypeError) as exc:
+        def check(record):
+            try:
+                return validate(record['answer'],rows,offset),None
+            except (ValueError,KeyError,TypeError) as exc:
+                return None,str(exc)
+        found,validation_error=check(record)
+        if validation_error and not record.get('retry_of'):
+            # An answer without the evidence a criterion needs is as unusable as a malformed
+            # one: ask once more, keeping both receipts.
+            record['failure']={'kind':'invalid_answer','message':validation_error}
+            atomic(journal,record)
+            record=await ask(archive(record))
+            if record.get('state')!='completed':
+                raise ValueError(pending_error(record))
+            found,validation_error=check(record)
+        if validation_error:
             # Keep the returned observations, but never invent missing fields or
             # turn a malformed answer into approval.
-            validation_error=str(exc)
             found=[{'criterion':'review_incomplete','message':validation_error,'kind':'invalid_response'}]
         return ({'clip':seq['sequence']['key'],'input_digest':key,'path':str(journal),
                  'observations':record['answer'],'source_sha256':board['sourceMediaSha256'],
