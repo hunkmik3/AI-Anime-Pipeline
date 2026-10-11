@@ -263,7 +263,9 @@ async def inspect(board, work: Path, on_progress=None, *, parallel=None):
             # Expected words are deliberately withheld from this listening pass.
             candidates=[{k:s.get(k) for k in ('id','framing','camera','action','staging','background','character_keys','character_states','asset_presence')} |
                         {'start':s['source_start']-offset,'end':s['source_end']-offset,
-                         'speakers':[{k:d.get(k) for k in ('who','speaker_id','delivery')} for d in s.get('dialogue',[])]} for s in rows]
+                         'speakers':[{**{k:d.get(k) for k in ('who','speaker_id','delivery')},
+                                      **({'continues_line_from_previous_shot':True} if d.get('cont') else {})}
+                                     for d in s.get('dialogue',[])]} for s in rows]
             prompt=SYSTEM+'\n'+json.dumps({'selected_interval':[start-offset,end-offset],'source_catalog':catalog,'shots':candidates},ensure_ascii=False)
             record={'state':'in_flight','source_sha256':board['sourceMediaSha256'],'excerpt_sha256':reskin.sha256(excerpt),
                     'model':MODEL,'prompt':prompt,'input_digest':key,'offset':offset,

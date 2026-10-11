@@ -64,6 +64,19 @@ async def test_missing_summary_is_asked_once_more_and_never_becomes_approval(mon
 
 
 @pytest.mark.asyncio
+async def test_the_listener_is_told_which_lines_continue_across_a_cut(monkeypatch,tmp_path):
+    b,rows,journal=setup(monkeypatch,tmp_path)
+    shots=b['nodes'][-1]['data']['shots']
+    shots[0]['dialogue']=[{'who':'HERO','speaker_id':'hero','delivery':'offscreen','line':'Come'}]
+    shots[1]['dialogue']=[{'who':'HERO','speaker_id':'hero','delivery':'on_camera','line':'here.','cont':True}]
+    calls=atrium(monkeypatch,['{"shots": [ not json','{"shots": [ not json'])
+    with pytest.raises(review.ReviewIncomplete):
+        await review.inspect(b,tmp_path)
+    sent=json.loads(calls[0].content)['contents'][0]['parts'][0]['text']
+    assert '"continues_line_from_previous_shot": true' in sent and sent.count('continues_line_from_previous_shot')==1
+
+
+@pytest.mark.asyncio
 async def test_an_answer_missing_evidence_is_replaced_by_a_complete_second_answer(monkeypatch,tmp_path):
     b,rows,journal=setup(monkeypatch,tmp_path)
     incomplete=observations(rows);incomplete.pop('findings')
