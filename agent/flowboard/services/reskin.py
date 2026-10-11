@@ -17,6 +17,11 @@ from flowboard.services.production_manifest import digest
 
 VERSION = 'source-motion-reskin-v1'
 MAX_REFERENCE_SECONDS = 15.0
+# The white-model render for long films: depth at a 448 px long side, every second frame
+# of a shot (interpolated inside the shot), 24 fps (the KYC video floor is 23.8 fps).
+# About 3x faster per clip than the standard render; boards without it keep their exact
+# standard payload, so nothing already made is rendered again.
+FAST_RENDER = {'depth_long_side': 448, 'fps': 24, 'depth_stride': 2}
 POLICY = '''SOURCE MOTION / TARGET DESIGN CONTROL
 @video1 is a silent depth-shaded motion reference of the selected original shots.
 Follow its cut order, camera motion, framing, actions, eyelines, prop custody and
@@ -98,7 +103,8 @@ def motion_payload(board, package):
             'start': start, 'end': end, 'cuts': [a-start for a, _ in ranges[1:]],
             'shot_ids': [s.get('source_shots') or [s.get('source_shot')] for s in shots],
             'source_review_digest': digest([r for r in (board.get('reskinSourceReview') or {}).get('receipts',[])
-                                           if r.get('clip') == package['sequence_key']]), 'fps': 30}
+                                           if r.get('clip') == package['sequence_key']]),
+            **({'fps': FAST_RENDER['fps'], 'render': FAST_RENDER} if board.get('motionProfile') == 'fast' else {'fps': 30})}
 
 
 def split_readiness(board, packages):

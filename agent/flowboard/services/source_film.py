@@ -26,6 +26,8 @@ class FilmOptions(BaseModel):
     review_masters: bool = True
     kyc: bool = True
     unmoderated: bool = True
+    # 'fast' renders the white-model video with coarser depth at 24 fps (long films).
+    motion_profile: str = Field(default='standard', pattern='^(standard|fast)$')
     image_parallel: int = Field(default=4, ge=1, le=32)
     video_parallel: int = Field(default=4, ge=1, le=32)
     max_images: int = Field(default=500, ge=0, le=10000)
@@ -164,7 +166,8 @@ def graph(out, options):
         "sourcePipeline": "one_pass" if (out.get('source_verification') or {}).get('method') == 'one_pass_production' else 'verified_source',
         "dialogueLanguage": "source",
         "sourceVideoId": out["source_video_id"],
-        **({'motionReference':'white_model','reskinVersion':'source-motion-reskin-v1'} if opt.pipeline == 'reskin_v1' else {}),
+        **({'motionReference':'white_model','reskinVersion':'source-motion-reskin-v1',
+            **({'motionProfile':'fast'} if opt.motion_profile == 'fast' else {})} if opt.pipeline == 'reskin_v1' else {}),
         "style": opt.style,
         "preserveSourceShots": True,
         "stateSpecificReferences": bool(out.get('state_specific_references')),

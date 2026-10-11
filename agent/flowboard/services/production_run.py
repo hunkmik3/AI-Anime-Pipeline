@@ -5,6 +5,7 @@ through the existing leased worker. A stopped/unknown task is never auto-resubmi
 """
 from copy import deepcopy
 import json
+import os
 import uuid
 from sqlmodel import select
 
@@ -46,7 +47,7 @@ def input_version(board):
             nodes.append({'id':n['id'],'manual_prompt':d.get('prompt',''),'end_state':d.get('endState') or '',
                           'staging_decisions':d.get('stagingDecisions') or []})
     return pm.digest({'schema':SCHEMA,'style_version':style_version(board),'video_standard_version':film_motion.version(board.get('style')),'nodes':nodes, **{k:board.get(k) for k in
-        ('productionAssets','sourceVerification','preserveSourceShots','style','aspectRatio','imageModel','imageSize','kyc','unmoderated','dialogueLanguage','targetCasting','motionReference','sourceVideoId','sourceMediaSha256','reskinSourceReview','reskinVersion')}})
+        ('productionAssets','sourceVerification','preserveSourceShots','style','aspectRatio','imageModel','imageSize','kyc','unmoderated','dialogueLanguage','targetCasting','motionReference','motionProfile','sourceVideoId','sourceMediaSha256','reskinSourceReview','reskinVersion')}})
 
 
 def selected_packages(board, pid, keys):
@@ -207,7 +208,9 @@ def _task(s, run, all_jobs, state, key, kind, node, slot, payload, metadata=None
         limit=config['image_parallel'] if kind=='plate' else config['video_parallel'] if kind=='clip' else config['text_parallel']
         family={'write','raccord','clip_quality'} if kind in ('write','raccord','clip_quality') else {kind}
         if kind=='clip_quality':limit=min(2,limit)  # Bound concurrent local Whisper processes.
-        if kind in ('motion_reference','audio_cleanup'):limit=1
+        if kind=='audio_cleanup':limit=1
+        # Two local clay renders fit the CPU (4 depth threads each); more only add contention.
+        if kind=='motion_reference':limit=max(1,min(4,int(os.getenv('FLOWBOARD_MOTION_PARALLEL','2'))))
         if sum(j.kind in family for j in active)>=limit: raise Waiting()
         existing=AutomationJob(project_id=run.project_id,kind=kind,node_id=node,slot=slot,payload=payload,
                     request_key=request,prepared={**(metadata or {}),'run_id':str(run.id)})

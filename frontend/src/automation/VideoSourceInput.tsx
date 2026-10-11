@@ -36,6 +36,7 @@ export function VideoSourceInput() {
   const [environmentRequest, setEnvironmentRequest] = useState("");
   const [reskin, setReskin] = useState(true);
   const [fullTakes, setFullTakes] = useState(true);
+  const [fastMotion, setFastMotion] = useState(false);
   const [deep, setDeep] = useState(false);
   const [speechLanguage, setSpeechLanguage] = useState("");
   const [fastAnalysis, setFastAnalysis] = useState(false);
@@ -71,7 +72,8 @@ export function VideoSourceInput() {
       autoFilm ? { pipeline: reskin ? 'reskin_v1' : 'cinematic', style: preset, aspect_ratio: filmRatio, resolution: filmResolution,
         clip_seconds: reskin ? 15 : useAutomation.getState().clipSeconds, kyc: reskin || filmKyc, unmoderated: filmPeople,
         environment_request: environmentRequest.trim(),
-        review_masters: reviewMasters, casting_request: castingRequest.trim(), timing_policy: fullTakes ? "full_take" : "source_duration" } : undefined,
+        review_masters: reviewMasters, casting_request: castingRequest.trim(), timing_policy: fullTakes ? "full_take" : "source_duration",
+        ...(reskin ? { motion_profile: fastMotion ? "fast" as const : "standard" as const } : {}) } : undefined,
       mode, speechLanguage).catch(() => undefined);
   }
 
@@ -156,6 +158,8 @@ export function VideoSourceInput() {
             {!reskin && <SourceToggle label="KYC" checked={filmKyc} onChange={setFilmKyc} />}
             <SourceToggle label="Người thật / B2B" checked={filmPeople} onChange={setFilmPeople} />
             <SourceToggle label="Giữ trọn thoại khi ghép" hint="Ghép nguyên đoạn đã gen; phim có thể dài hơn nguồn." checked={fullTakes} onChange={setFullTakes} />
+            {reskin && <SourceToggle label="Video chuyển động nhanh · phim dài" checked={fastMotion} onChange={setFastMotion}
+              hint="Độ sâu thô hơn, 24 hình/giây: nhanh hơn khoảng 3 lần mỗi clip. Bố cục và chuyển động giữ nguyên; bề mặt video xám mịn hơn." />}
           </>}
         </div>
       </details>

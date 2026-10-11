@@ -25,8 +25,9 @@ async def generate(payload, progress=None):
         temporary = root / 'motion.partial.mp4'
         worker = Path(__file__).parent / 'reskin_workers' / 'white_model.py'
         with (root / 'worker.log').open('wb') as log:
+            render = [json.dumps(payload['render'])] if payload.get('render') else []
             process = await asyncio.create_subprocess_exec(sys.executable, '-u', str(worker), str(source),
-                str(payload['start']), str(payload['end']), ','.join(map(str,payload['cuts'])), str(temporary),
+                str(payload['start']), str(payload['end']), ','.join(map(str,payload['cuts'])), str(temporary), *render,
                 stdout=asyncio.subprocess.PIPE, stderr=log)
             async def consume():
                 async for line in process.stdout:

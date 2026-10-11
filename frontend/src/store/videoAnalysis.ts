@@ -114,6 +114,8 @@ export interface AutoFilmOptions {
   environment_request?: string;
   review_masters?: boolean;
   timing_policy?: 'full_take' | 'source_duration';
+  /** Reskin only: "fast" renders the motion video with coarser depth at 24 fps. */
+  motion_profile?: 'standard' | 'fast';
   kyc: boolean;
   unmoderated: boolean;
 }
