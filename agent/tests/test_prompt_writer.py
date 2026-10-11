@@ -233,3 +233,33 @@ def test_lines_are_spoken_under_the_casts_current_name_joined_by_speaker_id():
     bound = prompt_writer.bind_speakers(shots, characters, assets)
     assert [d["who"] for d in bound[0]["dialogue"]] == ["Damian Cross", "Lily", "Stranger"]
     assert shots[0]["dialogue"][0]["who"] == "Dark-haired bearded man"      # the input is not changed
+
+
+def test_a_clip_both_writers_decline_is_asked_of_the_next_gpt_model(monkeypatch):
+    import asyncio
+    from flowboard.services import prompt_writer as writer
+    from flowboard.services import avis_text
+    from flowboard.services.video_analyzer import adapt
+    from tests.test_cinematic_prompt import inputs, good
+    sequence, shots, chars = inputs()
+    asked = []
+
+    async def ask_json(system, user, stats, model=None, fallback='', **kw):
+        asked.append(model)
+        if model != 'gpt-6-1-sol':
+            raise avis_text.AvisContentRefusal(model + ' declined')
+        stats.answered_by[model] = 1
+        return {'prompt': good(), 'end_state': 'Rhea retains the closed parcel.', 'staging_decisions': []}
+
+    async def review(prompt, req, refs, assets, **kw):
+        return {'status': 'verified', 'checked_requirement_ids': [r['id'] for r in req], 'findings': []}
+
+    async def images(refs):
+        return [], []
+    monkeypatch.setattr(adapt, 'ask_json', ask_json)
+    monkeypatch.setattr(writer, 'review_prompt', review)
+    monkeypatch.setattr(writer.cinematic_prompt, 'reference_images', images)
+    monkeypatch.setattr(writer, 'WRITER_REFUSAL_CHAIN', ['gpt-6-1-sol'])
+    out = asyncio.run(writer.write_clip_prompt(sequence, shots, characters=chars, environment=None,
+                                               aspect_ratio='1:1', look='cg3d', cinematic=True))
+    assert asked[:3] == [writer.WRITER_MODEL, writer.WRITER_FALLBACK, 'gpt-6-1-sol'] and out.model == 'gpt-6-1-sol'

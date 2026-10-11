@@ -51,6 +51,10 @@ TIMING_POLICY_VERSION = 2
 
 WRITER_MODEL = os.getenv("FLOWBOARD_PROMPT_WRITER_MODEL", "gpt-6-luna")
 WRITER_FALLBACK = os.getenv("FLOWBOARD_PROMPT_WRITER_FALLBACK", "gpt-5-4")
+# Models asked, in order, when the writer and its fallback both decline the same clip (a
+# refusal is not deterministic). Video prompts are written by GPT models (AGENTS.md).
+WRITER_REFUSAL_CHAIN = [m.strip() for m in os.getenv("FLOWBOARD_PROMPT_WRITER_REFUSAL_CHAIN", "gpt-6-1-sol").split(",")
+                        if m.strip().startswith("gpt-")]
 WRITER_ON = os.getenv("FLOWBOARD_PROMPT_WRITER", "on").strip().lower() not in ("off", "0", "false", "no")
 REVIEW_MODEL = os.getenv("FLOWBOARD_PROMPT_REVIEW_MODEL", WRITER_MODEL)
 REVIEW_FALLBACK = os.getenv("FLOWBOARD_PROMPT_REVIEW_FALLBACK", WRITER_FALLBACK)
@@ -1103,12 +1107,18 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
         try:
             return await adapt_mod.ask_json(system, user, stats, model=writer,
                                             fallback=WRITER_FALLBACK if writer != WRITER_FALLBACK else "", **kwargs)
-        except avis_text.AvisContentRefusal:
-            if not WRITER_FALLBACK or writer == WRITER_FALLBACK:
-                raise
-            logger.warning("clip writer %s: %s declined; %s writes this clip", label, writer, WRITER_FALLBACK)
-            writer = WRITER_FALLBACK
-            return await adapt_mod.ask_json(system, user, stats, model=writer, fallback="", **kwargs)
+        except avis_text.AvisContentRefusal as refused:
+            declined = [writer]
+            for model in dict.fromkeys([WRITER_FALLBACK, *WRITER_REFUSAL_CHAIN]):
+                if not model or model in declined:
+                    continue
+                logger.warning("clip writer %s: %s declined; %s writes this clip", label, ', '.join(declined), model)
+                writer = model
+                try:
+                    return await adapt_mod.ask_json(system, user, stats, model=writer, fallback="", **kwargs)
+                except avis_text.AvisContentRefusal:
+                    declined.append(model)
+            raise refused
 
     for round_ in (1, 2, 3):
         if round_ == 3 and not allow_final_semantic_repair:

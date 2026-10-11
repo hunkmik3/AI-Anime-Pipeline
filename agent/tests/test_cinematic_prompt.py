@@ -893,6 +893,7 @@ def test_a_clip_the_provider_declines_is_written_by_the_fallback_and_says_so(mon
     monkeypatch.setattr(adapt, "ask_json", fake)
     monkeypatch.setattr(writer, "review_prompt", review)
     monkeypatch.setattr(writer, "WRITER_FALLBACK", "gpt-5-4")
+    monkeypatch.setattr(writer, "WRITER_REFUSAL_CHAIN", ["gpt-6-1-sol"])
     result = asyncio.run(writer.write_clip_prompt(sequence, shots, characters=chars, environment=None,
                                                   aspect_ratio="1:1", look="cg3d", cinematic=True))
     assert asked == [writer.WRITER_MODEL, "gpt-5-4"]
@@ -900,6 +901,7 @@ def test_a_clip_the_provider_declines_is_written_by_the_fallback_and_says_so(mon
     # Without a fallback the refusal still stops the clip, visibly.
     asked.clear()
     monkeypatch.setattr(writer, "WRITER_FALLBACK", "")
+    monkeypatch.setattr(writer, "WRITER_REFUSAL_CHAIN", [])
     with pytest.raises(writer.WriterError, match="declined"):
         asyncio.run(writer.write_clip_prompt(sequence, shots, characters=chars, environment=None,
                                              aspect_ratio="1:1", look="cg3d", cinematic=True))
