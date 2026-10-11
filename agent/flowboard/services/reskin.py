@@ -210,9 +210,12 @@ def staging_payload(board, package, references):
               'Keep architecture scale and openings; background extras are distinct people with stable attire. '
               'Do not bring later arrivals into the opening. Design bindings and source facts follow as data:\n' +
               json.dumps({'style': board['style'], 'references': references, 'shots': facts}, ensure_ascii=False))
+    # A clip can draw its staging scene with another image model (its video node's
+    # stagingImageModel, e.g. when the board's model is unavailable); the sheets keep theirs.
+    video = next((n.get('data') or {} for n in board.get('nodes', []) if n.get('id') == 'vid:' + package['sequence_key']), {})
     return {'prompt': prompt, 'reference_urls': list(dict.fromkeys(r['url'] for r in references)),
-            'image_model': board.get('imageModel', 'dola-seedream-5-0-pro'), 'image_size': board.get('imageSize','2K'),
-            'aspect_ratio': '21:9'}
+            'image_model': video.get('stagingImageModel') or board.get('imageModel', 'dola-seedream-5-0-pro'),
+            'image_size': board.get('imageSize','2K'), 'aspect_ratio': '21:9'}
 
 
 def enforce_prompt(prompt):

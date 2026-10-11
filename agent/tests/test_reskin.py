@@ -89,6 +89,15 @@ def test_staging_output_ratios_and_target_binding_independent(ratio):
     assert body.shots==b['nodes'][-1]['data']['shots']
 
 
+def test_one_clip_can_draw_its_staging_scene_with_another_image_model():
+    b=fixture();b['imageModel']='dola-seedream-5-0-pro';p=packages(b)[0];refs=[{'url':'https://image','description':'Approved cast'}]
+    assert reskin.staging_payload(b,p,refs)['image_model']=='dola-seedream-5-0-pro'
+    before=run.input_version(b)
+    next(n for n in b['nodes'] if n['id']=='vid:'+p['sequence_key'])['data']['stagingImageModel']='gemini-3-pro-image'
+    assert reskin.staging_payload(b,p,refs)['image_model']=='gemini-3-pro-image'
+    assert run.input_version(b)==before and b['imageModel']=='dola-seedream-5-0-pro'
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('ratio',['1:1','9:16','16:9'])
 async def test_provider_gets_images_and_motion_in_order(monkeypatch,ratio):
