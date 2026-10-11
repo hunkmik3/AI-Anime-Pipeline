@@ -123,6 +123,32 @@ def test_delivery_across_a_cut_warns_but_a_wrong_speaker_holds():
     assert [(f['origin'], policy.severity(f)) for f in found] == [('speech_words', 'blocking')]
 
 
+def test_a_delivery_heard_beside_a_cut_warns_but_one_far_from_it_holds():
+    # "now." is on camera after the cut at 4 s; the listener's one offscreen piece ends at
+    # 3.7 s, within its timing error of that cut.
+    b, rows = dialogue_board()
+    answer = observations(shots_of(b, 'c1'))
+    answer['heard_dialogue'] = [{'speaker': 'hero', 'speaker_id': 'hero', 'delivery': 'offscreen',
+                                 'text': 'Come here now.', 'start': 2.0, 'end': 3.7}]
+    found = review.validate(answer, rows, 0)
+    assert [(f['origin'], policy.severity(f)) for f in found] == [('speech_delivery_cut', 'warning')]
+    answer['heard_dialogue'][0].update(start=1.0, end=3.0)
+    found = review.validate(answer, rows, 0)
+    assert [(f['origin'], policy.severity(f)) for f in found] == [('speech_speaker', 'blocking')]
+
+
+def test_an_unnamed_voice_is_the_listeners_unknown_speaker():
+    b, rows = dialogue_board()
+    rows[0]['dialogue'] = [{'who': 'Voice from inside the car', 'delivery': 'offscreen', 'line': 'Come here'}]
+    rows[1]['dialogue'] = []
+    answer = observations(shots_of(b, 'c1'))
+    answer['heard_dialogue'] = [{'speaker': 'Unidentified woman', 'speaker_id': 'unknown', 'delivery': 'offscreen',
+                                 'text': 'Come here', 'start': 1.0, 'end': 2.0}]
+    assert review.validate(answer, rows, 0) == []
+    answer['heard_dialogue'][0]['speaker_id'] = 'hero'
+    assert [f['origin'] for f in review.validate(answer, rows, 0)] == ['speech_speaker']
+
+
 def test_a_run_produces_clean_clips_and_stops_for_the_held_one(local_ready):
     b = two_clips()
     criterion(b, 'c1', 'identity_wardrobe')

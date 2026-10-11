@@ -94,6 +94,20 @@ Return JSON {"shots":[{"id":"supplied ID","start":0,"end":1,
 "findings":[],"limitations":["..."]}. An empty findings list alone is not a review.'''
 
 
+# Seconds: how far apart the audiovisual listener's timestamps can be (about 1 fps).
+CUT_TOLERANCE = 0.5
+
+
+def _same_speaker(line, piece):
+    """A heard piece is the line's speaker: the same catalog ID, or, for a line with no
+    catalog ID, its 'who' or the listener's 'unknown' (a voice the catalog does not name)."""
+    heard = piece.get('speaker_id')
+    heard = None if heard in (None, '', 'unknown') else heard
+    if line.get('speaker_id'):
+        return heard == line['speaker_id']
+    return heard is None or heard == line.get('who')
+
+
 def validate(answer, shots, offset):
     if not isinstance(answer, dict) or not isinstance(answer.get('shots'), list):
         raise ValueError('Đối chiếu nguồn thiếu quan sát theo shot.')
@@ -141,16 +155,16 @@ def validate(answer, shots, offset):
         if any(d.get('shot_id') not in {s['id'] for s in shots} for d in heard):
             raise ValueError('Bản nghe thoại trỏ tới shot không có trong đoạn nguồn.')
         for s in shots:
-            expected=[(t,d.get('speaker_id') or d.get('who'),d.get('delivery') or 'on_camera')
+            expected=[(t,d,d.get('delivery') or 'on_camera')
                       for d in s.get('dialogue',[]) for t in policy.spoken(d.get('line',''))]
-            actual=[(t,d.get('speaker_id'),d.get('delivery')) for d in heard if d['shot_id']==s['id']
+            actual=[(t,d,d.get('delivery')) for d in heard if d['shot_id']==s['id']
                     for t in policy.spoken(d['text'])]
             words=policy.word_difference([w for w,_,_ in expected],[w for w,_,_ in actual])
             if words:
                 findings.append({'shot':s['id'],'criterion':'speech_delivery','origin':words,
                     'message':'Original audio words differ in this shot.',
                     'expected':' '.join(w for w,_,_ in expected),'heard':' '.join(w for w,_,_ in actual)})
-            elif [x[1:] for x in expected] != [x[1:] for x in actual]:
+            elif any(not _same_speaker(e[1],a[1]) or e[2]!=a[2] for e,a in zip(expected,actual)):
                 findings.append({'shot':s['id'],'criterion':'speech_delivery','origin':'speech_speaker',
                     'message':'Original audio speaker or delivery differs in this shot.'})
             for d in (d for d in heard if d['shot_id']==s['id']):
@@ -167,13 +181,14 @@ def validate(answer, shots, offset):
         findings.append({'criterion':'speech_delivery','origin':words,'message':'Original audio differs from shotlist dialogue.',
                          'expected':' '.join(expected),'heard':' '.join(actual)})
     else:
-        expected_words=[(d.get('speaker_id') or d.get('who'), d.get('delivery') or 'on_camera',
+        expected_words=[(d, d.get('delivery') or 'on_camera',
                          s['source_start']-offset,s['source_end']-offset)
                         for s in shots for d in s.get('dialogue',[]) for _ in policy.spoken(d.get('line',''))]
         heard_words=[d for d in heard for _ in policy.spoken(d['text'])]
         bounds=[(s['source_start']-offset,s['source_end']-offset) for s in shots]
-        for (speaker,delivery,start,end),d in zip(expected_words,heard_words):
-            if d.get('speaker_id') != speaker:
+        for (line,delivery,start,end),d in zip(expected_words,heard_words):
+            speaker=line.get('speaker_id') or line.get('who') or 'unknown'
+            if not _same_speaker(line,d):
                 findings.append({'criterion':'speech_delivery','origin':'speech_speaker','message':'Speaker differs / remains unclear.',
                                  'expected':str(speaker)+' · '+delivery,
                                  'heard':str(d.get('speaker_id','unknown'))+' · '+str(d.get('delivery','unclear'))})
@@ -182,8 +197,14 @@ def validate(answer, shots, offset):
                 # One heard piece carries one delivery; a sentence can go from offscreen to
                 # on camera at a cut, so a piece that spans a cut cannot settle it per word.
                 spans_cut=sum(1 for a,b in bounds if d['start'] < b-.15 and d['end'] > a+.15) > 1
-                findings.append({'criterion':'speech_delivery','origin':'speech_delivery_cut' if spans_cut else 'speech_speaker',
-                                 'message':'Delivery differs'+(' in a piece that spans a cut.' if spans_cut else ' / remains unclear.'),
+                # The listener's times are about a second apart: when this word's shot begins or
+                # ends within that of the heard piece, the piece cannot tell which side of the cut
+                # it is on, and the shotlist's word timing decides.
+                at_cut=any(abs(edge-x)<=CUT_TOLERANCE for edge in (start,end) for x in (d['start'],d['end'])
+                           if any(abs(edge-b)<.01 for a,b in bounds[:-1]) or any(abs(edge-a)<.01 for a,b in bounds[1:]))
+                findings.append({'criterion':'speech_delivery','origin':'speech_delivery_cut' if spans_cut or at_cut else 'speech_speaker',
+                                 'message':'Delivery differs'+(' in a piece that spans a cut.' if spans_cut else
+                                                               ' in a piece heard at a cut.' if at_cut else ' / remains unclear.'),
                                  'expected':str(speaker)+' · '+delivery,
                                  'heard':str(d.get('speaker_id','unknown'))+' · '+str(d.get('delivery','unclear'))})
                 break
