@@ -107,24 +107,50 @@ def motion_payload(board, package):
             **({'fps': FAST_RENDER['fps'], 'render': FAST_RENDER} if board.get('motionProfile') == 'fast' else {'fps': 30})}
 
 
-def split_readiness(board, packages):
-    """(issues that stop every clip, {clip key: issues that stop only that clip}).
+REVIEW_STALE_SECONDS = 2 * 3600
+
+
+def review_in_progress(board) -> bool:
+    """A source review was started for exactly this source contract and is still running."""
+    from datetime import datetime, timezone
+    review = board.get('reskinSourceReview') or {}
+    if review.get('status') != 'in_progress' or review.get('input_digest') != digest(source_contract(board)):
+        return False
+    try:
+        started = datetime.fromisoformat(review.get('started_at', ''))
+    except ValueError:
+        return False
+    return (datetime.now(timezone.utc) - started).total_seconds() < REVIEW_STALE_SECONDS
+
+
+def review_state(board, packages):
+    """(issues that stop every clip, {clip: issues that stop only that clip}, clips still
+    waiting for a review that is running now).
 
     The review's input digest covers the whole board, so an edit anywhere asks for a
-    re-review (unchanged intervals reuse their receipts). Inside a current review each
-    clip stands on its own receipt: a blocking finding the owner has not accepted holds
-    that clip only; warnings never hold one (see reskin_review_policy)."""
+    re-review (unchanged intervals reuse their receipts). While that review runs, every
+    clip waits for its own receipt and the material sheets may already be drawn (sheets
+    are not part of the reviewed source contract). Inside a finished review each clip
+    stands on its own receipt: a blocking finding the owner has not accepted holds that
+    clip only; warnings never hold one (see reskin_review_policy)."""
     if not enabled(board):
-        return [], {}
+        return [], {}, set()
     shared, held = [], {}
-    review = board.get('reskinSourceReview') or {}
-    if review.get('input_digest') != digest(source_contract(board)):
-        shared.append('Shotlist reskin chưa đối chiếu đủ với hình/âm thanh nguồn, hoặc đã thay đổi sau đối chiếu.')
     if not board.get('kyc'):
         shared.append('Reskin cần bật KYC để gắn đồng thời video chuyển động và các sheet đã chọn.')
+    review = board.get('reskinSourceReview') or {}
+    if review_in_progress(board):
+        pending = {p['sequence_key'] for p in packages}
+    elif review.get('input_digest') != digest(source_contract(board)):
+        shared.append('Shotlist reskin chưa đối chiếu đủ với hình/âm thanh nguồn, hoặc đã thay đổi sau đối chiếu.')
+        pending = set()
+    else:
+        pending = set()
     from flowboard.services import reskin_source_review, reskin_review_policy as policy
     for package in packages:
         key = package['sequence_key']
+        if key in pending:
+            continue
         receipt = next((r for r in review.get('receipts',[]) if r.get('clip') == key),None)
         try:
             if not receipt or receipt.get('source_sha256') != board.get('sourceMediaSha256'):
@@ -143,6 +169,15 @@ def split_readiness(board, packages):
             motion_payload(board, package)
         except (ValueError, KeyError, TypeError, StopIteration) as exc:
             held.setdefault(package['sequence_key'], []).append(str(exc))
+    return shared, held, pending
+
+
+def split_readiness(board, packages):
+    """(issues that stop every clip, {clip key: issues that stop only that clip}); a clip
+    waiting for a running review counts as stopped here (see review_state)."""
+    shared, held, pending = review_state(board, packages)
+    for key in sorted(pending):
+        held.setdefault(key, []).insert(0, 'Đang đối chiếu nguồn; clip chờ biên nhận của nó.')
     return shared, held
 
 

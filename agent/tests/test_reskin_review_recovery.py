@@ -125,13 +125,22 @@ async def test_source_resume_starts_at_saved_review_without_rebuilding_profiles(
             options={'auto_production':{'board_ready':True,'settings':source_film.FilmOptions(pipeline='reskin_v1').model_dump()}})
         v.options={**v.options,'auto_production':{**v.options['auto_production'],'source_board_input_digest':source_film.board_source_digest(v)}}
         s.add(v);s.commit();vid=v.id
-    def forbidden(*a,**kw):raise AssertionError('Upstream preparation or production must not run')
+    def forbidden(*a,**kw):raise AssertionError('Upstream preparation must not run')
     monkeypatch.setattr(one_pass_film,'prepare',forbidden)
     monkeypatch.setattr(builder,'build_board',forbidden)
     monkeypatch.setattr(video_analysis,'_run_design',forbidden)
-    monkeypatch.setattr(production_run,'start',forbidden)
+    # Production starts before the review so the sheets draw meanwhile; every clip waits
+    # for its own receipt, and an incomplete review still stops the source job.
+    started=[]
+    def start(pid_,revision,config,key):
+        with get_session() as s:
+            board=s.get(AutomationProject,pid_).board
+        assert board['reskinSourceReview']['status']=='in_progress'
+        started.append(key);return {'id':str(uuid.uuid4())}
+    monkeypatch.setattr(production_run,'start',start)
     monkeypatch.setattr(video_analysis,'_work_dir',lambda _:tmp_path)
     with pytest.raises(review.ReviewIncomplete):await source_film.execute(vid)
+    assert started==['source-film:'+str(vid)]
     with get_session() as s:
         v=s.get(VideoAnalysis,vid);p=s.get(AutomationProject,pid)
         assert v.cast=={'preserved':'all paid designs'}

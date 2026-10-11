@@ -28,8 +28,8 @@ class FilmOptions(BaseModel):
     unmoderated: bool = True
     # 'fast' renders the white-model video with coarser depth at 24 fps (long films).
     motion_profile: str = Field(default='standard', pattern='^(standard|fast)$')
-    image_parallel: int = Field(default=4, ge=1, le=32)
-    video_parallel: int = Field(default=4, ge=1, le=32)
+    image_parallel: int = Field(default=8, ge=1, le=32)
+    video_parallel: int = Field(default=16, ge=1, le=64)
     max_images: int = Field(default=500, ge=0, le=10000)
     max_videos: int = Field(default=500, ge=0, le=10000)
 
@@ -332,12 +332,28 @@ async def finish_board(row, opt, board):
     from flowboard.routes import video_analysis as routes
     from flowboard.routes.automation import ProductionRunConfig
     video_id=row.id
+    def run_config():
+        return ProductionRunConfig(mode='render',review_masters=opt.review_masters,assemble=True,
+            resolution=opt.resolution,timing_policy=opt.timing_policy,audio_cleanup=opt.pipeline=='reskin_v1',
+            set_continuity=opt.pipeline!='reskin_v1',image_parallel=opt.image_parallel,video_parallel=opt.video_parallel,
+            max_images=opt.max_images,max_videos=opt.max_videos,max_text=10000).model_dump()
+    def start_run():
+        with get_session() as s:
+            revision = s.get(AutomationProject,row.automation_project_id).revision
+        return production_run.start(row.automation_project_id,revision,run_config(),'source-film:'+str(video_id))
     if opt.pipeline == 'reskin_v1':
         from flowboard.services import reskin, reskin_source_review, production_manifest, production_progress
         state(video_id,board_ready=True,stage='reskin_review')
+        payload={'input_digest':production_manifest.digest(reskin.source_contract(board))}
+        # The sheets are not part of the reviewed source contract: production starts now and
+        # draws them while the source is reviewed; each clip waits for its own receipt.
+        reskin_source_review.mark_started(row.automation_project_id, payload['input_digest'])
+        # Not yet the committed handoff (run_id): a failed review is resumed by running this
+        # source again, which finds the same run by its request key.
+        run = start_run()
+        state(video_id, sheets_run_id=run['id'])
         try:
-            review = await reskin_source_review.review_project(row.automation_project_id,
-                {'input_digest':production_manifest.digest(reskin.source_contract(board))},
+            review = await reskin_source_review.review_project(row.automation_project_id, payload,
                 on_progress=routes._progress_writer(video_id))
         except reskin_source_review.ReviewIncomplete as exc:
             # The report (with every receipt that did arrive) is already on the board.
@@ -356,15 +372,13 @@ async def finish_board(row, opt, board):
                     raise incomplete
                 raise ValueError(reskin_source_review.summary(review))
             state(video_id, source_holds=sorted(held))
-    with get_session() as s:
-        revision = s.get(AutomationProject,row.automation_project_id).revision
-    state(video_id, board_ready=True, stage='production')
-    config = ProductionRunConfig(mode='render',review_masters=opt.review_masters,assemble=True,
-        resolution=opt.resolution,timing_policy=opt.timing_policy,audio_cleanup=opt.pipeline=='reskin_v1',
-        set_continuity=opt.pipeline!='reskin_v1',image_parallel=opt.image_parallel,video_parallel=opt.video_parallel,
-        max_images=opt.max_images,max_videos=opt.max_videos,max_text=10000).model_dump()
-    run=production_run.start(row.automation_project_id,revision,config,'source-film:'+str(video_id))
-    state(video_id,run_id=run['id'],stage='production',error=None)
+        # The run may have settled while every clip waited for the review.
+        production_run.resume_settled(run['id'])
+        state(video_id, run_id=run['id'], stage='production', error=None)
+    else:
+        state(video_id, board_ready=True, stage='production')
+        run = start_run()
+        state(video_id, run_id=run['id'], stage='production', error=None)
     # A resumed source can still carry its previous failure status. The durable
     # production handoff succeeded; do not make execute_source report the old
     # error after generation has already been queued.

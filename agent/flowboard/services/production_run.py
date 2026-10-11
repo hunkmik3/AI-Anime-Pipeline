@@ -47,7 +47,7 @@ def input_version(board):
             nodes.append({'id':n['id'],'manual_prompt':d.get('prompt',''),'end_state':d.get('endState') or '',
                           'staging_decisions':d.get('stagingDecisions') or []})
     return pm.digest({'schema':SCHEMA,'style_version':style_version(board),'video_standard_version':film_motion.version(board.get('style')),'nodes':nodes, **{k:board.get(k) for k in
-        ('productionAssets','sourceVerification','preserveSourceShots','style','aspectRatio','imageModel','imageSize','kyc','unmoderated','dialogueLanguage','targetCasting','motionReference','motionProfile','sourceVideoId','sourceMediaSha256','reskinSourceReview','reskinVersion')}})
+        ('productionAssets','sourceVerification','preserveSourceShots','style','aspectRatio','imageModel','imageSize','kyc','unmoderated','dialogueLanguage','targetCasting','motionReference','motionProfile','sourceVideoId','sourceMediaSha256','reskinVersion')}})
 
 
 def selected_packages(board, pid, keys):
@@ -114,10 +114,32 @@ def material_specs(board, packs):
     return specs
 
 
+def clip_order(specs, packs, needs):
+    """Materials ordered by the first clip that needs them, every dependency before its
+    dependants. Each tick rebuilds the ready set in this order, so a dependant placed
+    before its dependency would wait forever."""
+    position = {k: i for i, k in enumerate(specs)}
+    first = {}
+    for i, p in enumerate(packs):
+        for k in needs.get(p['sequence_key'], ()):
+            first.setdefault(k, i)
+    out, seen = [], set()
+    def visit(k):
+        if k in seen or k not in specs:
+            return
+        seen.add(k)
+        for d in sorted(specs[k]['deps'], key=lambda d: (first.get(d, len(packs)), position.get(d, 0))):
+            visit(d)
+        out.append(k)
+    for k in sorted(specs, key=lambda k: (first.get(k, len(packs)), position[k])):
+        visit(k)
+    return {k: specs[k] for k in out}
+
+
 def preview(board, pid, config):
     packs=selected_packages(board,pid,config.get('sequence_keys',[]))
     issues=[{'clip':p['sequence_key'],**i} for p in packs for i in p['issues'] if i.get('blocking') and i['code'] not in ('missing_material','missing_costume_sheet')]
-    shared,held=reskin.split_readiness(board,packs)
+    shared,held,reviewing=reskin.review_state(board,packs)
     issues += [{'code':'reskin_source','message':e,'blocking':True} for e in shared]
     if held and len(held)==len(packs):
         issues += [{'clip':k,'code':'reskin_source','message':e,'blocking':True} for k,v in held.items() for e in v]
@@ -146,6 +168,8 @@ def preview(board, pid, config):
             'issues':issues,'ready':not issues,'config':config,
             # Clips held by their own source findings; the others are produced meanwhile.
             **({'source_holds':held} if held and len(held)<len(packs) else {}),
+            # Clips waiting for the source review that is running now; their sheets draw meanwhile.
+            **({'source_pending':sorted(reviewing)} if reviewing else {}),
             'dependency_notes':next(iter(specs.values()),{}).get('dependency_notes',[]),
             'pipeline':reskin.VERSION if reskin.enabled(board) else 'cinematic',
             'atlases':[{"clip":p['sequence_key'],**reference_atlas.plan(p['materials'],1 if reskin.enabled(board) else 2 if config.get('boundary_frames') else 0)} for p in packs] if not any(i['code']=='reference_limit' for i in issues) else []}
@@ -207,8 +231,9 @@ def _task(s, run, all_jobs, state, key, kind, node, slot, payload, metadata=None
         active=[j for j in all_jobs if j.status in jobs.ACTIVE and j.kind!=KIND]
         limit=config['image_parallel'] if kind=='plate' else config['video_parallel'] if kind=='clip' else config['text_parallel']
         family={'write','raccord','clip_quality'} if kind in ('write','raccord','clip_quality') else {kind}
-        if kind=='clip_quality':limit=min(2,limit)  # Bound concurrent local Whisper processes.
-        if kind=='audio_cleanup':limit=1
+        # Local Whisper / Demucs processes share the CPU with the clay renders.
+        if kind=='clip_quality':limit=min(max(1,int(os.getenv('FLOWBOARD_QUALITY_PARALLEL','3'))),limit)
+        if kind=='audio_cleanup':limit=max(1,int(os.getenv('FLOWBOARD_AUDIO_PARALLEL','2')))
         # Two local clay renders fit the CPU (4 depth threads each); more only add contention.
         if kind=='motion_reference':limit=max(1,min(4,int(os.getenv('FLOWBOARD_MOTION_PARALLEL','2'))))
         if sum(j.kind in family for j in active)>=limit: raise Waiting()
@@ -422,7 +447,7 @@ def advance(s, run, project, all_jobs):
     board=jobs.overlay(project.board or {},all_jobs);config=run.payload['config']
     if input_version(board)!=run.payload['input_version']: raise Blocked('Production inputs changed. Start a new run to reuse matching tasks and rebuild affected outputs.')
     packs=selected_packages(board,project.id,config.get('sequence_keys',[]))
-    shared,held=reskin.split_readiness(board,packs)
+    shared,held,reviewing=reskin.review_state(board,packs)
     if shared: raise Blocked('; '.join(shared))
     if held and len(held)==len(packs): raise Blocked('; '.join(f'{k}: {e}' for k,v in held.items() for e in v))
     # A clip held by its own source findings waits; every other clip is produced now.
@@ -430,6 +455,8 @@ def advance(s, run, project, all_jobs):
     packs=usable(packs);specs=material_specs(board,packs)
     if held: state['source_holds']=held
     else: state.pop('source_holds',None)
+    if reviewing: state['source_pending']=sorted(reviewing)
+    else: state.pop('source_pending',None)
     # Re-check before ANY material call, including resumed runs. Previously the
     # source gate lived only in preview/prompt dispatch, after image spending.
     if prompt_coverage.is_strict(board.get('productionAssets'),board.get('sourceVerification')):
@@ -439,7 +466,11 @@ def advance(s, run, project, all_jobs):
             if source_errors: raise Blocked('; '.join(source_errors))
     from flowboard.services.production_progress import make_plan
     state['progress_plan'] = make_plan(specs, packs)
-    ready={};waiting=False;errors=[]
+    streaming=reskin.enabled(board)
+    needs={p['sequence_key']:set(material_specs(board,[p])) for p in packs} if streaming else {}
+    if streaming:
+        specs=clip_order(specs,packs,needs)
+    ready={};waiting=False;errors=[];failed_materials=set()
     state['stage']='materials'
     for key,spec in specs.items():
         if any(d not in ready for d in spec['deps']): waiting=True;continue
@@ -465,14 +496,32 @@ def advance(s, run, project, all_jobs):
                 if not image.get('reference_url'): raise Blocked('Material has no published reference: '+key)
             ready[key]={'reference_url':image['reference_url'],'media_id':image.get('media_id',''),'asset_id':spec['asset_id'],'name':spec['item'].get('name',spec['asset_id'])}
         except Waiting: waiting=True
-        except Blocked as exc: errors.append(str(exc))
+        except Blocked as exc: errors.append(str(exc));failed_materials.add(key)
     state['ready_materials'] = list(ready)
-    if errors: state['errors']=errors;state['stage']='blocked';return state,'blocked'
-    if waiting: return state,'running'
-    # Recompile only after all material dependencies have settled.
+    material_holds={}
+    if streaming:
+        # A failed sheet holds only the clips that need it; a clip whose sheets are all
+        # ready goes on now, the others wait for theirs.
+        material_holds={k:[e for e in errors] for k,ks in needs.items() if ks & failed_materials}
+        ready_clips={k for k,ks in needs.items() if ks <= set(ready)}
+        state['material_ready_clips']=sorted(ready_clips)
+        if material_holds: state['material_holds']=sorted(material_holds)
+        else: state.pop('material_holds',None)
+        if not ready_clips:
+            if waiting: return state,'running'
+            state['errors']=errors;state['stage']='blocked';return state,'blocked'
+        errors=[]
+    else:
+        if errors: state['errors']=errors;state['stage']='blocked';return state,'blocked'
+        if waiting: return state,'running'
+        ready_clips=None
+    # Recompile only after the selected clips' material dependencies have settled.
     board=jobs.overlay(project.board or {},all_jobs);packs=usable(selected_packages(board,project.id,config.get('sequence_keys',[])))
+    # A clip waiting for the running source review gets its sheets, never its prompt or video.
+    todo=lambda ps:[p for p in ps if (ready_clips is None or p['sequence_key'] in ready_clips)
+                    and p['sequence_key'] not in reviewing]
     if config.get('kyc_required',board.get('kyc',False)):
-        missing=sorted({m['reference_url'] for p in packs for m in p['materials'].values() if not m['media_id']})
+        missing=sorted({m['reference_url'] for p in todo(packs) for m in p['materials'].values() if not m['media_id']})
         if missing:
             try: _task(s,run,all_jobs,state,'ingest','ingest','production:ingest','',{'urls':missing})
             except Waiting: return state,'running'
@@ -488,10 +537,10 @@ def advance(s, run, project, all_jobs):
         except Waiting:waiting=True
     if waiting:return state,'running'
     board=jobs.overlay(project.board or {},all_jobs);packs=usable(selected_packages(board,project.id,config.get('sequence_keys',[])))
-    blockers=[i for p in packs for i in p['issues'] if i.get('blocking')]
+    blockers=[i for p in todo(packs) for i in p['issues'] if i.get('blocking')]
     if blockers: raise Blocked(json.dumps(blockers,ensure_ascii=False))
     shots={sh['id']:(p,sh) for p in packs for sh in p['shots']}
-    clips={};completed=set();state['stage']='prompts' if config['mode']=='prepare' else 'videos'
+    clips={};completed=set();failed_clips=set();state['stage']='prompts' if config['mode']=='prepare' else 'videos'
     generated={};holds={}     # reviewed takes (continuity frames come from these) / takes held for review
     def checked_clip(job, package):
         from flowboard.services import production_quality as quality
@@ -517,7 +566,7 @@ def advance(s, run, project, all_jobs):
         try:quality.require_pass(q.result,clip,package['version'])
         except ValueError as exc:raise QualityHold(str(exc)) from exc
         return {**clip,'quality_job':str(q.id),'package_version':package['version']}
-    for p in packs:
+    for p in todo(packs):
         key=p['sequence_key'];refs=[]
         try:
             motion=None
@@ -618,9 +667,20 @@ def advance(s, run, project, all_jobs):
         except QualityHold as exc:
             holds[key]=key+': '+str(exc)
         except (Blocked,ValueError) as exc:
-            errors.append(key+': '+str(exc))
-            # Prompts are independent; renders continue from the clips before them.
-            if config['mode']!='prepare':break
+            errors.append(key+': '+str(exc));failed_clips.add(key)
+            # Prompts are independent; renders continue from the clips before them. A reskin
+            # clip has no chain to the clip before it, so one clip's refusal holds only itself.
+            if config['mode']!='prepare' and not streaming:break
+    if streaming:
+        # Settle the run only when every clip is done or held for a stated reason.
+        settled=(completed if config['mode']=='prepare' else set(clips)|set(holds))|failed_clips|set(material_holds)
+        errors=errors+[f'{k}: sheet failed — '+'; '.join(v)[:400] for k,v in material_holds.items()]
+        if len(settled)<len(packs):
+            if errors: state['errors']=errors
+            return state,'running'
+        if errors:
+            state['errors']=errors;state['failed_clips']=sorted(failed_clips|set(material_holds));return state,'blocked'
+        state.pop('errors',None)
     # A prepare run blocks once every other clip has its prompt; it reports all refusals together.
     if errors and (config['mode']!='prepare' or len(completed)+len(errors)==len(packs)):
         state['errors']=errors;return state,'blocked'
@@ -653,6 +713,18 @@ def advance(s, run, project, all_jobs):
         state['output']=j.result
     if config['mode']=='render':state['quality_status']='automated_checks_passed'
     state['stage']='complete';return state,'succeeded'
+
+
+def resume_settled(run_id):
+    """Set a run that settled while its clips waited (e.g. for a source review) going again.
+    Paid tasks stay as they are; a run waiting at the master-sheet review is left alone."""
+    with get_session() as s:
+        run=s.exec(select(AutomationJob).where(AutomationJob.id==uuid.UUID(str(run_id))).with_for_update()).first()
+        if not run or run.kind!=KIND or run.status!='blocked' or (run.result or {}).get('stage')=='master_review':
+            return False
+        run.status='running';run.error='';run.result={**(run.result or {}),'errors':[]}
+        run.updated_at=jobs.now();s.add(run);s.commit()
+        return True
 
 
 def tick(run_id):

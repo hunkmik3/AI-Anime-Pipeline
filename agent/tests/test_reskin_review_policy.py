@@ -140,3 +140,108 @@ def test_a_run_produces_clean_clips_and_stops_for_the_held_one(local_ready):
     made = {j.node_id for j in all_jobs(pid) if j.kind in ('clip', 'write', 'motion_reference')}
     assert made == {'vid:c2'}
     assert not any(j.kind == 'assemble' for j in all_jobs(pid))           # never a film with a hole
+
+
+def with_letter_for_c2(b):
+    """A prop only clip c2 shows, whose sheet is not drawn yet."""
+    box = next(n for n in b['nodes'] if n['id'] == 'asset:box')
+    letter = deepcopy(box)
+    letter['id'] = 'asset:letter'
+    letter['data']['asset'].update(key='letter', id='letter', name='letter')
+    for slot in ('identity', 'plate'):
+        letter['data'][slot] = {'prompt': box['data'][slot].get('prompt', '')}
+    letter['data']['states'] = {}
+    b['nodes'].insert(0, letter)
+    if any(a.get('id') == 'box' for a in b.get('productionAssets', [])):
+        asset = deepcopy(next(a for a in b['productionAssets'] if a.get('id') == 'box'))
+        asset.update(id='letter', name='letter')
+        b['productionAssets'].append(asset)
+    for s in shots_of(b, 'c2'):
+        s['asset_presence'].append({'asset_id': 'letter', 'visibility': 'visible'})
+    return reviewed(b)
+
+
+def drive(pid, run_id, finish, rounds=60):
+    for _ in range(rounds):
+        tick(run_id)
+        if get(run_id).status != 'running':
+            break
+        for job in pending(pid):
+            finish(job)
+    return get(run_id)
+
+
+def test_a_clip_whose_sheets_are_ready_goes_on_while_another_waits_for_its_own(local_ready):
+    b = with_letter_for_c2(two_clips())
+    pid = project(b)
+    a = start(pid, mode='render', audio_cleanup=True, set_continuity=False)
+    held = []
+
+    def finish(job):
+        if job.kind == 'plate' and job.slot != 'staging' and 'letter' in job.node_id:
+            held.append(job)                                  # the letter sheet stays in the provider
+            return
+        finish_reskin(job)
+    out = drive(pid, a['id'], finish, rounds=25)
+    assert out.status == 'running' and held, out.error
+    made = {j.node_id for j in all_jobs(pid) if j.kind == 'clip'}
+    assert made == {'vid:c1'} and out.result['material_ready_clips'] == ['c1']
+    finish_reskin(held[0])
+    out = drive(pid, a['id'], finish_reskin)
+    assert out.status == 'succeeded', out.error
+    assert {j.node_id for j in all_jobs(pid) if j.kind == 'clip'} == {'vid:c1', 'vid:c2'}
+
+
+def test_one_clips_refusal_holds_only_that_clip(local_ready):
+    from tests.test_production_run import complete
+    b = two_clips()
+    pid = project(b)
+    a = start(pid, mode='render', audio_cleanup=True, set_continuity=False)
+
+    def finish(job):
+        if job.kind == 'write' and job.node_id == 'vid:c1':
+            from flowboard.db import get_session
+            from flowboard.db.models import AutomationJob
+            with get_session() as s:
+                row = s.get(AutomationJob, job.id); row.status = 'failed'; row.error = '422: Provider declined this content request'
+                s.add(row); s.commit()
+            return
+        finish_reskin(job)
+    out = drive(pid, a['id'], finish)
+    assert out.status == 'blocked' and out.result['failed_clips'] == ['c1'], out.error
+    assert {j.node_id for j in all_jobs(pid) if j.kind == 'clip'} == {'vid:c2'}
+    assert not any(j.kind == 'assemble' for j in all_jobs(pid))
+
+
+def test_materials_follow_the_clips_but_never_precede_what_they_depend_on():
+    specs = {'env': {'deps': []}, 'env:reverse': {'deps': ['env']}, 'hero': {'deps': []},
+             'hero:wet': {'deps': ['hero']}, 'letter': {'deps': []}}
+    packs = [{'sequence_key': 'c1'}, {'sequence_key': 'c2'}]
+    needs = {'c1': {'hero:wet', 'env:reverse'}, 'c2': {'letter', 'hero', 'env'}}
+    order = list(run.clip_order(specs, packs, needs))
+    assert sorted(order) == sorted(specs)
+    assert all(order.index(d) < order.index(k) for k, v in specs.items() for d in v['deps'])
+    assert order.index('letter') == len(order) - 1                   # only clip 2 needs it
+
+
+def test_sheets_draw_while_the_source_is_reviewed_and_clips_follow_their_receipts(local_ready):
+    from datetime import datetime, timezone
+    from flowboard.db import get_session
+    from flowboard.db.models import AutomationProject
+    b = with_letter_for_c2(two_clips())
+    report = b['reskinSourceReview']
+    b['reskinSourceReview'] = {'status': 'in_progress', 'input_digest': report['input_digest'],
+                               'started_at': datetime.now(timezone.utc).isoformat(), 'receipts': [], 'findings': []}
+    pid = project(b)
+    a = start(pid, mode='render', audio_cleanup=True, set_continuity=False)
+    out = drive(pid, a['id'], finish_reskin, rounds=8)
+    kinds = {(j.kind, j.slot) for j in all_jobs(pid)}
+    assert out.status == 'running' and out.result['source_pending'] == ['c1', 'c2'], out.error
+    assert ('plate', 'plate') in kinds or ('plate', 'identity') in kinds            # the letter's sheet
+    assert not {k for k, _ in kinds} & {'motion_reference', 'write', 'clip'}
+    with get_session() as s:
+        p = s.get(AutomationProject, pid)
+        p.board = {**p.board, 'reskinSourceReview': report}; p.revision += 1; s.add(p); s.commit()
+    out = drive(pid, a['id'], finish_reskin)
+    assert out.status == 'succeeded', out.error
+    assert {j.node_id for j in all_jobs(pid) if j.kind == 'clip'} == {'vid:c1', 'vid:c2'}

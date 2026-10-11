@@ -310,7 +310,9 @@ async def execute(data):
         beat.cancel();await asyncio.gather(beat,return_exceptions=True)
 
 async def worker():
-    concurrency=max(1,min(64,int(os.getenv('FLOWBOARD_AUTOMATION_CONCURRENCY','8'))));tasks=set()
+    # Most jobs wait on a provider (a clip holds its slot while Seedance renders), so the
+    # pool is wide; CPU-heavy kinds keep their own per-kind limits in production_run.
+    concurrency=max(1,min(128,int(os.getenv('FLOWBOARD_AUTOMATION_CONCURRENCY','48'))));tasks=set()
     try:
         while True:
             for task in list(tasks):
