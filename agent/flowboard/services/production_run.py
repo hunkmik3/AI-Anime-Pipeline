@@ -382,6 +382,14 @@ def writing_body(board, pid, package, continuity_refs, atlas_receipts=None, moti
     from flowboard.services.prompt_writer import TIMING_POLICY_VERSION
     key=package['sequence_key'];seq=next(n['data'] for n in board['nodes'] if n.get('id')=='seq:'+key)
     nodes=asset_nodes(board);characters=[];environment=None;extras=[];urls=[]
+    own={n for s in seq['shots'] for n in (s.get('source_shots') or [s.get('source_shot')])}
+    def scoped(item):
+        # An asset's observations of other shots are history: the shot package carries their
+        # last-known state into this clip (with any later source correction), so a writer
+        # reading both would see two accounts of the same past.
+        if isinstance(item.get('observed_states'),list):
+            return {**item,'observed_states':[o for o in item['observed_states'] if isinstance(o,dict) and o.get('shot') in own]}
+        return item
     def binding(m):
         url=m['reference_url']
         if url not in urls: urls.append(url)
@@ -391,7 +399,7 @@ def writing_body(board, pid, package, continuity_refs, atlas_receipts=None, moti
     materials.sort(key=lambda m:({'character':0,'environment':1}.get(m['kind'],2),m['asset_id'],m.get('state_key')=='reverse'))
     for m in materials:
         node=nodes[m['asset_id']]['data'];item=node[node['kind']]
-        ref={**item,'source_asset_id':m['asset_id'],'id':m['asset_id'],
+        ref={**scoped(item),'source_asset_id':m['asset_id'],'id':m['asset_id'],
              'state_key':m.get('state_key'),**binding(m)}
         if item.get('target_description'):
             ref.update(description=m['description'],target_appearance=item['target_description'])
@@ -410,16 +418,19 @@ def writing_body(board, pid, package, continuity_refs, atlas_receipts=None, moti
             'description':r['description'],**binding({'reference_url':r['url'],'media_id':r.get('media_id','')})})
     if len(urls)>30: raise Blocked('More than 30 references including continuity frames; prepare an atlas or disable boundary previews.')
     from flowboard.services import film_motion
+    context=pm.context(pm.build(board,str(pid)),key)
+    context['assets']={k:{**a,**({'design':scoped(a['design'])} if isinstance(a.get('design'),dict) else {})} for k,a in context['assets'].items()}
     sequence={**seq['sequence'],'function':seq.get('functionOf',[]),'raccord':seq.get('raccord',[]),
         'video_standard_version':film_motion.version(board.get('style')),
         'preserve_source_shots':board.get('preserveSourceShots',True),'shot_package':package,'timing_policy_version':TIMING_POLICY_VERSION,'reference_format_version':1,
-        'production_context':pm.context(pm.build(board,str(pid)),key),'continuity_references':continuity_refs,'reference_atlases':atlas_receipts or [],
+        'production_context':context,'continuity_references':continuity_refs,'reference_atlases':atlas_receipts or [],
         **({'motion_reference':board['motionReference']} if board.get('motionReference') else {})}
     if motion_receipt: sequence['motion_receipt']=motion_receipt
     # Source state is already complete and deterministic; independent writers need not wait for a previous writer.
     return VideoWriteBody(sequence=sequence,shots=seq['shots'],characters=characters,environment=environment,
         reference_assets=extras,production_assets=board.get('productionAssets') if prompt_coverage.is_strict(board.get('productionAssets'),board.get('sourceVerification')) else None,
-        source_verification=board.get('sourceVerification') if prompt_coverage.is_strict(board.get('productionAssets'),board.get('sourceVerification')) else None,
+        # The record of owner source corrections keeps the values they replaced; never source facts.
+        source_verification={k:v for k,v in board['sourceVerification'].items() if k!='source_corrections'} if prompt_coverage.is_strict(board.get('productionAssets'),board.get('sourceVerification')) else None,
         style=board.get('style','realistic'),aspect_ratio=board.get('aspectRatio','16:9'),language='en',
         style_note=automation._style(board['style'])['video_style'] if style_version(board) else next((m['style_note'] for m in materials if m['style_note']),''))
 

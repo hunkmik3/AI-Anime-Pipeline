@@ -1,3 +1,4 @@
+import json
 """Provider-free Reskin contracts and durable controller integration."""
 from copy import deepcopy
 import uuid
@@ -87,6 +88,18 @@ def test_staging_output_ratios_and_target_binding_independent(ratio):
     assert body.aspect_ratio==ratio and body.sequence['motion_receipt']['media_id']=='motion'
     assert 'Woven basket' in next(a for a in body.reference_assets if a['id']=='box')['target_appearance']
     assert body.shots==b['nodes'][-1]['data']['shots']
+
+
+def test_the_writer_reads_an_assets_observations_of_its_own_shots_only():
+    b=fixture();p=packages(b)[0]
+    own=b['nodes'][-1]['data']['shots'][0]['source_shot']
+    item=b['nodes'][2]['data']['asset']
+    item['observed_states']=[{'shot':own,'state':'Held in the box.'},{'shot':999,'state':'STALE OTHER SHOT'}]
+    b['sourceVerification']['source_corrections']=[{'changes':[{'before':'REPLACED VALUE'}]}]
+    body=run.writing_body(b,'film',p,[],motion_receipt={'media_id':'motion'})
+    text=json.dumps(body.model_dump(),default=str)
+    assert 'Held in the box.' in text and 'STALE OTHER SHOT' not in text and 'REPLACED VALUE' not in text
+    assert item['observed_states'][1]['state']=='STALE OTHER SHOT'
 
 
 def test_one_clip_can_draw_its_staging_scene_with_another_image_model():
