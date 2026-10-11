@@ -25,6 +25,7 @@ import { ShotEditor } from "./routes/ShotEditor";
 import { AssetLibraryPage } from "./routes/AssetLibraryPage";
 import { MyWorkPage } from "./routes/MyWorkPage";
 import { AutomationPage } from "./routes/AutomationPage";
+import { StudioPage } from "./studio/StudioPage";
 import { MaterialsPage } from "./routes/MaterialsPage";
 import { CutReviewPage } from "./routes/CutReviewPage";
 import { ReviewQueuePage } from "./routes/ReviewQueuePage";
@@ -116,6 +117,10 @@ export function App() {
               writes — and no ProductGate while it is a demo, so it stays
               openable for whoever is reviewing the pipeline shape. */}
           <Route path="/automation" element={<AutomationPage />} />
+          {/* Reskin Studio: one source film from upload to export, with the owner's
+              controls at every stage. Its own page; the automation canvas stays as it is. */}
+          <Route path="/studio" element={<StudioPage />} />
+          <Route path="/studio/:videoId" element={<StudioPage />} />
           {/* One cut, with its notes. Keyed by the submission rather than the
               series: a series has several cuts and a note belongs to the one it
               was left on. */}
@@ -285,6 +290,8 @@ function useLayoutMode(): { topBar: boolean; sidebar: boolean } {
     // Automation brings its own rail: a flat list of boards, not the
     // Project → Series → Episode tree, which it has no place in.
     pathname === "/automation" ||
+    // The studio lays out its own stations across the full width.
+    pathname.startsWith("/studio") ||
     // Every giantflow surface: the production project tree belongs to the other
     // hierarchy entirely, and on the panel grid it was 384px of unrelated
     // navigation stealing width from the thing the page is for.

@@ -31,7 +31,7 @@ IMAGE_MODELS = ('dola-seedream-5-0-pro', 'gemini-3-pro-image', 'gemini-3.1-flash
 SOURCE_STAGES = {
     'queued': 'Đang chờ', 'analysis': 'Cắt shot, nghe thoại, xem hình', 'profiles': 'Lập danh mục nhân vật & bối cảnh',
     'source_refinement': 'Soát lại nguồn', 'adaptation': 'Chuẩn bị kịch bản', 'casting': 'Đổi vai', 'design': 'Thiết kế',
-    'board': 'Dựng board', 'reskin_review': 'Đối chiếu với nguồn', 'awaiting_review': 'Chờ bạn duyệt',
+    'board': 'Dựng board', 'board_approved': 'Đã duyệt — đang chạy tiếp', 'reskin_review': 'Đối chiếu với nguồn', 'awaiting_review': 'Chờ bạn duyệt',
     'production': 'Sản xuất', 'blocked': 'Bị chặn', 'retry_wait': 'Chờ thử lại',
 }
 # Known provider failures, in words the owner can act on.
@@ -486,6 +486,8 @@ def detail(session, row: VideoAnalysis) -> dict:
     runs = sorted((j for j in jobs if j.kind == 'production_run'), key=lambda j: j.created_at, reverse=True)[:8]
     out.update(revision=project.revision, aspect_ratio=board.get('aspectRatio'), style=board.get('style'), image_model=board.get('imageModel'),
                shared_issues=shared, clips=clips, materials=mats,
+               characters=[{'id': a.get('id'), 'name': a.get('production_name') or a.get('name') or a.get('id')}
+                           for a in board.get('productionAssets') or [] if a.get('kind') == 'character'],
                review={'status': review.get('status'), 'in_progress': reskin.review_in_progress(board), 'counts': review.get('counts') or {}},
                cost=cost(settings, jobs, {c['key']: c['seconds'] for c in clips}),
                runs=[{'id': str(j.id), 'status': j.status, 'stage': (j.result or {}).get('stage'), 'created_at': _iso(j.created_at),

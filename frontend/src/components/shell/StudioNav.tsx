@@ -41,6 +41,7 @@ export function StudioNav() {
             the strip. */}
         {canEdit ? <Tab to="/materials" label="Raw material" /> : null}
         <Tab to="/review" label="Review" count={toReview} />
+        <Tab to="/studio" label="Reskin Studio" />
       </nav>
     </div>
   );

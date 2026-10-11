@@ -15,11 +15,12 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // FLOWBOARD_API points a second dev server at another backend (e.g. a branch's :8102).
     proxy: {
-      "/api": "http://localhost:8101",
-      "/media": "http://localhost:8101",
+      "/api": process.env.FLOWBOARD_API ?? "http://localhost:8101",
+      "/media": process.env.FLOWBOARD_API ?? "http://localhost:8101",
       "/ws": {
-        target: "ws://localhost:8101",
+        target: (process.env.FLOWBOARD_API ?? "http://localhost:8101").replace(/^http/, "ws"),
         ws: true,
       },
     },
