@@ -225,13 +225,31 @@ async def analyze(video: Path, work_dir: Path, *, language: Optional[str] = None
     # run side by side, each in its own process. A video with no audio track
     # makes the speech side fail fast inside ffmpeg; that is caught below.
     on_progress("speech", 0, 1)
-    measured, speech = await asyncio.gather(
-        _measure(video, work_dir, on_progress, deep=deep),
-        _speech(video, work_dir, language, **({'multilingual':True} if analysis_mode=='one_pass' else {})),
-        return_exceptions=True,
-    )
-    if isinstance(measured, BaseException):
-        raise measured
+    speech_task = asyncio.ensure_future(
+        _speech(video, work_dir, language, **({'multilingual':True} if analysis_mode=='one_pass' else {})))
+    try:
+        measured = await _measure(video, work_dir, on_progress, deep=deep)
+    except BaseException:
+        speech_task.cancel()
+        await asyncio.gather(speech_task, return_exceptions=True)
+        raise
+    one_pass_vision = None
+    if analysis_mode == 'one_pass':
+        # One-pass vision reads only the frames, never the transcript: it starts as soon
+        # as the shots are measured while speech recognition (CPU) runs on beside it.
+        from . import one_pass
+        one_pass_spans = [frames.ShotSpan(index=s["index"], start=s["start"], end=s["end"],
+                                          frame_paths=[work_dir / f for f in s["frames"]]) for s in measured["spans"]]
+        one_pass_vision = asyncio.ensure_future(one_pass.analyze(one_pass_spans, work_dir, on_progress=on_progress))
+    try:
+        speech = await speech_task
+    except Exception as exc:  # noqa: BLE001 — handled below exactly as before
+        speech = exc
+    except BaseException:
+        if one_pass_vision:
+            one_pass_vision.cancel()
+            await asyncio.gather(one_pass_vision, return_exceptions=True)
+        raise
     machine_reused=bool(measured.get('cache_reused'))
     on_progress("speech", 1, 1)
     timer.stages.update(measured["timings_s"])
@@ -272,8 +290,7 @@ async def analyze(video: Path, work_dir: Path, *, language: Optional[str] = None
     one_pass_stats = None
     vstats = vision.VisionStats()
     if analysis_mode == 'one_pass':
-        from . import one_pass
-        analyses, vstats, one_pass_stats = await one_pass.analyze(spans, work_dir, on_progress=on_progress)
+        analyses, vstats, one_pass_stats = await one_pass_vision
     elif analysis_mode == 'fast':
         from . import joint_observation
         raw_shots = [{'shot': s.index, 'start': s.start, 'end': s.end,
