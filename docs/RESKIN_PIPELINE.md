@@ -206,3 +206,31 @@ three concurrent requests (hard maximum four), retaining successful receipts eve
 when another excerpt fails. Unknown/refused requests are not resubmitted.
 Catalog completion and audiovisual source readiness are reported separately.
 The complete-clip limit is checked again when production starts.
+
+## Speed for long films
+
+What reaches a reskin clip is kept: verbatim dialogue, speakers and delivery, the
+catalog of who is in each shot and what they wear, the design sheets, the 21:9
+staging still, the white-model motion video, the reviewed prompt, music cleanup and
+clip QA. What the motion video already carries (camera, framing, positions, set
+geometry) never stops a clip. Speed comes from not waiting, not from reading less:
+
+| Stage | Default | Option |
+|---|---|---|
+| Analysis window | whole upload | **Chỉ làm đoạn đầu (phút)** (`generate_seconds`): the source becomes its first N + 30 s; every analysis stage reads only that and the clips ending by N are made. The full upload stays as `source-original.*`. |
+| Speech | language probed once per 28 s block | **Ngôn ngữ thoại**: a known language skips probing. |
+| Cuts | per-frame resizes in a thread pool | — |
+| Vision | 8 batches at a time, starts as soon as shots are measured; 429s wait and retry; a missing camera detail is `unclear` | `FLOWBOARD_ONE_PASS_CONCURRENCY` |
+| Catalog | one pass in film order | **Lập hồ sơ nhân vật song song** (`catalog_parallel`): story segments 4 at a time after the first, merged on face/voice evidence (`catalog_waves.py`). ~5× on job 1011's first 93 shots. |
+| Scene staging | 8 scenes at a time (scenes of one place stay in order) | `FLOWBOARD_STAGING_PARALLEL` |
+| Source review | 8 clips at a time, runs while the sheets draw; one retry after a definite failure | `FLOWBOARD_SOURCE_REVIEW_PARALLEL` |
+| Sheets | 16 at a time; a clip starts when its own sheets are ready | run panel |
+| Motion video | 2 renders at a time | **Video chuyển động nhanh** (`motion_profile: fast`): 448 px depth, every second frame, 24 fps; ~4× per clip. |
+| Clips | 16 Seedance renders at a time; 4 source shots per clip | **Clip dài hơn** (`clip_max_shots: 8`) — about half the clips; untested on real output. |
+| Failures | a refusal, a failed sheet or a source finding holds only its own clip | — |
+
+All jobs share one pool (`FLOWBOARD_AUTOMATION_CONCURRENCY`, default 48): a clip
+holds its slot while the provider renders. Clay, Whisper and Demucs run on this
+machine's CPU and keep their own limits (`FLOWBOARD_MOTION_PARALLEL`,
+`FLOWBOARD_QUALITY_PARALLEL`, `FLOWBOARD_AUDIO_PARALLEL`); for a one-hour film they
+are the remaining bottleneck (~2 h of clay on an M1 Pro even with the fast profile).
