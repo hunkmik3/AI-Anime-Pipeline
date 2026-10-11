@@ -22,7 +22,8 @@ from flowboard.services.video_analyzer.source_integrity import comparison_tokens
 BOARD_KEY = 'reskinFindingDispositions'
 # Carried by the white-model motion video, so never a reason to stop a reskin clip.
 MOTION_CARRIED = frozenset({'cuts_timing', 'framing_camera', 'action_positions', 'environment_props'})
-WARNING_ORIGINS = frozenset({'model_note', 'boundary', 'speech_position', 'speech_delivery_cut', 'speech_interjection'})
+WARNING_ORIGINS = frozenset({'model_note', 'boundary', 'speech_position', 'speech_delivery_cut', 'speech_interjection',
+                             'speech_spelling', 'speech_boundary'})
 BLOCKING_ORIGINS = frozenset({'speech_words', 'speech_speaker'})
 
 # Spellings of one spoken form: the clip speaks the shotlist's words either way.
@@ -48,13 +49,36 @@ def spoken(text) -> list[str]:
     return [t for token in comparison_tokens(text) for t in SPOKEN_FORMS.get(token, token).split()]
 
 
-def word_difference(expected: list[str], heard: list[str]) -> str | None:
-    """None when the words agree, 'speech_interjection' when only interjections differ,
-    else 'speech_words'."""
+def _spelling(a: str, b: str) -> bool:
+    """Two hearings of one long word (a name, mostly): 'norriston' / 'norston'."""
+    from difflib import SequenceMatcher
+    return min(len(a), len(b)) >= 5 and SequenceMatcher(None, a, b).ratio() >= .75
+
+
+def word_difference(expected: list[str], heard: list[str], *, edges=(False, False)) -> str | None:
+    """None when the words agree; a warning origin when they differ only by
+    interjections ('speech_interjection'), by hearings of one long word
+    ('speech_spelling') or by one extra word heard right at an edge of the excerpt whose
+    audio touches that edge (``edges``: the neighbouring clip's sound can bleed in there,
+    'speech_boundary'); else 'speech_words'. A word the shotlist lacks anywhere else blocks."""
     if expected == heard:
         return None
     strip = lambda words: [w for w in words if w not in INTERJECTIONS]
-    return 'speech_interjection' if strip(expected) == strip(heard) else 'speech_words'
+    expected, heard = strip(expected), strip(heard)
+    if expected == heard:
+        return 'speech_interjection'
+    from difflib import SequenceMatcher
+    kinds = set()
+    for tag, i1, i2, j1, j2 in SequenceMatcher(None, expected, heard, autojunk=False).get_opcodes():
+        if tag == 'equal':
+            continue
+        if tag == 'replace' and i2 - i1 == j2 - j1 and all(_spelling(a, b) for a, b in zip(expected[i1:i2], heard[j1:j2])):
+            kinds.add('speech_spelling')
+        elif tag == 'insert' and j2 - j1 == 1 and (j1 == 0 and edges[0] or j2 == len(heard) and edges[1]):
+            kinds.add('speech_boundary')
+        else:
+            return 'speech_words'
+    return 'speech_boundary' if 'speech_boundary' in kinds else 'speech_spelling'
 
 
 def severity(finding: dict) -> str:

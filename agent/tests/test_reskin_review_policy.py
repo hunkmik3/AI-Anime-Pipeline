@@ -245,3 +245,17 @@ def test_sheets_draw_while_the_source_is_reviewed_and_clips_follow_their_receipt
     out = drive(pid, a['id'], finish_reskin)
     assert out.status == 'succeeded', out.error
     assert {j.node_id for j in all_jobs(pid) if j.kind == 'clip'} == {'vid:c1', 'vid:c2'}
+
+
+@pytest.mark.parametrize('expected, heard, edges, origin', [
+    ("nathan we are done lex norriston's back", "nathan we are done lex norston's back", (False, False), 'speech_spelling'),
+    ('besides lex norrington who else', 'see besides lex norrington who else', (True, False), 'speech_boundary'),
+    ('no i love you sweetheart', 'going no i love you sweetheart', (True, False), 'speech_boundary'),
+    ('no i love you sweetheart', 'going no i love you sweetheart', (False, False), 'speech_words'),   # not at the edge
+    ('always loved him he is rich', 'i have always loved him he is rich', (True, False), 'speech_words'),  # two words
+    ('i have always loved you', 'i have always loved him', (True, True), 'speech_words'),       # meaning changed
+    ('are you answering where are you', 'vivian why were not you answering where are you', (True, True), 'speech_words'),
+    ('you could never give me what he bye', 'you could never give me what he could bye', (True, True), 'speech_words'),
+])
+def test_long_word_hearings_and_one_edge_word_warn_but_changed_or_missing_words_block(expected, heard, edges, origin):
+    assert policy.word_difference(policy.spoken(expected), policy.spoken(heard), edges=edges) == origin

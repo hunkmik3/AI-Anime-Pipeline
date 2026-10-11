@@ -154,7 +154,9 @@ def validate(answer, shots, offset):
         return findings
     expected = [t for s in shots for d in s.get('dialogue',[]) for t in policy.spoken(d.get('line',''))]
     actual = [t for d in heard for t in policy.spoken(d['text'])]
-    words = policy.word_difference(expected, actual)
+    first, last = shots[0]['source_start']-offset, shots[-1]['source_end']-offset
+    edges = (bool(heard) and heard[0]['start'] <= first+.6, bool(heard) and heard[-1]['end'] >= last-.6)
+    words = policy.word_difference(expected, actual, edges=edges)
     if words:
         findings.append({'criterion':'speech_delivery','origin':words,'message':'Original audio differs from shotlist dialogue.',
                          'expected':' '.join(expected),'heard':' '.join(actual)})
