@@ -23,7 +23,7 @@ BOARD_KEY = 'reskinFindingDispositions'
 # Carried by the white-model motion video, so never a reason to stop a reskin clip.
 MOTION_CARRIED = frozenset({'cuts_timing', 'framing_camera', 'action_positions', 'environment_props'})
 WARNING_ORIGINS = frozenset({'model_note', 'boundary', 'speech_position', 'speech_delivery_cut', 'speech_interjection',
-                             'speech_spelling', 'speech_boundary'})
+                             'speech_spelling', 'speech_boundary', 'criterion_missing'})
 BLOCKING_ORIGINS = frozenset({'speech_words', 'speech_speaker'})
 
 # Spellings of one spoken form: the clip speaks the shotlist's words either way.

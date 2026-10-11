@@ -259,3 +259,15 @@ def test_sheets_draw_while_the_source_is_reviewed_and_clips_follow_their_receipt
 ])
 def test_long_word_hearings_and_one_edge_word_warn_but_changed_or_missing_words_block(expected, heard, edges, origin):
     assert policy.word_difference(policy.spoken(expected), policy.spoken(heard), edges=edges) == origin
+
+
+def test_a_missing_observation_of_a_motion_carried_criterion_warns_but_speech_still_must_be_there():
+    b = two_clips()
+    rows = [{**s, 'id': f'c1:{i + 1}'} for i, s in enumerate(shots_of(b, 'c1'))]
+    answer = deepcopy(receipt(b, 'c1')['observations'])
+    del answer['shots'][0]['criteria']['action_positions']
+    found = review.validate(answer, rows, 0)
+    assert [(f['origin'], policy.severity(f)) for f in found] == [('criterion_missing', 'warning')]
+    del answer['shots'][0]['criteria']['speech_delivery']
+    with pytest.raises(ValueError, match='speech_delivery'):
+        review.validate(answer, rows, 0)

@@ -116,6 +116,12 @@ def validate(answer, shots, offset):
             if (row.get('status') not in {'pass','fail','unclear'} or not isinstance(row.get('evidence'),str)
                     or len(row['evidence'].strip()) < 8 or not isinstance(at,(int,float))
                     or not math.isfinite(at) or not start-.15 <= at <= end+.15):
+                if criterion in policy.MOTION_CARRIED:
+                    # The white-model video carries this; a missing observation is a warning,
+                    # never a reason to discard the clip's speech and identity evidence.
+                    findings.append({'shot':expected['id'],'criterion':criterion,'origin':'criterion_missing',
+                                     'message':f'No valid observation for {criterion}.'})
+                    continue
                 raise ValueError(f"{expected['id']}: thiếu dẫn chứng hợp lệ cho {criterion}.")
             if row['status'] != 'pass':
                 findings.append({'shot':expected['id'], 'criterion':criterion, **row, 'origin':'criterion'})
