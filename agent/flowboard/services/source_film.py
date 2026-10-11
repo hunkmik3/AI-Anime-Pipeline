@@ -460,7 +460,7 @@ async def execute(video_id):
                 prepared, cast, adaptation = await one_pass_film.prepare(
                     row.analysis, routes._work_dir(video_id), row.name, rules,
                     on_progress=routes._progress_writer(video_id), production_scope=scope,
-                    parallel=opt.catalog_parallel)
+                    parallel=opt.catalog_parallel, soft_speech_notes=opt.pipeline == 'reskin_v1')
                 production_analysis = prepared
                 info = prepared['production_scope']
                 previous = current_cfg.get('production_preparation') or {}
@@ -473,7 +473,8 @@ async def execute(video_id):
             elif (row.analysis.get('source_verification') or {}).get('method') != one_pass_film.METHOD:
                 prepared, cast, adaptation = await one_pass_film.prepare(
                     row.analysis, routes._work_dir(video_id), row.name, rules,
-                    on_progress=routes._progress_writer(video_id), parallel=opt.catalog_parallel)
+                    on_progress=routes._progress_writer(video_id), parallel=opt.catalog_parallel,
+                    soft_speech_notes=opt.pipeline == 'reskin_v1')
                 routes._update(video_id, analysis=prepared, cast=cast, adaptation=adaptation)
                 row = read(video_id)
                 production_analysis = row.analysis

@@ -150,3 +150,16 @@ async def test_a_parallel_catalog_reads_each_segment_from_its_own_start_and_agre
     assert starts[(3, 4)] == [] and starts[(5, 6)] == [] and starts[(7, 8)] == []
     strip = lambda shots: [{k: s.get(k) for k in ('shot', 'character_states', 'asset_presence', 'dialogue')} for s in shots]
     assert strip(par['shots']) == strip(seq['shots'])
+
+
+def test_a_reskin_catalog_keeps_the_models_voice_notes_as_reviewer_notes():
+    from flowboard.services.video_analyzer import one_pass_film as film
+    notes = [{'shot': 61, 'code': 'voice_cluster_conflict', 'message': 'kept the visible speaker'},
+             {'shot': 87, 'code': 'prop_continuity_conflict', 'message': 'wristband'},
+             {'shot': 5, 'code': 'missing_environment', 'message': 'needs a place'}]
+    assert [f['shot'] for f in film.blocking(film._model_findings(notes))] == [61, 87, 5]
+    token = film.SOFT_SPEECH_NOTES.set(True)
+    try:
+        assert [f['shot'] for f in film.blocking(film._model_findings(notes))] == [5]
+    finally:
+        film.SOFT_SPEECH_NOTES.reset(token)

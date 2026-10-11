@@ -7,6 +7,7 @@ compiled in code. The legacy independent-source-verification path is untouched.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 from copy import deepcopy
 import hashlib
 import json
@@ -232,6 +233,13 @@ def apply_earlier_states(known, patch, ns):
 
 _SOFT_FINDING = re.compile(r'wardrobe|costume|outfit|cloth|attire|garment|identit', re.I)
 _SPEECH_FINDING = re.compile(r'speaker|voice|dialogue', re.I)
+_CONTINUITY_FINDING = re.compile(r'continuity|custody|prop', re.I)
+# A reskin film reviews every clip against the original audio and video before it is
+# generated, and a speech finding there holds that clip. So in a reskin catalog the
+# model's own notes about voices, speakers and prop continuity (made after it kept the
+# speaker the local evidence shows) are reviewer notes, not a stop for the whole film.
+# The catalog's deterministic speaker and custody checks still block.
+SOFT_SPEECH_NOTES = contextvars.ContextVar('soft_speech_notes', default=False)
 
 
 def _model_findings(found):
@@ -243,6 +251,8 @@ def _model_findings(found):
         code = str(f.get('code') or '') if isinstance(f, dict) else ''
         if _SOFT_FINDING.search(code) and not _SPEECH_FINDING.search(code):
             f = {**f, 'kind': wardrobe_checks.SOFT}
+        elif SOFT_SPEECH_NOTES.get() and (_SPEECH_FINDING.search(code) or _CONTINUITY_FINDING.search(code)):
+            f = {**f, 'kind': wardrobe_checks.SOFT, 'review': 'clip_source_review'}
         out.append(f)
     return out
 
@@ -1223,7 +1233,16 @@ async def _read_catalog_batch(payload, cards, work, model, batch, known, supplie
     return patch, notes
 
 
-async def prepare(analysis, work: Path, title, rules, on_progress=None, *, production_scope=None, parallel=None):
+async def prepare(analysis, work: Path, title, rules, on_progress=None, *, production_scope=None, parallel=None,
+                  soft_speech_notes=False):
+    token = SOFT_SPEECH_NOTES.set(bool(soft_speech_notes))
+    try:
+        return await _prepare(analysis, work, title, rules, on_progress, production_scope=production_scope, parallel=parallel)
+    finally:
+        SOFT_SPEECH_NOTES.reset(token)
+
+
+async def _prepare(analysis, work: Path, title, rules, on_progress=None, *, production_scope=None, parallel=None):
     original = deepcopy(analysis)
     progress_path=work/'one-pass-catalog-progress.json'
     prior=json.loads(progress_path.read_text()) if progress_path.exists() else {}
