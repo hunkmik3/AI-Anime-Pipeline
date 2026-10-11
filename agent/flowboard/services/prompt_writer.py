@@ -52,9 +52,11 @@ TIMING_POLICY_VERSION = 2
 WRITER_MODEL = os.getenv("FLOWBOARD_PROMPT_WRITER_MODEL", "gpt-6-luna")
 WRITER_FALLBACK = os.getenv("FLOWBOARD_PROMPT_WRITER_FALLBACK", "gpt-5-4")
 # Models asked, in order, when the writer and its fallback both decline the same clip (a
-# refusal is not deterministic). Video prompts are written by GPT models (AGENTS.md).
-WRITER_REFUSAL_CHAIN = [m.strip() for m in os.getenv("FLOWBOARD_PROMPT_WRITER_REFUSAL_CHAIN", "gpt-6-1-sol").split(",")
-                        if m.strip().startswith("gpt-")]
+# refusal is not deterministic). Video prompts are written by GPT models (AGENTS.md); for a
+# clip GPT declines, the owner chose Grok, which writes mildly sensitive adult scenes
+# (2026-10-12). The writer's own checks and the independent review still apply.
+WRITER_REFUSAL_CHAIN = [m.strip() for m in os.getenv("FLOWBOARD_PROMPT_WRITER_REFUSAL_CHAIN", "grok-4-7").split(",") if m.strip()]
+REVIEW_REFUSAL_CHAIN = [m.strip() for m in os.getenv("FLOWBOARD_PROMPT_REVIEW_REFUSAL_CHAIN", "grok-4-7").split(",") if m.strip()]
 WRITER_ON = os.getenv("FLOWBOARD_PROMPT_WRITER", "on").strip().lower() not in ("off", "0", "false", "no")
 REVIEW_MODEL = os.getenv("FLOWBOARD_PROMPT_REVIEW_MODEL", WRITER_MODEL)
 REVIEW_FALLBACK = os.getenv("FLOWBOARD_PROMPT_REVIEW_FALLBACK", WRITER_FALLBACK)
@@ -1380,12 +1382,20 @@ async def review_prompt(prompt: str, requirements: list[dict], references: list[
         try:
             review = await adapt_mod.ask_json(review_system, review_input, adapt_mod.TextStats(),
                                               model=REVIEW_MODEL, fallback="", attempts=1, temperature=0.0)
-        except avis_text.AvisContentRefusal:
-            # A declined review is no verdict; the fallback model reviews instead.
-            if not REVIEW_FALLBACK or REVIEW_FALLBACK == REVIEW_MODEL:
-                raise
-            review = await adapt_mod.ask_json(review_system, review_input, adapt_mod.TextStats(),
-                                              model=REVIEW_FALLBACK, fallback="", attempts=1, temperature=0.0)
+        except avis_text.AvisContentRefusal as refused:
+            # A declined review is no verdict; the fallback models review instead, in order.
+            review, declined = None, [REVIEW_MODEL]
+            for model in dict.fromkeys([REVIEW_FALLBACK, *REVIEW_REFUSAL_CHAIN]):
+                if not model or model in declined:
+                    continue
+                try:
+                    review = await adapt_mod.ask_json(review_system, review_input, adapt_mod.TextStats(),
+                                                      model=model, fallback="", attempts=1, temperature=0.0)
+                    break
+                except avis_text.AvisContentRefusal:
+                    declined.append(model)
+            if review is None:
+                raise refused
     except Exception as exc:  # noqa: BLE001
         raise WriterError(f"Independent prompt review failed: {exc}") from exc
     if not isinstance(review, dict) or not isinstance(review.get("findings"), list):
