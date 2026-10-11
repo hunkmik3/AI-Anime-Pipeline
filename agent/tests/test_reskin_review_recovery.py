@@ -175,3 +175,22 @@ async def test_a_malformed_answer_is_asked_once_more_and_both_answers_are_kept(m
     assert json.loads((journal.parent/'receipt.attempt-1.json').read_text())['failure']['kind']=='invalid_response'
     await review.inspect({**b,'reskinSourceReview':{}},tmp_path)
     assert len(calls)==2
+
+
+def test_marking_a_review_started_records_the_source_fingerprint_production_needs(monkeypatch,tmp_path):
+    from flowboard.services import production_run
+    from flowboard.db import get_session
+    from flowboard.db.models import AutomationProject
+    b,_,_=setup(monkeypatch,tmp_path)
+    b.pop('sourceMediaSha256')                       # a fresh source board, never reviewed
+    monkeypatch.setattr(reskin,'source_fingerprint',lambda path:reskin.sha256(path))
+    pid=project(b)
+    payload=review.mark_started(pid)
+    with get_session() as s:
+        board=s.get(AutomationProject,pid).board
+    assert board['sourceMediaSha256']==reskin.sha256(tmp_path/'source.mp4')
+    assert board['reskinSourceReview']['status']=='in_progress'
+    assert board['reskinSourceReview']['input_digest']==payload['input_digest']==pm.digest(reskin.source_contract(board))
+    report=production_run.preview(board,str(pid),{'resolution':'480p'})
+    assert not any('vân tay' in str(i.get('message','')) for i in report['issues']), report['issues']
+    assert report['source_pending']==['c1']

@@ -354,10 +354,9 @@ async def finish_board(row, opt, board):
     if opt.pipeline == 'reskin_v1':
         from flowboard.services import reskin, reskin_source_review, production_manifest, production_progress
         state(video_id,board_ready=True,stage='reskin_review')
-        payload={'input_digest':production_manifest.digest(reskin.source_contract(board))}
         # The sheets are not part of the reviewed source contract: production starts now and
         # draws them while the source is reviewed; each clip waits for its own receipt.
-        reskin_source_review.mark_started(row.automation_project_id, payload['input_digest'])
+        payload = reskin_source_review.mark_started(row.automation_project_id)
         # Not yet the committed handoff (run_id): a failed review is resumed by running this
         # source again, which finds the same run by its request key.
         run = start_run()

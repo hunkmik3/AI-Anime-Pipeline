@@ -334,10 +334,12 @@ async def inspect(board, work: Path, on_progress=None, *, parallel=None):
     return report
 
 
-def mark_started(project_id, input_digest):
-    """Say on the board that a review of exactly this source contract runs now, so the
+def mark_started(project_id):
+    """Say on the board that a review of its current source contract runs now, so the
     material sheets (not part of the reviewed contract) can draw meanwhile while every
-    clip waits for its own receipt. A current finished review is left as it is."""
+    clip waits for its own receipt. Records the source file's fingerprint first, as the
+    review itself would (production needs it for the motion videos). Returns the
+    review payload; a current finished review is left as it is."""
     import uuid
     from sqlmodel import select
     from flowboard.db import get_session
@@ -346,16 +348,17 @@ def mark_started(project_id, input_digest):
     with get_session() as session:
         project=session.exec(select(AutomationProject).where(AutomationProject.id==uuid.UUID(str(project_id))).with_for_update()).one()
         board=automation_jobs.project_board(session,project)
-        if pm.digest(reskin.source_contract(board)) != input_digest:
-            raise ValueError('Shotlist đã đổi sau khi yêu cầu đối chiếu. Lưu bản sửa rồi đối chiếu lại.')
+        sha=reskin.source_fingerprint(reskin.source_path(board['sourceVideoId']))
+        board['sourceMediaSha256']=sha
+        input_digest=pm.digest(reskin.source_contract(board))
         old=(project.board or {}).get('reskinSourceReview') or {}
-        if old.get('status')=='reviewed' and old.get('input_digest')==input_digest:
-            return old
-        marker={'status':'in_progress','input_digest':input_digest,'started_at':datetime.now(timezone.utc).isoformat(),
-                'receipts':[],'findings':[]}
-        project.board={**(project.board or {}),'reskinSourceReview':marker}
+        changes={'sourceMediaSha256':sha}
+        if not (old.get('status')=='reviewed' and old.get('input_digest')==input_digest):
+            changes['reskinSourceReview']={'status':'in_progress','input_digest':input_digest,
+                'started_at':datetime.now(timezone.utc).isoformat(),'receipts':[],'findings':[]}
+        project.board={**(project.board or {}),**changes}
         project.revision+=1;session.add(project);session.commit()
-        return marker
+        return {'input_digest':input_digest}
 
 
 async def review_project(project_id, payload, on_progress=None):
