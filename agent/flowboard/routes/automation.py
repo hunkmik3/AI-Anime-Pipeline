@@ -167,7 +167,7 @@ def _keep_earned(incoming: dict[str, Any], stored: dict[str, Any]) -> dict[str, 
     if "adaptation" not in incoming and "adaptation" in stored:
         incoming["adaptation"] = stored["adaptation"]
     # Server-issued source receipts cannot be forged/cleared by canvas autosave.
-    for key in ('sourceMediaSha256','reskinSourceReview','reskinVersion','motionReference'):
+    for key in ('sourceMediaSha256','reskinSourceReview','reskinVersion','motionReference','reskinFindingDispositions'):
         if key in stored: incoming[key] = stored[key]
         else: incoming.pop(key, None)
     nodes = incoming.get("nodes")
@@ -951,13 +951,44 @@ def reskin_status(project_id: uuid.UUID, user=Depends(get_optional_user)):
         project=_load(s,project_id,user)
         board=automation_jobs.project_board(s,project)
         packages=production_run.selected_packages(board,str(project_id),[])
-        issues=reskin.readiness(board,packages)
+        shared,held=reskin.split_readiness(board,packages)
+        issues=shared+[f'{k}: {e}' for k,v in held.items() for e in v]
         return {'ready':not issues,'issues':issues,'source_review':board.get('reskinSourceReview'),
+                'ready_clips':[] if shared else [p['sequence_key'] for p in packages if p['sequence_key'] not in held],
+                'held_clips':held,'dispositions':board.get('reskinFindingDispositions') or {},
                 'output_ratio':board.get('aspectRatio'),'clips':len(packages)}
 
 
 class ReskinReviewBody(BaseModel):
     expected_revision: int = Field(ge=0)
+
+
+class ReskinFindingAccept(BaseModel):
+    expected_revision: int = Field(ge=0)
+    keys: list[str] = Field(min_length=1, max_length=500)
+    note: str = Field(default='', max_length=500)
+
+
+@router.post('/projects/{project_id}/reskin/findings/accept')
+def accept_reskin_findings(project_id: uuid.UUID, body: ReskinFindingAccept, user=Depends(get_optional_user)):
+    """The owner accepts blocking source findings as they are (e.g. a known ASR slip).
+    Keyed to this review's receipts: an edited and re-reviewed shot asks again."""
+    from flowboard.services import reskin, reskin_review_policy as policy
+    with get_session() as s:
+        _load(s,project_id,user)
+        project=s.exec(select(AutomationProject).where(AutomationProject.id==project_id).with_for_update()).one()
+        if project.revision != body.expected_revision:
+            raise HTTPException(409,detail='Board đã thay đổi. Tải lại trước khi chấp nhận.')
+        board=automation_jobs.project_board(s,project)
+        if not reskin.enabled(board): raise HTTPException(400,detail='Chỉ áp dụng cho board Reskin.')
+        who=(getattr(user,'display_name',None) or getattr(user,'username',None) or 'owner') if user else 'owner'
+        try:
+            updated=policy.accept(project.board or {},body.keys,who,body.note)
+        except ValueError as exc:
+            raise HTTPException(409,detail=str(exc)) from exc
+        project.board={**(project.board or {}),policy.BOARD_KEY:updated[policy.BOARD_KEY]}
+        project.revision+=1;s.add(project);s.commit()
+        return {'revision':project.revision,'accepted':len(body.keys)}
 
 
 @router.post('/projects/{project_id}/reskin/review',status_code=202)
@@ -989,7 +1020,9 @@ def create_job(project_id: uuid.UUID, body: JobCreate, user=Depends(get_optional
         board = automation_jobs.project_board(s,row)
         from flowboard.services import reskin, production_run
         if reskin.enabled(board):
-            problems=reskin.readiness(board,production_run.selected_packages(board,str(project_id),[]))
+            # Board-wide gates only: a clip's own findings hold its prompt and video
+            # (checked at dispatch), never another clip's material sheets.
+            problems,_held=reskin.split_readiness(board,production_run.selected_packages(board,str(project_id),[]))
             if problems: raise HTTPException(409,detail='; '.join(problems))
         node = next((n.get('data') for n in board.get('nodes',[]) if n.get('id')==body.node_id),None)
         if not node: raise HTTPException(422,detail="Job target is not on this board.")

@@ -28,7 +28,8 @@ async def test_missing_summary_keeps_observations_without_fabricated_approval(mo
     with pytest.raises(review.ReviewIncomplete) as caught:
         await review.inspect(b,tmp_path)
     report=caught.value.report
-    assert report['counts']=={'received':1,'validated':0,'total':1}
+    assert {k:report['counts'][k] for k in ('received','validated','total')}=={'received':1,'validated':0,'total':1}
+    assert report['counts']['blocked_clips']==['c1'] and report['status']=='needs_review'
     assert report['receipts'][0]['observations']==answer
     assert report['errors'][0]['kind']=='invalid_response'
     assert journal.read_bytes()==before

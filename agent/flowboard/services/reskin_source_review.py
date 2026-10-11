@@ -16,8 +16,8 @@ from pathlib import Path
 import httpx
 
 from flowboard.services import reskin, production_manifest as pm, production_media as media, avis_text, atrium_text
+from flowboard.services import reskin_review_policy as policy
 from flowboard.services.video_analyzer.one_pass_film import atomic
-from flowboard.services.video_analyzer.source_integrity import comparison_tokens
 
 MODEL = 'gemini-2.5-pro'
 
@@ -36,6 +36,13 @@ def summary(report):
     errors = report.get('errors') or []
     if errors:
         text += ' ' + '; '.join(f"{e['clip']}: {e['message']}" for e in errors)
+    if 'blocked_clips' in counts:
+        blocked = counts['blocked_clips']
+        if blocked:
+            text += f" {len(blocked)} clip cần xử lý trước khi gen: {', '.join(blocked[:8])}{'…' if len(blocked) > 8 else ''}."
+        if counts.get('warning'):
+            text += f" {counts['warning']} cảnh báo không chặn (camera, vị trí, ghi chú)."
+        return text[:1200]
     content = [f for f in report.get('findings',[]) if f.get('criterion') != 'review_incomplete']
     if content:
         text += f" Còn {len(set(f.get('clip') for f in content))} đoạn có phát hiện nguồn cần xử lý."
@@ -92,13 +99,15 @@ def validate(answer, shots, offset):
         raise ValueError('Đối chiếu nguồn thiếu hoặc đổi thứ tự shot.')
     if not isinstance(answer.get('findings'),list) or not isinstance(answer.get('limitations'),list):
         raise ValueError('Đối chiếu nguồn thiếu danh sách phát hiện / giới hạn.')
-    findings = list(answer['findings'])
+    # The model's own notes are kept and shown; its real problems also arrive as statuses.
+    findings = [{**(f if isinstance(f, dict) else {'message': str(f)}), 'origin': 'model_note'} for f in answer['findings']]
     for observed, expected in zip(answer['shots'], shots):
         start, end = expected['source_start']-offset, expected['source_end']-offset
         for key, value in [('start',start),('end',end)]:
             t = observed.get(key)
             if not isinstance(t, (int,float)) or not math.isfinite(t) or abs(t-value) > .15:
-                findings.append({'shot':expected['id'], 'criterion':'cuts_timing', 'message':'Observed boundary differs or is missing', 'observed':t,'expected':value})
+                findings.append({'shot':expected['id'], 'criterion':'cuts_timing', 'origin':'boundary',
+                                 'message':'Observed boundary differs or is missing', 'observed':t,'expected':value})
         for criterion in CRITERIA:
             row = (observed.get('criteria') or {}).get(criterion) or {}
             at = row.get('at_s')
@@ -107,7 +116,7 @@ def validate(answer, shots, offset):
                     or not math.isfinite(at) or not start-.15 <= at <= end+.15):
                 raise ValueError(f"{expected['id']}: thiếu dẫn chứng hợp lệ cho {criterion}.")
             if row['status'] != 'pass':
-                findings.append({'shot':expected['id'], 'criterion':criterion, **row})
+                findings.append({'shot':expected['id'], 'criterion':criterion, **row, 'origin':'criterion'})
     heard = answer.get('heard_dialogue')
     if not isinstance(heard,list): raise ValueError('Thiếu bản nghe thoại độc lập.')
     for row in heard:
@@ -125,35 +134,51 @@ def validate(answer, shots, offset):
             raise ValueError('Bản nghe thoại trỏ tới shot không có trong đoạn nguồn.')
         for s in shots:
             expected=[(t,d.get('speaker_id') or d.get('who'),d.get('delivery') or 'on_camera')
-                      for d in s.get('dialogue',[]) for t in comparison_tokens(d.get('line',''))]
+                      for d in s.get('dialogue',[]) for t in policy.spoken(d.get('line',''))]
             actual=[(t,d.get('speaker_id'),d.get('delivery')) for d in heard if d['shot_id']==s['id']
-                    for t in comparison_tokens(d['text'])]
-            if expected != actual:
-                findings.append({'shot':s['id'],'criterion':'speech_delivery',
-                    'message':'Original audio words, speaker or delivery differ in this shot.'})
+                    for t in policy.spoken(d['text'])]
+            words=policy.word_difference([w for w,_,_ in expected],[w for w,_,_ in actual])
+            if words:
+                findings.append({'shot':s['id'],'criterion':'speech_delivery','origin':words,
+                    'message':'Original audio words differ in this shot.',
+                    'expected':' '.join(w for w,_,_ in expected),'heard':' '.join(w for w,_,_ in actual)})
+            elif [x[1:] for x in expected] != [x[1:] for x in actual]:
+                findings.append({'shot':s['id'],'criterion':'speech_delivery','origin':'speech_speaker',
+                    'message':'Original audio speaker or delivery differs in this shot.'})
             for d in (d for d in heard if d['shot_id']==s['id']):
                 if d['start'] < s['source_start']-offset-.15 or d['end'] > s['source_end']-offset+.15:
-                    findings.append({'shot':s['id'],'criterion':'speech_delivery',
+                    findings.append({'shot':s['id'],'criterion':'speech_delivery','origin':'speech_position',
                         'message':'Heard dialogue piece crosses its assigned shot; review the cut.'})
         return findings
-    expected = [t for s in shots for d in s.get('dialogue',[]) for t in comparison_tokens(d.get('line',''))]
-    actual = [t for d in heard for t in comparison_tokens(d['text'])]
-    if actual != expected:
-        findings.append({'criterion':'speech_delivery','message':'Original audio differs from shotlist dialogue.',
+    expected = [t for s in shots for d in s.get('dialogue',[]) for t in policy.spoken(d.get('line',''))]
+    actual = [t for d in heard for t in policy.spoken(d['text'])]
+    words = policy.word_difference(expected, actual)
+    if words:
+        findings.append({'criterion':'speech_delivery','origin':words,'message':'Original audio differs from shotlist dialogue.',
                          'expected':' '.join(expected),'heard':' '.join(actual)})
     else:
         expected_words=[(d.get('speaker_id') or d.get('who'), d.get('delivery') or 'on_camera',
                          s['source_start']-offset,s['source_end']-offset)
-                        for s in shots for d in s.get('dialogue',[]) for _ in comparison_tokens(d.get('line',''))]
-        heard_words=[d for d in heard for _ in comparison_tokens(d['text'])]
+                        for s in shots for d in s.get('dialogue',[]) for _ in policy.spoken(d.get('line',''))]
+        heard_words=[d for d in heard for _ in policy.spoken(d['text'])]
+        bounds=[(s['source_start']-offset,s['source_end']-offset) for s in shots]
         for (speaker,delivery,start,end),d in zip(expected_words,heard_words):
-            if d.get('speaker_id') != speaker or d.get('delivery') != delivery:
-                findings.append({'criterion':'speech_delivery','message':'Speaker or delivery differs / remains unclear.',
+            if d.get('speaker_id') != speaker:
+                findings.append({'criterion':'speech_delivery','origin':'speech_speaker','message':'Speaker differs / remains unclear.',
+                                 'expected':str(speaker)+' · '+delivery,
+                                 'heard':str(d.get('speaker_id','unknown'))+' · '+str(d.get('delivery','unclear'))})
+                break
+            if d.get('delivery') != delivery:
+                # One heard piece carries one delivery; a sentence can go from offscreen to
+                # on camera at a cut, so a piece that spans a cut cannot settle it per word.
+                spans_cut=sum(1 for a,b in bounds if d['start'] < b-.15 and d['end'] > a+.15) > 1
+                findings.append({'criterion':'speech_delivery','origin':'speech_delivery_cut' if spans_cut else 'speech_speaker',
+                                 'message':'Delivery differs'+(' in a piece that spans a cut.' if spans_cut else ' / remains unclear.'),
                                  'expected':str(speaker)+' · '+delivery,
                                  'heard':str(d.get('speaker_id','unknown'))+' · '+str(d.get('delivery','unclear'))})
                 break
             if d['end'] < start-.15 or d['start'] > end+.15:
-                findings.append({'criterion':'speech_delivery','message':'Dialogue occurs outside its assigned shot.'})
+                findings.append({'criterion':'speech_delivery','origin':'speech_position','message':'Dialogue occurs outside its assigned shot.'})
                 break
     return findings
 
@@ -245,7 +270,8 @@ async def inspect(board, work: Path, on_progress=None, *, parallel=3):
         return ({'clip':seq['sequence']['key'],'input_digest':key,'path':str(journal),
                  'observations':record['answer'],'source_sha256':board['sourceMediaSha256'],
                  **({'validation_error':validation_error} if validation_error else {})},
-                [{'clip':seq['sequence']['key'],**(f if isinstance(f,dict) else {'message':str(f)})} for f in found])
+                [{'clip':seq['sequence']['key'],**f} for f in policy.annotate(
+                    [f if isinstance(f,dict) else {'message':str(f)} for f in found],key)])
     async def bounded(seq):
         nonlocal completed
         async with semaphore:
@@ -261,14 +287,17 @@ async def inspect(board, work: Path, on_progress=None, *, parallel=3):
             message=safe_error(result) or type(result).__name__
             errors.append({'clip':seq['sequence']['key'],'kind':'request_incomplete','message':message})
             findings.append({'clip':seq['sequence']['key'], 'criterion':'review_incomplete',
-                             'message':message})
+                             'message':message,'severity':'blocking'})
         else:
             receipt, found = result
             receipts.append(receipt); findings.extend(found)
             if receipt.get('validation_error'):
                 errors.append({'clip':seq['sequence']['key'],'kind':'invalid_response','message':receipt['validation_error']})
-    report={'input_digest':digest,'status':'needs_review' if findings else 'reviewed','receipts':receipts,'findings':findings,
-            'errors':errors,'counts':{'received':len(receipts),'validated':completed,'total':len(sequences)},
+    accepted=policy.accepted(board)
+    open_blocking=[f for f in findings if f.get('severity')=='blocking' and f.get('key') not in accepted]
+    report={'input_digest':digest,'status':'needs_review' if open_blocking else 'reviewed','receipts':receipts,'findings':findings,
+            'errors':errors,'counts':{'received':len(receipts),'validated':completed,'total':len(sequences),
+                                      **policy.summarize(open_blocking+[f for f in findings if f.get('severity')!='blocking'])},
             'method':'bounded_original_video_audio','limitations':['Automated audiovisual review can be mistaken; not a 100% fidelity certification.']}
     atomic(work/'reskin-source-review'/'latest.json',report)
     if errors:

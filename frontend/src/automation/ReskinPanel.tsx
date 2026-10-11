@@ -4,12 +4,25 @@ import { useAutomation, type AutoNodeData } from "../store/automation";
 import { ProductionRun } from "./ProductionRun";
 import { STYLE_PRESETS } from "../store/videoAnalysis";
 
+type Finding = { key?: string; severity?: "blocking" | "warning"; clip?: string; shot?: string; criterion?: string;
+  message?: string; evidence?: string; finding?: string; description?: string; expected?: string; heard?: string };
+
+function findingText(f: Finding) {
+  return f.message || f.evidence || f.finding || f.description || f.criterion || f.key || JSON.stringify(f);
+}
+
+function FindingLine({ f, children }: { f: Finding; children?: React.ReactNode }) {
+  return <p className="reskin-panel__finding">{children}<b>{f.clip} {f.shot}</b> · {findingText(f)}
+    {f.expected && <><br />Shotlist: {f.expected}<br />Nghe lại: {f.heard}</>}</p>;
+}
+
 export function ReskinPanel() {
   const state = useAutomation();
   const { currentProjectId: pid, jobs, nodes } = state;
   const [source,setSource]=useState<any>(null), [runtime,setRuntime]=useState<any>(null);
   const [error,setError]=useState(""), [busy,setBusy]=useState(false);
   const [editId,setEditId]=useState(""), [draft,setDraft]=useState("");
+  const [picked,setPicked]=useState<string[]>([]), [note,setNote]=useState("");
   const jobVersion=jobs.map(j=>`${j.id}:${j.status}`).join("|");
   const active=jobs.some(j=>["running","queued","preparing","submitting","unknown"].includes(j.status));
   const runs=jobs.filter(j=>j.kind === "production_run"), latest=runs[runs.length-1];
@@ -29,6 +42,22 @@ export function ReskinPanel() {
       const job=await api<any>(`/api/automation/projects/${pid}/reskin/review`,{method:"POST",body:JSON.stringify({expected_revision:current.projectRevision})});
       if(["failed","unknown"].includes(job.status))throw new Error(job.error || "Giữ checkpoint đang lỗi; không tự gửi lại lượt đã tính phí.");
       await current.refreshJobs();
+    }catch(e){setError((e as Error).message)}finally{setBusy(false)}
+  }
+  const findings:Finding[]=source?.source_review?.findings||[], accepted=source?.dispositions||{};
+  // Reports written before findings carried a severity show every item as needing a decision.
+  const holding=findings.filter(f=>f.severity!=="warning"&&!(f.key&&accepted[f.key]));
+  const warnings=findings.filter(f=>f.severity==="warning"), acceptedFindings=findings.filter(f=>f.key&&accepted[f.key]);
+  const heldClips=Object.keys(source?.held_clips||{}), readyClips:string[]=source?.ready_clips||[];
+  async function acceptPicked() {
+    setBusy(true);setError("");
+    try {
+      await state.saveNow(); const current=useAutomation.getState();
+      if(current.saveState === "error")throw new Error(current.saveError);
+      await api(`/api/automation/projects/${pid}/reskin/findings/accept`,{method:"POST",
+        body:JSON.stringify({expected_revision:current.projectRevision,keys:picked,note:note.trim()})});
+      setPicked([]);setNote("");
+      await current.openProject(pid!);
     }catch(e){setError((e as Error).message)}finally{setBusy(false)}
   }
   function applyShots() {
@@ -52,7 +81,19 @@ export function ReskinPanel() {
       {source?.source_review?.counts&&<p>Đã nhận kết quả: {source.source_review.counts.received}/{source.source_review.counts.total} đoạn. Đọc xong chưa có nghĩa shotlist đã đạt để gen; các nhận xét cần đối soát nằm bên dưới.</p>}
       {source?.issues?.map((text:string,i:number)=><p key={i}>{text}</p>)}<p>Đối chiếu tự động có thể nhầm. Giữ đầy đủ phát hiện, dẫn chứng và giới hạn; không tự duyệt phần chưa rõ.</p>
       {state.sourceVideoId&&<video controls preload="none" src={`/api/automation/videos/${state.sourceVideoId}/source`}/>}
-      {source?.source_review?.findings?.map((f:any,i:number)=><p className="reskin-panel__finding" key={i}><b>{f.clip} {f.shot}</b> · {f.message||f.evidence||f.finding||f.description||f.criterion||f.key||JSON.stringify(f)}{f.expected&&<><br/>Shotlist: {f.expected}<br/>Nghe lại: {f.heard}</>}</p>)}
+      {source?.source_review&&<p><b>{readyClips.length}</b> clip đã sẵn sàng gen{heldClips.length>0&&<> · <b>{heldClips.length}</b> clip chờ xử lý: {heldClips.join(", ")}</>}{warnings.length>0&&<> · {warnings.length} cảnh báo không chặn</>}.</p>}
+      {holding.length>0&&<fieldset className="reskin-panel__decisions"><legend>Cần xử lý trước khi gen (lời thoại, người nói, danh tính, trang phục)</legend>
+        {holding.map((f,i)=><FindingLine key={f.key||i} f={f}>{f.key&&f.criterion!=="review_incomplete"&&<input type="checkbox" aria-label="Chấp nhận phát hiện này"
+          checked={picked.includes(f.key)} disabled={busy||active} onChange={e=>setPicked(p=>e.target.checked?[...p,f.key!]:p.filter(k=>k!==f.key))}/>}</FindingLine>)}
+        <p className="reskin-panel__muted">Sửa shotlist nếu nguồn đúng là khác. Nếu shotlist đã đúng (ví dụ máy nghe nhầm), chọn và chấp nhận; lần sửa shot sau sẽ hỏi lại.</p>
+        <label>Ghi chú<input value={note} maxLength={500} onChange={e=>setNote(e.target.value)} placeholder="Ví dụ: đã nghe lại, câu thoại trong shotlist đúng."/></label>
+        <button className="auto-btn" disabled={busy||active||!picked.length} onClick={()=>void acceptPicked()}>Chấp nhận {picked.length||""} mục đã chọn</button>
+      </fieldset>}
+      {warnings.length>0&&<details><summary>{warnings.length} cảnh báo không chặn · camera, vị trí, bối cảnh, ghi chú của model</summary>
+        <p className="reskin-panel__muted">Video chuyển động nguồn đã mang góc máy, điểm cắt và vị trí; các mục này chỉ để tham khảo.</p>
+        {warnings.map((f,i)=><FindingLine key={f.key||i} f={f}/>)}</details>}
+      {acceptedFindings.length>0&&<details><summary>{acceptedFindings.length} mục đã chấp nhận</summary>
+        {acceptedFindings.map((f,i)=><FindingLine key={f.key||i} f={f}><span>{accepted[f.key!]?.by} · </span></FindingLine>)}</details>}
       <details><summary>Dẫn chứng từng đoạn</summary>{source?.source_review?.receipts?.map((r:any)=><details key={r.clip}><summary>{r.clip}</summary><pre>{JSON.stringify(r.observations,null,2)}</pre></details>)}</details>
       <details><summary>Sửa shotlist nâng cao</summary><p>Xem/nghe nguồn rồi sửa đúng đoạn có lỗi. Các trường chưa sửa được giữ nguyên; thay nguồn sẽ cần đối chiếu lại.</p>
         {nodes.filter(n=>n.data.kind==="sequence").map(n=><button className="auto-btn" disabled={active||busy} key={n.id} onClick={()=>{setEditId(n.id);setDraft(JSON.stringify((n.data as any).shots,null,2))}}>{(n.data as any).sequence.title||n.id.replace('seq:','')}</button>)}

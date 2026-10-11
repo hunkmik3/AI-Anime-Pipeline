@@ -12904,6 +12904,11 @@ button:disabled {
 .reskin-panel__source > video { width:100%; max-height:380px; background:#0d1419; margin:12px 0; }
 .reskin-panel pre { max-height:420px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; }
 .reskin-panel__finding { padding:10px; background:#302b22; border-radius:7px; }
+.reskin-panel__finding input[type=checkbox] { margin:0 8px 0 0; vertical-align:middle; }
+.reskin-panel__decisions { display:grid; gap:8px; margin:12px 0; padding:12px; border:1px solid #5a4a2c; border-radius:8px; }
+.reskin-panel__decisions legend { padding:0 6px; color:#f0d9a8; font-size:13px; }
+.reskin-panel__decisions label { display:grid; gap:4px; font-size:12px; color:#9aaeb8; }
+.reskin-panel__decisions input:not([type]) { padding:7px 9px; background:#10181e; border:1px solid #32434d; border-radius:6px; color:inherit; }
 .reskin-panel .auto-btn { margin:5px 8px 5px 0; }
 .reskin-panel__media { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; }
 .reskin-panel figure { margin:0; min-width:0; }

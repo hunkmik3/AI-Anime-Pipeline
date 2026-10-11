@@ -63,12 +63,24 @@ action/positions, identity/wardrobe, environments/props and dialogue delivery.
 Words, speaker IDs and delivery must agree; utterance timing is bounded to the
 selected interval (not a claimed phoneme/lip-sync measurement).
 
+Findings have a severity (`reskin_review_policy.py`). The white-model video carries
+cuts, camera, framing, positions and set geometry, so those criteria, boundary drift,
+the reviewer's free-text notes, interjection-only word differences and a delivery
+change inside a piece that spans a cut are **warnings**: shown, never a hold. Words,
+speaker, on-camera/offscreen delivery, identity/wardrobe and an incomplete review are
+**blocking**, and hold only their own clip: the other clips get their materials,
+prompts and videos meanwhile, and the run ends at `source_review` (never assembling a
+film with a hole). A new run, after the findings are settled, reuses everything made.
+
 For a specific finding, inspect the original in Pipeline Reskin. Advanced shotlist
 editing preserves fields not edited. After saving corrections, explicitly request
 **Đối chiếu bản sửa**. Identical intervals reuse receipts; changed intervals are
 read again. Unknown charged attempts retain their journal and require provider
-reconciliation; a button click does not silently repeat the charge. There is no
-one-click override that falsely marks a source finding approved.
+reconciliation; a button click does not silently repeat the charge. When the shotlist
+is already right (e.g. the listening pass misheard), the owner can accept a blocking
+finding: the decision records who, when and an optional note, is keyed to that exact
+receipt, and lapses as soon as the shot is edited and read again. An incomplete
+review cannot be accepted.
 
 Server-owned source receipts cannot be forged/cleared by canvas autosave. Source
 edits invalidate review; target design/style/ratio edits leave the source review

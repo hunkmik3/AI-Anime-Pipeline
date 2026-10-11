@@ -43,9 +43,11 @@ def test_empty_findings_alone_are_not_approval():
 
 
 @pytest.mark.parametrize('criterion',review.CRITERIA)
-def test_each_unknown_source_criterion_blocks(criterion):
+def test_an_unknown_speech_or_identity_criterion_blocks_and_motion_carried_ones_warn(criterion):
+    # The white-model video carries cuts, camera, positions and the set's geometry; the
+    # words, speakers and who wears what must be settled before a clip is generated.
     b=fixture();b['reskinSourceReview']['receipts'][0]['observations']['shots'][0]['criteria'][criterion]['status']='unclear'
-    assert not run.preview(b,'film',config())['ready']
+    assert run.preview(b,'film',config())['ready'] == (criterion in review.policy.MOTION_CARRIED)
 
 
 def test_source_changes_invalidate_but_design_ratio_do_not():

@@ -116,7 +116,10 @@ def material_specs(board, packs):
 def preview(board, pid, config):
     packs=selected_packages(board,pid,config.get('sequence_keys',[]))
     issues=[{'clip':p['sequence_key'],**i} for p in packs for i in p['issues'] if i.get('blocking') and i['code'] not in ('missing_material','missing_costume_sheet')]
-    issues += [{'code':'reskin_source','message':e,'blocking':True} for e in reskin.readiness(board,packs)]
+    shared,held=reskin.split_readiness(board,packs)
+    issues += [{'code':'reskin_source','message':e,'blocking':True} for e in shared]
+    if held and len(held)==len(packs):
+        issues += [{'clip':k,'code':'reskin_source','message':e,'blocking':True} for k,v in held.items() for e in v]
     if reskin.enabled(board) and config.get('resolution','480p') not in ('480p','720p'):
         issues.append({'code':'reskin_resolution','message':'Provider hiện được cấu hình cho 480p hoặc 720p.','blocking':True})
     if reskin.enabled(board) and config.get('boundary_frames'):
@@ -140,6 +143,8 @@ def preview(board, pid, config):
             'shots':sum(len(p['shots']) for p in packs),'materials':len(specs) if specs else len({k for p in packs for k in p['materials']}),
             'missing_materials':sum(not s['plate'].get('referenceUrl') for s in specs.values()) if specs else len({k for p in packs for k,m in p['materials'].items() if not m['reference_url']}),
             'issues':issues,'ready':not issues,'config':config,
+            # Clips held by their own source findings; the others are produced meanwhile.
+            **({'source_holds':held} if held and len(held)<len(packs) else {}),
             'dependency_notes':next(iter(specs.values()),{}).get('dependency_notes',[]),
             'pipeline':reskin.VERSION if reskin.enabled(board) else 'cinematic',
             'atlases':[{"clip":p['sequence_key'],**reference_atlas.plan(p['materials'],1 if reskin.enabled(board) else 2 if config.get('boundary_frames') else 0)} for p in packs] if not any(i['code']=='reference_limit' for i in issues) else []}
@@ -413,9 +418,15 @@ def advance(s, run, project, all_jobs):
     state=deepcopy(run.result);state.setdefault('tasks',{});run.result=state
     board=jobs.overlay(project.board or {},all_jobs);config=run.payload['config']
     if input_version(board)!=run.payload['input_version']: raise Blocked('Production inputs changed. Start a new run to reuse matching tasks and rebuild affected outputs.')
-    packs=selected_packages(board,project.id,config.get('sequence_keys',[]));specs=material_specs(board,packs)
-    source_errors=reskin.readiness(board,packs)
-    if source_errors: raise Blocked('; '.join(source_errors))
+    packs=selected_packages(board,project.id,config.get('sequence_keys',[]))
+    shared,held=reskin.split_readiness(board,packs)
+    if shared: raise Blocked('; '.join(shared))
+    if held and len(held)==len(packs): raise Blocked('; '.join(f'{k}: {e}' for k,v in held.items() for e in v))
+    # A clip held by its own source findings waits; every other clip is produced now.
+    usable=lambda ps:[p for p in ps if p['sequence_key'] not in held]
+    packs=usable(packs);specs=material_specs(board,packs)
+    if held: state['source_holds']=held
+    else: state.pop('source_holds',None)
     # Re-check before ANY material call, including resumed runs. Previously the
     # source gate lived only in preview/prompt dispatch, after image spending.
     if prompt_coverage.is_strict(board.get('productionAssets'),board.get('sourceVerification')):
@@ -456,7 +467,7 @@ def advance(s, run, project, all_jobs):
     if errors: state['errors']=errors;state['stage']='blocked';return state,'blocked'
     if waiting: return state,'running'
     # Recompile only after all material dependencies have settled.
-    board=jobs.overlay(project.board or {},all_jobs);packs=selected_packages(board,project.id,config.get('sequence_keys',[]))
+    board=jobs.overlay(project.board or {},all_jobs);packs=usable(selected_packages(board,project.id,config.get('sequence_keys',[])))
     if config.get('kyc_required',board.get('kyc',False)):
         missing=sorted({m['reference_url'] for p in packs for m in p['materials'].values() if not m['media_id']})
         if missing:
@@ -473,7 +484,7 @@ def advance(s, run, project, all_jobs):
         try:_task(s,run,all_jobs,state,'raccord:'+scene['scope'],'raccord','raccord:'+scene['version'],'',scene)
         except Waiting:waiting=True
     if waiting:return state,'running'
-    board=jobs.overlay(project.board or {},all_jobs);packs=selected_packages(board,project.id,config.get('sequence_keys',[]))
+    board=jobs.overlay(project.board or {},all_jobs);packs=usable(selected_packages(board,project.id,config.get('sequence_keys',[])))
     blockers=[i for p in packs for i in p['issues'] if i.get('blocking')]
     if blockers: raise Blocked(json.dumps(blockers,ensure_ascii=False))
     shots={sh['id']:(p,sh) for p in packs for sh in p['shots']}
@@ -615,7 +626,7 @@ def advance(s, run, project, all_jobs):
     if holds:
         # Every clip is generated; those the review did not clear wait for the reviewer.
         state['quality_holds']=list(holds.values());state['errors']=list(holds.values());state['stage']='quality'
-        if reskin.enabled(board) and config.get('assemble') and len(state.get('preview_clips',{}))==len(packs):
+        if reskin.enabled(board) and config.get('assemble') and not held and len(state.get('preview_clips',{}))==len(packs):
             try:
                 draft=_task(s,run,all_jobs,state,'preview_assembly','assemble','production:preview','',
                     {'clips':[state['preview_clips'][p['sequence_key']] for p in packs],
@@ -623,6 +634,11 @@ def advance(s, run, project, all_jobs):
                      'timing_policy':config.get('timing_policy','full_take'),'require_quality':False})
                 state['preview_output']={**draft.result,'status':'unapproved_preview','findings_retained':True}
             except Waiting: return state,'running'
+        return state,'blocked'
+    if held:
+        # Never assemble a film with holes: the clips produced so far are kept and a new
+        # run, once the owner has resolved or accepted these findings, reuses them.
+        state['stage']='source_review';state['errors']=[f'{k}: {e}' for k,v in held.items() for e in v]
         return state,'blocked'
     if config['mode']=='render' and config['assemble']:
         state['stage']='assembly'

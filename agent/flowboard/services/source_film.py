@@ -337,11 +337,22 @@ async def finish_board(row, opt, board):
                 {'input_digest':production_manifest.digest(reskin.source_contract(board))},
                 on_progress=routes._progress_writer(video_id))
         except reskin_source_review.ReviewIncomplete as exc:
-            production_progress.record_source_review(video_id,exc.report)
-            raise
+            # The report (with every receipt that did arrive) is already on the board.
+            review, incomplete = exc.report, exc
+        else:
+            incomplete = None
         production_progress.record_source_review(video_id,review)
         if review.get('status') != 'reviewed':
-            raise ValueError(reskin_source_review.summary(review))
+            # Clips held by their own findings wait for the owner; the rest go ahead.
+            with get_session() as s:
+                current = production_run.jobs.project_board(s, s.get(AutomationProject,row.automation_project_id))
+            packages = production_run.selected_packages(current, str(row.automation_project_id), [])
+            shared, held = reskin.split_readiness(current, packages)
+            if shared or len(held) == len(packages):
+                if incomplete:
+                    raise incomplete
+                raise ValueError(reskin_source_review.summary(review))
+            state(video_id, source_holds=sorted(held))
     with get_session() as s:
         revision = s.get(AutomationProject,row.automation_project_id).revision
     state(video_id, board_ready=True, stage='production')

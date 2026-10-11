@@ -101,35 +101,49 @@ def motion_payload(board, package):
                                            if r.get('clip') == package['sequence_key']]), 'fps': 30}
 
 
-def readiness(board, packages):
+def split_readiness(board, packages):
+    """(issues that stop every clip, {clip key: issues that stop only that clip}).
+
+    The review's input digest covers the whole board, so an edit anywhere asks for a
+    re-review (unchanged intervals reuse their receipts). Inside a current review each
+    clip stands on its own receipt: a blocking finding the owner has not accepted holds
+    that clip only; warnings never hold one (see reskin_review_policy)."""
     if not enabled(board):
-        return []
-    issues = []
+        return [], {}
+    shared, held = [], {}
     review = board.get('reskinSourceReview') or {}
-    if review.get('input_digest') != digest(source_contract(board)) or review.get('status') != 'reviewed':
-        issues.append('Shotlist reskin chưa đối chiếu đủ với hình/âm thanh nguồn, hoặc đã thay đổi sau đối chiếu.')
-    if not review.get('receipts') or review.get('findings'):
-        issues.append('Cần xử lý các mục nguồn chưa rõ trước khi gen material hoặc video.')
-    from flowboard.services import reskin_source_review
+    if review.get('input_digest') != digest(source_contract(board)):
+        shared.append('Shotlist reskin chưa đối chiếu đủ với hình/âm thanh nguồn, hoặc đã thay đổi sau đối chiếu.')
+    if not board.get('kyc'):
+        shared.append('Reskin cần bật KYC để gắn đồng thời video chuyển động và các sheet đã chọn.')
+    from flowboard.services import reskin_source_review, reskin_review_policy as policy
     for package in packages:
-        receipt = next((r for r in review.get('receipts',[]) if r.get('clip') == package['sequence_key']),None)
+        key = package['sequence_key']
+        receipt = next((r for r in review.get('receipts',[]) if r.get('clip') == key),None)
         try:
             if not receipt or receipt.get('source_sha256') != board.get('sourceMediaSha256'):
                 raise ValueError('Thiếu bằng chứng đúng phiên bản nguồn.')
-            rows = [{**s,'id':f"{package['sequence_key']}:{i+1}"}
-                    for i,s in enumerate(selected_shots(board,package['sequence_key']))]
-            if reskin_source_review.validate(receipt.get('observations'),rows,max(0,rows[0]['source_start']-1)):
-                raise ValueError('Còn phát hiện nguồn chưa giải quyết.')
+            if receipt.get('validation_error'):
+                raise ValueError('Lượt đối chiếu nguồn trả về thiếu cấu trúc: ' + str(receipt['validation_error'])[:200])
+            rows = [{**s,'id':f"{key}:{i+1}"} for i,s in enumerate(selected_shots(board,key))]
+            found = reskin_source_review.validate(receipt.get('observations'),rows,max(0,rows[0]['source_start']-1))
+            stops = policy.blocking(found, receipt.get('input_digest',''), board)
+            if stops:
+                raise ValueError(f'Còn {len(stops)} phát hiện nguồn cần xử lý: ' + '; '.join(policy.describe(f) for f in stops[:3]))
         except (ValueError,KeyError,TypeError,StopIteration) as exc:
-            issues.append(package['sequence_key']+': '+str(exc))
-    if not board.get('kyc'):
-        issues.append('Reskin cần bật KYC để gắn đồng thời video chuyển động và các sheet đã chọn.')
+            held.setdefault(key, []).append(str(exc))
     for package in packages:
         try:
             motion_payload(board, package)
         except (ValueError, KeyError, TypeError, StopIteration) as exc:
-            issues.append(package['sequence_key'] + ': ' + str(exc))
-    return issues
+            held.setdefault(package['sequence_key'], []).append(str(exc))
+    return shared, held
+
+
+def readiness(board, packages):
+    """Every issue for these packages, flat: what any one of them still needs."""
+    shared, held = split_readiness(board, packages)
+    return shared + [f'{key}: {issue}' for key, issues in held.items() for issue in issues]
 
 
 def staging_payload(board, package, references):
