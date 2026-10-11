@@ -9,8 +9,8 @@ import uuid
 from sqlmodel import select
 
 from flowboard.db import get_session
-from flowboard.db.models import AutomationJob, AutomationProject
-from flowboard.services import reference_atlas, material_dependencies, automation, automation_jobs as jobs, production_manifest as pm, shot_package, raccord, prompt_coverage, set_restyle
+from flowboard.db.models import AutomationJob, AutomationProject, VideoAnalysis
+from flowboard.services import reference_atlas, material_dependencies, automation, automation_jobs as jobs, production_manifest as pm, shot_package, raccord, prompt_coverage, set_restyle, reskin
 
 KIND = 'production_run'
 RUNNING = {'running'}
@@ -46,7 +46,7 @@ def input_version(board):
             nodes.append({'id':n['id'],'manual_prompt':d.get('prompt',''),'end_state':d.get('endState') or '',
                           'staging_decisions':d.get('stagingDecisions') or []})
     return pm.digest({'schema':SCHEMA,'style_version':style_version(board),'video_standard_version':film_motion.version(board.get('style')),'nodes':nodes, **{k:board.get(k) for k in
-        ('productionAssets','sourceVerification','preserveSourceShots','style','aspectRatio','imageModel','imageSize','kyc','unmoderated','dialogueLanguage','targetCasting','motionReference')}})
+        ('productionAssets','sourceVerification','preserveSourceShots','style','aspectRatio','imageModel','imageSize','kyc','unmoderated','dialogueLanguage','targetCasting','motionReference','sourceVideoId','sourceMediaSha256','reskinSourceReview','reskinVersion')}})
 
 
 def selected_packages(board, pid, keys):
@@ -116,6 +116,11 @@ def material_specs(board, packs):
 def preview(board, pid, config):
     packs=selected_packages(board,pid,config.get('sequence_keys',[]))
     issues=[{'clip':p['sequence_key'],**i} for p in packs for i in p['issues'] if i.get('blocking') and i['code'] not in ('missing_material','missing_costume_sheet')]
+    issues += [{'code':'reskin_source','message':e,'blocking':True} for e in reskin.readiness(board,packs)]
+    if reskin.enabled(board) and config.get('resolution','480p') not in ('480p','720p'):
+        issues.append({'code':'reskin_resolution','message':'Provider hiện được cấu hình cho 480p hoặc 720p.','blocking':True})
+    if reskin.enabled(board) and config.get('boundary_frames'):
+        issues.append({'code':'reskin_frames','message':'Reskin dùng một ảnh rộng 21:9; tắt ảnh đầu/cuối từng clip.','blocking':True})
     try: specs=material_specs(board,packs)
     except ValueError as exc: specs={};issues.append({'code':'material_graph','message':str(exc),'blocking':True})
     for p in packs:
@@ -128,7 +133,7 @@ def preview(board, pid, config):
             issues += [{'clip':p['sequence_key'],'code':'source_not_ready','message':e,'blocking':True} for e in
                        prompt_coverage.source_readiness_issues(seq['shots'],board.get('sourceVerification'))]
         count=len({m['reference_url'] or m['asset_id'] for m in p['materials'].values()})
-        try:reference_atlas.plan(p['materials'],2 if config.get('boundary_frames') else 0)
+        try:reference_atlas.plan(p['materials'],1 if reskin.enabled(board) else 2 if config.get('boundary_frames') else 0)
         except ValueError as exc:issues.append({'clip':p['sequence_key'],'code':'reference_limit','message':str(exc),'blocking':True})
     from flowboard.services.production_progress import make_plan
     return {'progress_plan': make_plan(specs, packs), 'input_version':input_version(board),'clips':[p['sequence_key'] for p in packs],
@@ -136,13 +141,19 @@ def preview(board, pid, config):
             'missing_materials':sum(not s['plate'].get('referenceUrl') for s in specs.values()) if specs else len({k for p in packs for k,m in p['materials'].items() if not m['reference_url']}),
             'issues':issues,'ready':not issues,'config':config,
             'dependency_notes':next(iter(specs.values()),{}).get('dependency_notes',[]),
-            'atlases':[{"clip":p['sequence_key'],**reference_atlas.plan(p['materials'],2 if config.get('boundary_frames') else 0)} for p in packs] if not any(i['code']=='reference_limit' for i in issues) else []}
+            'pipeline':reskin.VERSION if reskin.enabled(board) else 'cinematic',
+            'atlases':[{"clip":p['sequence_key'],**reference_atlas.plan(p['materials'],1 if reskin.enabled(board) else 2 if config.get('boundary_frames') else 0)} for p in packs] if not any(i['code']=='reference_limit' for i in issues) else []}
 
 
 def start(pid, revision, config, request_key):
     with get_session() as s:
         project=s.exec(select(AutomationProject).where(AutomationProject.id==pid).with_for_update()).one()
         if project.revision!=revision: raise ValueError('Board changed; save/reload before starting.')
+        if request_key.startswith('source-film:'):
+            source=s.get(VideoAnalysis,uuid.UUID(request_key.removeprefix('source-film:')))
+            if not source or source.automation_project_id!=pid: raise ValueError('Source handoff belongs to a different project.')
+            from flowboard.services.source_generation_scope import configure
+            config=configure(project.board or {},source.options.get('auto_production') or {},config)
         previous=s.exec(select(AutomationJob).where(AutomationJob.project_id==pid,AutomationJob.request_key==request_key)).first()
         if previous:
             if previous.kind!=KIND or previous.payload.get('config')!=config: raise ValueError('Request key already used with different settings.')
@@ -154,6 +165,11 @@ def start(pid, revision, config, request_key):
         if active: raise ValueError('A production run is already active for this project.')
         board=jobs.project_board(s,project);report=preview(board,pid,config)
         if not report['ready']: raise ValueError(json.dumps(report['issues'],ensure_ascii=False))
+        if reskin.enabled(board):
+            from flowboard.services.reskin_runtime import require_ready
+            require_ready(audio=config.get('audio_cleanup',False))
+            if reskin.source_fingerprint(reskin.source_path(board['sourceVideoId'])) != board.get('sourceMediaSha256'):
+                raise ValueError('File nguồn đã thay đổi; đối chiếu lại nguồn trước khi chạy.')
         job=AutomationJob(project_id=pid,kind=KIND,node_id='production',request_key=request_key,status='paused' if config.get('review_masters') else 'running',
             payload={'config':config,'input_version':report['input_version']},result={'stage':'master_review' if config.get('review_masters') else 'materials','tasks':{},'created_counts':{},'progress_plan':report['progress_plan'],'preview':report})
         s.add(job);s.commit();s.refresh(job);return jobs.public(job)
@@ -186,6 +202,7 @@ def _task(s, run, all_jobs, state, key, kind, node, slot, payload, metadata=None
         limit=config['image_parallel'] if kind=='plate' else config['video_parallel'] if kind=='clip' else config['text_parallel']
         family={'write','raccord','clip_quality'} if kind in ('write','raccord','clip_quality') else {kind}
         if kind=='clip_quality':limit=min(2,limit)  # Bound concurrent local Whisper processes.
+        if kind in ('motion_reference','audio_cleanup'):limit=1
         if sum(j.kind in family for j in active)>=limit: raise Waiting()
         existing=AutomationJob(project_id=run.project_id,kind=kind,node_id=node,slot=slot,payload=payload,
                     request_key=request,prepared={**(metadata or {}),'run_id':str(run.id)})
@@ -208,7 +225,7 @@ def set_fixtures(board, env_id):
         if d.get('kind')!='asset':continue
         item=d.get('asset') or {}
         if env_id in (item.get('fixture_of') or []):
-            out.append({'name':item.get('name',''),'description':item.get('description') or item.get('summary') or ''})
+            out.append({'name':item.get('name',''),'description':item.get('target_description') or item.get('description') or item.get('summary') or ''})
     return sorted(out,key=lambda f:f['name'])
 
 
@@ -300,13 +317,16 @@ def material_payload(spec, deps, board):
                 aspect_ratio=board.get('aspectRatio','16:9'),has_reference=bool(refs))
     if not style_version(board):
         prompt += '\nLOCKED TARGET DEFINITION: '+json.dumps(item,ensure_ascii=False)
+    if item.get('target_description'):
+        prompt += '\nOWNER TARGET DESIGN (replaces source surface appearance only): '+item['target_description']
+        prompt += '\nPreserve source role, prop function, scale needed for the action and character identity across states. Do not draw source and replacement as two objects.'
     return {'prompt':prompt,'image_model':board.get('imageModel',automation.DEFAULT_IMAGE_MODEL),'image_size':board.get('imageSize','2K'),
             'aspect_ratio':'16:9' if style_version(board) else board.get('aspectRatio','16:9'),
             'reference_urls':list(dict.fromkeys(refs)),'variant_count':1,
             'style':style,'style_version':style_version(board), 'material_kind':item.get('kind',kind) if kind=='asset' else kind}
 
 
-def writing_body(board, pid, package, continuity_refs, atlas_receipts=None):
+def writing_body(board, pid, package, continuity_refs, atlas_receipts=None, motion_receipt=None):
     from flowboard.routes.automation import VideoWriteBody
     from flowboard.services.prompt_writer import TIMING_POLICY_VERSION
     key=package['sequence_key'];seq=next(n['data'] for n in board['nodes'] if n.get('id')=='seq:'+key)
@@ -322,6 +342,8 @@ def writing_body(board, pid, package, continuity_refs, atlas_receipts=None):
         node=nodes[m['asset_id']]['data'];item=node[node['kind']]
         ref={**item,'source_asset_id':m['asset_id'],'id':m['asset_id'],
              'state_key':m.get('state_key'),**binding(m)}
+        if item.get('target_description'):
+            ref.update(description=m['description'],target_appearance=item['target_description'])
         if m.get('view'):
             # "Hotel corridor — reverse view": the same location, named as one place in two directions.
             ref.update(view=m['view'],name=f"{item.get('name') or m['asset_id']} — {m['view'].split(':')[0]} view")
@@ -342,6 +364,7 @@ def writing_body(board, pid, package, continuity_refs, atlas_receipts=None):
         'preserve_source_shots':board.get('preserveSourceShots',True),'shot_package':package,'timing_policy_version':TIMING_POLICY_VERSION,'reference_format_version':1,
         'production_context':pm.context(pm.build(board,str(pid)),key),'continuity_references':continuity_refs,'reference_atlases':atlas_receipts or [],
         **({'motion_reference':board['motionReference']} if board.get('motionReference') else {})}
+    if motion_receipt: sequence['motion_receipt']=motion_receipt
     # Source state is already complete and deterministic; independent writers need not wait for a previous writer.
     return VideoWriteBody(sequence=sequence,shots=seq['shots'],characters=characters,environment=environment,
         reference_assets=extras,production_assets=board.get('productionAssets') if prompt_coverage.is_strict(board.get('productionAssets'),board.get('sourceVerification')) else None,
@@ -391,6 +414,8 @@ def advance(s, run, project, all_jobs):
     board=jobs.overlay(project.board or {},all_jobs);config=run.payload['config']
     if input_version(board)!=run.payload['input_version']: raise Blocked('Production inputs changed. Start a new run to reuse matching tasks and rebuild affected outputs.')
     packs=selected_packages(board,project.id,config.get('sequence_keys',[]));specs=material_specs(board,packs)
+    source_errors=reskin.readiness(board,packs)
+    if source_errors: raise Blocked('; '.join(source_errors))
     # Re-check before ANY material call, including resumed runs. Previously the
     # source gate lived only in preview/prompt dispatch, after image spending.
     if prompt_coverage.is_strict(board.get('productionAssets'),board.get('sourceVerification')):
@@ -440,7 +465,8 @@ def advance(s, run, project, all_jobs):
             # Ingest overlays supply media IDs on the next tick.
             return state,'running'
     state['stage']='raccord';waiting=False
-    scenes=raccord.scene_inputs(board,str(project.id));selected={p['sequence_key'] for p in packs}
+    # The accepted reskin uses original motion, not a second generated blocking plan.
+    scenes={} if reskin.enabled(board) else raccord.scene_inputs(board,str(project.id));selected={p['sequence_key'] for p in packs}
     state['raccord_scopes'] = [scene['scope'] for scene in scenes.values() if any(sh['sequence_key'] in selected for sh in scene['shots'])]
     for scene in scenes.values():
         if not any(sh['sequence_key'] in selected for sh in scene['shots']): continue
@@ -458,6 +484,15 @@ def advance(s, run, project, all_jobs):
         key=package['sequence_key']
         clip={'url':job.result['url'],'job_id':str(job.id),
             'duration_s':sum(float(sh['duration_s']) for sh in package['shots']), 'sequence_key':key}
+        if config.get('audio_cleanup'):
+            state['stage']='audio_cleanup'
+            from flowboard.services import reskin_audio
+            cleaned=_task(s,run,all_jobs,state,'audio:'+key,'audio_cleanup','vid:'+key,'audio',
+                {'version':reskin_audio.VERSION,'source_job':str(job.id),'url':clip['url'],
+                 'has_dialogue':any(d.get('line') for sh in package['shots'] for d in sh.get('dialogue',[]))})
+            state.setdefault('audio_results',{})[key]=cleaned.result
+            clip.update(url=cleaned.result['url'],native_url=job.result['url'])
+        state.setdefault('preview_clips',{})[key]=clip
         state['stage']='quality'
         q=_task(s,run,all_jobs,state,'quality:'+key,'clip_quality','vid:'+key,'quality',
             {'version':quality.VERSION,'model':quality.MODEL,'source_job':clip['job_id'],'url':clip['url'],
@@ -471,6 +506,10 @@ def advance(s, run, project, all_jobs):
     for p in packs:
         key=p['sequence_key'];refs=[]
         try:
+            motion=None
+            if reskin.enabled(board):
+                state['stage']='motion'
+                motion=_task(s,run,all_jobs,state,'motion:'+key,'motion_reference','vid:'+key,'motion',reskin.motion_payload(board,p))
             # Boundary plans are optional paid reference stills, never falsely declared exact i2v constraints.
             if config['boundary_frames']:
                 for index,which in ((0,'start'),(len(p['shots'])-1,'end')):
@@ -481,7 +520,7 @@ def advance(s, run, project, all_jobs):
                     im=j.result['images'][0]
                     refs.append({'id':f'frame:{key}:{which}','name':f'{which} composition guide','url':im['reference_url'],'media_id':im.get('media_id'),
                                  'description':f'Approved planned {which} composition; do not copy sheet layout or add events.'})
-            if config['mode']=='render':
+            if config['mode']=='render' and not reskin.enabled(board):
                 for shot in p['shots']:
                     pred=shot.get('raccord',{}).get('predecessor_shot_id')
                     if not pred: continue
@@ -515,14 +554,25 @@ def advance(s, run, project, all_jobs):
                                       'walls, doorways, materials, fixtures, light and where the people stand in it. The camera angle '
                                       'may differ; locked shot facts and identity sheets take precedence.'})
             atlas_receipts=[];atlas_waiting=False
-            packing=reference_atlas.plan(p['materials'],len({r['url'] for r in refs}))
+            packing=reference_atlas.plan(p['materials'],1 if reskin.enabled(board) else len({r['url'] for r in refs}))
             for page in packing['pages']:
                 try:
                     atlas_job=_task(s,run,all_jobs,state,'atlas:'+page['version'],'atlas','atlas:'+page['version'],'',page)
                     atlas_receipts.append({'job_id':str(atlas_job.id),'result':atlas_job.result})
                 except Waiting:atlas_waiting=True
             if atlas_waiting:raise Waiting()
-            body=writing_body(board,project.id,p,refs,atlas_receipts)
+            if reskin.enabled(board):
+                state['stage']='staging'
+                materials=reference_atlas.apply(p['materials'],atlas_receipts)
+                bindings=[{'name':m['name'],'kind':m['kind'],'url':m['reference_url'],
+                           'asset_id':m['asset_id'],'description':m['description'],
+                           'atlas_instruction':m.get('atlas_instruction','')} for m in materials.values()]
+                stage=_task(s,run,all_jobs,state,'staging:'+key,'plate','vid:'+key,'staging',reskin.staging_payload(board,p,bindings))
+                im=stage.result['images'][0]
+                refs.append({'id':'staging:'+key,'name':'Single wide scene staging','url':im['reference_url'],'media_id':im.get('media_id'),
+                             'description':'ONE continuous 21:9 wide staging scene; positions and eyelines only, never a shot/framing override.'})
+                state.setdefault('reskin_references',{})[key]={'motion':motion.result,'staging':im}
+            body=writing_body(board,project.id,p,refs,atlas_receipts,motion.result if motion else None)
             # Validate all deterministic inputs before queuing paid text or video.
             jobs.validate_package(board,str(project.id),body)
             if config['mode']=='render':
@@ -546,6 +596,7 @@ def advance(s, run, project, all_jobs):
             clip=ClipBody(prompt=out['prompt'],duration_seconds=out['duration_seconds'],reference_urls=[r['ref_url'] for r in ordered],
                 kyc_media_ids=[r['media_id'] for r in ordered] if board.get('kyc') else [],unmoderated=board.get('unmoderated',True),
                 aspect_ratio=p['aspect_ratio'],resolution=config['resolution'],project_id=project.id,sequence_key=key,
+                motion_media_id=motion.result['media_id'] if motion else '',motion_job_id=str(motion.id) if motion else '',
                 prompt_contract=body,coverage=out.get('coverage'),contract_digest=out.get('contract_digest',''),coverage_token=out.get('coverage_token',''))
             j=_task(s,run,all_jobs,state,'clip:'+key,'clip','vid:'+key,'',clip.model_dump(mode='json'))
             clips[key]=checked_clip(j,p)
@@ -564,6 +615,14 @@ def advance(s, run, project, all_jobs):
     if holds:
         # Every clip is generated; those the review did not clear wait for the reviewer.
         state['quality_holds']=list(holds.values());state['errors']=list(holds.values());state['stage']='quality'
+        if reskin.enabled(board) and config.get('assemble') and len(state.get('preview_clips',{}))==len(packs):
+            try:
+                draft=_task(s,run,all_jobs,state,'preview_assembly','assemble','production:preview','',
+                    {'clips':[state['preview_clips'][p['sequence_key']] for p in packs],
+                     'fps':config['fps'],'aspect_ratio':board.get('aspectRatio','1:1'),'resolution':config['resolution'],
+                     'timing_policy':config.get('timing_policy','full_take'),'require_quality':False})
+                state['preview_output']={**draft.result,'status':'unapproved_preview','findings_retained':True}
+            except Waiting: return state,'running'
         return state,'blocked'
     if config['mode']=='render' and config['assemble']:
         state['stage']='assembly'

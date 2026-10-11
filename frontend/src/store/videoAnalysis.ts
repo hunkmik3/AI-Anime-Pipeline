@@ -105,11 +105,13 @@ export interface Cast {
 }
 
 export interface AutoFilmOptions {
+  pipeline?: 'cinematic' | 'reskin_v1';
   style: FilmStyle;
   aspect_ratio: string;
   resolution: string;
   clip_seconds: number;
   casting_request?: string;
+  environment_request?: string;
   review_masters?: boolean;
   timing_policy?: 'full_take' | 'source_duration';
   kyc: boolean;

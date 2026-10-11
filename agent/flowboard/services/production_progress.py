@@ -18,10 +18,11 @@ SOURCE_LABELS = {
     'source_verify': ('Đối chiếu nguồn', 'shot'), 'source_refine': ('Sửa mục nguồn có lỗi', 'shot'),
     'source_identity': ('Đối chiếu danh tính', 'mục'), 'source_layers': ('Đọc lớp hình ảnh', 'mục'),
     'source_context': ('Đối chiếu ngữ cảnh', 'mục'), 'source_protocol_review': ('Kiểm tra kết luận', 'mục'),
+    'reskin_review': ('Đối chiếu hình & thoại gốc cho reskin', 'phân đoạn'),
 }
 PHASE_LABELS = {'analysis':'Phân tích video gốc', 'profiles':'Lập hồ sơ nhân vật & bối cảnh',
     'adaptation':'Chuẩn bị shotlist', 'casting':'Áp dụng tạo hình tùy chỉnh', 'design':'Viết hồ sơ tạo hình',
-    'board':'Tạo board & liên kết material', 'source_refinement':'Xử lý dữ liệu nguồn'}
+    'board':'Tạo board & liên kết material', 'source_refinement':'Xử lý dữ liệu nguồn', 'reskin_review':'Đối chiếu nguồn reskin'}
 
 
 def record_source(video_id, stage, done, total):
@@ -39,12 +40,55 @@ def record_source(video_id, stage, done, total):
         row.progress = progress; row.updated_at = jobs.now(); s.add(row); s.commit()
 
 
+def record_catalog(video_id, report):
+    """Persist successful and quarantined units separately, including fast cache replay."""
+    from flowboard.db import get_session
+    stamp = jobs.now().isoformat()
+    with get_session() as s:
+        row = s.exec(select(VideoAnalysis).where(VideoAnalysis.id == video_id).with_for_update()).first()
+        if not row: return
+        progress = deepcopy(row.progress or {})
+        history = progress.setdefault('steps', {})
+        old = history.get('profiles', {})
+        if report.get('production_scope'):
+            # The complete-film backlog remains visible in audit data; it is not
+            # relabelled successful when a selected production prefix is ready.
+            progress['full_catalog'] = deepcopy(report['production_scope'].get('full_catalog_summary') or {})
+        pending = len(report.get('pending_shots') or [])
+        history['profiles'] = {**old, 'done':report['completed'], 'total':report['total'],
+            'processed':report['processed'], 'pending':pending, 'recovery_state':report['state'],
+            'pending_shots':report.get('pending_shots') or [],
+            'pending_groups':[{'kind':p.get('kind'),'shots':p.get('root_shots',[]),'reason':p.get('error','')[:500]}
+                              for p in report.get('pending',[])],
+            'automatic_repairs':sum(r.get('status')=='corrected' for r in report.get('automatic_repairs',[])),
+            **({'production_scope':deepcopy(report['production_scope'])} if report.get('production_scope') else {}),
+            'started_at':old.get('started_at',stamp), 'updated_at':stamp}
+        progress.update(stage='profiles',done=report['completed'],total=report['total'])
+        row.progress = progress; row.updated_at = jobs.now(); s.add(row); s.commit()
+
+
 def make_plan(specs, packs):
     return {'materials': [{'key': key, 'node': sp['node_id'], 'slot': sp['slot'],
         'name': sp['item'].get('name', sp['asset_id']),
         # A set's reverse view is drawn from its master, like a costume from the identity sheet.
         'group': 'masters' if sp['kind'] == 'environment' and sp['slot'] != 'reverse' or sp['kind'] == 'character' and sp['slot'] == 'identity' else 'variants'}
         for key, sp in specs.items()], 'clips': [p['sequence_key'] for p in packs]}
+
+
+def record_source_review(video_id, report):
+    """Received responses, valid structure and source approval are different."""
+    from flowboard.db import get_session
+    from flowboard.services.reskin_source_review import summary
+    counts=report['counts'];stamp=jobs.now().isoformat()
+    with get_session() as s:
+        row=s.exec(select(VideoAnalysis).where(VideoAnalysis.id==video_id).with_for_update()).one()
+        progress=deepcopy(row.progress or {});history=progress.setdefault('steps',{})
+        old=history.get('reskin_review',{})
+        history['reskin_review']={**old,'done':counts['validated'],'total':counts['total'],
+            'received':counts['received'],'review_status':report['status'],'note':summary(report),
+            'errors':report.get('errors',[]),'started_at':old.get('started_at',stamp),'updated_at':stamp}
+        progress.update(stage='reskin_review',done=counts['validated'],total=counts['total'])
+        row.progress=progress;row.updated_at=jobs.now();s.add(row);s.commit()
 
 
 def stage(key, label, done, total, status='waiting', unit='mục', **extra):
@@ -54,6 +98,8 @@ def stage(key, label, done, total, status='waiting', unit='mục', **extra):
         status = 'succeeded'
     # A single opaque provider call has no intermediate percentage.
     pct = round(done / total * 100) if total and not (total == 1 and done == 0 and status in {'running','queued'}) else None
+    if pct is not None and total and done < total:
+        pct = min(99, pct)
     return {'key': key, 'label': label, 'done': done, 'total': total, 'percent': pct,
         'status': status, 'unit': unit, **extra}
 
@@ -69,16 +115,30 @@ def source_stages(row, active_source=False):
         complete = total is not None and total > 0 and done >= total
         status = 'succeeded' if complete else 'running' if active_source else 'paused'
         if row.status == 'failed' and not complete: status = 'failed'
+        pending = entry.get('pending',0) if key == 'profiles' else 0
+        if pending and entry.get('recovery_state') == 'needs_review': status = 'blocked'
+        if key == 'reskin_review' and entry.get('review_status') == 'needs_review': status = 'blocked'
         if key == 'speech' and (row.analysis or {}).get('speech_error'): status = 'failed'; done = 0
         label, unit = SOURCE_LABELS.get(key, ('Phân tích nguồn: ' + key, 'mục'))
+        selected_scope = entry.get('production_scope') or {}
+        scope_note = ''
+        if selected_scope:
+            label = 'Lập hồ sơ phần được chọn để gen'
+            scope_note = (f"Phạm vi 0–{selected_scope['actual_source_end_seconds']:.1f}s; "
+                          f"đã giữ kết quả đọc toàn bộ {selected_scope['full_source_shots']} shot. "
+                          'Hoàn tất hồ sơ chưa có nghĩa đã đối chiếu đạt video/âm thanh gốc. ')
         out.append(stage('source:'+key, label, done, total, status, unit,
+            failed=pending,
+            note=entry.get('note','')+scope_note+((f"Đã xét {entry.get('processed',done)}/{total} shot · {pending} shot chờ đối soát; "
+                  "chỉ các shot đã lập hồ sơ hợp lệ mới được tính hoàn tất. ") if pending else '') +
+                 (f"Đã tự đối chiếu hình/âm thanh và sửa {entry['automatic_repairs']} nhóm." if entry.get('automatic_repairs') else ''),
             started_at=entry.get('started_at'), updated_at=entry.get('updated_at'), error=((row.analysis or {}).get('speech_error') or row.error or '') if key == 'speech' and status == 'failed' else (row.error or '') if status == 'failed' else ''))
     phases = cfg.get('phase_history', {})
     for key, entry in phases.items():
         if key not in PHASE_LABELS: continue
         # Detailed counters replace the broad stage when available.
         detailed = {'analysis': ['probe','cuts','speech','keyframes','vision','joint_vision','story'],
-            'adaptation':['adapt'], 'profiles':['profiles','cast'], 'design':['design']}.get(key, [])
+            'adaptation':['adapt'], 'profiles':['profiles','cast'], 'design':['design'], 'reskin_review':['reskin_review']}.get(key, [])
         if any(k in history for k in detailed): continue
         status = entry.get('status', 'running')
         if status == 'running' and not active_source: status = 'paused'
@@ -114,7 +174,7 @@ def run_stages(run, board, all_jobs):
         'error': by_id[t['id']].error if t.get('id') in by_id else ''} for k,t in result.get('tasks', {}).items()}
     nodes = {n['id']: n.get('data', {}) for n in board.get('nodes', [])}
     phase = result.get('stage'); finished = run.status == 'succeeded'; ready = set(result.get('ready_materials', []))
-    passed_materials = phase in {'raccord','prompts','videos','quality','assembly','complete'}
+    passed_materials = phase in {'raccord','motion','staging','prompts','videos','audio_cleanup','quality','assembly','complete'}
     out = []
     def status_for(records, started=False):
         statuses = {r.get('status') for r in records}
@@ -154,7 +214,13 @@ def run_stages(run, board, all_jobs):
     out.append(stage('raccord', 'Liên tục cảnh / raccord', raccord_total if finished and raccord_total is not None else raccord_done,
         raccord_total, 'skipped' if raccord_total == 0 else status_for(raccord_tasks, phase == 'raccord'), 'cảnh'))
     keys = plan['clips']
-    for prefix, label in [('write','Viết prompt video'),('clip','Gen video'),('quality','Kiểm tra video thực tế')]:
+    steps=[]
+    if board.get('motionReference')=='white_model':
+        steps += [('motion','Video chuyển động gốc'),('staging','Dàn cảnh rộng 21:9')]
+    steps += [('write','Viết prompt video'),('clip','Gen video')]
+    if cfg.get('audio_cleanup') and cfg.get('mode')=='render': steps.append(('audio','Xử lý nhạc nền'))
+    steps.append(('quality','Kiểm tra video thực tế'))
+    for prefix, label in steps:
         if prefix in {'clip','quality'} and cfg.get('mode') != 'render': continue
         recs = [tasks[prefix+':'+key] for key in keys if prefix+':'+key in tasks]
         if prefix=='quality':
@@ -168,7 +234,7 @@ def run_stages(run, board, all_jobs):
             continue
         count = sum(finished or tasks.get(prefix+':'+key, {}).get('status') == 'succeeded' or
             prefix == 'write' and tasks.get('clip:'+key, {}).get('status') == 'succeeded' for key in keys)
-        out.append(stage(prefix, label, count, len(keys), status_for(recs, phase in {'prompts','videos'}), 'clip',
+        out.append(stage(prefix, label, count, len(keys), status_for(recs, phase in {'prompts','videos',prefix,'audio_cleanup'}), 'clip',
             failed=sum(r.get('status') in {'failed','unknown','cancelled'} for r in recs)))
     if cfg.get('mode') == 'render' and cfg.get('assemble'):
         recs = [tasks['assembly']] if 'assembly' in tasks else []
@@ -200,7 +266,7 @@ def snapshot(session, project):
         data = nodes.get(j.node_id, {})
         target = data.get('states', {}).get(j.slot, {}) if j.kind == 'plate' and data.get('kind') == 'character' and j.slot != 'identity' else data.get(j.slot, {}) if j.kind == 'plate' else data
         return str(j.id) in target.get('ignoredRuntimeJobIds', []) or (j.kind == 'write' and j.prepared.get('superseded_by_generation'))
-    attention = [j for j in latest.values() if j.status in jobs.ACTIVE | {'unknown','failed'} and not ignored(j)]
+    attention = [j for j in latest.values() if j.status in jobs.ACTIVE | {'unknown','failed','blocked'} and not ignored(j)]
     node_names = {}
     for n in (project.board or {}).get('nodes', []):
         d=n.get('data', {}); definition=d.get(d.get('kind'), {})

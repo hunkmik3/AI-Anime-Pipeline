@@ -60,6 +60,7 @@ def plan_clips(
     *,
     max_clip_s: float = MAX_CLIP_S,
     min_clip_s: float = MIN_CLIP_S,
+    hard_limit_s: float = HARD_MAX_S,
 ) -> list[dict]:
     """Group shots into clips of ``min_clip_s``..``max_clip_s`` inside each sequence.
 
@@ -67,7 +68,7 @@ def plan_clips(
     Every shot lands in exactly one clip.
     """
     max_clip_s = max(min_clip_s, min(float(max_clip_s), HARD_MAX_S))
-    hard_max = min(HARD_MAX_S, max_clip_s * 1.35)
+    hard_max = min(hard_limit_s, HARD_MAX_S, max_clip_s * 1.35)
     by_n = {s["shot"]: s for s in shots}
     dur = lambda n: by_n[n]["end"] - by_n[n]["start"]  # noqa: E731
     clips: list[dict] = []
@@ -105,7 +106,7 @@ def plan_clips(
 
 
 def plan_dialogue_clips(shots, sequences, dialogue_track, max_clip_s, *, character_states=None,
-                        state_specific_references=False, max_shots=None):
+                        state_specific_references=False, max_shots=None, hard_limit_s=HARD_MAX_S):
     """Never cut a spoken sentence between independent generation requests.
 
     Keep every source shot. Select a shorter safe boundary, or a bounded longer
@@ -128,7 +129,7 @@ def plan_dialogue_clips(shots, sequences, dialogue_track, max_clip_s, *, charact
                 break
             clip_states.update(states)
             end = shots[j]['end']
-            if end-start > HARD_MAX_S + .001: break
+            if end-start > hard_limit_s + .001: break
             crosses = any(d['start'] < end-.001 and d['end'] > end+.001 for d in dialogue_track)
             if not crosses: safe.append(j)
             # Shorter requests reduce omitted cuts/acting beats. A sentence
@@ -140,7 +141,7 @@ def plan_dialogue_clips(shots, sequences, dialogue_track, max_clip_s, *, charact
             if wardrobe_boundary is not None:
                 raise ValueError(f"Source shot {wardrobe_boundary}: wardrobe change crosses a spoken sentence; "
                                  "no dialogue-safe boundary before the change.")
-            raise ValueError(f"Source shot {shots[i]['shot']}: no dialogue-safe boundary within {HARD_MAX_S}s.")
+            raise ValueError(f"Source shot {shots[i]['shot']}: no dialogue-safe boundary within {hard_limit_s}s.")
         last = preferred[-1] if preferred else safe[0]
         qi = next((k for k,q in enumerate(sequences) if q['first_shot'] <= shots[i]['shot'] <= q['last_shot']), 0)
         result.append({'sequence':qi, 'shots':[s['shot'] for s in shots[i:last+1]]})
@@ -659,7 +660,8 @@ def _normalise(characters: list[dict], environments: list[dict]) -> None:
 
 
 async def build_board(analysis: dict, adaptation: dict, cast: Optional[dict] = None,
-                      *, max_clip_s: float = MAX_CLIP_S, preserve_source_shots: bool = True, source_id: str = "") -> dict:
+                      *, max_clip_s: float = MAX_CLIP_S, preserve_source_shots: bool = True, source_id: str = "",
+                      hard_limit_s: float = HARD_MAX_S) -> dict:
     """The /api/automation/breakdown response shape, plus each clip's shots already cut.
 
     ``cast`` is the stored bible when there is one — reusing it keeps the board's
@@ -702,9 +704,9 @@ async def build_board(analysis: dict, adaptation: dict, cast: Optional[dict] = N
     if one_pass_film:
         clips = plan_dialogue_clips(analysis['shots'], sequences_src, analysis.get('dialogue_track') or [], max_clip_s,
                                    character_states={n: row.get('character_states') or {} for n, row in per_shot.items()},
-                                   state_specific_references=True, max_shots=4)
+                                   state_specific_references=True, max_shots=4, hard_limit_s=hard_limit_s)
     else:
-        clips = plan_clips(analysis["shots"], sequences_src, max_clip_s=max_clip_s)
+        clips = plan_clips(analysis["shots"], sequences_src, max_clip_s=max_clip_s,hard_limit_s=hard_limit_s)
 
     sequences: list[dict] = []
     shots_by_seq: dict[str, list[dict]] = {}

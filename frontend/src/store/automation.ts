@@ -47,6 +47,7 @@ export interface CharacterState {
 }
 
 export interface Character {
+  target_description?: string;
   source_asset_id?: string;
   plate?: ImportedPlate;
   key: string;
@@ -58,6 +59,7 @@ export interface Character {
 }
 
 export interface Environment {
+  target_description?: string;
   source_asset_id?: string;
   plate?: ImportedPlate;
   key: string;
@@ -79,6 +81,7 @@ interface ImportedPlate {
 }
 
 export interface Asset {
+  target_description?: string;
   key: string;
   id?: string;
   kind: "prop" | "background_group";
@@ -475,6 +478,10 @@ export const IMAGE_MODEL_LABELS: Record<string, string> = {
 interface AutomationStore {
   sourceVideoId?: string;
   sourcePipeline?: "one_pass" | "verified_source";
+  motionReference?: "white_model";
+  sourceMediaSha256?: string;
+  reskinVersion?: string;
+  reskinSourceReview?: { status: string; input_digest: string; findings: any[]; receipts: any[]; limitations?: string[] };
   dialogueLanguage?: string;
   autoSourceFilm?: boolean;
   productionAssets: ProductionAsset[];
@@ -638,6 +645,10 @@ function boardSettings(board: Partial<GenerationSettings>, caps: Capabilities | 
 export interface BoardFile extends Partial<GenerationSettings> {
   sourceVideoId?: string;
   sourcePipeline?: "one_pass" | "verified_source";
+  motionReference?: "white_model";
+  sourceMediaSha256?: string;
+  reskinVersion?: string;
+  reskinSourceReview?: { status: string; input_digest: string; findings: any[]; receipts: any[]; limitations?: string[] };
   dialogueLanguage?: string;
   autoSourceFilm?: boolean;
   preserveSourceShots?: boolean;
@@ -966,6 +977,11 @@ export function applyRuntimeJobs(nodes: AutoNode[], jobs: RuntimeJob[]): AutoNod
     if (node.data.kind !== "video") continue;
     const clip=latest.get(`${node.id}:clip:`);
     const quality=latest.get(`${node.id}:clip_quality:quality`);
+    const audio=latest.get(`${node.id}:audio_cleanup:audio`);
+    if (audio?.status === "succeeded" && clip && audio.result.source_job === clip.id && audio.result.url) {
+      node.data.nativeClipUrl=clip.result.url;
+      node.data.clipUrl=audio.result.url;
+    }
     node.data.qualityCheck=quality && clip && quality.source_job===clip.id
       ? quality.status==="succeeded" && quality.result.url===node.data.clipUrl ? {...quality.result,status:String(quality.result.status)}
         : {status:runningJob(quality.status)?"running":"needs_review",findings:[{code:"quality_job",message:quality.error||"Đang kiểm tra clip."}]}
@@ -1063,7 +1079,7 @@ export async function ensureRaccord(sequenceKey = ""): Promise<void> {
 
 const createBoard: StateCreator<AutomationStore> = (set, get) => ({
   sourceVideoId: undefined,
-  sourcePipeline: undefined,
+  sourcePipeline: undefined, motionReference: undefined, sourceMediaSha256: undefined, reskinVersion: undefined, reskinSourceReview: undefined,
   dialogueLanguage: "en",
   autoSourceFilm: false,
   script: "",
@@ -1140,6 +1156,10 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
         jobs: [],
         sourceVideoId: board.sourceVideoId,
         sourcePipeline: board.sourcePipeline,
+        motionReference: board.motionReference,
+        sourceMediaSha256: board.sourceMediaSha256,
+        reskinVersion: board.reskinVersion,
+        reskinSourceReview: board.reskinSourceReview,
         dialogueLanguage: board.dialogueLanguage ?? "en",
         autoSourceFilm: board.autoSourceFilm ?? false,
         preserveSourceShots: board.preserveSourceShots ?? true,
@@ -1208,6 +1228,10 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
             ...boardSettings(s, s.capabilities),
             sourceVideoId: s.sourceVideoId,
             sourcePipeline: s.sourcePipeline,
+        motionReference: s.motionReference,
+        sourceMediaSha256: s.sourceMediaSha256,
+        reskinVersion: s.reskinVersion,
+        reskinSourceReview: s.reskinSourceReview,
             dialogueLanguage: s.dialogueLanguage,
             autoSourceFilm: s.autoSourceFilm,
             preserveSourceShots: s.preserveSourceShots,
@@ -1295,7 +1319,7 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
         runtimeSeconds: out.runtime_seconds || runtimeSeconds,
         productionAssets: [],
         sourceVerification: undefined,
-        sourcePipeline: undefined,
+        sourcePipeline: undefined, motionReference: undefined, sourceMediaSha256: undefined, reskinVersion: undefined, reskinSourceReview: undefined,
         breakdownStatus: "done",
       });
       void get().primePrompts();
@@ -1336,6 +1360,7 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
         productionAssets: out.production_assets ?? [],
         sourceVerification: out.source_verification,
         sourceVideoId: videoId,
+        motionReference: undefined, sourceMediaSha256: undefined, reskinVersion: undefined, reskinSourceReview: undefined,
         sourcePipeline: out.source_verification?.method === "one_pass_production" ? "one_pass"
           : out.source_verification?.method === "source_frames" ? "verified_source" : undefined,
         autoSourceFilm: false,
@@ -1360,7 +1385,7 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
     boardEpoch += 1;
     set({
       sourceVideoId: undefined,
-      sourcePipeline: undefined,
+      sourcePipeline: undefined, motionReference: undefined, sourceMediaSha256: undefined, reskinVersion: undefined, reskinSourceReview: undefined,
       dialogueLanguage: "en",
       autoSourceFilm: false,
       preserveSourceShots: true,
@@ -1925,6 +1950,7 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
   },
 
   async primeVideoPrompt(sequenceKey) {
+    if (get().motionReference === "white_model") throw new Error("Mở Pipeline Reskin, chọn clip và chạy bước Material + prompt để gắn đủ video chuyển động và ảnh dàn cảnh.");
     const epoch = boardEpoch;
     const { nodes } = get();
     const node = nodes.find((n) => n.id === `vid:${sequenceKey}`);
@@ -2033,6 +2059,10 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
     const id = `vid:${sequenceKey}`;
     const node = get().nodes.find((n) => n.id === id);
     if (!node || node.data.kind !== "video" || node.data.status === "running") return;
+    if (get().motionReference === "white_model") {
+      get().patchNode(id, { error: "Mở Pipeline Reskin → Chạy pipeline, chọn clip cần gen. Luồng này gắn đúng video chuyển động và ảnh dàn cảnh." });
+      return;
+    }
 
     // Write first, unless a written prompt already matches the references it
     // would be sent with. A clip is the most expensive thing on this board and
@@ -2417,6 +2447,10 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
             version: 1,
             sourceVideoId: s.sourceVideoId,
             sourcePipeline: s.sourcePipeline,
+        motionReference: s.motionReference,
+        sourceMediaSha256: s.sourceMediaSha256,
+        reskinVersion: s.reskinVersion,
+        reskinSourceReview: s.reskinSourceReview,
             dialogueLanguage: s.dialogueLanguage,
             autoSourceFilm: s.autoSourceFilm,
             preserveSourceShots: s.preserveSourceShots,
@@ -2469,6 +2503,8 @@ const createBoard: StateCreator<AutomationStore> = (set, get) => ({
       environments: d.environments ?? [],
       sourceVideoId: d.sourceVideoId,
       sourcePipeline: d.sourcePipeline,
+      motionReference: d.motionReference, sourceMediaSha256: d.sourceMediaSha256,
+      reskinVersion: d.reskinVersion, reskinSourceReview: d.reskinSourceReview,
       dialogueLanguage: d.dialogueLanguage ?? "en",
       autoSourceFilm: d.autoSourceFilm ?? false,
       style: d.style ?? "realistic",

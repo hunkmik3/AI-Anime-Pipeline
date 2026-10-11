@@ -37,7 +37,8 @@ def enqueue(project_id,kind,node_id,slot,payload,request_key,expected_revision=N
         if waiting_run(s, project_id):
             node = next((n.get('data', {}) for n in (project.board or {}).get('nodes', []) if n.get('id') == node_id), {})
             if not (kind == 'plate' and ((node.get('kind') == 'character' and slot == 'identity') or
-                    (node.get('kind') == 'environment' and slot == 'plate'))):
+                    (node.get('kind') == 'environment' and slot == 'plate') or
+                    ((project.board or {}).get('motionReference')=='white_model' and node.get('kind')=='asset' and slot=='plate'))):
                 raise ValueError('Chốt sheet ở tab Tạo hình chính trước khi gen diện mạo phụ hoặc video.')
         existing=s.exec(select(AutomationJob).where(AutomationJob.project_id==project_id,AutomationJob.request_key==request_key)).first()
         if existing:
@@ -114,6 +115,9 @@ def overlay(board, jobs):
         if d.get('kind')!='video':continue
         d.pop('qualityCheck',None)
         clip=latest.get((node_id,'clip',''));quality=latest.get((node_id,'clip_quality','quality'))
+        audio=latest.get((node_id,'audio_cleanup','audio'))
+        if audio and clip and audio.status=='succeeded' and audio.payload.get('source_job')==str(clip.id) and audio.result.get('url'):
+            d.update(nativeClipUrl=clip.result.get('url'),clipUrl=audio.result['url'])
         if quality and clip and quality.payload.get('source_job')==str(clip.id):
             if quality.status=='succeeded' and quality.result.get('url')==d.get('clipUrl'):
                 d['qualityCheck']=deepcopy(quality.result)
@@ -129,9 +133,10 @@ def project_board(s,project):
     return overlay(project.board or {},jobs)
 
 def checkpoint(jid,token,**values):
+    lease_until=values.pop('lease_until',now()+timedelta(seconds=LEASE_SECONDS))
     with get_session() as s:
         changed=s.exec(update(AutomationJob).where(AutomationJob.id==jid,AutomationJob.lease_token==token)
-                       .values(**values,updated_at=now(),lease_until=now()+timedelta(seconds=LEASE_SECONDS)))
+                       .values(**values,updated_at=now(),lease_until=lease_until))
         s.commit()
         if not changed.rowcount:raise RuntimeError('Job lease lost')
 
@@ -214,6 +219,19 @@ async def execute(data):
         elif data['kind']=='clip_quality':
             from flowboard.services import production_quality
             result=await production_quality.inspect(data['payload'])
+        elif data['kind']=='reskin_source_review':
+            from flowboard.services import reskin_source_review
+            def progress(stage,done,total):
+                checkpoint(jid,token,result={'progress':{'stage':stage,'done':done,'total':total}})
+            result=await reskin_source_review.review_project(data['project_id'],data['payload'],progress)
+        elif data['kind']=='motion_reference':
+            from flowboard.services import reskin_motion
+            async def progress(counter):
+                await asyncio.to_thread(checkpoint,jid,token,result={'progress':counter})
+            result=await reskin_motion.generate(data['payload'],progress)
+        elif data['kind']=='audio_cleanup':
+            from flowboard.services import reskin_audio
+            result=await reskin_audio.clean(data['payload'])
         elif data['kind'] in ('extract_frame','assemble'):
             from flowboard.services import production_media
             result=await getattr(production_media,data['kind'])(data['payload'])
@@ -264,9 +282,29 @@ async def execute(data):
         # Lease expiry handles recovery; a submit without its receipt stays unknown.
         raise
     except Exception as exc:
+        from flowboard.services.avis_text import AvisRateLimited
+        if data['kind']=='source' and isinstance(exc,AvisRateLimited):
+            prepared=deepcopy(data.get('prepared') or {})
+            count=int(prepared.get('rate_retries',0))+1
+            if count <= 8:
+                retry_at=now()+timedelta(seconds=min(900,60*2**(count-1)))
+                prepared.update(rate_retries=count,retry_at=retry_at.isoformat(),recovery='rate_limit')
+                await asyncio.to_thread(checkpoint,jid,token,status='queued',prepared=prepared,
+                    lease_until=retry_at,error='Nhà cung cấp đang giới hạn lượt gọi. Tool sẽ tự tiếp tục, bạn không cần bấm chạy lại.')
+                return
+            exc=RuntimeError('Nhà cung cấp vẫn giới hạn lượt gọi sau 8 lần tự chờ. Kiểm tra hạn mức tài khoản rồi tiếp tục; kết quả đã lưu.')
+            from flowboard.services import source_film
+            from flowboard.routes import video_analysis
+            video_id=uuid.UUID(data['payload']['video_id'])
+            if data['payload'].get('operation',{}).get('task')=='film':
+                await asyncio.to_thread(source_film.state,video_id,stage='blocked',error=str(exc))
+            await asyncio.to_thread(video_analysis._update,video_id,status='failed',error=str(exc))
         definite_rejection = getattr(exc, 'code', '') in {'bad_input','auth','quota','content_filtered'}
         status=('running' if provider_id and data['attempts'] < 5 else 'unknown') if submitting or provider_id else 'failed'
         if definite_rejection and not provider_id: status='failed'
+        from flowboard.services.video_analyzer.catalog_recovery import CatalogNeedsReview
+        if isinstance(exc,CatalogNeedsReview) and data['kind']=='source':
+            status='blocked'
         await asyncio.to_thread(checkpoint,jid,token,status=status,error=str(exc)[:1200])
     finally:
         beat.cancel();await asyncio.gather(beat,return_exceptions=True)
@@ -362,13 +400,20 @@ def validate_writing(project_id,body):
 
 
 def validate_package(board, project_id, body):
-    from flowboard.services import shot_package
+    from flowboard.services import shot_package, reskin
+    if reskin.enabled(board) and (body.sequence.get('motion_reference') != 'white_model'
+                                  or not body.sequence.get('motion_receipt')):
+        raise ValueError('Mở Pipeline Reskin để chuẩn bị video chuyển động và ảnh dàn cảnh trước khi viết prompt.')
     supplied = body.sequence.get('shot_package')
     if not supplied:
         return  # Old boards stay compatible until explicitly prepared.
     package = shot_package.build(board, project_id, body.sequence.get('key', ''))
     if supplied != package:
         raise ValueError('Shot preparation changed; refresh the package and rewrite the prompt.')
+    from flowboard.services import reskin
+    if reskin.enabled(board):
+        problems=reskin.readiness(board,[package])
+        if problems: raise ValueError('; '.join(problems))
     references = [*body.characters, *([body.environment] if body.environment else []), *body.reference_assets]
     if body.sequence.get('reference_atlases'):
         from flowboard.services import reference_atlas

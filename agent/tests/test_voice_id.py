@@ -110,6 +110,42 @@ def test_the_new_speaker_is_offscreen_when_not_in_the_shot():
     assert rows['4']['speakers'][0]['delivery'] == 'offscreen'
 
 
+def test_voice_majority_cannot_overwrite_local_visible_mouth_evidence():
+    from copy import deepcopy
+    shots, rows = catalog([('L1', 'V1', 'high', 'lily'), ('L2', 'V1', 'high', 'lily'),
+                           ('L3', 'V1', 'high', 'lily'), ('L4', 'V1', 'high', 'damian')])
+    rows['4']['evidence_ids'] = ['shot-4-frame-2']
+    rows['4']['speakers'][0].update(mouth_visible=True, evidence_ids=['shot-4-frame-2'])
+    before = deepcopy(rows)
+    assert voice_id.reconcile(rows, shots) == []
+    assert rows == before
+    assert voice_id.disputes(rows, shots) == [{'voice': 'V1', 'speakers': {'lily': 3, 'damian': 1}}]
+
+
+def test_mouth_evidence_in_continuation_protects_the_entire_voice_group():
+    from copy import deepcopy
+    shots, rows = catalog([('L1', 'V1', 'high', 'lily'), ('L2', 'V1', 'high', 'lily'),
+                           ('L3', 'V1', 'high', 'lily'), ('L4', 'V1', 'high', 'damian')])
+    rows['4']['speakers'][0]['delivery'] = 'offscreen'
+    shots.append({'shot': 5, 'dialogue_pieces': [
+        {'line_id': 'L4', 'cont': True, 'voice': 'V1', 'voice_confidence': 'high'}]})
+    rows['5'] = {'evidence_ids': ['shot-5-frame-1'],
+                 'asset_presence': [{'asset_id': 'damian', 'visibility': 'visible'}],
+                 'speakers': [{'asset_id': 'damian', 'label': 'Damian', 'delivery': 'on_camera',
+                               'mouth_visible': True, 'evidence_ids': ['shot-5-frame-1']}]}
+    before = deepcopy(rows)
+    assert voice_id.reconcile(rows, shots) == []
+    assert rows == before
+
+
+def test_foreign_frame_does_not_establish_local_mouth_evidence():
+    shots, rows = catalog([('L1', 'V1', 'high', 'lily'), ('L2', 'V1', 'high', 'lily'),
+                           ('L3', 'V1', 'high', 'lily'), ('L4', 'V1', 'high', 'damian')])
+    rows['4']['evidence_ids'] = ['shot-4-frame-1']
+    rows['4']['speakers'][0].update(mouth_visible=True, evidence_ids=['shot-99-frame-1'])
+    assert len(voice_id.reconcile(rows, shots)) == 1
+
+
 def test_a_voice_split_between_people_is_left_alone_and_reported():
     shots, rows = catalog([('L1', 'V1', 'high', 'lily'), ('L2', 'V1', 'high', 'lily'),
                            ('L3', 'V1', 'high', 'damian'), ('L4', 'V1', 'high', 'damian')])

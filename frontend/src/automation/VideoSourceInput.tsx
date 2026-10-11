@@ -27,6 +27,8 @@ export function VideoSourceInput() {
   const [filmKyc, setFilmKyc] = useState(true);
   const [filmPeople, setFilmPeople] = useState(true);
   const [castingRequest, setCastingRequest] = useState("");
+  const [environmentRequest, setEnvironmentRequest] = useState("");
+  const [reskin, setReskin] = useState(true);
   const [fullTakes, setFullTakes] = useState(true);
   const [deep, setDeep] = useState(false);
   const [fastAnalysis, setFastAnalysis] = useState(false);
@@ -59,8 +61,9 @@ export function VideoSourceInput() {
     if (!file) return;
     const text = STYLE_PRESETS.find(p => p.key === preset)?.text ?? DEFAULT_RULES.visual_style;
     void upload(file, projectId, { ...DEFAULT_RULES, visual_style: text }, deep ? "deep" : "standard",
-      autoFilm ? { style: preset, aspect_ratio: filmRatio, resolution: filmResolution,
-        clip_seconds: useAutomation.getState().clipSeconds, kyc: filmKyc, unmoderated: filmPeople,
+      autoFilm ? { pipeline: reskin ? 'reskin_v1' : 'cinematic', style: preset, aspect_ratio: filmRatio, resolution: filmResolution,
+        clip_seconds: reskin ? 15 : useAutomation.getState().clipSeconds, kyc: reskin || filmKyc, unmoderated: filmPeople,
+        environment_request: environmentRequest.trim(),
         review_masters: reviewMasters, casting_request: castingRequest.trim(), timing_policy: fullTakes ? "full_take" : "source_duration" } : undefined,
       mode).catch(() => undefined);
   }
@@ -97,13 +100,15 @@ export function VideoSourceInput() {
       </label>
       <label className="source-input__field"><span>Độ phân giải video</span>
         <select value={filmResolution} onChange={event => setFilmResolution(event.target.value)}>
-          <option>480p</option><option>720p</option><option>1080p</option>
+          <option>480p</option><option>720p</option>{!reskin && <option>1080p</option>}
         </select>
       </label>
     </div>}
 
     {autoFilm && <SourceToggle label="Chốt tạo hình chính trước" checked={reviewMasters} onChange={setReviewMasters}
       hint="Dừng sau shotlist để bạn upload hoặc gen sheet chính; chỉ tạo diện mạo phụ khi bạn bấm tiếp tục." />}
+    {autoFilm && <SourceToggle label="Reskin bám chuyển động gốc" checked={reskin} onChange={v=>{setReskin(v);if(v && filmResolution==='1080p')setFilmResolution('720p')}}
+      hint="Phương án đã chốt: motion gốc + sheet tùy chọn + một ảnh dàn cảnh rộng 21:9. Mặc định video vuông, tối đa 15 giây mỗi lượt." />}
     <div className="source-input__options">
       {autoFilm && <details className="source-input__section">
         <summary><span>Tạo hình tùy chỉnh</span><small>{castingRequest.trim() ? "Đã thiết lập" : "Tùy chọn"}</small></summary>
@@ -114,6 +119,11 @@ export function VideoSourceInput() {
               placeholder="Ví dụ: nam chính da đen; nữ chính da trắng, tóc vàng, mắt xanh." />
           </label>
           <p className="source-input__hint">Để trống để giữ tạo hình gốc. Thay đổi màu da, tóc, mắt hoặc sắc tộc; giữ tuổi, vóc dáng, kiểu tóc và trang phục.</p>
+          <label className="source-input__field"><span>Bối cảnh đích</span>
+            <textarea className="auto-textarea nowheel" value={environmentRequest} maxLength={2000} rows={3}
+              onChange={event => setEnvironmentRequest(event.target.value)} placeholder="Ví dụ: nội thất cổ trang bằng gỗ sẫm; giữ vị trí cửa và cầu thang." />
+          </label>
+          <p className="source-input__hint">Sau khi có danh mục, mở Tạo hình chính để upload hoặc sửa prompt riêng cho từng đạo cụ và nhóm quần chúng.</p>
         </div>
       </details>}
 
@@ -130,7 +140,7 @@ export function VideoSourceInput() {
           <p className="source-input__hint">{mode === "one_pass" ? "Đọc hình và nghe thoại cùng lượt; chỉ xử lý lại nhóm shot có mâu thuẫn." : mode === "fast" ? "Đọc shot và danh mục cùng lượt, sau đó đối chiếu video độc lập." : "Tách các bước phân tích và đối chiếu video nguồn."}</p>
           <SourceToggle label="Phân tích shot kỹ" hint="Nhiều keyframe hơn; chậm và tốn hơn." checked={deep} onChange={setDeep} />
           {autoFilm && <>
-            <SourceToggle label="KYC" checked={filmKyc} onChange={setFilmKyc} />
+            {!reskin && <SourceToggle label="KYC" checked={filmKyc} onChange={setFilmKyc} />}
             <SourceToggle label="Người thật / B2B" checked={filmPeople} onChange={setFilmPeople} />
             <SourceToggle label="Giữ trọn thoại khi ghép" hint="Ghép nguyên đoạn đã gen; phim có thể dài hơn nguồn." checked={fullTakes} onChange={setFullTakes} />
           </>}
@@ -154,7 +164,7 @@ export function VideoSourceInput() {
           accept="video/mp4,video/quicktime,video/webm,.mkv,.m4v" disabled={uploadDisabled} onChange={selectFile} />
       </label>
       {uploading !== null && <progress aria-label="Tiến độ tải video" value={uploading} max={1} />}
-      <p>{autoFilm ? (reviewMasters ? "Tạo project và shotlist, rồi chờ bạn ở tab Tạo hình chính." : "Tự gen ảnh, video và ghép phim trong project mới. Có dùng lượt gen.") : "Tải lên và phân tích video. Dừng ở shotlist."}</p>
+      <p>{autoFilm ? (reviewMasters ? "Đối chiếu shotlist với nguồn, rồi chờ bạn ở tab Tạo hình chính." : "Đối chiếu nguồn, gen ảnh/video và ghép phim. Mục chưa rõ sẽ dừng để xử lý. Có dùng lượt gen.") : "Tải lên và phân tích video. Dừng ở shotlist."}</p>
       {waitingForServer && <p role="status">{capabilitiesReady ? "Pipeline một lượt chưa sẵn sàng. Chọn cách đọc khác trong Cài đặt nâng cao hoặc khởi động lại máy chủ." : "Đang kiểm tra kết nối máy chủ…"}</p>}
       {error && <p className="auto-error" role="alert">{error}</p>}
     </div>

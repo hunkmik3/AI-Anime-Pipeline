@@ -236,12 +236,11 @@ def test_an_offscreen_speaker_must_be_someone_in_the_scene():
     batch, frames = [{'shot': 2, 'dialogue_lines': ["That's all I can say."]}], [{'id': 'frame-2', 'shot': 2}]
     _, issues = film.normalize(data, batch, known, frames)
     assert [(i['code'], i['asset_id']) for i in issues] == [('speaker_not_in_scene', 'man')]
-    # Unresolved after the repair, the one reading left is a voice from outside the scene.
+    # Missing scene membership does not prove voice-over delivery.
     settled, receipts = film.settle_delivery(data, issues)
-    assert settled['shots']['2']['speakers'][0]['delivery'] == 'voice_over'
-    assert receipts == [{'shot': 2, 'speaker': 0, 'asset_id': 'man', 'from': 'offscreen', 'to': 'voice_over',
-                         'reason': 'not in the scene'}]
-    assert film.normalize(settled, batch, known, frames)[1] == []
+    assert settled['shots']['2']['speakers'][0]['delivery'] == 'offscreen'
+    assert receipts == []
+    assert film.normalize(settled, batch, known, frames)[1] == issues
     # Someone in the scene may speak from offscreen.
     data['shots']['2']['speakers'] = [{'asset_id': 'woman', 'label': 'Woman', 'delivery': 'offscreen'}]
     assert film.normalize(data, batch, known, frames)[1] == []

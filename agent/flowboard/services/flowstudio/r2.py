@@ -27,6 +27,7 @@ to disambiguate — but easy to mistype for the other.
 from __future__ import annotations
 
 import logging
+import hashlib
 import os
 import threading
 from pathlib import Path
@@ -93,17 +94,23 @@ def _get_client():
     return _client
 
 
-def upload_file(path: Path) -> str:
+def upload_file(path: Path, *, content_addressed: bool = False) -> str:
     """Upload a local media file to R2 (idempotent per-process) and return its
     public URL. Synchronous (boto3 + disk read) — call via ``asyncio.to_thread``.
     Raises on failure so the caller can surface it."""
-    key = f"{_PREFIX}/{path.name}"
+    # Per-shot working directories commonly reuse a basename. An immutable
+    # content key prevents both the process cache and CDN from serving a
+    # different excerpt under that name. Existing named uploads stay compatible.
+    data = path.read_bytes() if content_addressed else None
+    name = hashlib.sha256(data).hexdigest() + path.suffix.lower() if data is not None else path.name
+    key = f"{_PREFIX}/{name}"
     url = f"{public_base()}/{key}"
     with _lock:
         if key in _uploaded:
             return url
     ct = _CT.get(path.suffix.lower(), "application/octet-stream")
-    _get_client().put_object(Bucket=_env("R2_BUCKET"), Key=key, Body=path.read_bytes(), ContentType=ct)
+    _get_client().put_object(Bucket=_env("R2_BUCKET"), Key=key,
+        Body=data if data is not None else path.read_bytes(), ContentType=ct)
     with _lock:
         _uploaded.add(key)
     logger.info("r2: uploaded %s", key)

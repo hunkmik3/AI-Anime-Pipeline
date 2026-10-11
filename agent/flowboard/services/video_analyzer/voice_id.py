@@ -530,7 +530,9 @@ def reconcile(catalog_shots: dict, shots: list[dict], visible: set[str] | frozen
     """One person per voice: make each high-confidence line of a voice speak as the
     character most of that voice's high-confidence lines were given. In place on the
     catalog's ``speakers``; returns receipts. A voice with fewer than three bound lines,
-    or no clear majority, is left as the catalog had it."""
+    or no clear majority, is left as the catalog had it. A majority that conflicts
+    with local on-camera mouth evidence is also left alone: a voice cluster can
+    contain two people. ``disputes`` retains that conflict for source review."""
     lines: dict[str, list[tuple[str, int]]] = {}       # line id -> [(shot key, speaker index)]
     voice_of: dict[str, str] = {}
     for shot in shots:
@@ -561,6 +563,24 @@ def reconcile(catalog_shots: dict, shots: list[dict], visible: set[str] | frozen
             continue
         winner, winners = max(bound.items(), key=lambda kv: len(kv[1]))
         if len(winners) / total < MAJORITY:
+            continue
+        # Voice clustering is evidence, not proof of character identity. Do not
+        # erase a visible speaker (or another piece of their continued line) to
+        # satisfy a vote dominated by a different scene. Keep the entire disputed
+        # group unchanged, including offscreen pieces; the source reviewer can
+        # resolve it using the original audiovisual interval.
+        def contradicts_local_mouth(at):
+            s = speaker(at)
+            row = catalog_shots.get(at[0]) or {}
+            if not s or not s.get('asset_id') or s['asset_id'] == winner:
+                return False
+            own = set(row.get('evidence_ids') or [])
+            evidence = set(s.get('evidence_ids') or [])
+            return (s.get('delivery') == 'on_camera' and s.get('mouth_visible') is True
+                    and bool(evidence) and evidence <= own
+                    and any(p.get('asset_id') == s['asset_id'] and p.get('visibility') == 'visible'
+                            for p in row.get('asset_presence') or []))
+        if any(contradicts_local_mouth(at) for lid in lids for at in lines[lid]):
             continue
         label = next(s.get('label') for lid in winners for s in [speaker(lines[lid][0])] if s)
         for lid in lids:

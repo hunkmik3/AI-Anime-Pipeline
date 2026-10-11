@@ -1062,6 +1062,8 @@ async def generate_plate(
     try:
         if seedream:
             refs = await _fetch_reference_bytes(reference_urls or [])
+            if len(refs) != len(reference_urls or []):
+                raise AutomationError('A required image reference could not be loaded; refusing shifted or missing bindings.')
             if preset_sheet:
                 if len(refs) != len(reference_urls or []):
                     raise AutomationError('A required identity/material reference could not be loaded; image slots were not shifted.')
@@ -2018,6 +2020,8 @@ async def prepare_clip(
     last_frame_url: str = "",
     previous_clip_url: str = "",
     chain: str = "extend",
+    motion_media_id: str = "",
+    motion_job_id: str = "",
 ) -> dict[str, Any]:
     """Send one sequence to Seedance 2.5 and wait for the clip.
 
@@ -2056,6 +2060,8 @@ async def prepare_clip(
     #              identity asset, which is what gets photoreal people through.
     keyframes = bool(first_frame_url)
     chained = bool(previous_clip_url) and not keyframes
+    if motion_media_id and (keyframes or last_frame_url or previous_clip_url or not kyc_media_ids):
+        raise AutomationError('Source-motion reskin requires KYC sheets and cannot mix first/last frames or extension.')
     if not keyframes and not chained and not reference_urls and not kyc_media_ids:
         raise AutomationError(
             "Generate the character sheets and the environment plate first — "
@@ -2117,6 +2123,10 @@ async def prepare_clip(
         params["omni_reference_task_type"] = "reference"
         if kyc_asset_ids:
             params["kyc_image_asset_ids"] = kyc_asset_ids
+        if motion_media_id:
+            from flowboard.services.video import avis as avis_video
+            params['kyc_video_asset_id'] = await avis_video.ensure_kyc_asset(
+                motion_media_id, 'Video', project_id=project_id, unmoderated=unmoderated)
 
     return params
 

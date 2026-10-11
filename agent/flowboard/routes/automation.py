@@ -166,6 +166,10 @@ def _keep_earned(incoming: dict[str, Any], stored: dict[str, Any]) -> dict[str, 
     # the explicit mode on those saves; omission is not a mode change.
     if "adaptation" not in incoming and "adaptation" in stored:
         incoming["adaptation"] = stored["adaptation"]
+    # Server-issued source receipts cannot be forged/cleared by canvas autosave.
+    for key in ('sourceMediaSha256','reskinSourceReview','reskinVersion','motionReference'):
+        if key in stored: incoming[key] = stored[key]
+        else: incoming.pop(key, None)
     nodes = incoming.get("nodes")
     if not isinstance(nodes, list) or not isinstance(stored.get("nodes"), list):
         return incoming
@@ -660,6 +664,9 @@ class ClipBody(BaseModel):
     # Continue from (or match) the clip before this one. Live-action's answer
     # to drift: a video of real people is accepted where a still is not.
     previous_clip_url: str = ""
+    # Source motion + ordered image sheets, distinct from previous-clip extension.
+    motion_media_id: str = ""
+    motion_job_id: str = ""
     chain: str = Field(default="extend", pattern="^(extend|reference)$")
     prompt_contract: Optional[VideoWriteBody] = None
     coverage: Optional[dict[str, Any]] = None
@@ -735,6 +742,16 @@ def _requires_contract(body: "ClipBody") -> bool:
 
 def _validate_generation_contract(body: ClipBody) -> None:
     contract = body.prompt_contract
+    # A caller cannot bypass source-motion bindings by omitting shot_package.
+    from flowboard.services import reskin
+    if body.project_id:
+        with get_session() as s:
+            project = s.get(AutomationProject, body.project_id)
+            if project and (reskin.enabled(project.board or {}) or body.motion_media_id or body.motion_job_id):
+                try: reskin.validate_motion(s, project, body)
+                except ValueError as exc: raise HTTPException(422,detail=str(exc)) from exc
+    elif body.motion_media_id or body.motion_job_id:
+        raise HTTPException(422,detail='Motion reference cần board nguồn đã lưu.')
     if contract and contract.sequence.get('shot_package'):
         with get_session() as s:
             project = s.get(AutomationProject, body.project_id) if body.project_id else None
@@ -921,6 +938,48 @@ class JobCreate(BaseModel):
     input_fingerprint: str = Field(default="", max_length=200)
 
 
+@router.get('/reskin/capabilities')
+def reskin_capabilities():
+    from flowboard.services.reskin_runtime import capabilities
+    return capabilities()
+
+
+@router.get('/projects/{project_id}/reskin/status')
+def reskin_status(project_id: uuid.UUID, user=Depends(get_optional_user)):
+    from flowboard.services import reskin, production_run
+    with get_session() as s:
+        project=_load(s,project_id,user)
+        board=automation_jobs.project_board(s,project)
+        packages=production_run.selected_packages(board,str(project_id),[])
+        issues=reskin.readiness(board,packages)
+        return {'ready':not issues,'issues':issues,'source_review':board.get('reskinSourceReview'),
+                'output_ratio':board.get('aspectRatio'),'clips':len(packages)}
+
+
+class ReskinReviewBody(BaseModel):
+    expected_revision: int = Field(ge=0)
+
+
+@router.post('/projects/{project_id}/reskin/review',status_code=202)
+def review_reskin_source(project_id: uuid.UUID, body: ReskinReviewBody, user=Depends(get_optional_user)):
+    from flowboard.services import reskin, production_manifest as pm
+    with get_session() as s:
+        project=_load(s,project_id,user)
+        project=s.exec(select(AutomationProject).where(AutomationProject.id==project_id).with_for_update()).one()
+        if project.revision != body.expected_revision:
+            raise HTTPException(409,detail='Board đã thay đổi. Tải lại trước khi đối chiếu.')
+        board=automation_jobs.project_board(s,project)
+        if not reskin.enabled(board): raise HTTPException(400,detail='Chỉ áp dụng cho board Reskin.')
+        active=s.exec(select(AutomationJob).where(AutomationJob.project_id==project_id,AutomationJob.status.in_(automation_jobs.ACTIVE))).all()
+        if active: raise HTTPException(409,detail='Dừng xếp việc và chờ tác vụ hiện tại xong trước khi đối chiếu nguồn.')
+        payload={'input_digest':pm.digest(reskin.source_contract(board))}
+        request='source-review:'+payload['input_digest']
+        existing=s.exec(select(AutomationJob).where(AutomationJob.project_id==project_id,AutomationJob.request_key==request)).first()
+        if existing: return automation_jobs.public(existing)
+        job=AutomationJob(project_id=project_id,kind='reskin_source_review',node_id='source-review',request_key=request,payload=payload)
+        s.add(job);s.commit();s.refresh(job);return automation_jobs.public(job)
+
+
 @router.post("/projects/{project_id}/jobs", status_code=202)
 def create_job(project_id: uuid.UUID, body: JobCreate, user=Depends(get_optional_user)):
     with get_session() as s:
@@ -928,12 +987,17 @@ def create_job(project_id: uuid.UUID, body: JobCreate, user=Depends(get_optional
         if row.revision != body.expected_revision:
             raise HTTPException(409, detail="Board changed; save/reload before submitting a job.")
         board = automation_jobs.project_board(s,row)
+        from flowboard.services import reskin, production_run
+        if reskin.enabled(board):
+            problems=reskin.readiness(board,production_run.selected_packages(board,str(project_id),[]))
+            if problems: raise HTTPException(409,detail='; '.join(problems))
         node = next((n.get('data') for n in board.get('nodes',[]) if n.get('id')==body.node_id),None)
         if not node: raise HTTPException(422,detail="Job target is not on this board.")
         from flowboard.services.primary_materials import waiting_run
         if waiting_run(s, project_id) and not (body.kind == 'plate' and
                 ((node.get('kind') == 'character' and body.slot == 'identity') or
-                 (node.get('kind') == 'environment' and body.slot == 'plate'))):
+                 (node.get('kind') == 'environment' and body.slot == 'plate') or
+                 (reskin.enabled(board) and node.get('kind') == 'asset' and body.slot == 'plate'))):
             raise HTTPException(409, detail='Chốt sheet ở tab Tạo hình chính trước khi gen diện mạo phụ hoặc video.')
         metadata={}
         if body.kind=='clip':
@@ -1167,6 +1231,7 @@ class ProductionRunConfig(BaseModel):
     # set already filmed, so an independent generation does not redesign the room at the cut.
     set_continuity: bool = True
     review_masters: bool = False
+    audio_cleanup: bool = False
     assemble: bool = True
     timing_policy: str = Field(default='source_duration', pattern='^(source_duration|full_take)$')
     fps: int = Field(default=24, ge=24, le=60)
@@ -1218,23 +1283,30 @@ def control_production_run(project_id: uuid.UUID, run_id: uuid.UUID, action: str
         if action=='resume':
             active=s.exec(select(AutomationJob).where(AutomationJob.project_id==project_id,AutomationJob.kind==production_run.KIND,AutomationJob.status=='running')).first()
             if active:raise HTTPException(409,detail='Another production run is active')
+            # Explicit resume may retry local preparation after the operator fixes
+            # its runtime/storage. Paid generations and unknown submissions stay put.
+            for task in (run.result.get('tasks') or {}).values():
+                job=s.get(AutomationJob,uuid.UUID(task['id']))
+                if (job and job.project_id==project_id and job.status=='failed' and not job.provider_job_id
+                        and job.kind in {'motion_reference','audio_cleanup','assemble','atlas','ingest'}):
+                    job.status='queued';job.error='';job.lease_token='';job.lease_until=None;s.add(job)
         run.status='paused' if action=='pause' else 'running';run.error='';run.result={**run.result,'errors':[]}
         run.updated_at=automation_jobs.now();s.add(run);s.commit();return automation_jobs.public(run)
 
 
 @router.get('/projects/{project_id}/production-runs/{run_id}/film')
-def download_production_film(project_id: uuid.UUID, run_id: uuid.UUID, user=Depends(get_optional_user)):
+def download_production_film(project_id: uuid.UUID, run_id: uuid.UUID, preview: bool = False, user=Depends(get_optional_user)):
     from flowboard.config import STORAGE_DIR
     from pathlib import Path
     with get_session() as s:
         _load(s,project_id,user);run=s.get(AutomationJob,run_id)
-        if not run or run.project_id!=project_id or run.kind!='production_run' or run.status!='succeeded':
+        if not run or run.project_id!=project_id or run.kind!='production_run' or (not preview and run.status!='succeeded'):
             raise HTTPException(404,detail='Completed film not found')
-        filename=run.result.get('output',{}).get('filename','')
+        filename=run.result.get('preview_output' if preview else 'output',{}).get('filename','')
         if not filename or Path(filename).name!=filename:raise HTTPException(404,detail='Film not found')
         path=Path(STORAGE_DIR)/'production-renders'/filename
         if not path.is_file():raise HTTPException(404,detail='Rendered file no longer exists')
-        return FileResponse(path,media_type='video/mp4',filename='film.mp4')
+        return FileResponse(path,media_type='video/mp4',filename='preview-needs-review.mp4' if preview else 'film.mp4')
 
 
 @router.get('/projects/{project_id}/primary-materials')
@@ -1261,13 +1333,26 @@ def generate_primary_material(project_id: uuid.UUID, body: PrimaryGenerate, user
         if project.revision != body.expected_revision: raise HTTPException(409, detail='Board đã đổi. Lưu/tải lại trước khi gen.')
         board = automation_jobs.project_board(s, project)
         node = next((n for n in board.get('nodes', []) if n['id'] == body.node_id), None)
-        if not node or node['data'].get('kind') not in ('character', 'environment'):
-            raise HTTPException(422, detail='Chỉ tạo sheet nhân vật hoặc bối cảnh chính.')
+        allowed=('character','environment','asset') if board.get('motionReference')=='white_model' else ('character','environment')
+        if not node or node['data'].get('kind') not in allowed:
+            raise HTTPException(422, detail='Chỉ tạo sheet nhân vật, bối cảnh, đạo cụ hoặc nhóm quần chúng.')
         d = node['data']; kind = d['kind']; slot = 'identity' if kind == 'character' else 'plate'
         if s.exec(select(AutomationJob).where(AutomationJob.project_id == project_id,
                 AutomationJob.kind == 'production_run', AutomationJob.status == 'running')).first():
             raise HTTPException(409, detail='Tạm dừng sản xuất trước khi thay sheet chính.')
-        payload = production.material_payload({'kind': kind, 'item': d[kind], 'plate': d.get(slot, {}), 'slot': slot}, [], board)
+        spec={'asset_id':production.shot_package._id(d[kind]),'kind': kind, 'item': d[kind], 'plate': d.get(slot, {}), 'slot': slot}
+        deps=[]
+        if kind=='asset':
+            try:
+                specs=production.material_specs(board,production.selected_packages(board,str(project_id),[]))
+                spec=specs[body.node_id+':'+slot]
+                for dep in spec['deps']:
+                    other=specs[dep];plate=other['plate']
+                    if not plate.get('referenceUrl'): raise ValueError('Tạo/upload sheet phụ thuộc trước: '+other['item'].get('name',other['asset_id']))
+                    deps.append({'asset_id':other['asset_id'],'name':other['item'].get('name',other['asset_id']),
+                                 'reference_url':plate['referenceUrl'],'media_id':plate.get('mediaId','')})
+            except (ValueError,KeyError) as exc:raise HTTPException(409,detail=str(exc)) from exc
+        payload = production.material_payload(spec, deps, board)
     return create_job(project_id, JobCreate(kind='plate', node_id=body.node_id, slot=slot,
         payload=payload, expected_revision=body.expected_revision, request_key=body.request_key), user)
 
@@ -1294,3 +1379,10 @@ def production_progress(project_id: uuid.UUID, user=Depends(get_optional_user)):
     from flowboard.services.production_progress import snapshot
     with get_session() as session:
         return snapshot(session, _load(session, project_id, user))
+
+
+@router.get('/production-inbox')
+def production_inbox(user=Depends(get_optional_user)):
+    from flowboard.services.production_notifications import inbox
+    with get_session() as session:
+        return inbox(session,_owner_id(user))

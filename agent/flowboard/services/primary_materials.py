@@ -20,7 +20,7 @@ def items(board, pid, keys=None):
     result = []
     for n in board.get('nodes', []):
         d = n.get('data', {}); kind = d.get('kind')
-        if kind not in ('character', 'environment'): continue
+        if kind not in ('character', 'environment') and not (kind=='asset' and board.get('motionReference')=='white_model'): continue
         definition = d[kind]; slot = 'identity' if kind == 'character' else 'plate'
         aid = definition.get('source_asset_id') or definition.get('id') or definition.get('key')
         clips = []
@@ -36,7 +36,7 @@ def items(board, pid, keys=None):
                 'ready': bool(d.get('states', {}).get(st['key'], {}).get('referenceUrl')),
                 'stale': bool(d.get('states', {}).get(st['key'], {}).get('needsIdentityRefresh'))}
                 for st in definition.get('states', [])] if kind == 'character' else [],
-            'clips': clips, 'required': required is None or n['id'] in required})
+            'clips': clips, 'required': kind != 'asset' and (required is None or n['id'] in required)})
     return result
 
 

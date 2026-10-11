@@ -21,6 +21,17 @@ def stages(r):
     return {s['key']:s for s in r['stages']}
 
 
+def test_pending_catalog_shots_are_not_completion_even_after_all_intervals_processed():
+    with get_session() as s:
+        v=VideoAnalysis(name='source',status='failed');s.add(v);s.commit();s.refresh(v);vid=v.id
+    progress.record_catalog(vid,{'completed':847,'processed':848,'total':848,
+        'pending_shots':[51],'state':'needs_review'})
+    with get_session() as s:
+        row=progress.source_stages(s.get(VideoAnalysis,vid))[0]
+    assert row['done']==847 and row['failed']==1 and row['percent']==99
+    assert row['status']=='blocked' and '848/848' in row['note']
+
+
 def test_review_shows_masters_and_approval_separately_and_future_clip_total(client):
     pid=project(two_clips()); start(pid,review_masters=True,mode='render')
     r=client.get(f'/api/automation/projects/{pid}/progress'); assert r.status_code==200, r.text

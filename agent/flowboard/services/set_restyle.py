@@ -112,6 +112,16 @@ def apply_cast(cast: dict, receipt: dict) -> dict:
     return result
 
 
+def apply_board(board: dict, receipt: dict) -> dict:
+    result = deepcopy(board)
+    for node in result.get('nodes', []):
+        data = node.get('data', {})
+        if data.get('kind') != 'environment': continue
+        data['environment'] = apply_cast({'environments':[data['environment']]},receipt)['environments'][0]
+    result['setRestyle'] = deepcopy(receipt)
+    return result
+
+
 TEXT_FIELDS = ('action', 'background', 'staging', 'framing_note', 'scene_layout')
 
 

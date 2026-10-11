@@ -12885,3 +12885,47 @@ button:disabled {
   .production-progress .production-progress__meter progress { width: 42px; }
   .production-progress__detail-label { padding-left: 7px; }
 }
+
+/* Reskin keeps detailed receipts out of the canvas until opened. */
+.reskin-panel { flex:1; min-height:0; overflow-y:auto; padding:24px; color:#dce5e9; }
+.reskin-panel > header { display:flex; align-items:start; justify-content:space-between; gap:20px; flex-wrap:wrap; }
+.reskin-panel h2 { margin:8px 0; font-size:23px; }
+.reskin-panel p { line-height:1.5; }
+.reskin-panel__selectors { display:flex; gap:12px; flex-wrap:wrap; }
+.reskin-panel__selectors label { display:grid; gap:8px; font-size:12px; color:#acbbc4; }
+.reskin-panel select,.reskin-panel textarea { background:#202d37; color:inherit; border:1px solid #344650; border-radius:8px; padding:10px; }
+.reskin-panel textarea { width:100%; box-sizing:border-box; font-family:monospace; }
+.reskin-panel__ratios { display:flex; gap:1px; margin-top:20px; border:1px solid #31434c; border-radius:10px; overflow:hidden; }
+.reskin-panel__ratios span { flex:1; display:grid; gap:7px; padding:14px; background:#1b2932; font-size:12px; color:#aebdc5; }
+.reskin-panel__ratios b { color:#e7eff2; font-size:14px; }
+.reskin-panel__muted { color:#9aaeb8; font-size:12px; }
+.reskin-panel__source,.reskin-panel__run,.reskin-panel__clips > article { margin-top:14px; padding:16px; background:#19262e; border:1px solid #32434d; border-radius:10px; }
+.reskin-panel summary { cursor:pointer; padding:6px 0; }
+.reskin-panel__source > video { width:100%; max-height:380px; background:#0d1419; margin:12px 0; }
+.reskin-panel pre { max-height:420px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; }
+.reskin-panel__finding { padding:10px; background:#302b22; border-radius:7px; }
+.reskin-panel .auto-btn { margin:5px 8px 5px 0; }
+.reskin-panel__media { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; }
+.reskin-panel figure { margin:0; min-width:0; }
+.reskin-panel figure video,.reskin-panel figure img { width:100%; max-height:330px; object-fit:contain; background:#10181e; border-radius:8px; }
+.reskin-panel figcaption { margin-bottom:8px; font-size:12px; color:#aebdc5; }
+.reskin-panel a { color:#60dcb7; }
+.primary-card__target { display:grid; gap:8px; margin:14px 0; font-size:12px; }
+.primary-card__target textarea { width:100%; box-sizing:border-box; resize:vertical; padding:10px; border:1px solid #344650; border-radius:8px; color:inherit; background:#17242e; font:inherit; }
+.reskin-panel .production-run-settings select { max-width:100%; }
+@media (max-width:500px) {
+  .reskin-panel { padding:16px; }
+  .reskin-panel__ratios { flex-direction:column; }
+  .reskin-panel__ratios span { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+  .reskin-panel__ratios b { text-align:right; }
+}
+/* Production outcomes stay reachable across boards without opening progress. */
+.production-inbox { position: relative; }
+.production-inbox__panel { position: absolute; z-index: 80; right: 0; top: calc(100% + 10px); width: min(390px, 90vw); max-height: 70vh; overflow: auto; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); box-shadow: 0 12px 40px #0006; }
+.production-inbox__panel header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.production-inbox__panel p, .production-inbox__panel small { font-size: 12px; line-height: 1.5; color: var(--muted); }
+.production-inbox__panel small { display: block; margin: 10px 0; }
+.production-inbox__events { display: grid; gap: 8px; margin-top: 14px; }
+.production-inbox__events button { display: grid; gap: 6px; width: 100%; text-align: left; color: inherit; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; cursor: pointer; }
+.production-inbox__events strong { font-size: 12px; }
+.production-inbox__events span, .production-inbox__events time { font-size: 11px; line-height: 1.5; color: var(--muted); }

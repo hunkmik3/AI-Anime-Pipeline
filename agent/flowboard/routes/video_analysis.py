@@ -178,6 +178,11 @@ def _progress_writer(video_id: uuid.UUID):
         from flowboard.services.production_progress import record_source
         record_source(video_id, stage, done, total)
 
+    def catalog_detail(report):
+        from flowboard.services.production_progress import record_catalog
+        record_catalog(video_id,report)
+    write.catalog_detail = catalog_detail
+
     return write
 
 

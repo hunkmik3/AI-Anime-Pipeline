@@ -235,7 +235,7 @@ async def test_a_failed_repair_call_leaves_the_first_answer_standing(tmp_path, m
 
 
 @pytest.mark.asyncio
-async def test_an_on_camera_claim_for_an_unseen_speaker_left_by_the_repair_becomes_offscreen(tmp_path, monkeypatch):
+async def test_unproven_on_camera_claim_is_retained_for_review_without_inventing_delivery(tmp_path, monkeypatch):
     analysis, data = example(tmp_path)
     monkeypatch.setenv('FLOWBOARD_VOICE_LISTEN', '0')
     (tmp_path / 'audio.wav').unlink()
@@ -249,10 +249,12 @@ async def test_an_on_camera_claim_for_an_unseen_speaker_left_by_the_repair_becom
         return deepcopy(data)                     # the repair repeats the same claim
 
     monkeypatch.setattr(film, '_call', call)
-    prepared, _, adapt = await film.prepare(analysis, tmp_path, 'Late', source_film.source_rules('anime_jp_modern'))
-    fixes = prepared['scene_inventory']['settled_contradictions']
-    assert [(f['shot'], f['asset_id'], f['to']) for f in fixes] == [(4, 'marc', 'offscreen')]
-    assert adapt['shots']['4']['dialogue'][0]['delivery'] == 'offscreen'
+    from flowboard.services.video_analyzer.catalog_recovery import CatalogNeedsReview
+    with pytest.raises(CatalogNeedsReview) as caught:
+        await film.prepare(analysis, tmp_path, 'Late', source_film.source_rules('anime_jp_modern'))
+    assert caught.value.report['pending_shots'] == list(range(1, 9))
+    assert data['shots']['4']['speakers'][0]['delivery'] == 'on_camera'
+    assert not (tmp_path/'one-pass-production.json').exists()
 
 
 @pytest.mark.asyncio
@@ -294,7 +296,7 @@ async def test_a_batch_neither_model_answers_goes_again_as_two_smaller_requests(
         if model == 'gpt-6-luna':
             raise avis_text.AvisEmptyResponse('gpt-6-luna: provider returned empty text')
         if len(numbers) == 8:
-            raise TimeoutError()                  # the whole batch hangs at the gateway
+            raise avis_text.AvisEmptyResponse('terminal empty response')
         out = deepcopy(data)
         out['shots'] = {k: v for k, v in out['shots'].items() if int(k) in numbers}
         out['scenes'] = [{**sc, 'shot_ids': [n for n in sc['shot_ids'] if n in numbers]} for sc in out['scenes']]
@@ -306,7 +308,7 @@ async def test_a_batch_neither_model_answers_goes_again_as_two_smaller_requests(
     assert asked == [('gpt-6-luna', whole), ('claude-opus-5-5', whole), ('gpt-6-luna', first),
                      ('claude-opus-5-5', first), ('gpt-6-luna', second), ('claude-opus-5-5', second)]
     inventory = prepared['scene_inventory']
-    assert inventory['split_batches'] == [{'shots': whole, 'reason': 'TimeoutError: '}]
+    assert inventory['split_batches'] == [{'shots': whole, 'reason': 'AvisEmptyResponse: terminal empty response'}]
     assert [b['shots'] for b in inventory['fallback_batches']] == [first, second]
     assert sorted(inventory['shots'], key=int) == [str(n) for n in whole]
 

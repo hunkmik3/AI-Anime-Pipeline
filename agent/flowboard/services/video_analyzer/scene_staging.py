@@ -129,7 +129,8 @@ def _text(value) -> str:
     return ' '.join(str(value or '').split()) if isinstance(value, str) else ''
 
 
-async def extract(shots: list[dict], inventory: dict, evidence: list[dict], work: Path) -> dict:
+async def extract(shots: list[dict], inventory: dict, evidence: list[dict], work: Path, *, on_progress=None,
+                  parallel: int | None = None) -> dict:
     """``{'scenes': {scene: layout}, 'shots': {shot: {staging, landmark_states, set, view}},
     'views': {environment: {master, reverse}}, 'set_states': {environment: text},
     'fixtures': {prop: [environments]}, 'missing': [...]}``"""
@@ -137,6 +138,8 @@ async def extract(shots: list[dict], inventory: dict, evidence: list[dict], work
     kinds = {a['id']: a.get('kind') for a in inventory.get('assets', [])}
     source = {s['shot']: s for s in shots}
     rows = inventory.get('shots', {})
+    processed = 0
+    if on_progress: on_progress('source_context',0,len(shots))
     out = {'version': VERSION, 'scenes': {}, 'shots': {}, 'views': {}, 'set_states': {}, 'fixtures': {},
            'missing': []}
     scenes: dict[str, list[int]] = {}
@@ -144,6 +147,7 @@ async def extract(shots: list[dict], inventory: dict, evidence: list[dict], work
         scene = (rows.get(str(n)) or {}).get('scene_id')
         if scene:
             scenes.setdefault(scene, []).append(n)
+    planned = []
     for scene_id, numbers in scenes.items():
         present = sorted({p['asset_id'] for n in numbers for p in (rows.get(str(n)) or {}).get('asset_presence', [])
                           if isinstance(p, dict) and p.get('asset_id') in kinds})
@@ -151,6 +155,10 @@ async def extract(shots: list[dict], inventory: dict, evidence: list[dict], work
         places = list(dict.fromkeys(
             [e for n in numbers for e in [(rows.get(str(n)) or {}).get('environment_key')] if kinds.get(e) == 'environment']
             + [a for a in present if kinds[a] == 'environment']))
+        planned.append((scene_id, numbers, present, places))
+
+    async def process(scene_id, numbers, present, places):
+        nonlocal processed
         props = [a for a in present if kinds[a] == 'prop']
         context = {'environments': {a: names[a] for a in places},
                    'people': {a: names[a] for a in present if kinds[a] == 'character'},
@@ -208,6 +216,8 @@ async def extract(shots: list[dict], inventory: dict, evidence: list[dict], work
                                 and out['shots'].get(str(n), {}).get('view') == v
                                 and (out['shots'][str(n)]['set'] or (rows.get(str(n)) or {}).get('environment_key')) == env]
                     out['views'][env][f'{v}_shots'] = list(dict.fromkeys(shots_of))[:ANCHORS]
+            processed += len(chunk)
+            if on_progress: on_progress('source_context',processed,len(shots))
         if layout:
             out['scenes'][scene_id] = layout
         # A fixture belongs to the place most of the scene stands in.
@@ -215,6 +225,39 @@ async def extract(shots: list[dict], inventory: dict, evidence: list[dict], work
         for prop in sorted(fixtures):
             if home and home not in out['fixtures'].setdefault(prop, []):
                 out['fixtures'][prop].append(home)
+
+    # The carried context consists of each location's first named master/reverse
+    # views. Scenes sharing ANY location keep their original order; other scenes
+    # can read their unchanged frames/prompts at the same time. Wait for dependencies
+    # before taking a slot so a queued dependent scene cannot starve its predecessor.
+    limit = max(1, min(16, int(parallel if parallel is not None else os.getenv('FLOWBOARD_STAGING_PARALLEL','4'))))
+    semaphore = asyncio.Semaphore(limit)
+    tasks = []
+    last_place = {}
+    unknown_place = None
+    async def run(item, dependencies):
+        if dependencies: await asyncio.gather(*dependencies)
+        async with semaphore: await process(*item)
+    for item in planned:
+        places = item[3]
+        dependencies = list(dict.fromkeys(last_place[p] for p in places if p in last_place))
+        if unknown_place and unknown_place not in dependencies: dependencies.append(unknown_place)
+        # An unlocated scene cannot be declared independent from earlier/later sets.
+        if not places: dependencies = list(tasks)
+        task = asyncio.create_task(run(item, dependencies))
+        tasks.append(task)
+        for place in places: last_place[place] = task
+        if not places: unknown_place = task
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for result in results:
+        if isinstance(result, BaseException): raise result
+    # Completion order is not story order, and must not alter downstream hashes.
+    out['scenes'] = {key:out['scenes'][key] for key in scenes if key in out['scenes']}
+    out['shots'] = {key:out['shots'][key] for key in sorted(out['shots'],key=int)}
+    out['missing'].sort()
+    place_order = {p:i for i,p in enumerate(dict.fromkeys(p for item in planned for p in item[3]))}
+    for prop, homes in out['fixtures'].items():
+        out['fixtures'][prop] = sorted(homes,key=lambda p:place_order.get(p,len(place_order)))
     return out
 
 

@@ -31,7 +31,10 @@ async def test_catalog_never_retries_refusal_or_unknown(tmp_path,monkeypatch,err
     async def complete(*a,**kw):calls.append(1);raise error
     monkeypatch.setattr(avis_text,'complete',complete)
     with pytest.raises(type(error)):await film._call({},[],tmp_path,'test')
-    with pytest.raises(RuntimeError,match='not resubmitted'):await film._call({},[],tmp_path,'test')
+    if isinstance(error,avis_text.AvisContentRefusal):
+        with pytest.raises(avis_text.AvisContentRefusal):await film._call({},[],tmp_path,'test')
+    else:
+        with pytest.raises(RuntimeError,match='not resubmitted'):await film._call({},[],tmp_path,'test')
     assert len(calls)==1
 
 
@@ -119,7 +122,8 @@ def test_own_material_change_does_not_reuse_completed_video():
 def test_new_audio_policy_is_idempotent_and_inside_audio():
     draft='## AUDIO\nEnglish speech and room tone.\n## CONTINUITY / NEGATIVE CONSTRAINTS\nSame cast.'
     prompt=cinematic_prompt.enforce_audio_policy(draft)
-    assert prompt.startswith('## AUDIO\n'+cinematic_prompt.NO_MUSIC)
+    assert prompt.startswith(cinematic_prompt.DIALOGUE_LOCK)
+    assert '## AUDIO\n'+cinematic_prompt.NO_MUSIC in prompt
     assert cinematic_prompt.enforce_audio_policy(prompt)==prompt
 
 

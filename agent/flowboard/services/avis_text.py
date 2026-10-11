@@ -73,6 +73,10 @@ class AvisContentRefusal(AvisTextError):
     """A content refusal is terminal, not an availability/fallback signal."""
 
 
+class AvisRateLimited(AvisTextError):
+    """An HTTP 429 rejection before a completion; safe to defer the same request."""
+
+
 def check_content_response(text: str, finish_reason: str = "") -> None:
     head = text.strip().replace("’", "'")
     if finish_reason.lower() in {"content_filter", "safety", "blocked", "refusal"} or re.match(
@@ -203,6 +207,8 @@ async def complete(
                 await asyncio.sleep(2.0 * attempt)
                 continue
             if res.status_code >= 400:
+                if res.status_code == 429:
+                    raise AvisRateLimited(f'{model}: provider rate limit; waiting before retrying.')
                 try:
                     detail = res.json().get("errors") or res.text
                 except ValueError:

@@ -1023,6 +1023,9 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
         ask['set_restyle_policy'] = restyle_policy
     if reskin:
         ask['motion_reference_policy'] = WHITE_MODEL_POLICY
+        ask['target_design_policy'] = ('Owner target_appearance and attached approved sheets replace only the '
+            'source surface designs. Keep the same asset IDs, action, holder, function and exact dialogue. '
+            'Do not render both the original object and its replacement. Unmapped assets keep their approved design.')
         ask['shot_package'] = white_model_package(ask.get('shot_package'))
     refs = [(r["tag"], r["name"]) for r in ask["references"]]
     # Shots the payload marked for intimate words join the refused ones: their
@@ -1138,6 +1141,9 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
                 cinematic_prompt.single_reference_mentions(cinematic_prompt.enforce_audio_policy(prompt)))
         if cinematic and (source_verification or {}).get('method') == 'one_pass_production':
             prompt = cinematic_prompt.serialize_source_locks(prompt, fitted, slots)
+        if reskin:
+            from flowboard.services.reskin import enforce_prompt
+            prompt = enforce_prompt(prompt)
         if not cinematic:
             prompt = normalize_shot_headers(normalize_reference_mentions(prompt, refs), slots)
         end_state = str((data or {}).get("end_state") or "").strip() if isinstance(data, dict) else ""

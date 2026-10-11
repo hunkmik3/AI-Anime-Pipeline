@@ -15,12 +15,14 @@ from flowboard.services import film_styles, production_run
 
 class FilmOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    pipeline: str = Field(default='cinematic', pattern='^(cinematic|reskin_v1)$')
     style: str = Field(default=film_styles.KEY, pattern=film_styles.STYLE_PATTERN)
     aspect_ratio: str = Field(default="1:1", pattern="^(1:1|16:9|9:16)$")
     resolution: str = Field(default="480p", pattern="^(480p|720p|1080p)$")
     clip_seconds: float = Field(default=20, ge=5, le=30)
     timing_policy: str = Field(default='full_take', pattern='^(source_duration|full_take)$')
     casting_request: str = Field(default='', max_length=2000)
+    environment_request: str = Field(default='', max_length=2000)
     review_masters: bool = True
     kyc: bool = True
     unmoderated: bool = True
@@ -162,6 +164,7 @@ def graph(out, options):
         "sourcePipeline": "one_pass" if (out.get('source_verification') or {}).get('method') == 'one_pass_production' else 'verified_source',
         "dialogueLanguage": "source",
         "sourceVideoId": out["source_video_id"],
+        **({'motionReference':'white_model','reskinVersion':'source-motion-reskin-v1'} if opt.pipeline == 'reskin_v1' else {}),
         "style": opt.style,
         "preserveSourceShots": True,
         "stateSpecificReferences": bool(out.get('state_specific_references')),
@@ -184,9 +187,9 @@ def state(video_id, **changes):
         before, after = current.get('stage'), changes.get('stage')
         stamp = production_run.jobs.now().isoformat()
         if after and after != before:
-            if before in history:
+            if before in history and after != 'retry_wait':
                 history[before] = {**history[before], 'status': 'failed' if after == 'blocked' else 'succeeded', 'updated_at': stamp}
-            if after not in ('blocked', 'production', 'queued'):
+            if after not in ('blocked', 'production', 'queued','retry_wait'):
                 history[after] = {'status': 'running', 'started_at': stamp, 'updated_at': stamp}
         row.options = {**row.options, 'auto_production': {**current, **changes, 'phase_history': history}}
         s.add(row)
@@ -314,9 +317,48 @@ def invalidate_changed_dialogue(video_id):
             s.commit()
 
 
-async def execute(video_id):
+def board_source_digest(row):
+    from flowboard.services.production_manifest import digest
+    cfg=row.options.get('auto_production') or {}
+    return digest({'analysis':row.analysis,'settings':cfg.get('settings'),
+                   'generation_scope':cfg.get('generation_scope')})
+
+
+async def finish_board(row, opt, board):
+    """Resume at the saved board without repeating catalog or design work."""
     from flowboard.routes import video_analysis as routes
     from flowboard.routes.automation import ProductionRunConfig
+    video_id=row.id
+    if opt.pipeline == 'reskin_v1':
+        from flowboard.services import reskin, reskin_source_review, production_manifest, production_progress
+        state(video_id,board_ready=True,stage='reskin_review')
+        try:
+            review = await reskin_source_review.review_project(row.automation_project_id,
+                {'input_digest':production_manifest.digest(reskin.source_contract(board))},
+                on_progress=routes._progress_writer(video_id))
+        except reskin_source_review.ReviewIncomplete as exc:
+            production_progress.record_source_review(video_id,exc.report)
+            raise
+        production_progress.record_source_review(video_id,review)
+        if review.get('status') != 'reviewed':
+            raise ValueError(reskin_source_review.summary(review))
+    with get_session() as s:
+        revision = s.get(AutomationProject,row.automation_project_id).revision
+    state(video_id, board_ready=True, stage='production')
+    config = ProductionRunConfig(mode='render',review_masters=opt.review_masters,assemble=True,
+        resolution=opt.resolution,timing_policy=opt.timing_policy,audio_cleanup=opt.pipeline=='reskin_v1',
+        set_continuity=opt.pipeline!='reskin_v1',image_parallel=opt.image_parallel,video_parallel=opt.video_parallel,
+        max_images=opt.max_images,max_videos=opt.max_videos,max_text=10000).model_dump()
+    run=production_run.start(row.automation_project_id,revision,config,'source-film:'+str(video_id))
+    state(video_id,run_id=run['id'],stage='production',error=None)
+    # A resumed source can still carry its previous failure status. The durable
+    # production handoff succeeded; do not make execute_source report the old
+    # error after generation has already been queued.
+    routes._update(video_id,status='adapted',error=None)
+
+
+async def execute(video_id):
+    from flowboard.routes import video_analysis as routes
     from flowboard.services.video_analyzer import board as board_mod
 
     row = read(video_id)
@@ -328,6 +370,22 @@ async def execute(video_id):
         if cfg.get("run_id"):
             routes._update(video_id, status="adapted", error=None)
             return
+        if cfg.get('board_ready') and cfg.get('source_board_input_digest'):
+            if cfg['source_board_input_digest'] != board_source_digest(row):
+                raise ValueError('Nguồn hoặc phạm vi đã đổi sau khi lưu board; cần đối soát bản thay đổi trước khi chạy tiếp.')
+            with get_session() as s:
+                saved=s.get(AutomationProject,row.automation_project_id)
+                board=deepcopy(saved.board) if saved else {}
+            if board.get('sourceVideoId') != str(video_id):
+                raise ValueError('Board đã lưu không còn khớp nguồn.')
+            await finish_board(row,opt,board)
+            return
+        if opt.pipeline == 'reskin_v1':
+            if opt.resolution not in ('480p','720p'):
+                raise ValueError('Reskin hiện dùng 480p hoặc 720p theo cấu hình provider.')
+            from flowboard.services.reskin_runtime import require_ready
+            import asyncio
+            await asyncio.to_thread(require_ready)
         state(video_id, stage="analysis", error=None)
         if (
             not row.analysis.get("shots")
@@ -355,18 +413,34 @@ async def execute(video_id):
             if row.status == 'failed':
                 raise ValueError(row.error)
         rules = source_rules(opt.style)
+        production_analysis = row.analysis
         if one_pass:
             from flowboard.services.video_analyzer import one_pass_film
             state(video_id, stage='profiles')
-            if (row.analysis.get('source_verification') or {}).get('method') != one_pass_film.METHOD:
+            scope = current_cfg.get('generation_scope')
+            if scope:
+                prepared, cast, adaptation = await one_pass_film.prepare(
+                    row.analysis, routes._work_dir(video_id), row.name, rules,
+                    on_progress=routes._progress_writer(video_id), production_scope=scope)
+                production_analysis = prepared
+                info = prepared['production_scope']
+                previous = current_cfg.get('production_preparation') or {}
+                if previous.get('preparation_key') != info['preparation_key']:
+                    routes._update(video_id, cast=cast, adaptation=adaptation)
+                    state(video_id, production_preparation=info)
+                # Preserve uploaded/edited designs on recovery. The DB analysis
+                # remains the complete film, including all unresolved findings.
+                row = read(video_id)
+            elif (row.analysis.get('source_verification') or {}).get('method') != one_pass_film.METHOD:
                 prepared, cast, adaptation = await one_pass_film.prepare(
                     row.analysis, routes._work_dir(video_id), row.name, rules,
                     on_progress=routes._progress_writer(video_id))
                 routes._update(video_id, analysis=prepared, cast=cast, adaptation=adaptation)
                 row = read(video_id)
+                production_analysis = row.analysis
             elif row.adaptation.get('rules') != rules:
                 raise ValueError('Style/settings changed after preparation; create a new film rather than mixing cached designs.')
-        validate_source(row.analysis)
+        validate_source(production_analysis)
         state(video_id, stage="adaptation")
         if not one_pass:
             invalidate_changed_dialogue(video_id)
@@ -374,7 +448,8 @@ async def execute(video_id):
         row = read(video_id)
         if row.status == "failed":
             raise ValueError(row.error)
-        validate_adaptation(row.analysis, row.adaptation)
+        if not one_pass: production_analysis = row.analysis
+        validate_adaptation(production_analysis, row.adaptation)
         if not one_pass and (not row.cast.get("characters") or not row.cast.get("environments")):
             state(video_id, stage="profiles")
             if row.analysis.get('scene_inventory', {}).get('shots'):
@@ -401,6 +476,17 @@ async def execute(video_id):
                                adaptation={**row.adaptation,'target_casting':receipt})
                 row=read(video_id)
                 entries=[e for bucket in ('characters','environments','props','background_groups') for e in row.cast.get(bucket,[])]
+        if opt.environment_request.strip():
+            from flowboard.services import set_restyle
+            receipt = row.adaptation.get('set_restyle')
+            if receipt and receipt['request'] != opt.environment_request:
+                raise ValueError('Yêu cầu bối cảnh đã đổi; tạo lượt mới để giữ đúng checkpoint.')
+            if not receipt:
+                receipt = await set_restyle.resolve(opt.environment_request,row.cast,routes._work_dir(video_id))
+                routes._update(video_id,cast=set_restyle.apply_cast(row.cast,receipt),
+                               adaptation={**row.adaptation,'set_restyle':receipt})
+                row=read(video_id)
+                entries=[e for bucket in ('characters','environments','props','background_groups') for e in row.cast.get(bucket,[])]
         pending = [e["key"] for e in entries if not e.get("design") or e.get("design_error")]
         if pending:
             state(video_id, stage="design")
@@ -423,17 +509,23 @@ async def execute(video_id):
             raise ValueError("Output project was deleted")
         if empty_output_board(existing):
             out = await board_mod.build_board(
-                row.analysis,
+                production_analysis,
                 row.adaptation,
                 cast=row.cast,
-                max_clip_s=opt.clip_seconds,
+                max_clip_s=min(opt.clip_seconds,15) if opt.pipeline == 'reskin_v1' else opt.clip_seconds,
+                hard_limit_s=15 if opt.pipeline == 'reskin_v1' else board_mod.HARD_MAX_S,
                 preserve_source_shots=True,
                 source_id=str(video_id),
             )
             board = graph(out, opt.model_dump())
+            if production_analysis.get('production_scope'):
+                board['sourceProductionScope'] = deepcopy(production_analysis['production_scope'])
             if row.adaptation.get('target_casting'):
                 from flowboard.services import target_casting
                 board=target_casting.apply_board(board,row.adaptation['target_casting'])
+            if row.adaptation.get('set_restyle'):
+                from flowboard.services import set_restyle
+                board=set_restyle.apply_board(board,row.adaptation['set_restyle'])
             with get_session() as s:
                 project = s.exec(
                     select(AutomationProject)
@@ -456,24 +548,15 @@ async def execute(video_id):
             if existing.board.get("sourceVideoId") != str(video_id):
                 raise ValueError("Output board belongs to different source inputs.")
             revision = existing.revision
-        state(video_id, board_ready=True, stage="production")
-        config = ProductionRunConfig(
-            mode="render",
-            review_masters=opt.review_masters,
-            assemble=True,
-            resolution=opt.resolution,
-            timing_policy=opt.timing_policy,
-            image_parallel=opt.image_parallel,
-            video_parallel=opt.video_parallel,
-            max_images=opt.max_images,
-            max_videos=opt.max_videos,
-            max_text=10000,
-        ).model_dump()
-        run = production_run.start(
-            row.automation_project_id, revision, config, "source-film:" + str(video_id)
-        )
-        state(video_id, run_id=run["id"], stage="production", error=None)
+            board = deepcopy(existing.board)
+        state(video_id,board_ready=True,source_board_input_digest=board_source_digest(row))
+        await finish_board(row,opt,board)
     except Exception as exc:
+        from flowboard.services.avis_text import AvisRateLimited
+        if isinstance(exc,AvisRateLimited):
+            state(video_id,stage='retry_wait',error=None)
+            routes._update(video_id,status='queued',error=None)
+            raise
         state(video_id, stage="blocked", error=str(exc)[:1200])
         routes._update(video_id, status="failed", error=str(exc)[:1000])
         raise

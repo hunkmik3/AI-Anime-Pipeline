@@ -19,6 +19,8 @@ import {
 
 import { ProductionPanel, ProductionControls } from "../automation/ProductionPanel";
 import { AutomationSidebar } from "../automation/AutomationSidebar";
+import { ReskinPanel } from "../automation/ReskinPanel";
+import { ProductionInbox } from "../automation/ProductionInbox";
 import { PrimaryMaterials } from "../automation/PrimaryMaterials";
 import { ClipCanvas } from "../automation/ClipCanvas";
 import { AutomationAssistant } from "../automation/AutomationAssistant";
@@ -89,8 +91,9 @@ export function AutomationPage() {
   const clipCount = useAutomation((s) => s.clipCount());
   const downloadPlates = useAutomation((s) => s.downloadPlates);
   const plateCount = useAutomation((s) => s.plateCount());
-  const [workspaceTab, setWorkspaceTab] = useState<"canvas" | "primary">("canvas");
+  const [workspaceTab, setWorkspaceTab] = useState<"canvas" | "primary" | "reskin">("canvas");
   const jobs = useAutomation(s => s.jobs);
+  const isReskin = useAutomation(s => s.motionReference === "white_model");
   const reviewRun = jobs.find(j => j.kind === "production_run" && j.status === "paused" && j.result.stage === "master_review");
   const seenReview = useRef("");
   useEffect(() => { setWorkspaceTab("canvas"); seenReview.current = ""; }, [currentProjectId]);
@@ -138,6 +141,7 @@ export function AutomationPage() {
         <header className="auto-bar">
           <h1 className="auto-bar__title" title={title || "Chưa có phim"}>{title || "Chưa có phim"}</h1>
           <span className="auto-bar__summary">{seqCount} clip · {clipCount} video</span>
+          <ProductionInbox />
           <button type="button" className="auto-btn" aria-expanded={chatOpen} onClick={() => setChatOpen(!chatOpen)}>
             {chatBusy ? "◌ Agent đang làm" : "✧ Chat Agent"}
           </button>
@@ -370,7 +374,9 @@ export function AutomationPage() {
               <nav className="auto-workspace-tabs" aria-label="Không gian làm việc">
           <button type="button" aria-pressed={workspaceTab === "canvas"} onClick={() => setWorkspaceTab("canvas")}>Canvas</button>
           <button type="button" aria-pressed={workspaceTab === "primary"} onClick={() => setWorkspaceTab("primary")}>Tạo hình chính {reviewRun && <span>Chờ chốt</span>}</button>
+        {isReskin && <button type="button" aria-pressed={workspaceTab === "reskin"} onClick={() => setWorkspaceTab("reskin")}>Pipeline Reskin</button>}
         </nav>
+        {workspaceTab === "reskin" && isReskin && <ReskinPanel key={currentProjectId ?? "draft"} />}
         {workspaceTab === "primary" && <PrimaryMaterials key={currentProjectId ?? "draft"} />}
         <div className="auto-canvas-workspace" style={{ display: workspaceTab === "canvas" ? "flex" : "none" }}>
         {boardView === "clips" ? <ClipCanvas key={currentProjectId ?? "draft"} onSelection={selectChatNodes} /> : <div className="auto-canvas">

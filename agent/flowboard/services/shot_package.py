@@ -170,7 +170,7 @@ def build(board, project_id='', sequence_key=''):
                 if fixture:
                     material['fixture_of'] = fixture
                 bindings.append(material_key)
-                if kind == 'environment' and has_views(d):
+                if kind == 'environment' and has_views(d) and board.get('motionReference') != 'white_model':
                     # One set, two reference views: the master and the camera turned around.
                     views = design['views']
                     material['view'] = 'master: ' + views['master']

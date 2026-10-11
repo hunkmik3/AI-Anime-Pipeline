@@ -2,9 +2,12 @@ import { useState } from "react";
 import { api } from "../api/client";
 import { useAutomation } from "../store/automation";
 
-const stages: Record<string,string> = { master_review:"Chờ chốt tạo hình chính", materials:"Tạo material", raccord:"Lập raccord", prompts:"Viết prompt", videos:"Viết prompt / gen video", quality:"Kiểm tra video thực tế", assembly:"Ghép phim", complete:"Hoàn tất lượt chạy", blocked:"Cần xử lý" };
+const stages: Record<string,string> = { motion:"Chuẩn bị chuyển động gốc", staging:"Tạo ảnh dàn cảnh 21:9", audio_cleanup:"Kiểm tra / tách nhạc", master_review:"Chờ chốt tạo hình chính", materials:"Tạo material", raccord:"Lập raccord", prompts:"Viết prompt", videos:"Viết prompt / gen video", quality:"Kiểm tra video thực tế", assembly:"Ghép phim", complete:"Hoàn tất lượt chạy", blocked:"Cần xử lý" };
 export function ProductionRun() {
   const pid=useAutomation(s=>s.currentProjectId);
+  const reskin=useAutomation(s=>s.motionReference === "white_model");
+  const sequences=useAutomation(s=>s.nodes).filter(n=>n.data.kind === "sequence");
+  const [selected,setSelected]=useState<string[]>([]);
   const runs=useAutomation(s=>s.jobs).filter(j=>j.kind==="production_run");
   const [mode,setMode]=useState("prepare");
   const [frames,setFrames]=useState(false);
@@ -17,7 +20,7 @@ export function ProductionRun() {
   const [report,setReport]=useState<any>(null);
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState("");
-  const config={mode,resolution,review_masters:reviewMasters,timing_policy:fullTakes?'full_take':'source_duration',boundary_frames:frames,image_parallel:parallel,video_parallel:parallel,max_images:maxImages,max_videos:maxVideos};
+  const config={mode,resolution,sequence_keys:selected,review_masters:reviewMasters,timing_policy:fullTakes?'full_take':'source_duration',boundary_frames:reskin?false:frames,audio_cleanup:reskin,set_continuity:!reskin,image_parallel:parallel,video_parallel:parallel,max_images:maxImages,max_videos:maxVideos};
   async function save() {
     const s=useAutomation.getState();await s.saveNow();
     if(useAutomation.getState().saveState==="error")throw new Error(useAutomation.getState().saveError);
@@ -40,11 +43,16 @@ export function ProductionRun() {
   async function control(id:string,action:string){try{await api(`/api/automation/projects/${pid}/production-runs/${id}/${action}`,{method:"POST"});await useAutomation.getState().refreshJobs()}catch(e){setError((e as Error).message)}}
   return <section className="production-run-settings">
     <strong>Chạy sản xuất toàn board</strong>
-    <p>Bắt đầu từ shotlist đã nhập và hồ sơ đã chốt. Server tự tạo material thiếu, lập raccord, viết prompt và gen theo phụ thuộc. Đóng tab vẫn chạy.</p>
+    <p>Bắt đầu từ shotlist đã nhập và hồ sơ đã chốt. Server tạo material thiếu, chuẩn bị reference, viết prompt và gen theo phụ thuộc. Đóng tab vẫn chạy.</p>
+    <details><summary>{selected.length ? `${selected.length} clip đã chọn` : "Toàn bộ clip"} · chọn phạm vi</summary>
+      <button onClick={()=>setSelected([])}>Dùng toàn bộ</button>
+      {sequences.map(n=>{const key=n.id.replace(/^seq:/,"");return <label key={n.id} style={{display:"block"}}><input type="checkbox" checked={selected.includes(key)} onChange={e=>{setSelected(e.target.checked?[...selected,key]:selected.filter(k=>k!==key));setReport(null)}}/> {key}</label>})}
+      <small>Không chọn riêng clip nào: chạy toàn bộ. Lượt có cùng đầu vào dùng lại kết quả đã xong.</small>
+    </details>
     <label>Phạm vi <select value={mode} onChange={e=>{setMode(e.target.value);setReport(null)}}><option value="prepare">Material + prompt</option><option value="render">Material + prompt + video + ghép phim</option></select></label>{" "}
-    <label><input type="checkbox" checked={frames} onChange={e=>{setFrames(e.target.checked);setReport(null)}}/> Thêm ảnh hướng dẫn đầu/cuối clip (tính lượt ảnh)</label>
+    {!reskin && <label><input type="checkbox" checked={frames} onChange={e=>{setFrames(e.target.checked);setReport(null)}}/> Thêm ảnh hướng dẫn đầu/cuối clip (tính lượt ảnh)</label>}
     <p><label><input type="checkbox" checked={reviewMasters} onChange={e=>setReviewMasters(e.target.checked)}/> Dừng ở Tạo hình chính trước khi gen diện mạo phụ</label></p>
-    <p><label>Video <select value={resolution} onChange={e=>setResolution(e.target.value)}><option>480p</option><option>720p</option><option>1080p</option></select></label></p>
+    <p><label>Video <select value={resolution} onChange={e=>setResolution(e.target.value)}><option>480p</option><option>720p</option>{!reskin && <option>1080p</option>}</select></label></p>
     <p><label><input type="checkbox" checked={fullTakes} onChange={e=>{setFullTakes(e.target.checked);setReport(null)}}/> Giữ nguyên đoạn đã gen khi ghép để không cắt mất thoại (thời lượng có thể dài hơn nguồn)</label></p>
     <p><label>Song song ảnh/video <input type="number" min={1} max={32} value={parallel} onChange={e=>setParallel(Number(e.target.value))} style={{width:60}}/></label>{" "}
       <label>Tối đa ảnh mới <input type="number" min={0} value={maxImages} onChange={e=>setMaxImages(Number(e.target.value))} style={{width:70}}/></label>{" "}
@@ -57,6 +65,7 @@ export function ProductionRun() {
     {runs.slice(-5).reverse().map(r=>{const tasks=Object.values(r.result.tasks||{}) as {status:string}[];return <div key={r.id} style={{marginTop:12}}>
       <strong>{stages[r.result.stage]||r.result.stage}</strong> · {r.status} · {tasks.filter(t=>t.status==="succeeded").length}/{tasks.length} tác vụ đã lên lịch hoàn tất
       {r.error&&<p role="alert">{r.error}</p>}
+      {r.result.preview_output?.filename&&<p><a href={`/api/automation/projects/${pid}/production-runs/${r.id}/film?preview=true`} target="_blank" rel="noreferrer">Mở / tải bản xem thử · còn mục cần duyệt</a></p>}
       {r.result.quality_results&&Object.entries(r.result.quality_results as Record<string,any>).filter(([,q])=>q.status!=="checks_passed").map(([key,q])=><details key={key}><summary>{key} · cần kiểm tra</summary><ul>{q.findings?.map((f:any,i:number)=><li key={i}>{f.message||f.note||f.code}{f.differences&&<pre>{JSON.stringify(f.differences,null,2)}</pre>}</li>)}</ul></details>)}
       {r.result.quality_status==="automated_checks_passed"&&<small>Đối chiếu tự động đạt. Giọng diễn, nhạc nền và chi tiết giữa các frame mẫu vẫn cần xem/nghe khi duyệt bản giao.</small>}
       {r.status==="running"&&<button onClick={()=>void control(r.id,"pause")}>Dừng xếp thêm việc</button>}

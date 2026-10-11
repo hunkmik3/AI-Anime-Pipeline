@@ -17,9 +17,10 @@ import re
 from flowboard.services import avis_text
 from . import source_inventory as inv, production
 from .scene_staging import staging_line
+from . import catalog_recovery as recovery
 
 VERSION = 3
-COMPILER_VERSION = 8
+COMPILER_VERSION = 10
 METHOD = "one_pass_production"
 LOCK_FIELDS = ("framing", "camera", "framing_note", "background", "staging", "action", "dialogue", "character_states")
 SYSTEM = """Compile a production catalog for the supplied source film, using source
@@ -112,6 +113,20 @@ composition,camera_movement,blocking,action,start_pose,end_pose}}. Omit unchange
 Never change source timing, cuts, dialogue, or add story events. Source corrections are
 logged separately. Reference design images will be generated later in the selected style.
 """
+
+# Reuse only exact-input legacy receipts, and revalidate their outputs below.
+# A prompt correction is not a reason to repurchase completed film analysis.
+LEGACY_SYSTEM = SYSTEM
+SYSTEM = SYSTEM.replace('''Lines with the same voice at voice_confidence high are one person everywhere in the film;
+known_voices names whom earlier batches gave each voice. low is a hint (a short line, or a
+listener's judgement) and none means the audio cannot tell. Two voices can still be one
+person (another room, a phone). Prefer high-confidence voice evidence over who happens to be
+visible, and never give one high-confidence voice to two characters.''', '''Voice fingerprints are fallible similarities, including at confidence high, not proof of
+identity. A cluster can contain two different people. known_voices records earlier bindings
+and their vote counts; a majority is not authority to rename a visible speaking character.
+Keep local speaking-mouth evidence and cross-cut continuity when they conflict with a
+cluster. Record unresolved conflicts; never merge characters just to satisfy a voice label.
+Two voice clusters can also be one person (another room or a phone).''')
 
 
 def digest(value):
@@ -525,8 +540,8 @@ def remove_legacy_environment_presence(inventory):
     return cleaned, removed
 
 
-def catalog_cache_key(payload, cards, model):
-    request = {'version':VERSION,'model':model,'system':SYSTEM,'payload':payload,
+def catalog_cache_key(payload, cards, model, *, system=None):
+    request = {'version':VERSION,'model':model,'system':SYSTEM if system is None else system,'payload':payload,
                'frames':[(e['id'], hashlib.sha256(p.read_bytes()).hexdigest()) for e,p in cards]}
     if os.getenv('FLOWBOARD_CATALOG_FRAME_GRID') == '1':
         request['transport'] = 'labelled-four-frame-grid-jpeg88-final-text-v3'
@@ -569,13 +584,40 @@ def catalog_timeout(model):
 async def _call(payload, cards, work, model, repair=False):
     key = catalog_cache_key(payload,cards,model)
     path = work / 'one-pass-catalog' / (key + '.json')
+    if not path.exists():
+        legacy = work / 'one-pass-catalog' / (catalog_cache_key(payload,cards,model,system=LEGACY_SYSTEM)+'.json')
+        if legacy.exists():
+            saved = json.loads(legacy.read_text())
+            # All inputs other than the revised voice-confidence instructions
+            # are identical. Retain provenance; never treat reuse as approval.
+            saved['reused_prior_contract'] = {'path':str(legacy),'revalidate':True}
+            atomic(path,saved)
     history=[]
+    rate_retries=0
     if path.exists():
         saved = json.loads(path.read_text())
         if saved.get('state') == 'completed': return saved['output']
+        if saved.get('state') == 'response_received' and isinstance(saved.get('raw_text'),str):
+            raise recovery.CatalogMalformedResponse(saved['raw_text'])
+        if (saved.get('failure_kind') == 'content_refusal'
+                or 'provider declined' in str(saved.get('error','')).lower()):
+            raise avis_text.AvisContentRefusal(saved.get('error') or 'Provider declined this content request.')
         history=saved.get('attempts',[])
-        if saved.get('state')!='terminal_empty' or len(history)>=2:
-            raise RuntimeError('Catalog request incomplete/unknown or retry exhausted; checkpoint retained, not resubmitted: '+key)
+        rate_retries=saved.get('rate_retries',0)
+        if saved.get('state') == 'terminal_empty' and len(history) >= 2:
+            raise avis_text.AvisEmptyResponse('Catalog terminal empty responses exhausted; no identical retry.')
+        if saved.get('state') not in {'terminal_empty','rate_limited'} or len(history)>=2:
+            raise recovery.CatalogCheckpointUnknown('Catalog request incomplete/unknown; checkpoint retained, not resubmitted: '+key)
+    # A corrected earlier catalog changes request hashes. It must not make a
+    # refused/unknown interval look like a brand-new payable request on resume.
+    ledger=work/'catalog-request-outcomes.json'
+    if ledger.exists():
+        ns={s['shot'] for s in payload.get('shots',[])}
+        for outcome in json.loads(ledger.read_text()).get('terminal',[]):
+            if ns.intersection(outcome['shots']):
+                if outcome['kind']=='content_refusal':
+                    raise avis_text.AvisContentRefusal(outcome['reason'])
+                raise recovery.CatalogCheckpointUnknown(outcome['reason'])
     content = [avis_text.text_part(json.dumps(payload, ensure_ascii=False))]
     if os.getenv('FLOWBOARD_CATALOG_FRAME_GRID') == '1':
         content.append(avis_text.text_part('Source frames are supplied in labelled 2x2 grids, read left-to-right then top-to-bottom. Each cell is one separate, unchanged source frame. Its label is its exact evidence ID. Do not treat a grid as a single scene or merge the people from separate cells.'))
@@ -593,7 +635,7 @@ async def _call(payload, cards, work, model, repair=False):
             content.extend([avis_text.text_part(e['id']), avis_text.image_part(p)])
     content.append(avis_text.text_part('Now return the complete catalog JSON for the supplied current shots, using their evidence IDs. Keep the supplied dialogue entries and established asset IDs.'))
     while len(history)<2:
-        atomic(path, {'state':'in_flight','model':model,'repair':repair,'attempts':history})
+        atomic(path, {'state':'in_flight','model':model,'repair':repair,'attempts':history,'rate_retries':rate_retries})
         try:
             response = await asyncio.wait_for(avis_text.complete(model, [
                 {'role':'system','content':SYSTEM}, {'role':'user','content':content}],
@@ -602,17 +644,32 @@ async def _call(payload, cards, work, model, repair=False):
             # Persist raw text before parsing; malformed JSON never causes an
             # automatic repurchase. Only a typed terminal empty reply retries.
             atomic(path, {'state':'response_received','model':model,'raw_text':response.text,'attempts':history})
-            output = avis_text.extract_json(response.text)
+            try:
+                output = avis_text.extract_json(response.text)
+            except avis_text.AvisTextError as exc:
+                raise recovery.CatalogMalformedResponse(response.text) from exc
             atomic(path, {'state':'completed','model':model,'repair':repair,'output':output,'attempts':history,
                           'usage':{'input':response.prompt_tokens,'output':response.completion_tokens}})
             return output
+        except avis_text.AvisRateLimited as exc:
+            atomic(path,{'state':'rate_limited','model':model,'repair':repair,'attempts':history,
+                         'rate_retries':rate_retries+1,'error':str(exc)})
+            raise
         except avis_text.AvisEmptyResponse as exc:
             history.append({'state':'terminal_empty','error':str(exc)[:1000]})
             atomic(path, {'state':'terminal_empty','model':model,'repair':repair,'attempts':history})
             if len(history)>=2:raise
         except Exception as exc:
             if json.loads(path.read_text()).get('state') == 'in_flight':
-                atomic(path, {'state':'failed_or_unknown','model':model,'error':str(exc)[:1000],'attempts':history})
+                atomic(path, {'state':'failed_or_unknown','model':model,'repair':repair,
+                              'failure_kind':'content_refusal' if isinstance(exc,avis_text.AvisContentRefusal) else 'unknown',
+                              'error':str(exc)[:1000],'attempts':history})
+                if ledger.exists():
+                    book=json.loads(ledger.read_text())
+                    book.setdefault('terminal',[]).append({'shots':[s['shot'] for s in payload.get('shots',[])],
+                        'kind':'content_refusal' if isinstance(exc,avis_text.AvisContentRefusal) else 'unknown',
+                        'reason':str(exc)[:1000] or 'Previous provider outcome unknown; do not resubmit.', 'receipt':str(path)})
+                    atomic(ledger,book)
             raise
 
 
@@ -809,7 +866,8 @@ def compile_prepared(analysis, inventory, title, rules, *, evidence, model, sour
     result['source_verification'] = {'method':METHOD,'status':'observed','observation_only':True,
         'independent_review':False,'structural_checks_passed':True,'prepared_shots':[s['shot'] for s in shots],
         'reviewed_shots':[],'unresolved_shots':[],'findings':[],'evidence':deepcopy(evidence),
-        'scope_notes':[_issue('observation_only','Single observation and catalog preparation; no independent visual certification.')],
+        'scope_notes':[_issue('observation_only','Single observation and catalog preparation; no independent visual certification.'),
+                       *deepcopy(known.get('source_audio_observation_findings',[]))],
         'inventory_digest':digest(known),'shot_digests':{n:digest(r) for n,r in known['shots'].items()},
         'asset_digests':{a['id']:digest(a) for a in known['assets']}}
     from . import source_integrity
@@ -833,15 +891,54 @@ def compile_prepared(analysis, inventory, title, rules, *, evidence, model, sour
 
 
 def catalog_batch(shots, offset, batch_size, known, evidence, image_limit=50):
-    """Fit complete shots plus historical anchors into the provider image cap."""
+    """Keep complete current shots; retrieve bounded historical identity images.
+
+    Retain the original packing when it fits so paid checkpoints remain reusable.
+    A growing catalog must never crowd the current source frames out of a request.
+    Historical profiles remain in the text catalog even when their images aren't sent.
+    """
     anchors = {a['evidence_ids'][0] for a in known['assets'] if a.get('evidence_ids')}
     for count in range(min(batch_size, len(shots)-offset), 0, -1):
         batch = shots[offset:offset+count]
         ns = {s['shot'] for s in batch}
         supplied = [e for e in evidence if e['shot'] in ns or e['id'] in anchors]
-        if len(supplied) <= image_limit:
+        if len(supplied) <= image_limit and not known.get('reference_retrieval'):
             return batch, supplied
-    raise ValueError('One complete shot plus identity anchors exceeds the provider image limit.')
+    # The complete historical gallery no longer fits even beside one shot. Give
+    # current evidence priority, reserving a small gallery for identity matching.
+    reserve = min(12, image_limit // 3, len(anchors))
+    for count in range(min(batch_size, len(shots)-offset), 0, -1):
+        batch = shots[offset:offset+count]
+        ns = {s['shot'] for s in batch}
+        current = [e for e in evidence if e['shot'] in ns]
+        if len(current) <= image_limit - reserve or count == 1 and len(current) <= image_limit:
+            break
+    else:
+        raise ValueError('One complete shot exceeds the provider image limit; all source frames were retained for review.')
+    # Recent visible entities first, then names mentioned in this source interval,
+    # then the newest character/set references. Props do not displace the cast.
+    recent = {}
+    for n, row in known.get('shots', {}).items():
+        if int(n) >= batch[0]['shot']: continue
+        for p in row.get('asset_presence') or []:
+            if p.get('visibility') in {'visible', 'partial', 'occluded'}:
+                recent[p['asset_id']] = max(int(n), recent.get(p['asset_id'], 0))
+    source_text = json.dumps([s.get('source') for s in batch], ensure_ascii=False).casefold()
+    by_id = {e['id']: e for e in evidence}
+    def priority(a):
+        name = str(a.get('name') or '').strip().casefold()
+        anchor = by_id.get((a.get('evidence_ids') or [''])[0], {})
+        return (int(bool(name and len(name) > 2 and name in source_text)),
+                int(a.get('id') in recent), recent.get(a.get('id'), 0),
+                {'character':3, 'environment':2, 'crowd':1}.get(a.get('kind'), 0),
+                anchor.get('shot', 0))
+    chosen = {e['id'] for e in current}
+    for asset in sorted(known['assets'], key=priority, reverse=True):
+        refs = asset.get('evidence_ids') or []
+        if len(chosen) >= image_limit: break
+        if refs and refs[0] in by_id and by_id[refs[0]]['shot'] < batch[0]['shot']:
+            chosen.add(refs[0])
+    return batch, [e for e in evidence if e['id'] in chosen]
 
 
 def blocking(issues):
@@ -851,35 +948,21 @@ def blocking(issues):
 
 
 def unanswered(exc) -> bool:
-    """A catalog request that produced no usable answer and may not simply be resent."""
-    return (isinstance(exc, (avis_text.AvisEmptyResponse, avis_text.AvisContentRefusal, TimeoutError, asyncio.TimeoutError))
-            or (isinstance(exc, RuntimeError) and 'not resubmitted' in str(exc)))
+    """Only a definite empty response permits bounded availability fallback.
 
-
-DELIVERY_FINDINGS = {'speaker_not_visible', 'speaker_mouth_not_established'}
+    A refusal is terminal; a timeout/unknown receipt may still have been charged.
+    Neither may be routed to another model or split into replacement requests.
+    """
+    return isinstance(exc, avis_text.AvisEmptyResponse)
 
 
 def settle_delivery(data, issues):
-    """Settle, in the shots their findings name, what one repair left of two
-    self-contradictions with only one reading: ``(answer, receipts)``.
+    """Reconcile same-shot membership contradictions, preserving speech delivery.
 
-    * an on-camera speaker the shot does not fully show speaks offscreen;
-    * a person both present in a shot and listed as departing it: seen there, they leave
-      after it (the departure is dropped; later shots carry them offscreen); only listed
-      offscreen there, they have already gone (that presence entry is dropped);
-    * an offscreen speaker who is not in the scene speaks from outside it: voice_over.
+    Missing frame/scene evidence cannot establish offscreen or voice-over speech.
+    Such findings remain for source review instead of being relabelled to pass.
     """
     out, receipts = deepcopy(data), []
-    for i in issues:
-        if not (isinstance(i, dict) and i.get('code') == 'speaker_not_in_scene'):
-            continue
-        row = (out.get('shots') or {}).get(str(i.get('shot')))
-        for k, speaker in enumerate((row or {}).get('speakers') or []):
-            if (isinstance(speaker, dict) and speaker.get('asset_id') == i.get('asset_id')
-                    and speaker.get('delivery') == 'offscreen'):
-                speaker['delivery'] = 'voice_over'
-                receipts.append({'shot': i.get('shot'), 'speaker': k, 'asset_id': speaker.get('asset_id'),
-                                 'from': 'offscreen', 'to': 'voice_over', 'reason': 'not in the scene'})
     for n in sorted({str(i.get('shot')) for i in issues if isinstance(i, dict) and i.get('code') == 'conflicting_departure'}):
         row = (out.get('shots') or {}).get(n)
         if not isinstance(row, dict) or not isinstance(row.get('departures'), list):
@@ -895,19 +978,6 @@ def settle_delivery(data, issues):
                 row['departures'] = [a for a in row['departures'] if a != aid]
                 receipts.append({'shot': int(n) if n.isdigit() else n, 'asset_id': aid, 'kept': f'{seen[aid]} presence',
                                  'dropped': 'departure in the same shot'})
-    shots = {str(i.get('shot')) for i in issues if isinstance(i, dict) and i.get('code') in DELIVERY_FINDINGS}
-    for n in sorted(shots):
-        row = (out.get('shots') or {}).get(n)
-        if not isinstance(row, dict):
-            continue
-        seen = {p.get('asset_id'): p.get('visibility') for p in row.get('asset_presence') or [] if isinstance(p, dict)}
-        for k, speaker in enumerate(row.get('speakers') or []):
-            if isinstance(speaker, dict) and speaker.get('delivery') == 'on_camera' and seen.get(speaker.get('asset_id')) != 'visible':
-                receipts.append({'shot': int(n) if n.isdigit() else n, 'speaker': k, 'asset_id': speaker.get('asset_id'),
-                                 'visibility': seen.get(speaker.get('asset_id')), 'from': 'on_camera', 'to': 'offscreen'})
-                speaker['delivery'] = 'offscreen'
-                speaker.pop('mouth_visible', None)
-                speaker.pop('evidence_ids', None)
     return out, receipts
 
 
@@ -1024,8 +1094,198 @@ def patch_output(previous, repair):
     return out
 
 
-async def prepare(analysis, work: Path, title, rules, on_progress=None):
+async def _read_catalog_batch(payload, cards, work, model, batch, known, supplied, line_speakers, faces):
+    ns = {s['shot'] for s in batch}
+    batch_model = model
+    repair_outcome_unknown = False
+    terminal_origin = False
+    try:
+        data = await _call(payload,cards,work,model)
+    except recovery.CatalogMalformedResponse as exc:
+        data=await _call({**payload,'malformed_response':exc.raw[:100000],
+            'repair_instruction':'Return the complete valid JSON for these same source shots. Correct syntax/schema, preserve source facts and all original words; do not fill unknown facts by guessing.'},
+            cards,work,model,repair=True)
+    except Exception as exc:
+        fallback = os.getenv('FLOWBOARD_ONE_PASS_CATALOG_FALLBACK_MODEL',
+                             os.getenv('FLOWBOARD_ONE_PASS_MODEL','claude-opus-5-5'))
+        if not fallback or fallback == model:
+            raise
+        cached = None
+        # Older runs may already have a completed fallback. Inspect exact-input
+        # receipts only: never resubmit a refusal or an unknown outcome.
+        if isinstance(exc, (avis_text.AvisTextError, recovery.CatalogCheckpointUnknown, TimeoutError)):
+            for system in (SYSTEM, LEGACY_SYSTEM):
+                path = work/'one-pass-catalog'/(catalog_cache_key(payload,cards,fallback,system=system)+'.json')
+                if path.exists():
+                    receipt = json.loads(path.read_text())
+                    if receipt.get('state') == 'completed' and 'output' in receipt:
+                        cached = receipt
+                        break
+        if cached is None and not unanswered(exc):
+            raise
+        terminal_origin = not unanswered(exc)
+        repair_outcome_unknown = terminal_origin
+        batch_model = fallback
+        try:
+            data = cached['output'] if cached is not None else await _call(payload,cards,work,fallback)
+        except Exception as again:
+            if not unanswered(again) or len(batch) < 2:
+                raise
+            # Both models returned terminal empty responses. Subdivide boundedly.
+            known.setdefault('split_batches', []).append(
+                {'shots': sorted(ns), 'reason': f'{type(again).__name__}: {str(again)[:200]}'})
+            raise recovery.SplitCatalogBatch(str(again)) from again
+        known.setdefault('fallback_batches', []).append(
+            {'shots': sorted(ns), 'model': fallback, 'reason': f'{type(exc).__name__}: {str(exc)[:200]}',
+             **({'reused_completed_receipt':str(path)} if cached is not None else {})})
+    data, links = (data, []) if _shape_issues(data) else recovery.speaker_links(data,batch,known,supplied)
+    if links: known.setdefault('source_based_speaker_repairs', []).extend(links)
+    patch, issues = normalize(data,batch,known,supplied,line_speakers,faces)
+    if issues:
+        # One local correction of concrete problems, no whole-film reviewer. The answer
+        # is a patch: what it does not restate stands as first answered. It is kept
+        # only if it leaves no more blocking findings than the first answer had, so a
+        # wardrobe note can never turn a passing batch into a failed one.
+        repair = {**payload,'previous_output':data,'repair_only_these_findings':issues}
+        try:
+            if terminal_origin:
+                existing=[]
+                for system in (SYSTEM,LEGACY_SYSTEM):
+                    saved=work/'one-pass-catalog'/(catalog_cache_key(repair,cards,batch_model,system=system)+'.json')
+                    if saved.exists(): existing.append(json.loads(saved.read_text()).get('state'))
+                if 'completed' not in existing:
+                    raise recovery.CatalogCheckpointUnknown('Prior refused/unknown request: no new repair submission; completed receipts only.')
+            fixed = patch_output(data, await _call(repair,cards,work,batch_model,repair=True))
+        except avis_text.AvisRateLimited:
+            raise
+        except Exception as exc:
+            # A repair improves an answer; without one (an empty reply, a refusal, a
+            # checkpoint that may not be resent) the first answer stands on its own.
+            fixed = None
+            repair_outcome_unknown = terminal_origin or not isinstance(exc, avis_text.AvisEmptyResponse)
+            known.setdefault('repair_failures', []).append(
+                {'shots': sorted(ns), 'error': f'{type(exc).__name__}: {str(exc)[:300]}'})
+        if fixed is not None:
+            fixed, fixed_links = ((fixed, []) if _shape_issues(fixed)
+                                  else recovery.speaker_links(fixed,batch,known,supplied))
+            patch2, issues2 = normalize(fixed,batch,known,supplied,line_speakers,faces)
+            if len(blocking(issues2)) <= len(blocking(issues)):
+                data, patch, issues = fixed, patch2, issues2
+                if fixed_links: known.setdefault('source_based_speaker_repairs', []).extend(fixed_links)
+    # Membership contradictions can be reconciled, but missing visual evidence
+    # does not prove offscreen/voice-over delivery. Preserve unresolved speech.
+    if blocking(issues):
+        settled, corrections = settle_delivery(data, [i for i in issues if i.get('code') == 'conflicting_departure'])
+        if corrections:
+            patch3, issues3 = normalize(settled,batch,known,supplied,line_speakers,faces)
+            if len(blocking(issues3)) < len(blocking(issues)):
+                data, patch, issues = settled, patch3, issues3
+                known.setdefault('settled_contradictions', []).extend(corrections)
+    # A state change inside a scene that nobody saw happen is settled by the catalog's
+    # own rule: the person keeps their state (receipts in settled_wardrobe).
+    if any(isinstance(i, dict) and i.get('code') == 'unexplained_wardrobe_change' for i in issues):
+        settled, corrections = settle_wardrobe(data, issues)
+        if corrections:
+            patch4, issues4 = normalize(settled,batch,known,supplied,line_speakers,faces)
+            if len(blocking(issues4)) <= len(blocking(issues)) and len(issues4) < len(issues):
+                data, patch, issues = settled, patch4, issues4
+                known.setdefault('settled_wardrobe', []).extend(corrections)
+    # A frame-only repair cannot resolve a voice-cluster contradiction. Use the
+    # original moving image AND audio once, retaining its evidence and limitations.
+    # Never route a refused/unknown provider request to this reviewer.
+    from . import catalog_speaker_review
+    unresolved = blocking(issues)
+    if (not repair_outcome_unknown and catalog_speaker_review.eligible(unresolved)
+            and os.getenv('FLOWBOARD_CATALOG_AV_REPAIR','1') != '0'):
+        budget=max(0,min(64,int(os.getenv('FLOWBOARD_CATALOG_AV_REPAIR_LIMIT','24'))))
+        attempts=known.setdefault('audiovisual_speaker_repairs',[])
+        if budget:
+            try:
+                revised,receipt=await catalog_speaker_review.recover(data,batch,known,unresolved,cards,work,max_requests=budget)
+                attempts.append({'shots':sorted(ns),**receipt})
+                if receipt.get('context_findings'):
+                    known.setdefault('source_audio_observation_findings',[]).extend(receipt['context_findings'])
+                if receipt.get('status')=='corrected':
+                    candidate,remaining=normalize(revised,batch,known,supplied,line_speakers,faces)
+                    if not blocking(remaining):
+                        data,patch,issues=revised,candidate,remaining
+                    else:
+                        attempts[-1].update(status='needs_review',remaining_findings=remaining)
+            except Exception as exc:
+                attempts.append({'shots':sorted(ns),'status':'needs_review',
+                    'reason':type(exc).__name__+': '+str(exc)[:500],'source_fidelity_approved':False})
+    # Wardrobe/identity findings the one repair could not settle are reviewer notes,
+    # not a failed film; every other finding still blocks.
+    notes = [i for i in issues if i not in blocking(issues)]
+    issues = blocking(issues)
+    if issues:
+        raise recovery.BatchNeedsReview(issues)
+    return patch, notes
+
+
+async def prepare(analysis, work: Path, title, rules, on_progress=None, *, production_scope=None):
     original = deepcopy(analysis)
+    progress_path=work/'one-pass-catalog-progress.json'
+    prior=json.loads(progress_path.read_text()) if progress_path.exists() else {}
+    ledger=work/'catalog-request-outcomes.json'
+    source=next((p for p in work.glob('source.*') if p.suffix.lower() in {'.mp4','.mov','.webm','.mkv','.m4v'}),None)
+    if source:
+        from flowboard.services.reskin import source_fingerprint as media_fingerprint
+        identity=await asyncio.to_thread(media_fingerprint,source)
+    else: identity=source_fingerprint(original)
+    # Scope expensive catalog/staging/review work before production, while sharing
+    # the full-film source observations and paid checkpoints. Never replace the
+    # full-film report with a seemingly completed prefix.
+    output_work = work
+    preparation_key = None
+    if production_scope:
+        from flowboard.services.source_generation_scope import preparation_prefix
+        scope_view = preparation_prefix(original, production_scope)  # validate before any calls
+        full_cache_path = work/'catalog-accepted-drafts.json'
+        full_cache = json.loads(full_cache_path.read_text()) if full_cache_path.exists() else {}
+        catalog_for_scope = deepcopy(full_cache.get('inventory') or {}) if full_cache.get('source_key') == {
+            'analysis':source_fingerprint(original),'media':identity} else {'assets':[],'scenes':[],'shots':{}}
+        if prior.get('source_fingerprint') == source_fingerprint(original) and prior.get('inventory'):
+            recovery.retain_drafts(catalog_for_scope, prior['inventory'])
+        preparation_key = digest({'source':source_fingerprint(original),'source_context':digest(original),'media':identity,
+            'scope':production_scope,'rules':rules,'compiler':COMPILER_VERSION,'version':VERSION,
+            'catalog':recovery.reusable_patch(catalog_for_scope, scope_view['shots'])})
+        output_work = work/'production-prefix'/preparation_key
+        saved_path = output_work/'one-pass-production.json'
+        if saved_path.exists():
+            saved = json.loads(saved_path.read_text())
+            validate_prepared(saved['analysis'])
+            if on_progress:
+                count = len(saved['analysis']['shots'])
+                on_progress('profiles',count,count)
+                detail = getattr(on_progress,'catalog_detail',None)
+                if detail:
+                    detail(json.loads((output_work/'one-pass-catalog-progress.json').read_text()))
+            return saved['analysis'], saved['cast'], saved['adaptation']
+    book=json.loads(ledger.read_text()) if ledger.exists() else {}
+    if book.get('source_identity')!=identity: book={'source_identity':identity,'terminal':[]}
+    if prior.get('source_fingerprint')==source_fingerprint(original):
+        for item in prior.get('pending',[]):
+            unknown_transport=(item.get('kind')=='AvisTextError'
+                and any(word in item.get('error','').lower() for word in ('timeout','connection','gave up after')))
+            if item.get('kind') in {'AvisContentRefusal','CatalogCheckpointUnknown','TimeoutError'} or unknown_transport:
+                scope={'shots':item['root_shots'],'kind':'content_refusal' if item['kind']=='AvisContentRefusal' else 'unknown',
+                       'reason':item.get('error') or 'Previous provider outcome is unresolved.'}
+                if not any(x['shots']==scope['shots'] and x['kind']==scope['kind'] for x in book['terminal']):
+                    book['terminal'].append(scope)
+    atomic(ledger,book)
+    # Retain successful groups even when a correction earlier in the film changes
+    # whole-request hashes. Revalidate their bindings locally before reuse.
+    cache_path=work/'catalog-accepted-drafts.json'
+    source_key={'analysis':source_fingerprint(original),'media':identity}
+    reusable=json.loads(cache_path.read_text()) if cache_path.exists() else {}
+    if reusable.get('source_key')!=source_key:
+        reusable={'source_key':source_key,'inventory':{'assets':[],'scenes':[],'shots':{}}}
+    if prior.get('source_fingerprint')==source_fingerprint(original) and prior.get('inventory'):
+        recovery.retain_drafts(reusable['inventory'],prior['inventory'])
+        for key in ('audiovisual_speaker_repairs','source_audio_observation_findings'):
+            if prior['inventory'].get(key): reusable['inventory'][key]=deepcopy(prior['inventory'][key])
+    if not production_scope: atomic(cache_path,reusable)
     if analysis.get('speech_error'): raise ValueError('Audio transcription failed; cannot omit dialogue.')
     from .one_pass_audio import repair
     analysis = await repair(analysis,work)
@@ -1063,10 +1323,19 @@ async def prepare(analysis, work: Path, title, rules, on_progress=None):
             raise ValueError('Source needs local correction before catalog/material generation: '+json.dumps(integrity['findings'],ensure_ascii=False)[:1800])
     analysis = await voice_id.identify(analysis,work)
     analysis['voices']['turns_split'] = turns
+    full_shots = analysis.get('shots') or []
+    if production_scope:
+        analysis = preparation_prefix(analysis, production_scope)
+        analysis['production_scope'].update(
+            full_source_fingerprint=source_fingerprint(original), preparation_key=preparation_key,
+            full_catalog_summary={k:deepcopy(prior.get(k)) for k in
+                ('state','completed','total','pending_shots','pending')})
     shots = analysis.get('shots') or []
     if not shots or any(not s.get('source') for s in shots): raise ValueError('Incomplete source observations')
-    evidence = inv._initial_evidence(work, shots, float(analysis['video']['fps']), bool(analysis.get('deep')))
-    if set(e['shot'] for e in evidence) != {s['shot'] for s in shots}:
+    # A retained character profile may cite a clearer identity anchor later in
+    # the film. Keep that original evidence; selecting output must not orphan it.
+    evidence = inv._initial_evidence(work, full_shots, float(analysis['video']['fps']), bool(analysis.get('deep')))
+    if set(e['shot'] for e in evidence) != {s['shot'] for s in full_shots}:
         raise ValueError('Every source shot needs its actual keyframes before production.')
     known = {'schema_version':1,'assets':[],'scenes':[],'shots':{}}
     # Face fingerprints of every keyframe, for the identity check (optional evidence).
@@ -1082,16 +1351,58 @@ async def prepare(analysis, work: Path, title, rules, on_progress=None):
     offset = 0
     size = batch_size    # smaller after a batch neither model answered, until one succeeds
     line_speakers = {}   # line id -> speaker of its first piece; later pieces must match
+    pending = []
+    after_gap = False
+    consecutive_provider_errors = 0
+    def checkpoint(state='running'):
+        recovery.retain_drafts(reusable['inventory'],known)
+        for key in ('audiovisual_speaker_repairs','source_audio_observation_findings'):
+            if known.get(key): reusable['inventory'][key]=deepcopy(known[key])
+        if not production_scope: atomic(cache_path,reusable)
+        report = {'state':state,'source_fingerprint':source_fingerprint(original),
+            'completed':len(known['shots']),'processed':offset,'total':len(shots),
+            'pending_shots':sorted({n for item in pending for n in item['shots']}),
+            'pending':deepcopy(pending),'source_fidelity_approved':False,
+            'automatic_repairs':deepcopy(known.get('audiovisual_speaker_repairs',[]))}
+        if production_scope: report['production_scope'] = deepcopy(analysis['production_scope'])
+        atomic(output_work/'one-pass-catalog-progress.json', {**report,'inventory':known})
+        if on_progress:
+            on_progress('profiles',report['completed'],len(shots))
+            detail = getattr(on_progress,'catalog_detail',None)
+            if detail: detail(report)
+        return report
     if on_progress: on_progress('profiles', 0, len(shots))
     while offset < len(shots):
+        # Avoid paying for a group that mixes a new interval with retained work.
+        cached_rows=reusable['inventory'].get('shots',{})
+        initial_cached=str(shots[offset]['shot']) in cached_rows
+        terminal_shots={n for item in book['terminal'] for n in item['shots']}
+        initial_terminal=shots[offset]['shot'] in terminal_shots
+        contiguous=0
+        for s in shots[offset:offset+size]:
+            if ((str(s['shot']) in cached_rows)!=initial_cached
+                    or (s['shot'] in terminal_shots)!=initial_terminal): break
+            contiguous+=1
         image_budget = 200 if os.getenv('FLOWBOARD_CATALOG_FRAME_GRID') == '1' else 50
-        batch, supplied = catalog_batch(shots,offset,size,known,evidence,image_budget)
+        planning_error = None
+        try:
+            batch, supplied = catalog_batch(shots,offset,min(size,contiguous),known,evidence,image_budget)
+        except ValueError as exc:
+            batch, supplied, planning_error = shots[offset:offset+1], [], exc
         ns = {s['shot'] for s in batch}
-        # All frames for the current batch plus one historical identity anchor.
+        # Keep a retrieval receipt when the growing identity gallery is bounded.
+        anchors = {a['evidence_ids'][0] for a in known['assets'] if a.get('evidence_ids')}
+        supplied_ids = {e['id'] for e in supplied}
+        if not planning_error and anchors - supplied_ids:
+            known.setdefault('reference_retrieval', []).append({'shots':sorted(ns),
+                'source_frame_ids':[e['id'] for e in supplied if e['shot'] in ns],
+                'anchor_ids':sorted(anchors & supplied_ids), 'omitted_anchor_ids':sorted(anchors - supplied_ids),
+                'reason':'Bounded historical gallery; all current source frames retained.'})
+        # All frames for the current batch plus selected historical identity anchors.
         cards = [(e,work/e['frame']) for e in supplied]
         payload = {'catalog':{'assets':known['assets'],'scenes':known['scenes'][-4:]},
-            'previous_shots':list(known['shots'].items())[-2:],
-            'continuing_scene':continuing_scene(known),
+            'previous_shots':[] if after_gap else list(known['shots'].items())[-2:],
+            'continuing_scene':{} if after_gap else continuing_scene(known),
             'shots':[{**{k:s[k] for k in ('shot','start','end','source','dialogue_lines') if k in s},
                       **({'dialogue_pieces':[{k:p.get(k) for k in ('line_id','text','cont','start','end',
                                                                     'voice','voice_confidence')}
@@ -1101,76 +1412,47 @@ async def prepare(analysis, work: Path, title, rules, on_progress=None):
                                         if any(p.get('line_id')==lid for s in batch for p in s.get('dialogue_pieces') or [])},
             'known_voices':voice_id.bindings(line_speakers,analysis.get('dialogue_track') or []),
             'evidence':supplied}
-        batch_model = model
         try:
-            data = await _call(payload,cards,work,model)
-        except Exception as exc:
-            fallback = os.getenv('FLOWBOARD_ONE_PASS_CATALOG_FALLBACK_MODEL',
-                                 os.getenv('FLOWBOARD_ONE_PASS_MODEL','claude-opus-5-5'))
-            if not unanswered(exc) or not fallback or fallback == model:
-                raise
-            # The catalog model gave no answer for these frames (twice empty, refused,
-            # or a checkpoint that may not be resent): the model that already read them
-            # in the vision pass catalogs this batch. Recorded per batch.
-            batch_model = fallback
-            try:
-                data = await _call(payload,cards,work,fallback)
-            except Exception as again:
-                if not unanswered(again) or len(batch) < 2:
-                    raise
-                # Neither model answered this request (it hung, or came back empty): the
-                # same shots go again as two smaller, different requests. A request
-                # itself is never resent.
-                known.setdefault('split_batches', []).append(
-                    {'shots': sorted(ns), 'reason': f'{type(again).__name__}: {str(again)[:200]}'})
-                size = len(batch) // 2
-                continue
-            known.setdefault('fallback_batches', []).append(
-                {'shots': sorted(ns), 'model': fallback, 'reason': f'{type(exc).__name__}: {str(exc)[:200]}'})
-        patch, issues = normalize(data,batch,known,supplied,line_speakers,faces)
-        if issues:
-            # One local correction of concrete problems, no whole-film reviewer. The answer
-            # is a patch: what it does not restate stands as first answered. It is kept
-            # only if it leaves no more blocking findings than the first answer had, so a
-            # wardrobe note can never turn a passing batch into a failed one.
-            repair = {**payload,'previous_output':data,'repair_only_these_findings':issues}
-            try:
-                fixed = patch_output(data, await _call(repair,cards,work,batch_model,repair=True))
-            except Exception as exc:
-                # A repair improves an answer; without one (an empty reply, a refusal, a
-                # checkpoint that may not be resent) the first answer stands on its own.
-                fixed = None
-                known.setdefault('repair_failures', []).append(
-                    {'shots': sorted(ns), 'error': f'{type(exc).__name__}: {str(exc)[:300]}'})
-            if fixed is not None:
-                patch2, issues2 = normalize(fixed,batch,known,supplied,line_speakers,faces)
-                if len(blocking(issues2)) <= len(blocking(issues)):
-                    data, patch, issues = fixed, patch2, issues2
-        # An on-camera claim for a speaker nobody can see that the repair left standing is
-        # settled the way its finding says ("correct delivery"): the line is offscreen.
-        if blocking(issues):
-            settled, corrections = settle_delivery(data, issues)
-            if corrections:
-                patch3, issues3 = normalize(settled,batch,known,supplied,line_speakers,faces)
-                if len(blocking(issues3)) < len(blocking(issues)):
-                    data, patch, issues = settled, patch3, issues3
-                    known.setdefault('settled_contradictions', []).extend(corrections)
-        # A state change inside a scene that nobody saw happen is settled by the catalog's
-        # own rule: the person keeps their state (receipts in settled_wardrobe).
-        if any(isinstance(i, dict) and i.get('code') == 'unexplained_wardrobe_change' for i in issues):
-            settled, corrections = settle_wardrobe(data, issues)
-            if corrections:
-                patch4, issues4 = normalize(settled,batch,known,supplied,line_speakers,faces)
-                if len(blocking(issues4)) <= len(blocking(issues)) and len(issues4) < len(issues):
-                    data, patch, issues = settled, patch4, issues4
-                    known.setdefault('settled_wardrobe', []).extend(corrections)
-        # Wardrobe/identity findings the one repair could not settle are reviewer notes,
-        # not a failed film; every other finding still blocks.
-        notes = [i for i in issues if i not in blocking(issues)]
-        issues = blocking(issues)
-        if issues:
-            atomic(work/'one-pass-catalog-findings.json', {'shots':sorted(ns),'findings':issues})
-            raise ValueError('One-pass catalog needs attention: '+json.dumps(issues,ensure_ascii=False)[:1800])
+            if planning_error: raise planning_error
+            context = {**known, 'shots': {}} if after_gap else known
+            retained=recovery.reusable_patch(reusable['inventory'],batch)
+            patch, problems = normalize(retained,batch,context,evidence,line_speakers,faces) if retained else (None,[])
+            if retained and not blocking(problems):
+                notes=problems
+                context.setdefault('reused_catalog_shots',[]).extend(sorted(ns))
+                # Keep the original evidence receipts and uncertain context when
+                # a successfully corrected draft is reused on a later resume.
+                for key in ('audiovisual_speaker_repairs','source_audio_observation_findings'):
+                    if reusable['inventory'].get(key):context[key]=deepcopy(reusable['inventory'][key])
+            else:
+                patch, notes = await _read_catalog_batch(payload,cards,work,model,batch,context,supplied,line_speakers,faces)
+            if after_gap:
+                for key, value in context.items():
+                    if key not in {'assets','scenes','shots'}: known[key] = value
+            consecutive_provider_errors = 0
+        except recovery.SplitCatalogBatch:
+            size = max(1, len(batch)//2)
+            continue
+        except avis_text.AvisRateLimited:
+            checkpoint('retry_wait')
+            raise
+        except (ValueError, avis_text.AvisTextError, recovery.CatalogCheckpointUnknown, TimeoutError) as exc:
+            # Keep the defective interval and everything dependent on it. Do not
+            # merge a partial/contradictory catalog into the shared identities.
+            following = recovery.next_independent_offset(shots,analysis.get('sequences') or [],max(ns))
+            provider_error = not isinstance(exc, recovery.BatchNeedsReview) and not initial_terminal
+            consecutive_provider_errors = consecutive_provider_errors + 1 if provider_error else 0
+            if consecutive_provider_errors >= 3:
+                following = len(shots)  # provider circuit breaker, no film-wide request storm
+            pending.append({'shots':[s['shot'] for s in shots[offset:following]],
+                'root_shots':sorted(ns),'error':str(exc)[:1600],
+                'kind':type(exc).__name__, 'findings':getattr(exc,'issues',[]),
+                'provider_circuit_open':consecutive_provider_errors >= 3})
+            offset = following
+            size = batch_size
+            after_gap = True
+            checkpoint()
+            continue
         inv._merge(known,patch)
         apply_earlier_states(known,patch,ns)
         if notes:
@@ -1184,12 +1466,18 @@ async def prepare(analysis, work: Path, title, rules, on_progress=None):
                 known.setdefault(audit_key, []).extend(patch[audit_key])
         offset += len(batch)
         size = batch_size
-        if on_progress: on_progress('profiles',offset,len(shots))
+        after_gap = False
+        checkpoint()
+    if pending:
+        report = checkpoint('needs_review')
+        atomic(output_work/'one-pass-catalog-findings.json', report)
+        raise recovery.CatalogNeedsReview(report)
+    checkpoint('completed')
     settle_scene_wardrobe(known)
     # Where everyone is in each scene, relative to the set, read from the source frames.
     if os.getenv('FLOWBOARD_SCENE_STAGING', '1') != '0':
         from . import scene_staging
-        known['staging'] = await scene_staging.extract(shots, known, evidence, work)
+        known['staging'] = await scene_staging.extract(shots, known, evidence, work, on_progress=on_progress)
     # One person per voice: high-confidence lines of a voice follow its majority character.
     voices = analysis.setdefault('voices', {})
     voices['reconciled'] = voice_id.reconcile(known['shots'], shots)
@@ -1197,11 +1485,11 @@ async def prepare(analysis, work: Path, title, rules, on_progress=None):
     result, cast, adaptation = compile_prepared(analysis, known, title, rules,
         evidence=evidence, model=model, source_digest=digest(original))
     if result['source_verification']['source_integrity']['findings']:
-        atomic(work/'source-integrity-findings.json',result['source_verification']['source_integrity'])
+        atomic(output_work/'source-integrity-findings.json',result['source_verification']['source_integrity'])
         raise ValueError('Speaker/shot integrity needs correction before production: '+json.dumps(result['source_verification']['source_integrity']['findings'],ensure_ascii=False)[:1800])
     # What a person checking the shotlist against the video would count, kept with it.
     from . import shotlist_audit
     result['identity_check'] = face_id.audit(known, faces) if faces else {'status': 'no_faces'}
     result['shotlist_audit'] = shotlist_audit.report(result, adaptation, cast)
-    atomic(work/'one-pass-production.json', {'analysis':result,'cast':cast,'adaptation':adaptation})
+    atomic(output_work/'one-pass-production.json', {'analysis':result,'cast':cast,'adaptation':adaptation})
     return result, cast, adaptation

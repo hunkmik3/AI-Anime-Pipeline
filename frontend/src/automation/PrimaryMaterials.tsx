@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
-import { useAutomation, type Plate, type RuntimeJob } from "../store/automation";
+import { useAutomation, type Plate, type RuntimeJob, type AutoNodeData } from "../store/automation";
 
 type Item = {
-  node_id: string; kind: "character" | "environment"; slot: string; required: boolean;
-  profile: { name: string; role?: string; summary?: string; identity_anchor?: string; lock?: string };
+  node_id: string; kind: "character" | "environment" | "asset"; slot: string; required: boolean;
+  profile: { target_description?: string; name: string; role?: string; summary?: string; identity_anchor?: string; lock?: string };
   plate: Plate; states: { key: string; label: string; stale: boolean; ready: boolean }[]; clips: string[];
 };
 type Review = { items: Item[]; waiting_run: (RuntimeJob & { config: { mode: string } }) | null };
@@ -13,6 +13,7 @@ const active = (j: RuntimeJob) => ["queued", "preparing", "submitting", "running
 /** One canonical identity/location per card, never one card per costume. */
 export function PrimaryMaterials() {
   const pid = useAutomation(s => s.currentProjectId);
+  const isReskin = useAutomation(s => s.motionReference === "white_model");
   const nodes = useAutomation(s => s.nodes);
   const jobs = useAutomation(s => s.jobs);
   const [review, setReview] = useState<Review | null>(null);
@@ -42,6 +43,7 @@ export function PrimaryMaterials() {
       states: data.character.states.map(s => ({ key: s.key, label: s.label,
         ready: !!data.states[s.key]?.referenceUrl, stale: !!data.states[s.key]?.needsIdentityRefresh })) };
     if (data?.kind === "environment") return { ...item, profile: data.environment, plate: data.plate };
+    if (data?.kind === "asset") return { ...item, profile: data.asset, plate: data.plate };
     return item;
   });
   const required = items.filter(i => i.required);
@@ -92,7 +94,7 @@ export function PrimaryMaterials() {
       sessionStorage.setItem(storageKey, requestKey);
       await api(`/api/automation/projects/${pid}/production-runs`, { method: "POST", body: JSON.stringify({
         expected_revision: revision, request_key: requestKey,
-        config: { review_masters: true, mode, resolution: "480p", timing_policy: "full_take" },
+        config: { review_masters: true, mode, resolution: "480p", timing_policy: "full_take", audio_cleanup: useAutomation.getState().motionReference === "white_model", set_continuity: useAutomation.getState().motionReference !== "white_model" },
       }) });
       sessionStorage.removeItem(storageKey);
     });
@@ -110,8 +112,8 @@ export function PrimaryMaterials() {
   return <section className="primary-materials" aria-label="Tạo hình chính">
     <header className="primary-materials__intro">
       <div><span className="primary-materials__eyebrow">01 · TẠO HÌNH GỐC</span>
-        <h2>Chốt nhân vật & bối cảnh</h2>
-        <p>Upload sheet của bạn hoặc gen từ hồ sơ. Các trang phục và trạng thái phụ sẽ dùng sheet nhân vật này làm gốc.</p>
+        <h2>Chọn tạo hình cho phim</h2>
+        <p>Upload hoặc sửa prompt riêng cho nhân vật, bối cảnh, đạo cụ và quần chúng. Các diện mạo phụ dùng sheet nhân vật đã chốt; mỗi vật giữ đúng vai trò và người cầm trong phim gốc.</p>
       </div>
       <div className="primary-materials__count"><strong>{required.length - missing.length}<small> / {required.length}</small></strong><span>sheet chính sẵn sàng</span></div>
     </header>
@@ -120,7 +122,7 @@ export function PrimaryMaterials() {
       <div className="primary-materials__empty"><h3>Chưa có hồ sơ nhân vật và bối cảnh</h3><p>Đưa video gốc vào Canvas. Khi phân tích xong, các hồ sơ sẽ xuất hiện ở đây.</p></div> : <>
       <div className="primary-materials__toolbar">
         <div className="primary-materials__filters" aria-label="Lọc hồ sơ">
-          {[["all", "Tất cả"], ["character", "Nhân vật"], ["environment", "Bối cảnh"]].map(([key, label]) =>
+          {[["all", "Tất cả"], ["character", "Nhân vật"], ["environment", "Bối cảnh"], ["asset", "Đạo cụ & quần chúng"]].map(([key, label]) =>
             <button type="button" className="auto-btn" aria-pressed={filter === key} key={key} onClick={() => setFilter(key)}>{label} <small>{items.filter(i => key === "all" || i.kind === key).length}</small></button>)}
         </div>
         <button className="auto-btn" disabled={locked || !missing.length || unresolved}
@@ -131,7 +133,7 @@ export function PrimaryMaterials() {
           const inFlight = jobs.some(j => j.node_id === item.node_id && j.slot === item.slot && active(j));
           const sheet = item.plate;
           return <article className="primary-card" key={item.node_id}>
-            <header><div><span>{item.kind === "character" ? "NHÂN VẬT · SHEET GỐC" : "BỐI CẢNH · SHEET GỐC"}</span><h3>{item.profile.name}</h3></div>
+            <header><div><span>{item.kind === "character" ? "NHÂN VẬT · SHEET GỐC" : item.kind === "environment" ? "BỐI CẢNH · SHEET GỐC" : "ĐẠO CỤ / NHÓM QUẦN CHÚNG"}</span><h3>{item.profile.name}</h3></div>
               <span className={`primary-card__status ${sheet.referenceUrl ? "is-ready" : ""}`}>{inFlight ? "Đang xử lý" : sheet.uploaded ? "Đã upload" : sheet.referenceUrl ? "Có sheet" : "Chưa có sheet"}</span></header>
             <div className="primary-card__image">{sheet.image || sheet.referenceUrl ?
               <a href={sheet.image || sheet.referenceUrl} target="_blank" rel="noreferrer"><img loading="lazy" decoding="async" src={sheet.image || sheet.referenceUrl} alt={`Sheet chính — ${item.profile.name}`} /></a> :
@@ -148,8 +150,17 @@ export function PrimaryMaterials() {
               </div>
               {item.profile.role && <b>{item.profile.role}</b>}
               <p className="primary-card__summary">{item.profile.summary || item.profile.identity_anchor || item.profile.lock}</p>
-              <div className="primary-card__usage">{item.states.length > 0 && <span>{item.states.length} diện mạo / trạng thái</span>}{item.clips.length > 0 && <span>{item.clips.length} clip sử dụng</span>}{!item.required && <span>Không dùng trong lượt đang chọn</span>}</div>
+              <div className="primary-card__usage">{item.states.length > 0 && <span>{item.states.length} diện mạo / trạng thái</span>}{item.clips.length > 0 && <span>{item.clips.length} clip sử dụng</span>}{!item.required && <span>Tùy chỉnh thêm trước khi chạy</span>}</div>
               {item.states.length > 0 && <details><summary>Các diện mạo phụ</summary><ul>{item.states.map(s => <li key={s.key}>{s.label}<small> · {s.stale ? "Cần gen theo sheet mới" : s.ready ? "Có sheet" : "Chưa gen"}</small></li>)}</ul></details>}
+              {isReskin && <label className="primary-card__target">Thiết kế thay thế
+                <textarea rows={3} maxLength={2000} disabled={locked || inFlight} value={item.profile.target_description || ""}
+                  placeholder="Ví dụ: thay điện thoại bằng gương đồng cầm tay. Để trống để dùng thiết kế đã chọn."
+                  onChange={e => {
+                    const data = nodes.find(n => n.id === item.node_id)?.data;
+                    if (!data || !["character","environment","asset"].includes(data.kind)) return;
+                    useAutomation.getState().patchNode(item.node_id, { [item.kind]: { ...item.profile, target_description: e.target.value } } as Partial<AutoNodeData>);
+                  }} />
+              </label>}
               <details><summary>Hồ sơ & prompt</summary><p>{item.profile.summary}</p><p>{item.profile.identity_anchor || item.profile.lock}</p>
                 <label>Prompt sheet chính<textarea rows={6} value={sheet.prompt || ""} disabled={locked || inFlight}
                   placeholder="Để trống để dùng master prompt theo hồ sơ và style phim."
