@@ -6,6 +6,7 @@ ambiguous provider request. Every upload owns a new project.
 """
 
 from copy import deepcopy
+import re
 from typing import Optional
 from pydantic import BaseModel, Field, ConfigDict
 from sqlmodel import select
@@ -553,6 +554,11 @@ async def execute(video_id):
                 source_id=str(video_id),
             )
             board = graph(out, opt.model_dump())
+            # The language the source is spoken in, for checking generated speech (one
+            # Whisper pass per clip instead of a language probe and a pass).
+            spoken = (production_analysis.get('transcript') or {}).get('language')
+            if isinstance(spoken, str) and re.fullmatch(r'[a-z]{2}', spoken):
+                board['sourceSpeechLanguage'] = spoken
             if production_analysis.get('production_scope'):
                 board['sourceProductionScope'] = deepcopy(production_analysis['production_scope'])
             if row.adaptation.get('target_casting'):

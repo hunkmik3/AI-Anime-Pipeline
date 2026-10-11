@@ -167,7 +167,7 @@ def _keep_earned(incoming: dict[str, Any], stored: dict[str, Any]) -> dict[str, 
     if "adaptation" not in incoming and "adaptation" in stored:
         incoming["adaptation"] = stored["adaptation"]
     # Server-issued source receipts cannot be forged/cleared by canvas autosave.
-    for key in ('sourceMediaSha256','reskinSourceReview','reskinVersion','motionReference','motionProfile','reskinFindingDispositions'):
+    for key in ('sourceMediaSha256','reskinSourceReview','reskinVersion','motionReference','motionProfile','reskinFindingDispositions','sourceSpeechLanguage'):
         if key in stored: incoming[key] = stored[key]
         else: incoming.pop(key, None)
     nodes = incoming.get("nodes")

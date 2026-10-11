@@ -252,6 +252,7 @@ def build(board, project_id='', sequence_key=''):
         package = {'schema_version': 1, 'project_id': project_id, 'sequence_key': key,
                    'style': board.get('style', 'realistic'), 'aspect_ratio': board.get('aspectRatio', '16:9'),
                    'dialogue_language': board.get('dialogueLanguage', 'en'),
+                   **({'source_speech_language': board['sourceSpeechLanguage']} if board.get('sourceSpeechLanguage') else {}),
                    'policy': POLICY if board.get('dialogueLanguage', 'en') in ('en', 'English') else POLICY.replace('in English exactly as supplied', 'verbatim in its supplied language'),
                    'raccord_versions': used_plans, 'scene_anchors': anchors, 'materials': materials, 'shots': shots, 'issues': issues,
                    'ready': bool(shots) and not any(i.get('blocking') for i in issues)}

@@ -203,6 +203,8 @@ async def inspect(payload):
             wav=root/'audio.wav'
             await media.command('ffmpeg','-v','error','-y','-i',source,'-vn','-ac','1','-ar','16000',wav)
             lang=package.get('dialogue_language')
+            if not (lang and len(lang)==2):
+                lang=package.get('source_speech_language')     # 'source' dialogue: the film's own language
             transcript=await asr.transcribe(wav,root,language=lang if lang and len(lang)==2 else None)
     audio=audio_check(package['shots'],transcript,duration,has_audio)
     findings.extend(audio['findings'])
