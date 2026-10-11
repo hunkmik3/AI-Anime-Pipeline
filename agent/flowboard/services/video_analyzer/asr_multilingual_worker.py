@@ -10,8 +10,10 @@ import sys
 import time
 from pathlib import Path
 
-VERSION = 2
+VERSION = 3
 RATE = 16000
+BLOCK = 28.            # one coarse language probe per decoding window
+CONFIDENT = .8         # below this a block is re-probed every 5 s, as before
 
 
 def language_runs(probes: list[dict], duration: float) -> list[dict]:
@@ -28,6 +30,37 @@ def language_runs(probes: list[dict], duration: float) -> list[dict]:
             runs.append({'start': boundary, 'end': duration, 'language': p['language']})
         previous = p
     return runs
+
+
+def detect_runs(probe, duration: float) -> list[dict]:
+    """Language runs from probes: one per 28 s block, 5 s probes only inside blocks whose
+    language is uncertain, then 1 s probes around each detected transition.
+
+    ``probe(center, width)`` returns a probe dict or None (no voiced audio). A monolingual
+    film costs one encoder pass per block instead of one per 5 s; a block that mixes
+    languages is still found because its own probe is uncertain."""
+    import numpy as np
+    probes = []
+    def take(center, width):
+        got = probe(float(center), float(width))
+        if got:
+            probes.append(got)
+        return got
+    for a in np.arange(0, duration, BLOCK):
+        b = min(duration, a + BLOCK)
+        got = take((a + b) / 2, b - a)
+        if got is not None and got.get('probability', 0) < CONFIDENT:
+            probes.remove(got)
+            for c in np.arange(a, b, 5.):
+                take(min(c + 2.5, (c + b) / 2), min(5., b - c))
+    probes.sort(key=lambda p: p['center'])
+    coarse = language_runs(probes, duration)
+    # Only inspect a detected transition, once, using local 2-second windows.
+    for r in coarse[1:]:
+        for center in np.arange(max(1, r['start'] - 2), min(duration, r['start'] + 3), 1.):
+            take(center, 2.)
+    probes.sort(key=lambda p: p['center'])
+    return probes
 
 
 def owned_segments(segments, start: float, end: float, offset: float, language: str | None):
@@ -63,20 +96,15 @@ def run(audio: str, model_name: str, language: str | None = None) -> dict:
     probes=[]
     def probe(center, width):
         a,b=max(0,center-width/2),min(duration,center+width/2)
-        if spoken(a,b)<.35: return
+        if spoken(a,b)<.35: return None
         sample=samples[int(a*RATE):int(b*RATE)]
-        if len(sample)<RATE//2 or float(np.max(np.abs(sample)))<.003:return
+        if len(sample)<RATE//2 or float(np.max(np.abs(sample)))<.003:return None
         code,prob,_=model.detect_language(audio=sample)
-        probes.append({'center':center,'start':a,'end':b,'language':code,'probability':round(prob,4)})
+        return {'center':center,'start':a,'end':b,'language':code,'probability':round(prob,4)}
     if language:
         runs=[{'start':0.,'end':duration,'language':language}]
     else:
-        for a in np.arange(0,duration,5.): probe(min(a+2.5,(a+duration)/2),5.)
-        coarse=language_runs(probes,duration)
-        # Only inspect a detected transition, once, using local 2-second windows.
-        for r in coarse[1:]:
-            for center in np.arange(max(1,r['start']-2),min(duration,r['start']+3),1.):probe(float(center),2.)
-        probes.sort(key=lambda p:p['center'])
+        probes=detect_runs(probe,duration)
         runs=language_runs(probes,duration)
     detection_elapsed=time.monotonic()-started
     segments=[]; windows=[]; findings=[]; skipped=[]
@@ -106,7 +134,7 @@ def run(audio: str, model_name: str, language: str | None = None) -> dict:
             start=end
     segments.sort(key=lambda x:x['start'])
     languages=sorted({s['language'] for s in segments})
-    return {'version':VERSION,'method':'language_runs_v1','model':model_name,
+    return {'version':VERSION,'method':'language_runs_v2' if not language else 'fixed_language_v1','model':model_name,
             'language':languages[0] if len(languages)==1 else 'mixed','languages':languages,
             'segments':segments,'language_probes':probes,'language_runs':runs,'windows':windows,
             'findings':findings,'skipped_windows':skipped,'source_duration_s':duration,

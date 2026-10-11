@@ -12,6 +12,12 @@ function SourceToggle({ label, hint, checked, onChange }: {
   </label>;
 }
 
+/** Whisper language codes. "Tự nhận diện" probes the audio and finds language switches. */
+const SPEECH_LANGUAGES = [
+  ["", "Tự nhận diện · chậm hơn"], ["en", "English"], ["vi", "Tiếng Việt"], ["zh", "中文"],
+  ["ja", "日本語"], ["ko", "한국어"], ["es", "Español"], ["th", "ไทย"], ["id", "Bahasa Indonesia"],
+] as const;
+
 export function VideoSourceInput() {
   const projectId = useAutomation(s => s.currentProjectId);
   const videos = useVideoAnalysis(s => s.videos);
@@ -31,6 +37,7 @@ export function VideoSourceInput() {
   const [reskin, setReskin] = useState(true);
   const [fullTakes, setFullTakes] = useState(true);
   const [deep, setDeep] = useState(false);
+  const [speechLanguage, setSpeechLanguage] = useState("");
   const [fastAnalysis, setFastAnalysis] = useState(false);
   const [fastAvailable, setFastAvailable] = useState(false);
   const [onePass, setOnePass] = useState(true);
@@ -65,7 +72,7 @@ export function VideoSourceInput() {
         clip_seconds: reskin ? 15 : useAutomation.getState().clipSeconds, kyc: reskin || filmKyc, unmoderated: filmPeople,
         environment_request: environmentRequest.trim(),
         review_masters: reviewMasters, casting_request: castingRequest.trim(), timing_policy: fullTakes ? "full_take" : "source_duration" } : undefined,
-      mode).catch(() => undefined);
+      mode, speechLanguage).catch(() => undefined);
   }
 
   return <div className="source-input nodrag nopan">
@@ -138,6 +145,12 @@ export function VideoSourceInput() {
             </select>
           </label>
           <p className="source-input__hint">{mode === "one_pass" ? "Đọc hình và nghe thoại cùng lượt; chỉ xử lý lại nhóm shot có mâu thuẫn." : mode === "fast" ? "Đọc shot và danh mục cùng lượt, sau đó đối chiếu video độc lập." : "Tách các bước phân tích và đối chiếu video nguồn."}</p>
+          <label className="source-input__field"><span>Ngôn ngữ thoại</span>
+            <select value={speechLanguage} onChange={event => setSpeechLanguage(event.target.value)}>
+              {SPEECH_LANGUAGES.map(([code, label]) => <option key={code} value={code}>{label}</option>)}
+            </select>
+          </label>
+          <p className="source-input__hint">Chọn đúng ngôn ngữ để bỏ bước nhận diện ngôn ngữ. Phim nói nhiều thứ tiếng thì để tự nhận diện.</p>
           <SourceToggle label="Phân tích shot kỹ" hint="Nhiều keyframe hơn; chậm và tốn hơn." checked={deep} onChange={setDeep} />
           {autoFilm && <>
             {!reskin && <SourceToggle label="KYC" checked={filmKyc} onChange={setFilmKyc} />}

@@ -357,7 +357,7 @@ interface VideoAnalysisStore {
   refiningId: string | null;
 
   loadVideos(projectId: string | null): Promise<void>;
-  upload(file: File, projectId: string | null, rules: Rules, detail?: "standard" | "deep", autoFilm?: AutoFilmOptions, analysisMode?: "standard" | "fast" | "one_pass"): Promise<void>;
+  upload(file: File, projectId: string | null, rules: Rules, detail?: "standard" | "deep", autoFilm?: AutoFilmOptions, analysisMode?: "standard" | "fast" | "one_pass", language?: string): Promise<void>;
   open(id: string | null): Promise<void>;
   refresh(): Promise<void>;
   adapt(rules: Rules, glossary?: Glossary, fresh?: boolean): Promise<void>;
@@ -438,7 +438,7 @@ export const useVideoAnalysis = create<VideoAnalysisStore>()((set, get) => {
       schedule(projectId);
     },
 
-    upload(file, projectId, rules, detail = "standard", autoFilm, analysisMode = "one_pass") {
+    upload(file, projectId, rules, detail = "standard", autoFilm, analysisMode = "one_pass", language = "") {
       // XHR, not fetch: an upload of tens of megabytes needs a progress bar,
       // and fetch still cannot report upload progress.
       return new Promise<void>((resolve, reject) => {
@@ -449,6 +449,8 @@ export const useVideoAnalysis = create<VideoAnalysisStore>()((set, get) => {
         form.append("rules", JSON.stringify(rules));
         form.append("detail", detail);
         form.append("analysis_mode", analysisMode);
+        // A known spoken language skips language detection in speech recognition.
+        if (language) form.append("language", language);
         if (autoFilm) form.append("auto_production", JSON.stringify(autoFilm));
         const xhr = new XMLHttpRequest();
         xhr.open("POST", "/api/automation/videos");
