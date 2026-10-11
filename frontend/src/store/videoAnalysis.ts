@@ -120,6 +120,8 @@ export interface AutoFilmOptions {
   generate_seconds?: number;
   /** Story segments catalogued this many at a time (1 = one pass in film order). */
   catalog_parallel?: number;
+  /** Source shots one reskin clip may hold (default 4). */
+  clip_max_shots?: number;
   kyc: boolean;
   unmoderated: boolean;
 }

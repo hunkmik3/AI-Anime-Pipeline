@@ -661,7 +661,7 @@ def _normalise(characters: list[dict], environments: list[dict]) -> None:
 
 async def build_board(analysis: dict, adaptation: dict, cast: Optional[dict] = None,
                       *, max_clip_s: float = MAX_CLIP_S, preserve_source_shots: bool = True, source_id: str = "",
-                      hard_limit_s: float = HARD_MAX_S) -> dict:
+                      hard_limit_s: float = HARD_MAX_S, max_clip_shots: int = 4) -> dict:
     """The /api/automation/breakdown response shape, plus each clip's shots already cut.
 
     ``cast`` is the stored bible when there is one — reusing it keeps the board's
@@ -704,7 +704,7 @@ async def build_board(analysis: dict, adaptation: dict, cast: Optional[dict] = N
     if one_pass_film:
         clips = plan_dialogue_clips(analysis['shots'], sequences_src, analysis.get('dialogue_track') or [], max_clip_s,
                                    character_states={n: row.get('character_states') or {} for n, row in per_shot.items()},
-                                   state_specific_references=True, max_shots=4, hard_limit_s=hard_limit_s)
+                                   state_specific_references=True, max_shots=max_clip_shots, hard_limit_s=hard_limit_s)
     else:
         clips = plan_clips(analysis["shots"], sequences_src, max_clip_s=max_clip_s,hard_limit_s=hard_limit_s)
 

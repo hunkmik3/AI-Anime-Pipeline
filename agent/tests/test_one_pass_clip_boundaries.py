@@ -49,3 +49,13 @@ async def test_one_pass_board_uses_prepared_character_states_to_plan_clips():
     result = await board.build_board(analysis, {}, cast=cast)
     assert [[shot['source_shot'] for shot in shots] for shots in result['shots'].values()] == [[1, 2], [3, 4]]
     assert [shot['duration_s'] for shots in result['shots'].values() for shot in shots] == [2.] * 4
+
+
+def test_a_longer_clip_cap_holds_more_shots_but_never_past_fifteen_seconds():
+    shots = [{'shot': n, 'start': (n - 1) * 1.5, 'end': n * 1.5, 'source': {'shot_size': 'MS', 'action': 'Waits.'}}
+             for n in range(1, 17)]
+    four = board.plan_dialogue_clips(shots, [], [], 15, max_shots=4, hard_limit_s=15)
+    eight = board.plan_dialogue_clips(shots, [], [], 15, max_shots=8, hard_limit_s=15)
+    assert [len(c['shots']) for c in four] == [4, 4, 4, 4]
+    assert [len(c['shots']) for c in eight] == [8, 8]
+    assert all(sum(1.5 for _ in c['shots']) <= 15 for c in eight)

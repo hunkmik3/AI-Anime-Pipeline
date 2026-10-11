@@ -31,6 +31,9 @@ class FilmOptions(BaseModel):
     # Generate only the first N seconds: the upload keeps N + 30 s of the source for the
     # whole analysis (cuts, speech, vision, catalog), so nothing past it is read or paid for.
     generate_seconds: Optional[float] = Field(default=None, ge=10, le=36000)
+    # Source shots one reskin clip may hold (never past clip_seconds / 15 s). Fewer, longer
+    # clips mean fewer Seedance, writer and review calls; 4 is the tested default.
+    clip_max_shots: int = Field(default=4, ge=1, le=16)
     # Story segments catalogued this many at a time (1 = one pass in film order).
     catalog_parallel: int = Field(default=1, ge=1, le=8)
     # 'fast' renders the white-model video with coarser depth at 24 fps (long films).
@@ -552,6 +555,7 @@ async def execute(video_id):
                 hard_limit_s=15 if opt.pipeline == 'reskin_v1' else board_mod.HARD_MAX_S,
                 preserve_source_shots=True,
                 source_id=str(video_id),
+                max_clip_shots=opt.clip_max_shots,
             )
             board = graph(out, opt.model_dump())
             # The language the source is spoken in, for checking generated speech (one
