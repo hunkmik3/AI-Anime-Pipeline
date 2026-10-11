@@ -67,6 +67,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+import os
+
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -121,35 +123,84 @@ class CutReport:
     kept_detail: list[Cut] = field(default_factory=list)
 
 
-def _frame_stats(path: Path) -> tuple[np.ndarray, np.ndarray, float]:
-    """One decode pass → a grey thumbnail per frame, and TransNetV2's own input.
+_STATS_WORKERS = max(1, min(8, (os.cpu_count() or 2)))
+_STATS_CHUNK = 32
 
-    Everything the referee, the veto and the network need, so the video is
-    decoded once rather than three times. Imported lazily: cv2 must not load in
-    any process that might also load PyAV (see asr_worker).
-    """
+
+def _shrink(frames: list[np.ndarray]) -> tuple[list[np.ndarray], list[np.ndarray]]:
     import cv2
-
-    cap = cv2.VideoCapture(str(path))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    thumbs: list[np.ndarray] = []
-    tiny: list[np.ndarray] = []
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
+    thumbs, tiny = [], []
+    for frame in frames:
         small = cv2.resize(frame, _THUMB, interpolation=cv2.INTER_AREA)
         thumbs.append(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY))
         # TransNetV2 is trained on 48x27 RGB and takes nothing else.
         # Resize before swapping channels: the same per-channel pixels, without
         # copying a full-resolution noncontiguous RGB array for every frame.
         tiny.append(cv2.resize(frame, (48, 27), interpolation=cv2.INTER_AREA)[:, :, ::-1])
+    return thumbs, tiny
+
+
+def _frame_stats(path: Path) -> tuple[np.ndarray, np.ndarray, float]:
+    """One decode pass → a grey thumbnail per frame, and TransNetV2's own input.
+
+    Everything the referee, the veto and the network need, so the video is
+    decoded once rather than three times. Imported lazily: cv2 must not load in
+    any process that might also load PyAV (see asr_worker).
+
+    Decoding stays sequential; the per-frame resizes (most of this pass) run in a
+    thread pool, in order and with a bounded number of frames in flight. OpenCV
+    releases the GIL, and every frame gets exactly the same operations.
+    """
+    import cv2
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+
+    cap = cv2.VideoCapture(str(path))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    thumbs: list[np.ndarray] = []
+    tiny: list[np.ndarray] = []
+    pending: deque = deque()
+
+    def collect(future) -> None:
+        a, b = future.result()
+        thumbs.extend(a)
+        tiny.extend(b)
+
+    with ThreadPoolExecutor(_STATS_WORKERS) as pool:
+        chunk: list[np.ndarray] = []
+        while True:
+            ok, frame = cap.read()
+            if ok:
+                chunk.append(frame)
+            if chunk and (not ok or len(chunk) == _STATS_CHUNK):
+                pending.append(pool.submit(_shrink, chunk))
+                chunk = []
+                while len(pending) > 2 * _STATS_WORKERS:
+                    collect(pending.popleft())
+            if not ok:
+                break
+        while pending:
+            collect(pending.popleft())
     cap.release()
     return (
         np.stack(thumbs) if thumbs else np.empty((0, _THUMB[1], _THUMB[0]), np.uint8),
         np.stack(tiny) if tiny else np.empty((0, 27, 48, 3), np.uint8),
         fps,
     )
+
+
+def _predict(model, frames: np.ndarray) -> np.ndarray:
+    """Per-frame boundary probabilities, without the package's progress bar in the logs.
+
+    Measured on a 31-min film: splitting the frames across threads or processes did not
+    beat one pass (the network already uses the free cores), so it stays one pass."""
+    import torch
+    with torch.no_grad():
+        try:
+            single, _all = model.predict_frames(torch.from_numpy(frames), quiet=True)
+        except TypeError:                      # an older package without ``quiet``
+            single, _all = model.predict_frames(torch.from_numpy(frames))
+    return np.asarray(single).reshape(-1)
 
 
 def _transnet_cuts(tiny: np.ndarray, fps: float) -> Optional[list[float]]:
@@ -169,9 +220,7 @@ def _transnet_cuts(tiny: np.ndarray, fps: float) -> Optional[list[float]]:
 
     model = TransNetV2()
     model.eval()
-    with torch.no_grad():
-        single, _all = model.predict_frames(torch.from_numpy(tiny))
-    probs = np.asarray(single).squeeze()
+    probs = _predict(model, tiny)
 
     # The network marks every frame INSIDE a transition; one boundary is the
     # peak of each run above the threshold.
