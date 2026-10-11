@@ -667,6 +667,22 @@ def test_source_action_beats_keep_order_and_gpt_staging_after_repeated_serializa
     assert cp.serialize_source_locks(result, shots, [(0, 4)]) == result
 
 
+def test_end_state_left_in_prose_is_written_from_the_last_source_beat():
+    # A writer folded the end into its prose and so also gave the dialogue no place.
+    shots = inputs()[1]
+    shots[0]["action"] = ["Rhea looks down at the parcel.", "Rhea raises her eyes, holding the closed parcel."]
+    draft = good().split("## DIALOGUE")[0] + "She ends looking up.\n" + good().split("**End state:** Rhea retains the closed parcel.\n")[1]
+    assert "**End state:**" not in draft
+    result = cp.serialize_source_locks(draft, shots, [(0, 4)])
+    block = prompt_coverage.shot_blocks(result)[1]
+    assert "**End state:** Rhea raises her eyes, holding the closed parcel." in block
+    assert "RHEA — SPOKEN ON CAMERA:\n“Here it is.”" in block
+    assert cp.validate(result, ask(), [(0, 4)]) == []
+    assert cp.serialize_source_locks(result, shots, [(0, 4)]) == result
+    # A writer's own end state is kept.
+    assert "**End state:** Rhea retains the closed parcel." in cp.serialize_source_locks(good(), shots, [(0, 4)])
+
+
 def test_source_action_beats_replace_stale_cached_lock_without_erasing_staging():
     shots = inputs()[1]
     cached = good().replace(

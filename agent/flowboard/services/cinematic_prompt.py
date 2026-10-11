@@ -138,6 +138,11 @@ def serialize_source_locks(prompt: str, shots: list[dict], slots: list | None = 
             block=re.sub(r'^(\*\*Duration:\*\*[^\n]*)$',lambda m:m.group(1)+'\n**Framing:** ',block,count=1,flags=re.M)
         if not re.search(r'^\*\*Camera:\*\*',block,re.M):
             block=re.sub(r'^(\*\*Framing:\*\*[^\n]*)$',lambda m:m.group(1)+'\n**Camera:** ',block,count=1,flags=re.M)
+        # A shot whose end the writer left in its prose ends on the source's own last beat.
+        actions=[' '.join(a.split()) for a in shot.get('action') or [] if isinstance(a,str) and a.strip()]
+        if actions and not re.search(r'^\*\*End state:\*\*',block,re.M):
+            tail=block[len(block.rstrip()):]
+            block=block.rstrip()+'\n**End state:** '+actions[-1].rstrip('.')+'.'+(tail or '\n')
         block=re.sub(r'^\*\*Framing:\*\*[^\n]*',lambda _:f"**Framing:** {shot.get('framing','')}. {shot.get('framing_note','')}",block,flags=re.M)
         block=re.sub(r'^\*\*Camera:\*\*[^\n]*',lambda _:f"**Camera:** {shot.get('camera','')}",block,flags=re.M)
         # The source's own view behind the people at this angle, locked like the camera.
