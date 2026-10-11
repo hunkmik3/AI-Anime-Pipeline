@@ -108,7 +108,9 @@ def material_specs(board, packs):
         for dep in ([] if slot=='reverse' else sorted(dependency_graph.get(aid,set()))):
             other=nodes.get(dep,{}).get('data',{})
             deps.append(add(dep,other.get('activeState') if other.get('kind')=='character' else None,(*trail,key)))
-        specs[key]={'key':key,'node_id':node['id'],'asset_id':aid,'slot':slot,'kind':kind,'item':item,'plate':plate,'deps':deps,'related_ids':related.get(aid,[]),'dependency_notes':notes}
+        specs[key]={'key':key,'node_id':node['id'],'asset_id':aid,'slot':slot,'kind':kind,'item':item,'plate':plate,'deps':deps,'related_ids':related.get(aid,[]),'dependency_notes':notes,
+                    # The owner can draw one material with another image model; the rest keep the board's.
+                    **({'image_model':d['imageModel']} if d.get('imageModel') else {})}
         return key
     for aid,state in sorted(required,key=lambda v:(v[0],str(v[1]))): add(aid,state)
     return specs
@@ -371,7 +373,7 @@ def material_payload(spec, deps, board):
     if item.get('target_description'):
         prompt += '\nOWNER TARGET DESIGN (replaces source surface appearance only): '+item['target_description']
         prompt += '\nPreserve source role, prop function, scale needed for the action and character identity across states. Do not draw source and replacement as two objects.'
-    return {'prompt':prompt,'image_model':board.get('imageModel',automation.DEFAULT_IMAGE_MODEL),'image_size':board.get('imageSize','2K'),
+    return {'prompt':prompt,'image_model':spec.get('image_model') or board.get('imageModel',automation.DEFAULT_IMAGE_MODEL),'image_size':board.get('imageSize','2K'),
             'aspect_ratio':'16:9' if style_version(board) else board.get('aspectRatio','16:9'),
             'reference_urls':list(dict.fromkeys(refs)),'variant_count':1,
             'style':style,'style_version':style_version(board), 'material_kind':item.get('kind',kind) if kind=='asset' else kind}
@@ -505,7 +507,7 @@ def advance(s, run, project, all_jobs):
         if any(d not in ready for d in spec['deps']): waiting=True;continue
         fixtures=set_fixtures(board,spec['asset_id']) if spec['kind']=='environment' else []
         deps=[ready[d] for d in spec['deps']];plate=spec['plate'];signature=pm.digest({'item':spec['item'],'deps':[{k:v for k,v in d.items() if k!='media_id'} for d in deps],'slot':spec['slot'],
-            'prompt':authored_prompt(plate),'model':board.get('imageModel'),'size':board.get('imageSize'),'style':board.get('style'),'style_version':style_version(board),
+            'prompt':authored_prompt(plate),'model':spec.get('image_model') or board.get('imageModel'),'size':board.get('imageSize'),'style':board.get('style'),'style_version':style_version(board),
             **({'fixtures':fixtures} if fixtures else {})})
         old=next((j for j in reversed(all_jobs) if j.kind in ('plate','material_binding') and j.node_id==spec['node_id'] and j.slot==spec['slot'] and j.status=='succeeded'),None)
         fresh=plate.get('referenceUrl') and not plate.get('needsIdentityRefresh') and (plate.get('uploaded') or not old or not old.prepared.get('material_signature') or old.prepared['material_signature']==signature)

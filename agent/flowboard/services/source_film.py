@@ -42,6 +42,10 @@ class FilmOptions(BaseModel):
     video_parallel: int = Field(default=16, ge=1, le=64)
     max_images: int = Field(default=500, ge=0, le=10000)
     max_videos: int = Field(default=500, ge=0, le=10000)
+    # Studio gates: stop once the shotlist and board exist (the owner reviews and edits,
+    # then continues), and/or draw sheets and write prompts without rendering any clip.
+    pause_for_review: bool = False
+    prepare_before_render: bool = False
 
 
 def source_rules(style):
@@ -343,8 +347,14 @@ async def finish_board(row, opt, board):
     from flowboard.routes import video_analysis as routes
     from flowboard.routes.automation import ProductionRunConfig
     video_id=row.id
+    if opt.pause_for_review and not (row.options.get('auto_production') or {}).get('board_approved'):
+        # The owner reviews the shotlist, cast and materials first; "continue" resumes here.
+        state(video_id, board_ready=True, stage='awaiting_review', error=None)
+        routes._update(video_id, status='adapted', error=None)
+        return
     def run_config():
-        return ProductionRunConfig(mode='render',review_masters=opt.review_masters,assemble=True,
+        return ProductionRunConfig(mode='prepare' if opt.prepare_before_render else 'render',
+            review_masters=opt.review_masters,assemble=True,
             resolution=opt.resolution,timing_policy=opt.timing_policy,audio_cleanup=opt.pipeline=='reskin_v1',
             set_continuity=opt.pipeline!='reskin_v1',image_parallel=opt.image_parallel,video_parallel=opt.video_parallel,
             max_images=opt.max_images,max_videos=opt.max_videos,max_text=10000).model_dump()

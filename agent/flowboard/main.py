@@ -332,6 +332,9 @@ app.include_router(flowpanels.router)
 app.include_router(automation.router)
 # Reference video → shotlist → adaptation, the other entry into /automation.
 app.include_router(video_analysis.router)
+# Reskin Studio (/studio): one source film's pipeline with the owner's controls at every stage.
+from flowboard.routes import studio as studio_route
+app.include_router(studio_route.router)
 
 
 @app.get("/api/health")
