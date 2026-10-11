@@ -324,5 +324,6 @@ def test_only_a_writer_format_failure_is_written_once_more_by_a_new_run():
     assert run.retryable_write('422: Shot 1: missing **Camera:**; Shot 4: missing **Camera:**')
     assert run.retryable_write('422: @image5 must be declared on its own line as `- **@image5 = HALL — REFERENCE ROLE.**`.')
     assert not run.retryable_write("422: Source contract needs review: ['Shot 2 ...']")
-    assert not run.retryable_write('422: no answer: Provider declined this content request')
+    assert run.retryable_write('422: no answer: Provider declined this content request')     # Grok may write it
+    assert not run.retryable_write('422: no answer: response metadata={}')
     assert not run.retryable_write('ReadTimeout')

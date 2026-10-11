@@ -213,11 +213,15 @@ class QualityHold(Exception):
 
 
 def retryable_write(error) -> bool:
-    """A writer failure of our own format/coverage checks (the model answered), not a
-    source issue for the owner, a provider refusal or an answer that never came."""
+    """A writer failure a new run may write once more: our own format/coverage checks failed
+    (the model answered), or every writer declined before the refusal chain (Grok) existed.
+    Never a source issue for the owner, nor an answer that never came for another reason."""
     text = str(error or '')
-    return text.startswith('422:') and not any(k in text for k in (
-        'Source contract needs review', 'Provider declined', 'no answer', 'declined this content'))
+    if not text.startswith('422:') or 'Source contract needs review' in text:
+        return False
+    if 'Provider declined' in text or 'declined this content' in text:
+        return True
+    return 'no answer' not in text
 
 
 def _task(s, run, all_jobs, state, key, kind, node, slot, payload, metadata=None):
