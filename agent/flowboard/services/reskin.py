@@ -16,7 +16,17 @@ from flowboard.config import STORAGE_DIR
 from flowboard.services.production_manifest import digest
 
 VERSION = 'source-motion-reskin-v1'
-MAX_REFERENCE_SECONDS = 15.0
+MAX_REFERENCE_SECONDS = 15.0     # the approved reskin clip; a board may allow up to 30 s
+PROVIDER_MAX_SECONDS = 30.0      # Seedance 2.5 output and the KYC reference video both stop at 30 s
+
+
+def max_seconds(board) -> float:
+    """The longest clip this reskin board makes (reskinMaxSeconds, 15 s by default)."""
+    try:
+        value = float(board.get('reskinMaxSeconds') or MAX_REFERENCE_SECONDS)
+    except (TypeError, ValueError):
+        value = MAX_REFERENCE_SECONDS
+    return max(4.0, min(PROVIDER_MAX_SECONDS, value))
 # The white-model render for long films: depth at a 448 px long side, every second frame
 # of a shot (interpolated inside the shot), 24 fps (the KYC video floor is 23.8 fps).
 # About 3x faster per clip than the standard render; boards without it keep their exact
@@ -92,8 +102,9 @@ def motion_payload(board, package):
     if any(abs(a - ranges[i-1][1]) > .05 for i, (a, _) in enumerate(ranges) if i):
         raise ValueError('Các shot trong clip không liên tiếp trên nguồn; chia clip tại khoảng nhảy thời gian.')
     start, end = ranges[0][0], ranges[-1][1]
-    if end - start > MAX_REFERENCE_SECONDS + .001:
-        raise ValueError('Clip reskin dài hơn 15 giây; chia tại cut nguồn trước khi chạy.')
+    limit = max_seconds(board)
+    if end - start > limit + .001:
+        raise ValueError(f'Clip reskin dài hơn {limit:g} giây; chia tại cut nguồn trước khi chạy.')
     if any(abs((b-a)-float(s['duration_s'])) > .05 for (a,b),s in zip(ranges, shots)):
         raise ValueError('Thời lượng shot đã khác video gốc; không thể gắn motion reference.')
     sha = board.get('sourceMediaSha256')

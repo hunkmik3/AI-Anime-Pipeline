@@ -60,3 +60,16 @@ def test_the_worker_gets_render_settings_only_for_a_fast_board(monkeypatch, tmp_
     assert len(args) == (9 if profile == 'fast' else 8)        # python -u worker src start end cuts out [render]
     if profile == 'fast':
         assert '"depth_stride": 2' in args[-1]
+
+
+def test_a_board_may_allow_reskin_clips_up_to_the_providers_thirty_seconds():
+    b = fixture()
+    shots = b['nodes'][-1]['data']['shots']
+    for i, s in enumerate(shots):
+        s.update(source_start=i * 10., source_end=(i + 1) * 10., duration_s=10)
+    with pytest.raises(ValueError, match='15 giây'):
+        reskin.motion_payload(b, packages(b)[0])                       # 20 s on an approved 15 s board
+    b['reskinMaxSeconds'] = 30
+    assert reskin.motion_payload(b, packages(b)[0])['end'] == 20.0
+    b['reskinMaxSeconds'] = 45
+    assert reskin.max_seconds(b) == 30.0

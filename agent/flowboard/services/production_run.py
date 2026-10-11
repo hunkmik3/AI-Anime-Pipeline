@@ -47,7 +47,7 @@ def input_version(board):
             nodes.append({'id':n['id'],'manual_prompt':d.get('prompt',''),'end_state':d.get('endState') or '',
                           'staging_decisions':d.get('stagingDecisions') or []})
     return pm.digest({'schema':SCHEMA,'style_version':style_version(board),'video_standard_version':film_motion.version(board.get('style')),'nodes':nodes, **{k:board.get(k) for k in
-        ('productionAssets','sourceVerification','preserveSourceShots','style','aspectRatio','imageModel','imageSize','kyc','unmoderated','dialogueLanguage','targetCasting','motionReference','motionProfile','sourceVideoId','sourceMediaSha256','reskinVersion')}})
+        ('productionAssets','sourceVerification','preserveSourceShots','style','aspectRatio','imageModel','imageSize','kyc','unmoderated','dialogueLanguage','targetCasting','motionReference','motionProfile','reskinMaxSeconds','sourceVideoId','sourceMediaSha256','reskinVersion')}})
 
 
 def selected_packages(board, pid, keys):
