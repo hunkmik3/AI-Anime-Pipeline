@@ -118,6 +118,8 @@ export interface AutoFilmOptions {
   motion_profile?: 'standard' | 'fast';
   /** Generate (and analyse) only the first N seconds of the source. */
   generate_seconds?: number;
+  /** Story segments catalogued this many at a time (1 = one pass in film order). */
+  catalog_parallel?: number;
   kyc: boolean;
   unmoderated: boolean;
 }

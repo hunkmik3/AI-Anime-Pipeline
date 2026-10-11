@@ -37,6 +37,7 @@ export function VideoSourceInput() {
   const [reskin, setReskin] = useState(true);
   const [fullTakes, setFullTakes] = useState(true);
   const [fastMotion, setFastMotion] = useState(false);
+  const [parallelCatalog, setParallelCatalog] = useState(false);
   const [openingMinutes, setOpeningMinutes] = useState("");
   const opening = Number(openingMinutes.replace(",", "."));
   const generateSeconds = openingMinutes.trim() && Number.isFinite(opening) && opening > 0 ? Math.max(10, Math.round(opening * 60)) : undefined;
@@ -77,7 +78,8 @@ export function VideoSourceInput() {
         environment_request: environmentRequest.trim(),
         review_masters: reviewMasters, casting_request: castingRequest.trim(), timing_policy: fullTakes ? "full_take" : "source_duration",
         ...(reskin ? { motion_profile: fastMotion ? "fast" as const : "standard" as const } : {}),
-        ...(generateSeconds ? { generate_seconds: generateSeconds } : {}) } : undefined,
+        ...(generateSeconds ? { generate_seconds: generateSeconds } : {}),
+        ...(parallelCatalog ? { catalog_parallel: 4 } : {}) } : undefined,
       mode, speechLanguage).catch(() => undefined);
   }
 
@@ -167,6 +169,8 @@ export function VideoSourceInput() {
             {!reskin && <SourceToggle label="KYC" checked={filmKyc} onChange={setFilmKyc} />}
             <SourceToggle label="Người thật / B2B" checked={filmPeople} onChange={setFilmPeople} />
             <SourceToggle label="Giữ trọn thoại khi ghép" hint="Ghép nguyên đoạn đã gen; phim có thể dài hơn nguồn." checked={fullTakes} onChange={setFullTakes} />
+            <SourceToggle label="Lập hồ sơ nhân vật song song · phim dài" checked={parallelCatalog} onChange={setParallelCatalog}
+              hint="Các đoạn truyện độc lập đọc 4 đoạn cùng lúc; nhân vật chỉ gộp khi khuôn mặt hoặc giọng khớp, trường hợp mơ hồ được ghi chú để duyệt." />
             {reskin && <SourceToggle label="Video chuyển động nhanh · phim dài" checked={fastMotion} onChange={setFastMotion}
               hint="Độ sâu thô hơn, 24 hình/giây: nhanh hơn khoảng 3 lần mỗi clip. Bố cục và chuyển động giữ nguyên; bề mặt video xám mịn hơn." />}
           </>}

@@ -1223,7 +1223,7 @@ async def _read_catalog_batch(payload, cards, work, model, batch, known, supplie
     return patch, notes
 
 
-async def prepare(analysis, work: Path, title, rules, on_progress=None, *, production_scope=None):
+async def prepare(analysis, work: Path, title, rules, on_progress=None, *, production_scope=None, parallel=None):
     original = deepcopy(analysis)
     progress_path=work/'one-pass-catalog-progress.json'
     prior=json.loads(progress_path.read_text()) if progress_path.exists() else {}
@@ -1478,7 +1478,34 @@ async def prepare(analysis, work: Path, title, rules, on_progress=None, *, produ
             progress()
 
     circuit = {'errors': 0}
-    await catalog_span(0, len(shots), known, line_speakers, pending, circuit, checkpoint)
+    parallel = max(1, int(parallel or os.getenv('FLOWBOARD_CATALOG_PARALLEL', '1')))
+    if parallel <= 1:
+        await catalog_span(0, len(shots), known, line_speakers, pending, circuit, checkpoint)
+    else:
+        # Independent story segments side by side, merged in film order (catalog_waves).
+        from . import catalog_waves
+        spans = catalog_waves.segments(shots, analysis.get('sequences') or [])
+        for wave in catalog_waves.waves(spans, parallel):
+            seed, seed_speakers = deepcopy(known), dict(line_speakers)
+            runs = [(lo, hi, deepcopy(seed), dict(seed_speakers)) for lo, hi in wave]
+            def wave_progress(state='running', runs=runs, seed=seed):
+                if on_progress:
+                    done = len(known['shots']) + sum(len(r[2]['shots']) - len(seed['shots']) for r in runs)
+                    on_progress('profiles', done, len(shots))
+            results = await asyncio.gather(*(catalog_span(lo, hi, seg, ls, pending, circuit, wave_progress, gap=lo > 0)
+                                             for lo, hi, seg, ls in runs), return_exceptions=True)
+            failure = next((r for r in results if isinstance(r, BaseException)), None)
+            if failure:
+                # Nothing of an unfinished wave is merged: a resume replays it from the journals.
+                raise failure
+            for lo, hi, seg, ls in runs:
+                receipt = catalog_waves.absorb(known, seed, seg, f"s{shots[lo]['shot']}", faces, line_speakers,
+                                               ls, seed_speakers, analysis.get('dialogue_track') or [])
+                missing = catalog_waves.dangling(known)
+                if missing:
+                    receipt['dangling'] = missing
+            pending.sort(key=lambda item: item['shots'][0] if item['shots'] else 0)
+            checkpoint()
     if pending:
         report = checkpoint('needs_review')
         atomic(output_work/'one-pass-catalog-findings.json', report)

@@ -30,6 +30,8 @@ class FilmOptions(BaseModel):
     # Generate only the first N seconds: the upload keeps N + 30 s of the source for the
     # whole analysis (cuts, speech, vision, catalog), so nothing past it is read or paid for.
     generate_seconds: Optional[float] = Field(default=None, ge=10, le=36000)
+    # Story segments catalogued this many at a time (1 = one pass in film order).
+    catalog_parallel: int = Field(default=1, ge=1, le=8)
     # 'fast' renders the white-model video with coarser depth at 24 fps (long films).
     motion_profile: str = Field(default='standard', pattern='^(standard|fast)$')
     image_parallel: int = Field(default=8, ge=1, le=32)
@@ -453,7 +455,8 @@ async def execute(video_id):
             if scope:
                 prepared, cast, adaptation = await one_pass_film.prepare(
                     row.analysis, routes._work_dir(video_id), row.name, rules,
-                    on_progress=routes._progress_writer(video_id), production_scope=scope)
+                    on_progress=routes._progress_writer(video_id), production_scope=scope,
+                    parallel=opt.catalog_parallel)
                 production_analysis = prepared
                 info = prepared['production_scope']
                 previous = current_cfg.get('production_preparation') or {}
@@ -466,7 +469,7 @@ async def execute(video_id):
             elif (row.analysis.get('source_verification') or {}).get('method') != one_pass_film.METHOD:
                 prepared, cast, adaptation = await one_pass_film.prepare(
                     row.analysis, routes._work_dir(video_id), row.name, rules,
-                    on_progress=routes._progress_writer(video_id))
+                    on_progress=routes._progress_writer(video_id), parallel=opt.catalog_parallel)
                 routes._update(video_id, analysis=prepared, cast=cast, adaptation=adaptation)
                 row = read(video_id)
                 production_analysis = row.analysis
