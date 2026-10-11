@@ -57,7 +57,7 @@ async def test_partial_report_is_saved_on_project_even_when_review_fails(monkeyp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('failure',['bad_request','refusal','timeout'])
-async def test_provider_failure_diagnostics_survive_without_resubmission(monkeypatch,tmp_path,failure):
+async def test_provider_failure_diagnostics_survive_and_only_a_definite_failure_is_asked_once_more(monkeypatch,tmp_path,failure):
     from flowboard.services.flowstudio import r2
     b,_,journal=setup(monkeypatch,tmp_path)
     async def command(*args):args[-1].write_bytes(b'excerpt')
@@ -77,7 +77,12 @@ async def test_provider_failure_diagnostics_survive_without_resubmission(monkeyp
     for _ in range(2):
         with pytest.raises(review.ReviewIncomplete):await review.inspect(b,tmp_path)
     record=json.loads(journal.read_text())
-    assert len(calls)==1
+    # A plain 400 says the request was not served: one more request, never a third.
+    # A refusal or a timeout (outcome unknown) is never resent.
+    assert len(calls)==(2 if failure=='bad_request' else 1)
+    if failure=='bad_request':
+        first=journal.parent/'receipt.attempt-1.json'
+        assert record['retry_of']==str(first) and json.loads(first.read_text())['http_status']==400
     assert record['state']=='failed_or_unknown'
     if failure=='timeout':assert record['failure']['kind']=='transport_unknown'
     else:
@@ -135,3 +140,29 @@ async def test_source_resume_starts_at_saved_review_without_rebuilding_profiles(
         options=deepcopy(v.options);options['auto_production']['generation_scope']={'source_end_seconds':9}
         v.options=options;s.add(v);s.commit()
     with pytest.raises(ValueError,match='phạm vi đã đổi'):await source_film.execute(vid)
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_answer_is_asked_once_more_and_both_answers_are_kept(monkeypatch,tmp_path):
+    from flowboard.services.flowstudio import r2
+    b,rows,journal=setup(monkeypatch,tmp_path)
+    async def command(*args):args[-1].write_bytes(b'excerpt')
+    monkeypatch.setattr(review.media,'command',command)
+    monkeypatch.setattr(r2,'upload_file',lambda _: 'https://test/excerpt.mp4')
+    monkeypatch.setenv('ATRIUM_CLIENT_ID','test-client-id')
+    monkeypatch.setenv('ATRIUM_CLIENT_SECRET','test-secret-value')
+    answers=['{"shots": [ not json',json.dumps(observations(rows))]
+    calls=[]
+    def handler(request):
+        if request.method=='GET':return httpx.Response(200,content=b'excerpt')
+        calls.append(request)
+        return httpx.Response(200,json={'candidates':[{'finishReason':'STOP','content':{'parts':[{'text':answers[len(calls)-1]}]}}]})
+    client=httpx.AsyncClient
+    monkeypatch.setattr(httpx,'AsyncClient',lambda **kw:client(transport=httpx.MockTransport(handler),**kw))
+    report=await review.inspect(b,tmp_path)
+    assert len(calls)==2 and report['status']=='reviewed'
+    record=json.loads(journal.read_text())
+    assert record['state']=='completed' and record['retry_of'].endswith('receipt.attempt-1.json')
+    assert json.loads((journal.parent/'receipt.attempt-1.json').read_text())['failure']['kind']=='invalid_response'
+    await review.inspect({**b,'reskinSourceReview':{}},tmp_path)
+    assert len(calls)==2
