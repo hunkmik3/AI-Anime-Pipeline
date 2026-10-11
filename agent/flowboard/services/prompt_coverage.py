@@ -338,8 +338,12 @@ def appearance_facts(appearances: list[dict]) -> list[dict]:
 
 
 def build_requirements(rows: list[dict], shots: list[dict], production_assets: list[dict], *,
-                       include_in_frame: bool = False) -> list[dict]:
-    """Every supplied fact survives. The model may paraphrase, but cannot drop it."""
+                       include_in_frame: bool = False, skip_offscreen: bool = False) -> list[dict]:
+    """Every supplied fact survives. The model may paraphrase, but cannot drop it.
+
+    ``skip_offscreen`` (a white-model reskin): an asset recorded offscreen in a shot is not
+    demanded of that shot's prompt; nothing offscreen is drawn, and the motion video keeps
+    where everything is."""
     assets = {asset_id(a): a for a in production_assets}
     result: list[dict] = []
     for row, shot in zip(rows, shots):
@@ -354,6 +358,8 @@ def build_requirements(rows: list[dict], shots: list[dict], production_assets: l
         for index, p in enumerate(shot.get("asset_presence") or [], 1):
             if p.get("visibility") == "uncertain":
                 continue  # only an accepted review lets one through; it asserts nothing
+            if skip_offscreen and p.get("visibility") == "offscreen":
+                continue
             key = p["asset_id"]
             result.append({"id": f"shot:{n}:asset:{key}:{index}", "shot": n, "kind": "presence",
                            "name": assets.get(key, {}).get("production_name") or assets.get(key, {}).get("name") or key,

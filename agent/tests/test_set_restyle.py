@@ -107,3 +107,13 @@ def test_the_reskin_package_copy_carries_no_layout_text():
                                'raccord': {'direction': '', 'set_layouts': [], 'scene_rule': 'one corridor'}}
     assert out['scene_anchors']['s'] == {'source_staging': '', 'sheet_geometry': [], 'policy': 'keep'}
     assert package['shots'][0]['background'] == 'sofa' and package['shots'][0]['raccord']['direction'].startswith('his')
+
+
+def test_a_reskin_prompt_is_not_asked_to_account_for_an_offscreen_prop():
+    from flowboard.services import prompt_coverage
+    rows = [{'shot': 1, 'action': ['He reads.']}]
+    shots = [{'asset_presence': [{'asset_id': 'booklet', 'visibility': 'offscreen', 'state': 'open on the podium'},
+                                 {'asset_id': 'man', 'visibility': 'visible'}]}]
+    ids = lambda **kw: [r['id'] for r in prompt_coverage.build_requirements(rows, shots, [], **kw) if r['kind'] == 'presence']
+    assert ids() == ['shot:1:asset:booklet:1', 'shot:1:asset:man:2']
+    assert ids(skip_offscreen=True) == ['shot:1:asset:man:2']

@@ -1044,7 +1044,7 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
     lines = [(row["shot"], d["line"]) for row in ask["shots"] for d in row["dialogue"]]
     speakers = [(row["shot"], d["who"], d["line"]) for row in ask["shots"] for d in row["dialogue"]]
     requirements = prompt_coverage.build_requirements(ask["shots"], fitted, production_assets or [],
-        include_in_frame=cinematic and not strict) if strict or cinematic else []
+        include_in_frame=cinematic and not strict, skip_offscreen=reskin) if strict or cinematic else []
     digest = prompt_coverage.contract_digest(
         sequence, shots, characters, environment, production_assets, reference_assets, source_verification,
         look=look, aspect_ratio=aspect_ratio, previous_state=previous_state, style_note=style_note,
