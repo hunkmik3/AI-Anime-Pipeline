@@ -691,21 +691,32 @@ _CAPTION_WORDS = re.compile(r"\b(?:captions?|subtitles?|on-?screen (?:text|names
 _CAPTION_TAIL = re.compile(r"\s+\b(?:while|as|when|with)\b.*$", re.I)
 
 
+_OVERLAY_REF = re.compile(r"\b(?:cards?|captions?|titles?|text|credits)\b", re.I)
+
+
 def without_captions(text):
-    """A source observation without its words about burned-in captions ("lips part while
-    the caption shows"): a caption overlays the source video, it is not something anyone
-    in the scene does, and the clip prompt forbids on-screen text."""
+    """A source observation without its words about text laid over the picture ("lips part
+    while the caption shows", "a name card fades in, then the card fades"): an overlay is
+    not something anyone in the scene does, and the clip prompt forbids on-screen text.
+    Clauses are cut at commas, semicolons and sentence ends; a clause that goes on about the
+    overlay just dropped ("then the card fades") goes with it, within its sentence."""
     if not _CAPTION_WORDS.search(text):
         return text
-    parts = re.split(r'([,;]\s*)', text)
-    kept = []
+    parts = re.split(r'((?<=[.!?])\s+|[,;]\s*)', text)
+    kept, dropped = [], False
     for i in range(0, len(parts), 2):
         clause, sep = parts[i], (parts[i + 1] if i + 1 < len(parts) else '')
         if _CAPTION_WORDS.search(clause):
             clause = _CAPTION_TAIL.sub('', clause)
             if not clause.strip() or _CAPTION_WORDS.search(clause):
-                continue
-        kept.append(clause + sep)
+                dropped = True
+                clause = None
+        elif dropped and _OVERLAY_REF.search(clause):
+            clause = None
+        if clause is not None:
+            kept.append(clause + sep)
+        if sep and not re.search(r'[,;]', sep):
+            dropped = False                       # a new sentence starts
     return ''.join(kept).strip(' ,;')
 
 

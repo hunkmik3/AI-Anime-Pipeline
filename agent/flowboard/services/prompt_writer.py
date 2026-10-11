@@ -1048,6 +1048,9 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
     if any(r.get('target_look') for r in [*([environment] if environment else []), *(reference_assets or [])]):
         from flowboard.services.set_restyle import POLICY as restyle_policy
         ask['set_restyle_policy'] = restyle_policy
+    if isinstance(ask.get('shot_package'), dict) and isinstance(ask['shot_package'].get('shots'), list):
+        # The package copy the writer and its review read says no more about overlays than the rows.
+        ask['shot_package'] = {**ask['shot_package'], 'shots': without_overlay_text(ask['shot_package']['shots'])}
     if reskin:
         ask['motion_reference_policy'] = WHITE_MODEL_POLICY
         ask['target_design_policy'] = ('Owner target_appearance and attached approved sheets replace only the '

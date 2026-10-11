@@ -169,6 +169,9 @@ def test_a_reskin_catalog_keeps_the_models_voice_notes_as_reviewer_notes():
     ('She turns to him, name cards fade in beside each guest', 'She turns to him'),
     ('Title card reads the date; the car pulls up', 'the car pulls up'),
     ('He adjusts the name tag on his jacket', 'He adjusts the name tag on his jacket'),     # a prop
+    ('He speaks. A name card fades in at upper left and right-center, then the upper-left card fades.', 'He speaks.'),
+    ('Lips part while the caption shows', 'Lips part'),
+    ('A title card appears. She opens the card he gave her.', 'She opens the card he gave her.'),  # a new sentence
 ])
 def test_text_laid_over_the_picture_leaves_the_action_but_a_worn_name_tag_stays(text, kept):
     from flowboard.services.video_analyzer import one_pass_film as film
