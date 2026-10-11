@@ -109,6 +109,7 @@ def serialize_source_locks(prompt: str, shots: list[dict], slots: list | None = 
     prompt = normalize_heads(re.sub(r'^\*\*DIALOGUE\*\*\s*$', '## DIALOGUE', prompt, flags=re.M))
     # "- **@image1 — NAME.**" is the declaration with a dash for its "=": the same line, normalised.
     prompt = re.sub(r'^- \*\*(@image[1-9]\d*)\s+[—–]\s+', r'- **\1 = ', prompt, flags=re.M)
+    prompt = close_declarations(prompt)
     prompt = re.sub(r'^Create (an?) (\d+(?:\.\d+)?-second[^\n]*?sequence)(?=\s|\.)',r'Create \1 **\2**',prompt,count=1,flags=re.M)
     if slots and len(slots) == len(shots):
         heads = list(re.finditer(r'^# SHOT (\d+) \|[^\n]*', prompt, re.M))
@@ -132,6 +133,11 @@ def serialize_source_locks(prompt: str, shots: list[dict], slots: list | None = 
             a, b = slots[n-1]
             block=re.sub(r'^\*\*Duration:\*\*[^\n]*',
                          lambda _: f'**Duration:** {b-a:.3f} seconds', block, flags=re.M)
+        # Framing and camera are locked source facts: a line the writer left out is written in.
+        if not re.search(r'^\*\*Framing:\*\*',block,re.M):
+            block=re.sub(r'^(\*\*Duration:\*\*[^\n]*)$',lambda m:m.group(1)+'\n**Framing:** ',block,count=1,flags=re.M)
+        if not re.search(r'^\*\*Camera:\*\*',block,re.M):
+            block=re.sub(r'^(\*\*Framing:\*\*[^\n]*)$',lambda m:m.group(1)+'\n**Camera:** ',block,count=1,flags=re.M)
         block=re.sub(r'^\*\*Framing:\*\*[^\n]*',lambda _:f"**Framing:** {shot.get('framing','')}. {shot.get('framing_note','')}",block,flags=re.M)
         block=re.sub(r'^\*\*Camera:\*\*[^\n]*',lambda _:f"**Camera:** {shot.get('camera','')}",block,flags=re.M)
         # The source's own view behind the people at this angle, locked like the camera.
@@ -355,6 +361,17 @@ look or copying conventions from another medium. Report contradictions or missin
 motion direction as prompt_issue. Do not demand a frame-rate API setting or claim
 that a prompt can certify the generated video's actual cadence.
 """
+
+
+def close_declarations(prompt: str) -> str:
+    """A "- **@imageN = NAME — role. More text" line that never closes its bold is the
+    declaration with its closing "**" lost: closed after its first sentence (or line)."""
+    def close(m):
+        body = m.group(2)
+        cut = re.search(r'\.(?=\s|$)', body)
+        at = cut.end() if cut else len(body)
+        return m.group(1) + body[:at].rstrip() + '**' + body[at:]
+    return re.sub(r'^(- \*\*@image[1-9]\d* = )((?:(?!\*\*)[^\n])*)$', close, prompt, flags=re.M)
 
 
 def normalize_heads(prompt: str) -> str:

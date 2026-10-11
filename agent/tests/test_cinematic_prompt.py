@@ -934,3 +934,21 @@ def test_a_cinematic_draft_with_a_bad_header_is_told_the_cinematic_form():
                                         lines=[], exempt_shots=set(), school_age=False)
     assert not any(p.startswith('@image1 must be declared') for p in problems)
     assert any('# SHOT 1 |' in p for p in problems)
+
+
+def test_a_declaration_that_lost_its_closing_bold_is_closed():
+    text = ('- **@image5 = WEDDING REGISTRATION HALL — the bright public hall. Keep its counter.\n'
+            '- **@image6 = GOLD LAPEL BROOCH — REFERENCE ROLE.** Small brooch.\n'
+            '- **@image7 = WHITE SMARTPHONE — no sentence end\n')
+    out = cp.close_declarations(text)
+    assert out.splitlines() == ['- **@image5 = WEDDING REGISTRATION HALL — the bright public hall.** Keep its counter.',
+                                '- **@image6 = GOLD LAPEL BROOCH — REFERENCE ROLE.** Small brooch.',
+                                '- **@image7 = WHITE SMARTPHONE — no sentence end**']
+
+
+def test_a_left_out_camera_line_is_written_in_from_the_locked_shot():
+    prompt = ('## REFERENCE CONTROL\n- **@image1 = RHEA — CHARACTER REFERENCE.**\n## STYLE\nx\n'
+              '# SHOT 1 | 00:00–00:02\n**Duration:** 2 seconds\n**Framing:** MS.\nShe waits.\n'
+              '## AUDIO\nNo music.\n## CONTINUITY / NEGATIVE CONSTRAINTS\nNone.\n')
+    out = cp.serialize_source_locks(prompt, [{'framing': 'MWS', 'camera': 'eye-level; static', 'action': ['waits']}], [(0, 2)])
+    assert '**Camera:** eye-level; static' in out and out.index('**Framing:**') < out.index('**Camera:**')

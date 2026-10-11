@@ -212,6 +212,14 @@ class QualityHold(Exception):
     delivered, and no reason to stop generating the rest of the run."""
 
 
+def retryable_write(error) -> bool:
+    """A writer failure of our own format/coverage checks (the model answered), not a
+    source issue for the owner, a provider refusal or an answer that never came."""
+    text = str(error or '')
+    return text.startswith('422:') and not any(k in text for k in (
+        'Source contract needs review', 'Provider declined', 'no answer', 'declined this content'))
+
+
 def _task(s, run, all_jobs, state, key, kind, node, slot, payload, metadata=None):
     """Atomic reservation + durable link under project/run row locks."""
     fingerprint=pm.digest({'kind':kind,'node':node,'slot':slot,'payload':payload})
@@ -240,6 +248,12 @@ def _task(s, run, all_jobs, state, key, kind, node, slot, payload, metadata=None
         existing=AutomationJob(project_id=run.project_id,kind=kind,node_id=node,slot=slot,payload=payload,
                     request_key=request,prepared={**(metadata or {}),'run_id':str(run.id)})
         s.add(existing);all_jobs.append(existing);counts[category]=counts.get(category,0)+1
+    if (existing.status=='failed' and kind=='write' and retryable_write(existing.error)
+            and existing.prepared.get('run_id')!=str(run.id) and not existing.prepared.get('write_retried')):
+        # A prompt that failed only the deterministic format/coverage checks is written once
+        # more by a new run: the writer resumes its saved draft under the current checks.
+        existing.status='queued';existing.error='';existing.lease_token='';existing.lease_until=None
+        existing.prepared={**existing.prepared,'write_retried':True,'run_id':str(run.id)};s.add(existing)
     if existing.status=='failed' and existing.prepared.get('validation_rejected') and not existing.provider_job_id:
         # No provider request occurred: a new run may dispatch these identical inputs safely.
         existing.status='queued';existing.error='';existing.lease_token='';existing.lease_until=None
