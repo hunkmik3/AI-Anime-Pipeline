@@ -1348,19 +1348,16 @@ async def prepare(analysis, work: Path, title, rules, on_progress=None, *, produ
             known['face_check_error'] = f'{type(exc).__name__}: {str(exc)[:300]}'
     model = os.getenv('FLOWBOARD_ONE_PASS_CATALOG_MODEL','gpt-6-luna')
     batch_size = max(1,min(16,int(os.getenv('FLOWBOARD_ONE_PASS_CATALOG_BATCH','12'))))
-    offset = 0
-    size = batch_size    # smaller after a batch neither model answered, until one succeeds
     line_speakers = {}   # line id -> speaker of its first piece; later pieces must match
     pending = []
-    after_gap = False
-    consecutive_provider_errors = 0
     def checkpoint(state='running'):
         recovery.retain_drafts(reusable['inventory'],known)
         for key in ('audiovisual_speaker_repairs','source_audio_observation_findings'):
             if known.get(key): reusable['inventory'][key]=deepcopy(known[key])
         if not production_scope: atomic(cache_path,reusable)
         report = {'state':state,'source_fingerprint':source_fingerprint(original),
-            'completed':len(known['shots']),'processed':offset,'total':len(shots),
+            'completed':len(known['shots']),
+            'processed':len(known['shots'])+len({n for item in pending for n in item['shots']}),'total':len(shots),
             'pending_shots':sorted({n for item in pending for n in item['shots']}),
             'pending':deepcopy(pending),'source_fidelity_approved':False,
             'automatic_repairs':deepcopy(known.get('audiovisual_speaker_repairs',[]))}
@@ -1372,102 +1369,116 @@ async def prepare(analysis, work: Path, title, rules, on_progress=None, *, produ
             if detail: detail(report)
         return report
     if on_progress: on_progress('profiles', 0, len(shots))
-    while offset < len(shots):
-        # Avoid paying for a group that mixes a new interval with retained work.
-        cached_rows=reusable['inventory'].get('shots',{})
-        initial_cached=str(shots[offset]['shot']) in cached_rows
-        terminal_shots={n for item in book['terminal'] for n in item['shots']}
-        initial_terminal=shots[offset]['shot'] in terminal_shots
-        contiguous=0
-        for s in shots[offset:offset+size]:
-            if ((str(s['shot']) in cached_rows)!=initial_cached
-                    or (s['shot'] in terminal_shots)!=initial_terminal): break
-            contiguous+=1
-        image_budget = 200 if os.getenv('FLOWBOARD_CATALOG_FRAME_GRID') == '1' else 50
-        planning_error = None
-        try:
-            batch, supplied = catalog_batch(shots,offset,min(size,contiguous),known,evidence,image_budget)
-        except ValueError as exc:
-            batch, supplied, planning_error = shots[offset:offset+1], [], exc
-        ns = {s['shot'] for s in batch}
-        # Keep a retrieval receipt when the growing identity gallery is bounded.
-        anchors = {a['evidence_ids'][0] for a in known['assets'] if a.get('evidence_ids')}
-        supplied_ids = {e['id'] for e in supplied}
-        if not planning_error and anchors - supplied_ids:
-            known.setdefault('reference_retrieval', []).append({'shots':sorted(ns),
-                'source_frame_ids':[e['id'] for e in supplied if e['shot'] in ns],
-                'anchor_ids':sorted(anchors & supplied_ids), 'omitted_anchor_ids':sorted(anchors - supplied_ids),
-                'reason':'Bounded historical gallery; all current source frames retained.'})
-        # All frames for the current batch plus selected historical identity anchors.
-        cards = [(e,work/e['frame']) for e in supplied]
-        payload = {'catalog':{'assets':known['assets'],'scenes':known['scenes'][-4:]},
-            'previous_shots':[] if after_gap else list(known['shots'].items())[-2:],
-            'continuing_scene':{} if after_gap else continuing_scene(known),
-            'shots':[{**{k:s[k] for k in ('shot','start','end','source','dialogue_lines') if k in s},
-                      **({'dialogue_pieces':[{k:p.get(k) for k in ('line_id','text','cont','start','end',
-                                                                    'voice','voice_confidence')}
-                                             for p in s['dialogue_pieces']]} if s.get('dialogue_pieces') else {})}
-                     for s in batch],
-            'continuing_line_speakers':{lid:v for lid,v in line_speakers.items()
-                                        if any(p.get('line_id')==lid for s in batch for p in s.get('dialogue_pieces') or [])},
-            'known_voices':voice_id.bindings(line_speakers,analysis.get('dialogue_track') or []),
-            'evidence':supplied}
-        try:
-            if planning_error: raise planning_error
-            context = {**known, 'shots': {}} if after_gap else known
-            retained=recovery.reusable_patch(reusable['inventory'],batch)
-            patch, problems = normalize(retained,batch,context,evidence,line_speakers,faces) if retained else (None,[])
-            if retained and not blocking(problems):
-                notes=problems
-                context.setdefault('reused_catalog_shots',[]).extend(sorted(ns))
-                # Keep the original evidence receipts and uncertain context when
-                # a successfully corrected draft is reused on a later resume.
-                for key in ('audiovisual_speaker_repairs','source_audio_observation_findings'):
-                    if reusable['inventory'].get(key):context[key]=deepcopy(reusable['inventory'][key])
-            else:
-                patch, notes = await _read_catalog_batch(payload,cards,work,model,batch,context,supplied,line_speakers,faces)
-            if after_gap:
-                for key, value in context.items():
-                    if key not in {'assets','scenes','shots'}: known[key] = value
-            consecutive_provider_errors = 0
-        except recovery.SplitCatalogBatch:
-            size = max(1, len(batch)//2)
-            continue
-        except avis_text.AvisRateLimited:
-            checkpoint('retry_wait')
-            raise
-        except (ValueError, avis_text.AvisTextError, recovery.CatalogCheckpointUnknown, TimeoutError) as exc:
-            # Keep the defective interval and everything dependent on it. Do not
-            # merge a partial/contradictory catalog into the shared identities.
-            following = recovery.next_independent_offset(shots,analysis.get('sequences') or [],max(ns))
-            provider_error = not isinstance(exc, recovery.BatchNeedsReview) and not initial_terminal
-            consecutive_provider_errors = consecutive_provider_errors + 1 if provider_error else 0
-            if consecutive_provider_errors >= 3:
-                following = len(shots)  # provider circuit breaker, no film-wide request storm
-            pending.append({'shots':[s['shot'] for s in shots[offset:following]],
-                'root_shots':sorted(ns),'error':str(exc)[:1600],
-                'kind':type(exc).__name__, 'findings':getattr(exc,'issues',[]),
-                'provider_circuit_open':consecutive_provider_errors >= 3})
-            offset = following
+    async def catalog_span(lo, hi, known, line_speakers, pending, circuit, progress, *, gap=False):
+        """Catalog shots[lo:hi] in order into ``known``: each batch sees the catalog, the
+        previous shots and the continuing scene of the batches before it in this span."""
+        offset, size, after_gap = lo, batch_size, gap
+        while offset < hi:
+            if circuit.get('open'):
+                # A provider outage elsewhere in the film: keep this interval for a later resume.
+                pending.append({'shots':[s['shot'] for s in shots[offset:hi]],'root_shots':[shots[offset]['shot']],
+                    'error':'Provider circuit open after repeated provider errors.','kind':'CatalogCheckpointUnknown',
+                    'findings':[],'provider_circuit_open':True})
+                break
+            # Avoid paying for a group that mixes a new interval with retained work.
+            cached_rows=reusable['inventory'].get('shots',{})
+            initial_cached=str(shots[offset]['shot']) in cached_rows
+            terminal_shots={n for item in book['terminal'] for n in item['shots']}
+            initial_terminal=shots[offset]['shot'] in terminal_shots
+            contiguous=0
+            for s in shots[offset:min(offset+size,hi)]:
+                if ((str(s['shot']) in cached_rows)!=initial_cached
+                        or (s['shot'] in terminal_shots)!=initial_terminal): break
+                contiguous+=1
+            image_budget = 200 if os.getenv('FLOWBOARD_CATALOG_FRAME_GRID') == '1' else 50
+            planning_error = None
+            try:
+                batch, supplied = catalog_batch(shots,offset,min(size,contiguous),known,evidence,image_budget)
+            except ValueError as exc:
+                batch, supplied, planning_error = shots[offset:offset+1], [], exc
+            ns = {s['shot'] for s in batch}
+            # Keep a retrieval receipt when the growing identity gallery is bounded.
+            anchors = {a['evidence_ids'][0] for a in known['assets'] if a.get('evidence_ids')}
+            supplied_ids = {e['id'] for e in supplied}
+            if not planning_error and anchors - supplied_ids:
+                known.setdefault('reference_retrieval', []).append({'shots':sorted(ns),
+                    'source_frame_ids':[e['id'] for e in supplied if e['shot'] in ns],
+                    'anchor_ids':sorted(anchors & supplied_ids), 'omitted_anchor_ids':sorted(anchors - supplied_ids),
+                    'reason':'Bounded historical gallery; all current source frames retained.'})
+            # All frames for the current batch plus selected historical identity anchors.
+            cards = [(e,work/e['frame']) for e in supplied]
+            payload = {'catalog':{'assets':known['assets'],'scenes':known['scenes'][-4:]},
+                'previous_shots':[] if after_gap else list(known['shots'].items())[-2:],
+                'continuing_scene':{} if after_gap else continuing_scene(known),
+                'shots':[{**{k:s[k] for k in ('shot','start','end','source','dialogue_lines') if k in s},
+                          **({'dialogue_pieces':[{k:p.get(k) for k in ('line_id','text','cont','start','end',
+                                                                        'voice','voice_confidence')}
+                                                 for p in s['dialogue_pieces']]} if s.get('dialogue_pieces') else {})}
+                         for s in batch],
+                'continuing_line_speakers':{lid:v for lid,v in line_speakers.items()
+                                            if any(p.get('line_id')==lid for s in batch for p in s.get('dialogue_pieces') or [])},
+                'known_voices':voice_id.bindings(line_speakers,analysis.get('dialogue_track') or []),
+                'evidence':supplied}
+            try:
+                if planning_error: raise planning_error
+                context = {**known, 'shots': {}} if after_gap else known
+                retained=recovery.reusable_patch(reusable['inventory'],batch)
+                patch, problems = normalize(retained,batch,context,evidence,line_speakers,faces) if retained else (None,[])
+                if retained and not blocking(problems):
+                    notes=problems
+                    context.setdefault('reused_catalog_shots',[]).extend(sorted(ns))
+                    # Keep the original evidence receipts and uncertain context when
+                    # a successfully corrected draft is reused on a later resume.
+                    for key in ('audiovisual_speaker_repairs','source_audio_observation_findings'):
+                        if reusable['inventory'].get(key):context[key]=deepcopy(reusable['inventory'][key])
+                else:
+                    patch, notes = await _read_catalog_batch(payload,cards,work,model,batch,context,supplied,line_speakers,faces)
+                if after_gap:
+                    for key, value in context.items():
+                        if key not in {'assets','scenes','shots'}: known[key] = value
+                circuit['errors'] = 0
+            except recovery.SplitCatalogBatch:
+                size = max(1, len(batch)//2)
+                continue
+            except avis_text.AvisRateLimited:
+                progress('retry_wait')
+                raise
+            except (ValueError, avis_text.AvisTextError, recovery.CatalogCheckpointUnknown, TimeoutError) as exc:
+                # Keep the defective interval and everything dependent on it. Do not
+                # merge a partial/contradictory catalog into the shared identities.
+                following = min(hi, recovery.next_independent_offset(shots,analysis.get('sequences') or [],max(ns)))
+                provider_error = not isinstance(exc, recovery.BatchNeedsReview) and not initial_terminal
+                circuit['errors'] = circuit.get('errors', 0) + 1 if provider_error else 0
+                if circuit['errors'] >= 3:
+                    following = hi  # provider circuit breaker, no film-wide request storm
+                    circuit['open'] = True
+                pending.append({'shots':[s['shot'] for s in shots[offset:following]],
+                    'root_shots':sorted(ns),'error':str(exc)[:1600],
+                    'kind':type(exc).__name__, 'findings':getattr(exc,'issues',[]),
+                    'provider_circuit_open':circuit['errors'] >= 3})
+                offset = following
+                size = batch_size
+                after_gap = True
+                progress()
+                continue
+            inv._merge(known,patch)
+            apply_earlier_states(known,patch,ns)
+            if notes:
+                known.setdefault('catalog_notes', []).extend(notes)
+            for source in batch:
+                for piece, speaker in zip(source.get('dialogue_pieces') or [], patch['shots'][str(source['shot'])].get('speakers') or []):
+                    line_speakers.setdefault(piece.get('line_id'), {k:speaker.get(k) for k in ('asset_id','label')})
+            for audit_key in ('discarded_profile_restatements', 'discarded_wardrobe_posture_restatements',
+                              'discarded_wardrobe_metadata_restatements'):
+                if patch.get(audit_key):
+                    known.setdefault(audit_key, []).extend(patch[audit_key])
+            offset += len(batch)
             size = batch_size
-            after_gap = True
-            checkpoint()
-            continue
-        inv._merge(known,patch)
-        apply_earlier_states(known,patch,ns)
-        if notes:
-            known.setdefault('catalog_notes', []).extend(notes)
-        for source in batch:
-            for piece, speaker in zip(source.get('dialogue_pieces') or [], patch['shots'][str(source['shot'])].get('speakers') or []):
-                line_speakers.setdefault(piece.get('line_id'), {k:speaker.get(k) for k in ('asset_id','label')})
-        for audit_key in ('discarded_profile_restatements', 'discarded_wardrobe_posture_restatements',
-                          'discarded_wardrobe_metadata_restatements'):
-            if patch.get(audit_key):
-                known.setdefault(audit_key, []).extend(patch[audit_key])
-        offset += len(batch)
-        size = batch_size
-        after_gap = False
-        checkpoint()
+            after_gap = False
+            progress()
+
+    circuit = {'errors': 0}
+    await catalog_span(0, len(shots), known, line_speakers, pending, circuit, checkpoint)
     if pending:
         report = checkpoint('needs_review')
         atomic(output_work/'one-pass-catalog-findings.json', report)
