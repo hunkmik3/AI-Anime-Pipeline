@@ -683,7 +683,11 @@ async def _call(payload, cards, work, model, repair=False):
             raise
 
 
-_CAPTION_WORDS = re.compile(r"\b(?:captions?|subtitles?|on-?screen text|text overlays?)\b", re.I)
+# Words about text laid over the picture (never something in the scene: a name tag pinned
+# on a jacket is a prop and stays).
+_CAPTION_WORDS = re.compile(r"\b(?:captions?|subtitles?|on-?screen (?:text|names?|titles?)|text overlays?|"
+                            r"name cards?|title cards?|lower[- ]thirds?|intertitles?|chyrons?|"
+                            r"(?:opening|end|closing) credits|credits roll)\b", re.I)
 _CAPTION_TAIL = re.compile(r"\s+\b(?:while|as|when|with)\b.*$", re.I)
 
 

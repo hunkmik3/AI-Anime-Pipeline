@@ -163,3 +163,13 @@ def test_a_reskin_catalog_keeps_the_models_voice_notes_as_reviewer_notes():
         assert [f['shot'] for f in film.blocking(film._model_findings(notes))] == [5]
     finally:
         film.SOFT_SPEECH_NOTES.reset(token)
+
+
+@pytest.mark.parametrize('text, kept', [
+    ('She turns to him, name cards fade in beside each guest', 'She turns to him'),
+    ('Title card reads the date; the car pulls up', 'the car pulls up'),
+    ('He adjusts the name tag on his jacket', 'He adjusts the name tag on his jacket'),     # a prop
+])
+def test_text_laid_over_the_picture_leaves_the_action_but_a_worn_name_tag_stays(text, kept):
+    from flowboard.services.video_analyzer import one_pass_film as film
+    assert film.without_captions(text) == kept
