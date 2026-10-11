@@ -166,8 +166,8 @@ def review_state(board, packages):
         try:
             if not receipt or receipt.get('source_sha256') != board.get('sourceMediaSha256'):
                 raise ValueError('Thiếu bằng chứng đúng phiên bản nguồn.')
-            if receipt.get('validation_error'):
-                raise ValueError('Lượt đối chiếu nguồn trả về thiếu cấu trúc: ' + str(receipt['validation_error'])[:200])
+            # The stored answer is re-read under the current rules every time (validate raises on
+            # a real structural defect); a validation error recorded under older rules does not stick.
             rows = [{**s,'id':f"{key}:{i+1}"} for i,s in enumerate(selected_shots(board,key))]
             found = reskin_source_review.validate(receipt.get('observations'),rows,max(0,rows[0]['source_start']-1))
             stops = policy.blocking(found, receipt.get('input_digest',''), board)
