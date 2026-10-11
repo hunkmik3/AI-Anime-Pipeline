@@ -117,3 +117,11 @@ def test_a_reskin_prompt_is_not_asked_to_account_for_an_offscreen_prop():
     ids = lambda **kw: [r['id'] for r in prompt_coverage.build_requirements(rows, shots, [], **kw) if r['kind'] == 'presence']
     assert ids() == ['shot:1:asset:booklet:1', 'shot:1:asset:man:2']
     assert ids(skip_offscreen=True) == ['shot:1:asset:man:2']
+
+
+def test_name_cards_leave_the_writers_copy_but_not_the_shot():
+    from flowboard.services import prompt_writer
+    shots = [{'action': ['She smiles, a name card fades in beside her', 'Title card: Six years later'], 'notes': ['quiet']}]
+    out = prompt_writer.without_overlay_text(shots)
+    assert out[0]['action'] == ['She smiles'] and out[0]['notes'] == ['quiet']
+    assert shots[0]['action'][0].endswith('beside her')

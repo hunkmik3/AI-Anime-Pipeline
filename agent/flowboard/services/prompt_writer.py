@@ -742,6 +742,26 @@ WHITE_MODEL_POLICY = (
     "and delivery, wardrobe, held props and the reference identities.")
 
 
+def without_overlay_text(shots: list[dict]) -> list[dict]:
+    """Model-facing copies whose action and notes no longer describe text laid over the source
+    picture (captions, name cards, title cards...): every clip prompt forbids on-screen text, so
+    asking for it only makes the review demand a contradiction. Boards compiled before the
+    compiler scrubbed name cards get the same reading; the locked contract never changes."""
+    from flowboard.services.video_analyzer.one_pass_film import without_captions
+    out = []
+    for shot in shots:
+        changed = {}
+        for field in ('action', 'notes'):
+            value = shot.get(field)
+            if isinstance(value, list):
+                kept = [without_captions(v) if isinstance(v, str) else v for v in value]
+                kept = [v for v in kept if not (isinstance(v, str) and not v.strip())]
+                if kept != value:
+                    changed[field] = kept
+        out.append({**shot, **changed} if changed else shot)
+    return out
+
+
 def white_model_view(shots: list[dict]) -> list[dict]:
     """In a reskin from a white-model motion video, the clay carries where everyone is and what
     stands behind them; the text copies of those facts only invite contradictions with it (and with
@@ -1004,6 +1024,7 @@ async def write_clip_prompt(sequence: dict[str, Any], shots: list[dict[str, Any]
     from flowboard.services import set_restyle
     target_shots = set_restyle.project_shots(target_shots, sheets)
     reskin = sequence.get('motion_reference') == 'white_model'
+    target_shots = without_overlay_text(target_shots)
     if reskin:
         target_shots = white_model_view(target_shots)
     fitted, slots, duration = production_timeline(sequence, target_shots)
