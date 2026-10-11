@@ -1269,7 +1269,7 @@ class ProductionRunConfig(BaseModel):
     timing_policy: str = Field(default='source_duration', pattern='^(source_duration|full_take)$')
     fps: int = Field(default=24, ge=24, le=60)
     resolution: str = Field(default='720p', pattern='^(480p|720p|1080p)$')
-    image_parallel: int = Field(default=8, ge=1, le=32)
+    image_parallel: int = Field(default=16, ge=1, le=64)
     video_parallel: int = Field(default=16, ge=1, le=64)
     text_parallel: int = Field(default=16, ge=1, le=64)
     max_images: int = Field(default=100, ge=0, le=10000)

@@ -194,7 +194,7 @@ async def inspect(board, work: Path, on_progress=None, *, parallel=None):
     sequences = [n['data'] for n in board['nodes'] if n.get('data',{}).get('kind') == 'sequence']
     # Original excerpts include neighboring cuts and use a fixed shared catalog.
     # Reviewing independent intervals concurrently does not remove any evidence.
-    parallel = parallel or int(os.getenv('FLOWBOARD_SOURCE_REVIEW_PARALLEL', '6'))
+    parallel = parallel or int(os.getenv('FLOWBOARD_SOURCE_REVIEW_PARALLEL', '8'))
     semaphore = asyncio.Semaphore(max(1, min(8, int(parallel))))
     completed = 0
     async def one(seq):

@@ -34,7 +34,7 @@ class FilmOptions(BaseModel):
     catalog_parallel: int = Field(default=1, ge=1, le=8)
     # 'fast' renders the white-model video with coarser depth at 24 fps (long films).
     motion_profile: str = Field(default='standard', pattern='^(standard|fast)$')
-    image_parallel: int = Field(default=8, ge=1, le=32)
+    image_parallel: int = Field(default=16, ge=1, le=64)
     video_parallel: int = Field(default=16, ge=1, le=64)
     max_images: int = Field(default=500, ge=0, le=10000)
     max_videos: int = Field(default=500, ge=0, le=10000)

@@ -13,7 +13,7 @@ export function ProductionRun() {
   const [frames,setFrames]=useState(false);
   const [reviewMasters,setReviewMasters]=useState(true);
   // Provider-bound work: sheets and videos wait on the provider, not on this machine.
-  const [imageParallel,setImageParallel]=useState(8), [videoParallel,setVideoParallel]=useState(16);
+  const [imageParallel,setImageParallel]=useState(16), [videoParallel,setVideoParallel]=useState(16);
   const [resolution,setResolution]=useState("480p");
   const [fullTakes,setFullTakes]=useState(true);
   const [maxImages,setMaxImages]=useState(100);
@@ -55,7 +55,7 @@ export function ProductionRun() {
     <p><label><input type="checkbox" checked={reviewMasters} onChange={e=>setReviewMasters(e.target.checked)}/> Dừng ở Tạo hình chính trước khi gen diện mạo phụ</label></p>
     <p><label>Video <select value={resolution} onChange={e=>setResolution(e.target.value)}><option>480p</option><option>720p</option>{!reskin && <option>1080p</option>}</select></label></p>
     <p><label><input type="checkbox" checked={fullTakes} onChange={e=>{setFullTakes(e.target.checked);setReport(null)}}/> Giữ nguyên đoạn đã gen khi ghép để không cắt mất thoại (thời lượng có thể dài hơn nguồn)</label></p>
-    <p><label>Song song ảnh <input type="number" min={1} max={32} value={imageParallel} onChange={e=>setImageParallel(Number(e.target.value))} style={{width:60}}/></label>{" "}
+    <p><label>Song song ảnh <input type="number" min={1} max={64} value={imageParallel} onChange={e=>setImageParallel(Number(e.target.value))} style={{width:60}}/></label>{" "}
       <label>Song song video <input type="number" min={1} max={64} value={videoParallel} onChange={e=>setVideoParallel(Number(e.target.value))} style={{width:60}}/></label>{" "}
       <label>Tối đa ảnh mới <input type="number" min={0} value={maxImages} onChange={e=>setMaxImages(Number(e.target.value))} style={{width:70}}/></label>{" "}
       <label>Tối đa video mới <input type="number" min={0} value={maxVideos} onChange={e=>setMaxVideos(Number(e.target.value))} style={{width:70}}/></label></p>
