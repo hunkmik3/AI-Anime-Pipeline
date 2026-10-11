@@ -99,7 +99,7 @@ RATE_WAITS=(15,30,60,120,240)   # seconds; a 429 is a definite "not answered", s
 
 async def analyze(spans, work_dir:Path, *, on_progress=None):
     model=os.getenv('FLOWBOARD_ONE_PASS_MODEL','claude-opus-5-5')
-    concurrency=max(1,min(8,int(os.getenv('FLOWBOARD_ONE_PASS_CONCURRENCY','6'))))
+    concurrency=max(1,min(8,int(os.getenv('FLOWBOARD_ONE_PASS_CONCURRENCY','8'))))
     folder=work_dir/'one-pass-vision';folder.mkdir(parents=True,exist_ok=True)
     sem=asyncio.Semaphore(concurrency);sources={};stats=vision.VisionStats()
     completed=0;hits=0;recovered=0;started=time.monotonic()

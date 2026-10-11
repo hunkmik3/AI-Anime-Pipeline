@@ -230,7 +230,7 @@ async def extract(shots: list[dict], inventory: dict, evidence: list[dict], work
     # views. Scenes sharing ANY location keep their original order; other scenes
     # can read their unchanged frames/prompts at the same time. Wait for dependencies
     # before taking a slot so a queued dependent scene cannot starve its predecessor.
-    limit = max(1, min(16, int(parallel if parallel is not None else os.getenv('FLOWBOARD_STAGING_PARALLEL','4'))))
+    limit = max(1, min(16, int(parallel if parallel is not None else os.getenv('FLOWBOARD_STAGING_PARALLEL','8'))))
     semaphore = asyncio.Semaphore(limit)
     tasks = []
     last_place = {}
