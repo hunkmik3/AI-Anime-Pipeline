@@ -1,5 +1,27 @@
-/* Reskin Studio — built on the app's dark (Dasher) tokens. */
+/* Reskin Studio — the app's dark "Dasher" theme. Its tokens are declared on the admin
+   console's .dash only, so the studio declares the same values for itself. */
 .st {
+  --d-primary: #00a76f;
+  --d-primary-bright: #5be49b;
+  --d-primary-dark: #007867;
+  --d-primary-subtle: rgba(0, 167, 111, 0.16);
+  --d-ink: #e7ecf0;
+  --d-body: #c4cdd5;
+  --d-muted: #919eab;
+  --d-faint: #637381;
+  --d-page: #141a21;
+  --d-surface: #1c252e;
+  --d-surface-2: #232e39;
+  --d-hover: #28333f;
+  --d-border: #2b3640;
+  --d-border-soft: rgba(145, 158, 171, 0.16);
+  --d-success: #1f9e57;
+  --d-success-bright: #5be49b;
+  --d-warning: #ffab00;
+  --d-danger: #e8542b;
+  --d-danger-bright: #ff7a5c;
+  --d-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --d-shadow-lg: 0 12px 32px -6px rgba(0, 0, 0, 0.55);
   --st-gap: 16px;
   --st-radius: 10px;
   --st-attention: var(--d-warning);
