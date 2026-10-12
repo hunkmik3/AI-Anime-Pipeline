@@ -91,10 +91,12 @@ async def assemble(payload):
             if duration+1/fps<editorial:raise ValueError(f"{clip['sequence_key']}: generated clip is shorter than the editorial duration.")
             # Never assume provider padding is silent. Full-take mode retains
             # both audio and video, rounding UP to a whole output frame.
-            seconds=math.ceil(duration*fps-0.0001)/fps if policy=='full_take' else editorial
+            # A clip whose speech runs past its source length keeps its whole take (keep_full).
+            seconds=math.ceil(duration*fps-0.0001)/fps if policy=='full_take' or clip.get('keep_full') else editorial
             if payload.get('require_quality') and quality['audio']['speech_end_s']>seconds+.04:
                 raise ValueError('Assembly would cut inspected speech in '+clip['sequence_key'])
-            has_audio=any(s.get('codec_type')=='audio' for s in info['streams'])
+            # A clip the owner set to silent gets the same silent track as one without audio.
+            has_audio=any(s.get('codec_type')=='audio' for s in info['streams']) and not clip.get('mute')
             args=['ffmpeg','-v','error','-y','-i',str(source)]
             if not has_audio:args+=['-f','lavfi','-i','anullsrc=r=48000:cl=stereo']
             args+=['-map','0:v:0','-map','0:a:0' if has_audio else '1:a:0',

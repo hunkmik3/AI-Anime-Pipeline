@@ -205,3 +205,140 @@ def test_a_clip_can_take_the_pose_motion_profile_and_only_its_motion_payload_cha
     assert reskin.motion_payload({**b, 'motionProfile': 'fast'}, p)['render'] == reskin.FAST_RENDER
     with pytest.raises(ValueError, match='không hỗ trợ'):
         studio.set_clip(b, p['sequence_key'], motion_profile='mocap')
+
+
+def test_presence_and_wardrobe_edits_move_the_shot_and_its_appearance_together():
+    b = board()
+    b['productionAssets'].append({'id': 'bag', 'kind': 'prop', 'name': 'Bag'})
+    n = b['nodes'][-1]['data']['shots'][0]['source_shot']
+    out, _ = studio.edit_shot(b, n, {'presence': [{'asset_id': 'hero', 'visibility': 'offscreen', 'state': 'In the car.', 'position': 'Outside'},
+                                                  {'asset_id': 'bag', 'visibility': 'visible', 'state': ' On the seat ', 'holder_id': 'hero'}],
+                                     'character_states': {'hero': 'coat'}})
+    shot = out['nodes'][-1]['data']['shots'][0]
+    assert [(p['asset_id'], p['visibility']) for p in shot['asset_presence']] == [('hero', 'offscreen'), ('bag', 'visible')]
+    assert shot['asset_presence'][1]['state'] == 'On the seat' and shot['asset_presence'][1]['holder_id'] == 'hero'
+    assert all(p['source_shot'] == n for p in shot['asset_presence'])
+    app = shot['source_appearances'][0]
+    assert [p['asset_id'] for p in app['asset_presence']] == ['hero', 'bag'] and 'source_shot' not in app['asset_presence'][0]
+    assert shot['character_keys'] == [] and shot['character_states'] == {'hero': 'coat'} and app['character_states'] == {'hero': 'coat'}
+    assert out['sourceVerification']['shot_digests'][str(n)] == studio.digest({k: v for k, v in app.items() if k != 'source_shot'})
+    for bad, message in ((['ghost'], 'danh mục'), (['hero', 'hero'], 'hai lần')):
+        with pytest.raises(ValueError, match=message):
+            studio.edit_shot(b, n, {'presence': [{'asset_id': a, 'visibility': 'visible'} for a in bad]})
+    with pytest.raises(ValueError, match='Trang phục'):
+        studio.edit_shot(b, n, {'character_states': {'hero': 'ballgown'}})
+
+
+def test_a_cut_moves_between_two_shots_and_keeps_every_line_on_its_side():
+    b = board()
+    shots = b['nodes'][-1]['data']['shots']
+    first = shots[0]['source_shot']
+    out, impact = studio.edit_shot(b, first, {'lines': [{'who': 'Hero', 'speaker_id': 'hero', 'line': 'Come here', 'delivery': 'offscreen',
+                                                          'timing': [1.0, 2.0]}]})
+    moved, impact = studio.move_cut(out, first, 3.0)
+    a, c = moved['nodes'][-1]['data']['shots']
+    assert (a['source_end'], a['duration_s'], c['source_start'], c['duration_s']) == (3.0, 3.0, 3.0, 5.0)
+    assert moved['sourceVerification']['locked_shots'][str(first)]['duration_s'] == 3.0
+    assert impact['clips'] == [b['nodes'][-1]['data']['sequence']['key']]
+    with pytest.raises(ValueError, match='kéo dài qua điểm cắt'):
+        studio.move_cut(out, first, 1.5)
+    with pytest.raises(ValueError, match='ít nhất 0,3'):
+        studio.move_cut(out, first, 7.9)
+
+
+def test_a_cut_between_two_clips_moves_the_next_clips_own_timings_with_its_start():
+    b = two_clip_board()
+    last = shots_of(b, 'c1')[-1]
+    nxt = shots_of(b, 'c2')[0]
+    nxt.update(dialogue=[{'who': 'Hero', 'speaker_id': 'hero', 'line': 'Later', 'delivery': 'on_camera'}],
+               performance=['Clip audio 1.000–2.000s: speak this line once.'])
+    out, impact = studio.move_cut(b, last['source_shot'], 7.5)
+    c2 = shots_of(out, 'c2')[0]
+    assert c2['source_start'] == 7.5 and c2['performance'] == ['Clip audio 1.500–2.500s: speak this line once.']
+    assert impact['clips'] == ['c1', 'c2']
+
+
+def shots_of(b, key):
+    return next(n['data']['shots'] for n in b['nodes'] if n.get('id') == 'seq:' + key)
+
+
+def test_every_change_can_be_undone_while_nothing_newer_touched_it():
+    b = board()
+    n = b['nodes'][-1]['data']['shots'][0]['source_shot']
+    edited, _ = studio.edit_shot(b, n, {'action': ['He waves.']})
+    entry = studio.change_entry(b, edited, 'shot', 'Shot edit', ['c1'])
+    assert entry and list(entry['before']['nodes']) == [b['nodes'][-1]['id']] and str(n) in entry['before']['locks']
+    back = studio.undo(edited, entry)
+    assert back['nodes'] == b['nodes'] and back['sourceVerification']['locked_shots'] == b['sourceVerification']['locked_shots']
+    later, _ = studio.edit_shot(edited, n, {'action': ['He runs.']})
+    with pytest.raises(ValueError, match='sửa tiếp'):
+        studio.undo(later, entry)
+    key = b['nodes'][-1]['data']['sequence']['key']
+    split, _ = studio.split_clip(b, key, 2)
+    entry = studio.change_entry(b, split, 'split', 'Split', [key])
+    restored = studio.undo(split, entry)
+    assert [x['id'] for x in restored['nodes']] == [x['id'] for x in b['nodes']]
+    assert sorted(map(str, restored.get('edges', []))) == sorted(map(str, b.get('edges', [])))
+    assert restored['nodes'] == b['nodes']
+    assert studio.change_entry(b, deepcopy(b), 'noop', 'Nothing', []) is None
+
+
+def test_production_settings_change_after_the_film_exists_and_reach_the_board():
+    settings, out, notes = studio.apply_settings({'resolution': '480p'}, {'nodes': []}, {
+        'resolution': '720p', 'budget_usd': 25, 'image_fallback_model': 'gemini-3-pro-image', 'style_note': '  warm  film grain ',
+        'motion_profile': 'pose'})
+    assert settings['resolution'] == '720p' and out['budgetUsd'] == 25.0 and out['imageFallbackModel'] == 'gemini-3-pro-image'
+    assert out['styleNote'] == 'warm film grain' and out['motionProfile'] == 'pose' and notes
+    _, cleared, _ = studio.apply_settings(settings, out, {'budget_usd': None, 'image_fallback_model': '', 'motion_profile': 'standard'})
+    assert 'budgetUsd' not in cleared and 'imageFallbackModel' not in cleared and 'motionProfile' not in cleared
+    with pytest.raises(ValueError):
+        studio.apply_settings({}, {}, {'resolution': '4k'})
+
+
+def test_a_render_past_the_owners_cap_is_refused_but_one_already_made_is_not():
+    from flowboard.services import production_run as run
+    payload = {'duration_seconds': 10, 'resolution': '480p', 'prompt': 'p'}
+    made = _job('clip', 'vid:c1', 'succeeded', 0, result={'url': 'u'})
+    made.payload = {'duration_seconds': 10, 'resolution': '480p', 'prompt': 'old'}
+    with pytest.raises(run.Blocked, match='Vượt trần'):
+        run.budget_check({'budgetUsd': 2}, [made], 'vid:c2', payload)
+    run.budget_check({'budgetUsd': 2}, [made], 'vid:c1', made.payload)      # this exact render already exists
+    run.budget_check({}, [made], 'vid:c2', payload)                         # no cap, no limit
+
+
+def test_a_clip_shows_the_take_the_owner_chose_and_its_audio_choice():
+    first = _job('clip', 'vid:c1', 'succeeded', 0, result={'url': 'https://r/1.mp4'})
+    second = _job('clip', 'vid:c1', 'succeeded', 5, result={'url': 'https://r/2.mp4'})
+    first.prepared = {'set_aside': True}
+    clean = _job('audio_cleanup', 'vid:c1', 'succeeded', 6, 'audio', {'url': 'https://r/2-clean.mp4', 'native_url': 'https://r/2.mp4'})
+    jobs = [first, second, clean]
+    made = studio.takes('c1', jobs)
+    assert [t['render_url'] for t in made] == ['https://r/2.mp4', 'https://r/1.mp4'] and made[1]['set_aside']
+    st = studio.clip_state('c1', jobs, {}, set())
+    assert st['take_id'] == str(second.id) and st['url'] == 'https://r/2-clean.mp4' and st['take_count'] == 2
+    st = studio.clip_state('c1', jobs, {}, set(), {'selectedTake': str(first.id), 'audioChoice': 'native'})
+    assert st['url'] == 'https://r/1.mp4' and st['take_selected'] and st['audio_choice'] == 'native'
+    b = fixture()
+    key = b['nodes'][-1]['data']['sequence']['key']
+    with pytest.raises(ValueError, match='Không có bản gen'):
+        studio.set_audio_and_take(b, key, take_id='nope', known_takes={str(first.id)})
+    with pytest.raises(ValueError, match='Âm thanh'):
+        studio.set_audio_and_take(b, key, audio_choice='loud')
+
+
+def test_the_edl_lays_the_clip_files_end_to_end():
+    text = studio.edl('Film', [{'file': '001_c1.mp4', 'length_s': 2.5, 'source_start': 0, 'source_end': 2.4, 'label': 'CLIP 01'},
+                               {'file': '002_c2.mp4', 'length_s': 1.0, 'source_start': 2.4, 'source_end': 3.4, 'label': 'CLIP 02'}])
+    events = [l for l in text.splitlines() if l[:3].isdigit()]
+    assert events[0].endswith('00:00:00:00 00:00:02:12') and events[1].endswith('00:00:02:12 00:00:03:12')
+    assert '* FROM CLIP NAME: 002_c2.mp4' in text and text.startswith('TITLE: Film')
+
+
+def test_a_provider_outage_draws_with_the_boards_fallback_model_but_a_refusal_does_not():
+    from flowboard.services import automation_jobs
+    from tests.test_production_run import project
+    pid = project({**fixture(), 'imageFallbackModel': 'gemini-3-pro-image'})
+    outage = RuntimeError('avis: 403 The request failed because your account has an overdue balance.')
+    assert automation_jobs.image_fallback(pid, 'dola-seedream-5-0-pro', outage) == 'gemini-3-pro-image'
+    assert automation_jobs.image_fallback(pid, 'gemini-3-pro-image', outage) is None
+    assert automation_jobs.image_fallback(pid, 'dola-seedream-5-0-pro', RuntimeError('content policy: refused')) is None

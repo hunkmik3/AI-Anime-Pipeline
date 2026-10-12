@@ -230,10 +230,12 @@ def _task(s, run, all_jobs, state, key, kind, node, slot, payload, metadata=None
     """Atomic reservation + durable link under project/run row locks."""
     fingerprint=pm.digest({'kind':kind,'node':node,'slot':slot,'payload':payload})
     request='production:'+fingerprint
-    existing=next((j for j in reversed(all_jobs) if j.kind==kind and j.node_id==node and j.slot==slot and j.status=='succeeded' and pm.digest(j.payload)==pm.digest(payload)),None)
+    # A take the owner set aside stays in the history but is never reused for a new take.
+    usable=lambda j:not (j.prepared or {}).get('set_aside')
+    existing=next((j for j in reversed(all_jobs) if j.kind==kind and j.node_id==node and j.slot==slot and j.status=='succeeded' and usable(j) and pm.digest(j.payload)==pm.digest(payload)),None)
     if not existing:existing=next((j for j in all_jobs if j.request_key==request),None)
     if not existing:
-        existing=next((j for j in reversed(all_jobs) if j.kind==kind and j.node_id==node and j.slot==slot and
+        existing=next((j for j in reversed(all_jobs) if j.kind==kind and j.node_id==node and j.slot==slot and usable(j) and
                        j.status in jobs.ACTIVE|{'unknown','succeeded'} and pm.digest(j.payload)==pm.digest(payload)),None)
     if not existing:
         busy=next((j for j in all_jobs if j.kind==kind and j.node_id==node and j.slot==slot and j.status in jobs.ACTIVE|{'unknown'}),None)
@@ -368,6 +370,14 @@ def material_payload(spec, deps, board):
             bindings=[{'id':d['asset_id'],'name':d['name'],'ref_label':f'@image{refs.index(d["reference_url"])+1}','ref_url':d['reference_url']} for i,d in enumerate(deps)]
             prompt=build_asset_prompt({**item,'dependency_references':bindings},kind=item['kind'],style=style,
                 aspect_ratio=board.get('aspectRatio','16:9'),has_reference=bool(refs))
+    if board.get('styleNote'):
+        prompt += '\nOWNER STYLE NOTE (every sheet of this film): '+board['styleNote']
+    if board.get('styleImageUrl') and board['styleImageUrl'] not in refs:
+        # A look to follow, never a source of people, objects or layout; added after the
+        # prompt is built so it never counts as an identity reference.
+        refs.append(board['styleImageUrl'])
+        prompt += ('\nSTYLE REFERENCE: the last supplied image is a style reference only. Follow its rendering, palette, '
+                   'lighting and line quality; never copy its people, objects, layout, text or composition.')
     if not style_version(board):
         prompt += '\nLOCKED TARGET DEFINITION: '+json.dumps(item,ensure_ascii=False)
     if item.get('target_description'):
@@ -434,7 +444,8 @@ def writing_body(board, pid, package, continuity_refs, atlas_receipts=None, moti
         # The record of owner source corrections keeps the values they replaced; never source facts.
         source_verification={k:v for k,v in board['sourceVerification'].items() if k!='source_corrections'} if prompt_coverage.is_strict(board.get('productionAssets'),board.get('sourceVerification')) else None,
         style=board.get('style','realistic'),aspect_ratio=board.get('aspectRatio','16:9'),language='en',
-        style_note=automation._style(board['style'])['video_style'] if style_version(board) else next((m['style_note'] for m in materials if m['style_note']),''))
+        style_note=(automation._style(board['style'])['video_style'] if style_version(board) else next((m['style_note'] for m in materials if m['style_note']),''))
+                   +('\nOwner style note: '+board['styleNote'] if board.get('styleNote') else ''))
 
 
 def completed_clip_contract(body):
@@ -452,6 +463,32 @@ def completed_clip_contract(body):
     return pm.digest(contract)
 
 
+# Avis Seedance 2.5 per generated second; the white-model motion reference adds about 13 %.
+SEEDANCE_USD = {'480p': 0.113, '720p': 0.254, '1080p': 0.45}
+MOTION_SHARE = 0.13
+
+
+def seedance_usd(payload) -> float:
+    return float(payload.get('duration_seconds') or 0) * SEEDANCE_USD.get(payload.get('resolution') or '480p', SEEDANCE_USD['480p']) * (1 + MOTION_SHARE)
+
+
+def budget_check(board, all_jobs, node, payload):
+    """Refuse a NEW render that would take the film's Seedance spend past the owner's cap
+    (board budgetUsd). A render already submitted or made is never refused."""
+    cap = board.get('budgetUsd')
+    if not cap:
+        return
+    digest = pm.digest(payload)
+    if any(j.kind == 'clip' and j.node_id == node and j.status in jobs.ACTIVE | {'unknown', 'succeeded'}
+           and not (j.prepared or {}).get('set_aside') and pm.digest(j.payload) == digest for j in all_jobs):
+        return
+    spent = sum(seedance_usd(j.payload or {}) for j in all_jobs if j.kind == 'clip' and j.status in jobs.ACTIVE | {'unknown', 'succeeded'})
+    more = seedance_usd(payload)
+    if spent + more > float(cap) + 1e-9:
+        raise Blocked(f'Vượt trần chi phí ${float(cap):.2f}: đã dùng khoảng ${spent:.2f}, clip này thêm khoảng ${more:.2f}. '
+                      'Nâng trần trong Thiết lập để render tiếp.')
+
+
 def reuse_completed_clip(board, package, body, config, all_jobs, state):
     key=package['sequence_key'];node='vid:'+key
     # Never conceal an unresolved generation behind an older successful one.
@@ -461,6 +498,7 @@ def reuse_completed_clip(board, package, body, config, all_jobs, state):
     draft=next((n['data'].get('prompt','') for n in board['nodes'] if n['id']==node),'')
     for job in reversed(all_jobs):
         if job.kind!='clip' or job.node_id!=node or job.status!='succeeded' or not job.result.get('url'):continue
+        if (job.prepared or {}).get('set_aside'):continue  # an earlier take the owner asked to redo
         old=job.payload
         if not old.get('prompt_contract') or completed_clip_contract(old['prompt_contract'])!=current:continue
         if old.get('resolution')!=config['resolution'] or old.get('aspect_ratio')!=package['aspect_ratio']:continue
@@ -508,7 +546,9 @@ def advance(s, run, project, all_jobs):
         fixtures=set_fixtures(board,spec['asset_id']) if spec['kind']=='environment' else []
         deps=[ready[d] for d in spec['deps']];plate=spec['plate'];signature=pm.digest({'item':spec['item'],'deps':[{k:v for k,v in d.items() if k!='media_id'} for d in deps],'slot':spec['slot'],
             'prompt':authored_prompt(plate),'model':spec.get('image_model') or board.get('imageModel'),'size':board.get('imageSize'),'style':board.get('style'),'style_version':style_version(board),
-            **({'fixtures':fixtures} if fixtures else {})})
+            **({'fixtures':fixtures} if fixtures else {}),
+            **({'style_note':board['styleNote']} if board.get('styleNote') else {}),
+            **({'style_image':board['styleImageUrl']} if board.get('styleImageUrl') else {})})
         old=next((j for j in reversed(all_jobs) if j.kind in ('plate','material_binding') and j.node_id==spec['node_id'] and j.slot==spec['slot'] and j.status=='succeeded'),None)
         fresh=plate.get('referenceUrl') and not plate.get('needsIdentityRefresh') and (plate.get('uploaded') or not old or not old.prepared.get('material_signature') or old.prepared['material_signature']==signature)
         try:
@@ -692,6 +732,7 @@ def advance(s, run, project, all_jobs):
                 aspect_ratio=p['aspect_ratio'],resolution=config['resolution'],project_id=project.id,sequence_key=key,
                 motion_media_id=motion.result['media_id'] if motion else '',motion_job_id=str(motion.id) if motion else '',
                 prompt_contract=body,coverage=out.get('coverage'),contract_digest=out.get('contract_digest',''),coverage_token=out.get('coverage_token',''))
+            budget_check(board,all_jobs,'vid:'+key,clip.model_dump(mode='json'))
             j=_task(s,run,all_jobs,state,'clip:'+key,'clip','vid:'+key,'',clip.model_dump(mode='json'))
             clips[key]=checked_clip(j,p)
         except Waiting: continue

@@ -79,10 +79,30 @@ def _frames(board: dict) -> dict:
 
 # ─────────────────────────────── jobs ───────────────────────────────
 
-def _latest(jobs: list[AutomationJob], kind: str, node_id: str, slot: Optional[str] = None) -> Optional[AutomationJob]:
-    found = [j for j in jobs if j.kind == kind and j.node_id == node_id and (slot is None or j.slot == slot)
-             and ':superseded-' not in (j.request_key or '')]
-    return max(found, key=lambda j: j.created_at) if found else None
+class Jobs:
+    """A project's jobs indexed once by (kind, node) in creation order; superseded
+    attempts are left out. A film of hundreds of clips is read in one pass."""
+
+    def __init__(self, jobs):
+        self.by: dict = {}
+        for j in sorted(jobs, key=lambda j: j.created_at):
+            if ':superseded-' in (j.request_key or ''):
+                continue
+            self.by.setdefault((j.kind, j.node_id), []).append(j)
+
+    def all(self, kind: str, node: str) -> list[AutomationJob]:
+        return self.by.get((kind, node), [])
+
+    def latest(self, kind: str, node: str, slot: Optional[str] = None) -> Optional[AutomationJob]:
+        return next((j for j in reversed(self.all(kind, node)) if slot is None or j.slot == slot), None)
+
+
+def _index(jobs) -> Jobs:
+    return jobs if isinstance(jobs, Jobs) else Jobs(jobs)
+
+
+def _latest(jobs, kind: str, node_id: str, slot: Optional[str] = None) -> Optional[AutomationJob]:
+    return _index(jobs).latest(kind, node_id, slot)
 
 
 def _error(job: Optional[AutomationJob]) -> str:
@@ -94,21 +114,52 @@ def hint(message: str) -> str:
     return next((text for needle, text in PROVIDER_HINTS if needle in low), '')
 
 
-def clip_state(key: str, jobs: list[AutomationJob], held: dict, pending: set) -> dict:
-    """Where one clip stands, from its newest jobs: done, rendering, preparing, failed, held, waiting."""
+def takes(key: str, jobs) -> list[dict]:
+    """Every render of one clip, newest first, with its cleaned audio and its check."""
+    index = _index(jobs)
     node = 'vid:' + key
-    clip, write = _latest(jobs, 'clip', node), _latest(jobs, 'write', node)
-    staging, motion = _latest(jobs, 'plate', node, 'staging'), _latest(jobs, 'motion_reference', node)
-    quality, audio = _latest(jobs, 'clip_quality', node), _latest(jobs, 'audio_cleanup', node)
-    render = clip.result.get('url') if clip and clip.status == 'succeeded' else None
-    cleaned = audio.result.get('url') if audio and audio.status == 'succeeded' and (audio.result or {}).get('native_url') == render else None
+    cleaned = {(j.result or {}).get('native_url'): (j.result or {}).get('url')
+               for j in index.all('audio_cleanup', node) if j.status == 'succeeded'}
+    checks = {}
+    for j in index.all('clip_quality', node):
+        checks[(j.payload or {}).get('source_job')] = j
+    out = []
+    for j in reversed(index.all('clip', node)):
+        url = (j.result or {}).get('url')
+        if j.status != 'succeeded' or not url:
+            continue
+        q = checks.get(str(j.id))
+        r = (q.result or {}) if q and q.status == 'succeeded' else {}
+        out.append({'job_id': str(j.id), 'render_url': url, 'cleaned_url': cleaned.get(url), 'at': _iso(j.created_at),
+                    'set_aside': bool((j.prepared or {}).get('set_aside')),
+                    'quality': {'status': r.get('status') or (q.status if q else None),
+                                'findings': [f.get('message') or f.get('code') for f in r.get('findings') or []][:6],
+                                'heard': ((r.get('audio') or {}).get('heard_text') or '')[:600],
+                                'speech_end_s': (r.get('audio') or {}).get('speech_end_s'),
+                                'error': _error(q)} if q else None})
+    return out
+
+
+AUDIO_CHOICES = ('cleaned', 'native', 'silent')
+
+
+def clip_state(key: str, jobs, held: dict, pending: set, video: Optional[dict] = None) -> dict:
+    """Where one clip stands, from its newest jobs: done, rendering, preparing, failed,
+    held, waiting; and which take it shows (the owner's choice, else the newest)."""
+    index = _index(jobs)
+    video = video or {}
+    node = 'vid:' + key
+    clip, write = index.latest('clip', node), index.latest('write', node)
+    staging, motion = index.latest('plate', node, 'staging'), index.latest('motion_reference', node)
+    made = takes(key, index)
+    take = next((t for t in made if t['job_id'] == video.get('selectedTake')), None) or (made[0] if made else None)
     status, reason = 'waiting', ''
     newest_failure = next((j for j in sorted([x for x in (write, staging, motion, clip) if x], key=lambda j: j.created_at, reverse=True)
                            if j.status in ('failed', 'unknown', 'blocked')), None)
-    if render and not (newest_failure and newest_failure.created_at > clip.created_at):
-        status = 'done'
-    elif clip and clip.status in automation_jobs.ACTIVE:
+    if clip and clip.status in automation_jobs.ACTIVE:
         status = 'rendering'
+    elif take and not (newest_failure and clip and newest_failure.created_at > clip.created_at):
+        status = 'done'
     elif newest_failure:
         status, reason = 'failed', _error(newest_failure)
     elif any(j and j.status in automation_jobs.ACTIVE for j in (write, staging, motion)):
@@ -119,21 +170,25 @@ def clip_state(key: str, jobs: list[AutomationJob], held: dict, pending: set) ->
         status, reason = 'reviewing', 'Đang đối chiếu với nguồn.'
     elif write and write.status == 'succeeded':
         status = 'prepared'
-    q = (quality.result or {}) if quality and quality.status == 'succeeded' else {}
     clay = (motion.result or {}) if motion and motion.status == 'succeeded' else {}
+    choice = video.get('audioChoice') if video.get('audioChoice') in AUDIO_CHOICES else 'cleaned'
+    render = take['render_url'] if take else None
+    cleaned = take['cleaned_url'] if take else None
+    url = render if choice in ('native', 'silent') else (cleaned or render)
+    stage_image = ((staging.result or {}).get('images') or [{}])[0] if staging and staging.status == 'succeeded' else {}
     return {
         'motion_url': clay.get('url'), 'motion_method': clay.get('method'),
         'camera': ((clay.get('layers') or {}).get('camera') or []),
+        'staging_url': stage_image.get('reference_url') or stage_image.get('url'),
+        'staging_model_used': (staging.result or {}).get('image_model_used') if staging and staging.status == 'succeeded' else None,
         'status': status, 'reason': reason, 'hint': hint(reason),
-        'render_url': render, 'cleaned_url': cleaned, 'url': cleaned or render,
-        'quality': {'status': q.get('status') or (quality.status if quality else None),
-                    'findings': [f.get('message') or f.get('code') for f in q.get('findings') or []][:6],
-                    'heard': ((q.get('audio') or {}).get('heard_text') or '')[:600],
-                    'error': _error(quality)} if quality else None,
+        'take_id': take['job_id'] if take else None, 'take_count': len(made), 'take_selected': bool(take and video.get('selectedTake') == take['job_id']),
+        'render_url': render, 'cleaned_url': cleaned, 'url': url, 'audio_choice': choice,
+        'quality': take['quality'] if take else None,
         'has_prompt': bool(write and write.status == 'succeeded' and (write.result or {}).get('prompt')),
         'unknown_jobs': [{'id': str(j.id), 'kind': j.kind, 'slot': j.slot, 'error': _error(j)}
                          for j in (write, staging, motion, clip) if j and j.status == 'unknown'],
-        'updated_at': _iso(max((j.updated_at for j in (write, staging, motion, clip, quality) if j), default=None)),
+        'updated_at': _iso(max((j.updated_at for j in (write, staging, motion, clip) if j), default=None)),
     }
 
 
@@ -169,10 +224,50 @@ def shot_rows(board: dict, seq_node: dict, heard: list[dict], findings: list[dic
             'frame': next((frames[e] for e in s.get('source_evidence') or [] if frames.get(e)), None),
             'framing': s.get('framing'), 'camera': s.get('camera'), 'action': s.get('action') or [], 'staging': s.get('staging') or '',
             'characters': s.get('character_keys') or [], 'states': s.get('character_states') or {},
+            'presence': [{k: x.get(k) for k in ('asset_id', 'visibility', 'state', 'position', 'holder_id')}
+                         for x in s.get('asset_presence') or [] if isinstance(x, dict)],
             'lines': lines, 'heard': heard_text if heard_text and not same else '',
             'findings': [f for f in findings if f.get('shot') == sid],
         })
     return rows
+
+
+VISIBILITY = ('visible', 'partial', 'offscreen', 'occluded')
+
+
+def _set_presence(s: dict, rows: list, assets: dict) -> None:
+    """Who and what is in the shot, in the shot record and its one source appearance;
+    fields the owner did not touch (evidence, holder, containment) stay."""
+    seen, fresh = set(), []
+    for r in rows:
+        aid = r.get('asset_id')
+        if aid not in assets:
+            raise ValueError('%s không có trong danh mục nguồn.' % aid)
+        if aid in seen:
+            raise ValueError('%s xuất hiện hai lần trong shot.' % (assets[aid].get('name') or aid))
+        if r.get('visibility') not in VISIBILITY:
+            raise ValueError('Mức hiện diện phải là trong khung, một phần, ngoài khung hoặc bị che.')
+        seen.add(aid)
+        fresh.append({k: ' '.join(str(r.get(k) or '').split()) for k in ('state', 'position')} | {'asset_id': aid, 'visibility': r['visibility'],
+                     **({'holder_id': r['holder_id']} if r.get('holder_id') in assets else {})})
+    def merged(old_rows, with_shot):
+        old = {x.get('asset_id'): x for x in old_rows or [] if isinstance(x, dict)}
+        out = []
+        for row in fresh:
+            base = dict(old.get(row['asset_id']) or {'contains_ids': [], 'evidence_ids': []})
+            if 'holder_id' not in row:
+                base.pop('holder_id', None)
+            base.update(row)
+            if with_shot:
+                base['source_shot'] = s.get('source_shot')
+            out.append(base)
+        return out
+    s['asset_presence'] = merged(s.get('asset_presence'), True)
+    for app in s.get('source_appearances') or []:
+        app['asset_presence'] = merged(app.get('asset_presence'), False)
+    on = [r['asset_id'] for r in fresh if r['visibility'] in ('visible', 'partial')]
+    s['character_keys'] = [a for a in on if assets[a].get('kind') == 'character']
+    s['scene_present_asset_ids'] = list(dict.fromkeys([*(s.get('scene_present_asset_ids') or []), *[r['asset_id'] for r in fresh]]))
 
 
 def _owner_label(user) -> str:
@@ -188,12 +283,13 @@ def edit_shot(board: dict, source_shot: int, patch: dict, user=None) -> tuple[di
     if len(found) != 1:
         raise ValueError('Không tìm thấy shot nguồn %s.' % source_shot)
     seq_node, s = found[0]
-    if set(patch) - {'lines', 'action', 'staging'}:
-        raise ValueError('Chỉ sửa được thoại, hành động và dàn cảnh của shot.')
+    if set(patch) - {'lines', 'action', 'staging', 'presence', 'character_states'}:
+        raise ValueError('Chỉ sửa được thoại, hành động, dàn cảnh, người/vật trong shot và trang phục.')
     assets = {a.get('id'): a for a in out.get('productionAssets') or []}
     origin = seq_node['data']['shots'][0]['source_start']
     a, b = s['source_start'] - origin, s['source_end'] - origin
-    before = {k: deepcopy(s.get(k)) for k in ('dialogue', 'performance', 'heard', 'action', 'staging', 'source_appearances')}
+    before = {k: deepcopy(s.get(k)) for k in ('dialogue', 'performance', 'heard', 'action', 'staging', 'source_appearances',
+                                              'asset_presence', 'character_states', 'character_keys', 'scene_present_asset_ids')}
     if 'lines' in patch:
         dialogue, performance = [], []
         for line in patch['lines'] or []:
@@ -228,6 +324,18 @@ def edit_shot(board: dict, source_shot: int, patch: dict, user=None) -> tuple[di
         s['action'] = beats
     if 'staging' in patch:
         s['staging'] = ' '.join(str(patch['staging'] or '').split())
+    if 'presence' in patch:
+        _set_presence(s, patch['presence'] or [], assets)
+    if 'character_states' in patch:
+        states = {}
+        for aid, key in (patch['character_states'] or {}).items():
+            asset = assets.get(aid) or {}
+            if asset.get('kind') != 'character' or key not in {st.get('key') for st in asset.get('states') or []}:
+                raise ValueError('Trang phục %s không có trong danh mục của %s.' % (key, asset.get('name') or aid))
+            states[aid] = key
+        s['character_states'] = states
+        for app in s.get('source_appearances') or []:
+            app['character_states'] = dict(states)
     sv = out.setdefault('sourceVerification', {})
     n = str(source_shot)
     lock_before = deepcopy((sv.get('locked_shots') or {}).get(n))
@@ -262,6 +370,10 @@ def materials(board: dict, pid: str, jobs: list[AutomationJob], used: Optional[s
         for sl in slots:
             plate = (d.get('states', {}).get(sl['slot']) if item['kind'] == 'character' and sl['slot'] != 'identity' else d.get(sl['slot'])) or {}
             job = _latest(jobs, 'plate', node['id'], sl['slot'])
+            drawn = [j for j in reversed(_index(jobs).all('plate', node['id'])) if j.slot == sl['slot'] and j.status == 'succeeded']
+            sl['versions'] = [{'job_id': str(j.id), 'url': img.get('reference_url') or img.get('url'), 'media_id': img.get('media_id') or '',
+                               'at': _iso(j.created_at), 'model': (j.result or {}).get('image_model_used') or (j.payload or {}).get('image_model')}
+                              for j in drawn[:8] for img in [((j.result or {}).get('images') or [{}])[0]] if img.get('reference_url') or img.get('url')]
             needed = used is None or f"{node['id']}:{sl['slot']}" in used
             sl.update(image=plate.get('referenceUrl'), uploaded=bool(plate.get('uploaded')), used=needed,
                       status=job.status if job else ('ready' if plate.get('referenceUrl') else 'missing' if needed else 'unused'),
@@ -461,6 +573,216 @@ def merge_clips(board: dict, key: str) -> tuple[dict, dict]:
     return out, {'clips': [key], 'removed': [other], 'review': True}
 
 
+def _mmss(s: float) -> str:
+    return f'{int(s // 60):02d}:{s % 60:05.2f}'
+
+
+def move_cut(board: dict, source_shot: int, at: float) -> tuple[dict, dict]:
+    """Move the cut after one source shot to source time ``at``: this shot ends there
+    and the next one (possibly the first of the next clip) starts there. Lines must
+    already fall on their side; the next clip's own timings follow its new start."""
+    out = deepcopy(board)
+    order = [(n, i, s) for n in sequences(out) for i, s in enumerate(n['data']['shots'])]
+    pos = next((k for k, (_, _, s) in enumerate(order) if s.get('source_shot') == source_shot), None)
+    if pos is None:
+        raise ValueError('Không tìm thấy shot nguồn %s.' % source_shot)
+    if pos + 1 >= len(order):
+        raise ValueError('Shot cuối phim không có điểm cắt phía sau.')
+    (sa, ia, a), (sb, ib, b) = order[pos], order[pos + 1]
+    if abs(a['source_end'] - b['source_start']) > .05:
+        raise ValueError('Hai shot này không liền nhau trên video gốc.')
+    at = round(float(at), 3)
+    if not (a['source_start'] + .3 <= at <= b['source_end'] - .3):
+        raise ValueError('Điểm cắt phải cách đầu shot này và cuối shot sau ít nhất 0,3 s.')
+    old = a['source_end']
+    a_origin = sa['data']['shots'][0]['source_start']
+    for line_timing in (_timing(x) for x in a.get('performance') or []):
+        if line_timing and line_timing[1] > at - a_origin + .15:
+            raise ValueError('Một câu thoại của shot này kéo dài qua điểm cắt mới; sửa mốc câu đó trước.')
+    b_first = ib == 0 and sb is not sa
+    b_origin_old = sb['data']['shots'][0]['source_start']
+    b_origin_new = at if b_first else b_origin_old
+    for line_timing in (_timing(x) for x in b.get('performance') or []):
+        if line_timing and line_timing[0] + b_origin_old < at - .15:
+            raise ValueError('Một câu thoại của shot sau bắt đầu trước điểm cắt mới; sửa mốc câu đó trước.')
+    a['source_end'] = at
+    a['duration_s'] = round(at - a['source_start'], 3)
+    b['source_start'] = at
+    b['duration_s'] = round(b['source_end'] - at, 3)
+    for s in (a, b):
+        if s.get('source_tc'):
+            s['source_tc'] = f"{_mmss(s['source_start'])}–{_mmss(s['source_end'])}"
+    if b_first and abs(b_origin_new - b_origin_old) > 1e-6:
+        # Every timing of the next clip is clip-relative: its clip now starts at the new cut.
+        shift = b_origin_old - b_origin_new
+        for s in sb['data']['shots']:
+            s['performance'] = [re.sub(r'Clip audio (-?[\d.]+)–(-?[\d.]+)s:',
+                                       lambda m: f'Clip audio {float(m[1]) + shift:.3f}–{float(m[2]) + shift:.3f}s:', x)
+                                for x in s.get('performance') or []]
+    limit = reskin.max_seconds(out) if reskin.enabled(out) else 30.0
+    for seq in {id(sa): sa, id(sb): sb}.values():
+        shots = seq['data']['shots']
+        if shots[-1]['source_end'] - shots[0]['source_start'] > limit + .001:
+            raise ValueError('Clip %s sẽ dài quá %g s.' % (_key(seq), limit))
+        seq['data']['sequence'] = _sequence_fields(seq['data']['sequence'], shots)
+    sv = out.get('sourceVerification') or {}
+    for s in (a, b):
+        n = str(s.get('source_shot'))
+        if n in (sv.get('locked_shots') or {}):
+            sv['locked_shots'][n]['duration_s'] = s['duration_s']
+    clips = list(dict.fromkeys([_key(sa), _key(sb)]))
+    return out, {'clips': clips, 'review': True, 'moved': {'from': old, 'to': at}}
+
+
+# ─────────────────────────────── history ───────────────────────────────
+
+def _nodes(board: dict) -> dict:
+    return {n['id']: (i, n) for i, n in enumerate(board.get('nodes', []))}
+
+
+def change_entry(before: dict, after: dict, kind: str, summary_text: str, clips: list, user=None) -> Optional[dict]:
+    """What one studio action changed — the nodes, their edges and the source locks — as
+    the values to put back on undo, and a digest of the result to check nothing changed since."""
+    b, a = _nodes(before), _nodes(after)
+    ids = sorted({i for i in set(b) | set(a) if (b.get(i) or (0, None))[1] != (a.get(i) or (0, None))[1]})
+    sv_b, sv_a = before.get('sourceVerification') or {}, after.get('sourceVerification') or {}
+    locks = sorted({n for field in ('locked_shots', 'shot_digests')
+                    for n in set(sv_b.get(field) or {}) | set(sv_a.get(field) or {})
+                    if (sv_b.get(field) or {}).get(n) != (sv_a.get(field) or {}).get(n)})
+    if not ids and not locks:
+        return None
+    touch = lambda e, keep: e.get('source') in keep or e.get('target') in keep
+    return {'id': uuid.uuid4().hex[:12], 'at': datetime.now(timezone.utc).isoformat(), 'by': _owner_label(user), 'kind': kind,
+            'summary': summary_text[:300], 'clips': clips,
+            'before': {'nodes': {i: (deepcopy(b[i][1]), b[i][0]) if i in b else None for i in ids},
+                       'edges': [deepcopy(e) for e in before.get('edges', []) if touch(e, set(ids))],
+                       'locks': {n: [deepcopy((sv_b.get('locked_shots') or {}).get(n)), (sv_b.get('shot_digests') or {}).get(n)] for n in locks}},
+            'after_digest': _state_digest(after, ids, locks)}
+
+
+def _state_digest(board: dict, ids, locks) -> str:
+    nodes = _nodes(board)
+    sv = board.get('sourceVerification') or {}
+    return digest({'nodes': {i: (nodes[i][1] if i in nodes else None) for i in ids},
+                   'locks': {n: [(sv.get('locked_shots') or {}).get(n), (sv.get('shot_digests') or {}).get(n)] for n in locks}})
+
+
+def undo(board: dict, entry: dict) -> dict:
+    """The board with one recorded change put back, if what it changed is still as it left it."""
+    before = entry['before']
+    ids, locks = list(before['nodes']), list(before['locks'])
+    if _state_digest(board, ids, locks) != entry['after_digest']:
+        raise ValueError('Phần này đã được sửa tiếp sau thay đổi đó; hoàn tác các thay đổi mới hơn trước.')
+    out = deepcopy(board)
+    keep = set(ids)
+    nodes = [n for n in out.get('nodes', []) if n['id'] not in keep]
+    for i, value in sorted(((i, v) for i, v in before['nodes'].items() if v), key=lambda x: x[1][1]):
+        node, index = value
+        nodes.insert(min(index, len(nodes)), deepcopy(node))
+    out['nodes'] = nodes
+    out['edges'] = [e for e in out.get('edges', []) if e.get('source') not in keep and e.get('target') not in keep] + deepcopy(before['edges'])
+    sv = out.setdefault('sourceVerification', {})
+    for n, (lock, dig) in before['locks'].items():
+        for field, value in (('locked_shots', lock), ('shot_digests', dig)):
+            if value is None:
+                (sv.get(field) or {}).pop(n, None)
+            else:
+                sv.setdefault(field, {})[n] = deepcopy(value)
+    return out
+
+
+# ─────────────────────────────── settings ───────────────────────────────
+
+# Settings that change production only (never the analysis or the board's shape).
+PRODUCTION_SETTINGS = {'resolution': ('480p', '720p'), 'timing_policy': ('full_take', 'source_duration')}
+GATE_SETTINGS = ('pause_for_review', 'prepare_before_render', 'review_masters')
+
+
+def apply_settings(settings: dict, board: dict, patch: dict) -> tuple[dict, dict, list[str]]:
+    """(settings, board, notes) after the owner changes a film's production settings."""
+    s, b, notes = dict(settings), deepcopy(board), []
+    for key, allowed in PRODUCTION_SETTINGS.items():
+        if key in patch:
+            if patch[key] not in allowed:
+                raise ValueError('Giá trị %s không hợp lệ: %s' % (key, patch[key]))
+            s[key] = patch[key]
+    for key in GATE_SETTINGS:
+        if key in patch:
+            s[key] = bool(patch[key])
+    if 'motion_profile' in patch:
+        if patch['motion_profile'] not in reskin.MOTION_PROFILES:
+            raise ValueError('Kiểu chuyển động không hỗ trợ.')
+        s['motion_profile'] = patch['motion_profile']
+        if patch['motion_profile'] == 'standard':
+            b.pop('motionProfile', None)
+        else:
+            b['motionProfile'] = patch['motion_profile']
+        notes.append('Clip chưa đặt kiểu riêng sẽ dựng lại clay ở lượt render tới.')
+    if 'image_fallback_model' in patch:
+        model = patch['image_fallback_model'] or ''
+        if model and model not in IMAGE_MODELS:
+            raise ValueError('Model ảnh không hỗ trợ.')
+        s['image_fallback_model'] = model
+        b['imageFallbackModel'] = model
+        if not model:
+            b.pop('imageFallbackModel', None)
+    if 'budget_usd' in patch:
+        cap = patch['budget_usd']
+        if cap is not None and (not isinstance(cap, (int, float)) or cap < 0):
+            raise ValueError('Trần chi phí phải là số đô-la không âm.')
+        s['budget_usd'] = cap
+        if cap:
+            b['budgetUsd'] = float(cap)
+        else:
+            b.pop('budgetUsd', None)
+    if 'style_note' in patch:
+        note = ' '.join(str(patch['style_note'] or '').split())[:2000]
+        s['style_note'] = note
+        if note:
+            b['styleNote'] = note
+        else:
+            b.pop('styleNote', None)
+        notes.append('Ghi chú phong cách đổi thì mọi sheet được vẽ lại ở lượt chạy tới, và mọi clip cần render lại.')
+    if 'style_image_url' in patch:
+        url = str(patch['style_image_url'] or '').strip()
+        s['style_image_url'] = url
+        if url:
+            b['styleImageUrl'] = url
+        else:
+            b.pop('styleImageUrl', None)
+        notes.append('Ảnh mẫu phong cách đổi thì mọi sheet được vẽ lại ở lượt chạy tới, và mọi clip cần render lại.')
+    return s, b, notes
+
+
+def set_audio_and_take(board: dict, key: str, *, audio_choice: Optional[str] = None, take_id: Optional[str] = None,
+                       known_takes: Optional[set] = None) -> dict:
+    out = deepcopy(board)
+    node = next((n for n in out.get('nodes', []) if n['id'] == 'vid:' + key), None)
+    if not node:
+        raise ValueError('Không tìm thấy clip %s.' % key)
+    d = node['data']
+    if audio_choice is not None:
+        if audio_choice not in AUDIO_CHOICES:
+            raise ValueError('Âm thanh phải là đã lọc nhạc, bản gốc của Seedance hoặc im lặng.')
+        d['audioChoice'] = audio_choice
+    if take_id is not None:
+        if take_id and known_takes is not None and take_id not in known_takes:
+            raise ValueError('Không có bản gen này của clip.')
+        if take_id:
+            d['selectedTake'] = take_id
+        else:
+            d.pop('selectedTake', None)
+    return out
+
+
+def quality_payload(board: dict, pid: str, key: str, take: dict, timing_policy: str) -> dict:
+    """A new automatic check of one take, the same request a run makes."""
+    from flowboard.services import production_quality as quality
+    package = production_run.selected_packages(board, pid, [key])[0]
+    return {'version': quality.VERSION, 'model': quality.MODEL, 'source_job': take['job_id'],
+            'url': take['cleaned_url'] or take['render_url'], 'package': package, 'timing_policy': timing_policy}
+
+
 def run_config(settings: dict, keys: list[str], mode: str) -> dict:
     from flowboard.routes.automation import ProductionRunConfig
     reskin_film = settings.get('pipeline') == 'reskin_v1'
@@ -483,6 +805,22 @@ def supersede_failed(session, pid: uuid.UUID, keys: list[str]) -> list[str]:
             j.request_key += ':superseded-' + stamp
             session.add(j)
             done.append(f'{j.kind}:{j.node_id}')
+    return done
+
+
+def set_aside_takes(session, pid: uuid.UUID, keys: list[str]) -> list[str]:
+    """Each made take of these clips steps aside so the next render makes a new one; the
+    takes stay on record to compare and choose from."""
+    stamp = str(int(datetime.now(timezone.utc).timestamp()))
+    nodes = {'vid:' + k for k in keys}
+    done = []
+    for j in session.exec(select(AutomationJob).where(AutomationJob.project_id == pid, AutomationJob.kind == 'clip',
+                                                      AutomationJob.status == 'succeeded')).all():
+        if j.node_id in nodes and not (j.prepared or {}).get('set_aside'):
+            j.prepared = {**(j.prepared or {}), 'set_aside': True, 'set_aside_at': stamp}
+            j.request_key = (j.request_key or '') + ':take-' + stamp
+            session.add(j)
+            done.append(str(j.id))
     return done
 
 
@@ -528,17 +866,18 @@ def providers(session, hours: int = 12) -> list[dict]:
     return out
 
 
-def cost(settings: dict, jobs: list[AutomationJob], seconds_of: dict) -> dict:
-    clips = [j for j in jobs if j.kind == 'clip' and j.status == 'succeeded']
-    seconds = 0.0
-    for j in clips:
-        key = (j.node_id or '')[4:]
-        seconds += float(seconds_of.get(key) or 0)
-    rate = SEEDANCE_USD.get(settings.get('resolution', '480p'), SEEDANCE_USD['480p'])
-    return {'clips_rendered': len(clips), 'seconds': round(seconds, 1), 'seedance_usd': round(seconds * rate * (1 + MOTION_SHARE), 2),
+def cost(settings: dict, jobs: list[AutomationJob], seconds_of: dict, budget=None) -> dict:
+    """Seedance spend from every render's own length and resolution (set-aside takes
+    included: they were paid for), and what is left under the owner's cap."""
+    made = [j for j in jobs if j.kind == 'clip' and j.status == 'succeeded']
+    seconds = sum(float((j.payload or {}).get('duration_seconds') or seconds_of.get((j.node_id or '')[4:]) or 0) for j in made)
+    usd = sum(production_run.seedance_usd({**(j.payload or {}), 'duration_seconds': (j.payload or {}).get('duration_seconds')
+                                            or seconds_of.get((j.node_id or '')[4:]) or 0}) for j in made)
+    return {'clips_rendered': len(made), 'seconds': round(seconds, 1), 'seedance_usd': round(usd, 2),
+            'budget_usd': float(budget) if budget else None, 'left_usd': round(float(budget) - usd, 2) if budget else None,
             'images': sum(1 for j in jobs if j.kind == 'plate' and j.status == 'succeeded'),
             'writes': sum(1 for j in jobs if j.kind == 'write' and j.status == 'succeeded'),
-            'note': 'Ước tính theo giá Seedance 2.5 trên Avis (%s, cộng ~13%% video chuyển động); ảnh và chữ chưa tính.' % settings.get('resolution', '480p')}
+            'note': 'Ước tính theo giá Seedance 2.5 trên Avis (cộng ~13% video chuyển động); ảnh và chữ chưa tính.'}
 
 
 # ─────────────────────────────── the whole film ───────────────────────────────
@@ -552,20 +891,13 @@ def summary(session, row: VideoAnalysis) -> dict:
             'progress': row.progress or {}}
 
 
-def detail(session, row: VideoAnalysis) -> dict:
-    out = summary(session, row)
-    auto, settings = _auto(row), _settings(row)
-    out['gates'] = {'pause_for_review': bool(settings.get('pause_for_review')), 'prepare_before_render': bool(settings.get('prepare_before_render')),
-                    'review_masters': bool(settings.get('review_masters')), 'board_approved': bool(auto.get('board_approved'))}
-    out['providers'] = providers(session)
-    out['films'] = auto.get('studio_films') or []
+def context(session, row: VideoAnalysis) -> Optional[dict]:
+    """Everything the overview and one clip's page read, built once per request."""
     project = session.get(AutomationProject, row.automation_project_id) if row.automation_project_id else None
     if not project or not sequences(project.board or {}):
-        out.update(stations=_stations(row, None, [], [], [], {}), clips=[], materials=[], findings=[], cost=None, inbox=_inbox(row, [], [], []),
-                   revision=project.revision if project else None, runs=[])
-        return out
+        return {'project': project} if project else None
     board = automation_jobs.project_board(session, project)
-    jobs = session.exec(select(AutomationJob).where(AutomationJob.project_id == project.id)).all()
+    rows = session.exec(select(AutomationJob).where(AutomationJob.project_id == project.id)).all()
     pid = str(project.id)
     used = None
     try:
@@ -574,48 +906,96 @@ def detail(session, row: VideoAnalysis) -> dict:
         used = set(production_run.material_specs(board, packages))
     except ValueError as exc:
         shared, held, pending = [str(exc)], {}, set()
-    approvals = auto.get('clip_approvals') or {}
     review = board.get('reskinSourceReview') or {}
     accepted = policy.accepted(board)
-    findings = []
-    for f in review.get('findings') or []:
-        if not isinstance(f, dict):
-            continue
-        level = policy.severity(f)
-        findings.append({**{k: f.get(k) for k in ('clip', 'shot', 'key', 'origin', 'criterion', 'message', 'expected', 'heard')},
-                         'severity': level, 'accepted': f.get('key') in accepted})
-    heard = _heard(board)
-    clips = []
-    for seq in sequences(board):
-        key = _key(seq)
-        shots = seq['data']['shots']
-        mine = [f for f in findings if f.get('clip') == key]
-        video = next((n['data'] for n in board['nodes'] if n['id'] == 'vid:' + key), {})
-        clips.append({'key': key, 'label': seq['data']['sequence'].get('label') or key,
-                      'source_start': shots[0]['source_start'], 'source_end': shots[-1]['source_end'], 'seconds': clip_seconds(seq),
-                      'estimate_usd': estimate(settings, clip_seconds(seq)), 'staging_image_model': video.get('stagingImageModel') or '',
-                      'motion_profile': reskin.motion_profile(board, key), 'prompt_by': video.get('promptBy') or '',
-                      'shots': shot_rows(board, seq, heard.get(key, []), mine),
-                      'findings': [f for f in mine if not f.get('shot')],
-                      'blocking': [f for f in mine if f['severity'] == 'blocking' and not f['accepted']],
-                      **clip_state(key, jobs, held, pending)})
-        state = clips[-1]
-        mark = approvals.get(key) or {}
-        state['approval'] = mark if mark.get('url') and mark.get('url') == state['url'] else None
-    mats = materials(board, pid, jobs, used)
-    runs = sorted((j for j in jobs if j.kind == 'production_run'), key=lambda j: j.created_at, reverse=True)[:8]
-    out.update(revision=project.revision, aspect_ratio=board.get('aspectRatio'), style=board.get('style'), image_model=board.get('imageModel'),
-               shared_issues=shared, clips=clips, materials=mats,
-               characters=[{'id': a.get('id'), 'name': a.get('production_name') or a.get('name') or a.get('id')}
-                           for a in board.get('productionAssets') or [] if a.get('kind') == 'character'],
+    findings = [{**{k: f.get(k) for k in ('clip', 'shot', 'key', 'origin', 'criterion', 'message', 'expected', 'heard')},
+                 'severity': policy.severity(f), 'accepted': f.get('key') in accepted}
+                for f in review.get('findings') or [] if isinstance(f, dict)]
+    videos = {n['id'][4:]: n.get('data') or {} for n in board.get('nodes', []) if str(n.get('id', '')).startswith('vid:')}
+    return {'project': project, 'board': board, 'rows': rows, 'jobs': Jobs(rows), 'pid': pid, 'used': used,
+            'shared': shared, 'held': held, 'pending': pending, 'review': review, 'findings': findings,
+            'heard': _heard(board), 'videos': videos, 'settings': _settings(row), 'auto': _auto(row)}
+
+
+def _clip_summary(ctx: dict, seq: dict) -> dict:
+    key = _key(seq)
+    shots = seq['data']['shots']
+    settings, video = ctx['settings'], ctx['videos'].get(key, {})
+    mine = [f for f in ctx['findings'] if f.get('clip') == key]
+    lines = [d.get('line') or '' for s in shots for d in s.get('dialogue') or []]
+    heard = ' '.join(h['text'].strip() for h in ctx['heard'].get(key, [])).strip()
+    differs = bool(heard) and policy.word_difference(policy.spoken(' '.join(lines)), policy.spoken(heard)) not in (
+        None, 'speech_interjection', 'speech_spelling', 'speech_boundary')
+    out = {'key': key, 'label': seq['data']['sequence'].get('label') or key,
+           'source_start': shots[0]['source_start'], 'source_end': shots[-1]['source_end'], 'seconds': clip_seconds(seq),
+           'estimate_usd': estimate(settings, clip_seconds(seq)), 'staging_image_model': video.get('stagingImageModel') or '',
+           'motion_profile': reskin.motion_profile(ctx['board'], key), 'prompt_by': video.get('promptBy') or '',
+           'shot_count': len(shots), 'line_count': len(lines), 'dialogue_text': ' '.join(lines)[:2000], 'heard_differs': differs,
+           'blocking': [f for f in mine if f['severity'] == 'blocking' and not f['accepted']],
+           'finding_count': len(mine),
+           **clip_state(key, ctx['jobs'], ctx['held'], ctx['pending'], video)}
+    mark = (ctx['auto'].get('clip_approvals') or {}).get(key) or {}
+    out['approval'] = mark if mark.get('url') and mark.get('url') == out['url'] else None
+    return out
+
+
+def detail(session, row: VideoAnalysis) -> dict:
+    """The film overview: every clip as a summary (its shots load with the clip)."""
+    out = summary(session, row)
+    auto, settings = _auto(row), _settings(row)
+    out['gates'] = {'pause_for_review': bool(settings.get('pause_for_review')), 'prepare_before_render': bool(settings.get('prepare_before_render')),
+                    'review_masters': bool(settings.get('review_masters')), 'board_approved': bool(auto.get('board_approved'))}
+    out['providers'] = providers(session)
+    out['films'] = auto.get('studio_films') or []
+    out['exports'] = auto.get('studio_exports') or []
+    out['history'] = [{k: v for k, v in h.items() if k not in ('before', 'after_digest')} for h in (auto.get('studio_history') or [])][:40]
+    ctx = context(session, row)
+    if not ctx or 'board' not in ctx:
+        project = (ctx or {}).get('project')
+        out.update(stations=_stations(row, None, [], [], [], {}), clips=[], materials=[], cost=None, inbox=_inbox(row, [], [], []),
+                   revision=project.revision if project else None, runs=[], assets=[])
+        return out
+    board, rows = ctx['board'], ctx['rows']
+    clips = [_clip_summary(ctx, seq) for seq in sequences(board)]
+    mats = materials(board, ctx['pid'], ctx['jobs'], ctx['used'])
+    runs = sorted((j for j in rows if j.kind == 'production_run'), key=lambda j: j.created_at, reverse=True)[:8]
+    review = ctx['review']
+    out.update(revision=ctx['project'].revision, aspect_ratio=board.get('aspectRatio'), style=board.get('style'), image_model=board.get('imageModel'),
+               board_settings={'imageFallbackModel': board.get('imageFallbackModel') or '', 'budgetUsd': board.get('budgetUsd'),
+                               'styleNote': board.get('styleNote') or '', 'styleImageUrl': board.get('styleImageUrl') or '',
+                               'motionProfile': board.get('motionProfile') or 'standard'},
+               shared_issues=ctx['shared'], clips=clips, materials=mats, assets=assets(board),
+               characters=[{'id': a['id'], 'name': a['name']} for a in assets(board) if a['kind'] == 'character'],
                review={'status': review.get('status'), 'in_progress': reskin.review_in_progress(board), 'counts': review.get('counts') or {}},
-               cost=cost(settings, jobs, {c['key']: c['seconds'] for c in clips}),
+               cost=cost(settings, rows, {c['key']: c['seconds'] for c in clips}, board.get('budgetUsd')),
                runs=[{'id': str(j.id), 'status': j.status, 'stage': (j.result or {}).get('stage'), 'created_at': _iso(j.created_at),
                       'keys': ((j.payload or {}).get('config') or {}).get('sequence_keys') or [], 'mode': ((j.payload or {}).get('config') or {}).get('mode'),
                       'errors': [str(e)[:300] for e in ((j.result or {}).get('errors') or [])][:4]} for j in runs],
-               stations=_stations(row, board, clips, mats, findings, review),
-               inbox=_inbox(row, clips, mats, findings))
+               stations=_stations(row, board, clips, mats, ctx['findings'], review),
+               inbox=_inbox(row, clips, mats, ctx['findings']))
     return out
+
+
+def clip_detail(session, row: VideoAnalysis, key: str) -> dict:
+    """One clip in full: its shots (dialogue, action, who is on screen and in what), its
+    findings and every take."""
+    ctx = context(session, row)
+    if not ctx or 'board' not in ctx:
+        raise ValueError('Phim chưa có shotlist.')
+    seq = next((n for n in sequences(ctx['board']) if _key(n) == key), None)
+    if not seq:
+        raise ValueError('Không tìm thấy clip %s.' % key)
+    mine = [f for f in ctx['findings'] if f.get('clip') == key]
+    return {**_clip_summary(ctx, seq), 'shots': shot_rows(ctx['board'], seq, ctx['heard'].get(key, []), mine),
+            'findings': [f for f in mine if not f.get('shot')], 'takes': takes(key, ctx['jobs']),
+            'revision': ctx['project'].revision}
+
+
+def assets(board: dict) -> list[dict]:
+    """The source catalog the shot presence editor picks from."""
+    return [{'id': a.get('id'), 'name': a.get('production_name') or a.get('name') or a.get('id'), 'kind': a.get('kind'),
+             'states': [{'key': s.get('key'), 'label': s.get('label') or s.get('key')} for s in a.get('states') or []]}
+            for a in board.get('productionAssets') or [] if a.get('id')]
 
 
 def needs_review(clip: dict) -> bool:
@@ -663,7 +1043,7 @@ def _stations(row, board, clips, mats, findings, review) -> list[dict]:
             'status': 'running' if (review or {}).get('status') is None and stage == 'reskin_review' else
                       'attention' if blocking or stage == 'awaiting_review' else 'done',
             'summary': (f'{len(blocking)} lỗi chặn cần xử lý' if blocking else 'Chờ bạn duyệt rồi bấm Tiếp tục' if stage == 'awaiting_review'
-                        else f"{sum(len(c['shots']) for c in clips)} shot, {sum(len(s['lines']) for c in clips for s in c['shots'])} câu thoại")}
+                        else f"{sum(c['shot_count'] for c in clips)} shot, {sum(c['line_count'] for c in clips)} câu thoại")}
     slots = [s for m in mats for s in m['slots'] if s.get('used', True)]
     missing = [s for s in slots if not s['image']]
     broken = [s for s in slots if s['status'] in ('failed', 'unknown')]
@@ -694,12 +1074,12 @@ def _inbox(row, clips, mats, findings) -> list[dict]:
     if row.status == 'failed' and not auto.get('board_ready'):
         items.append({'station': 'source', 'kind': 'error', 'message': (row.error or 'Phân tích dừng.')[:300]})
     for c in clips:
-        if c['blocking']:
+        if any(not f.get('shot') for f in c['blocking']):
             items.append({'station': 'shotlist', 'kind': 'finding', 'clip': c['key'], 'message': f"{c['label']}: {len(c['blocking'])} lỗi đối chiếu nguồn chặn clip."})
-        for s in c['shots']:
-            if s['findings'] and any(f['severity'] == 'blocking' and not f['accepted'] for f in s['findings']):
-                items.append({'station': 'shotlist', 'kind': 'finding', 'clip': c['key'], 'shot': s['index'],
-                              'message': f"{c['label']} shot {s['index']}: " + '; '.join(f.get('message') or f.get('criterion') or '' for f in s['findings'])[:200]})
+        for f in c['blocking']:
+            if f.get('shot'):
+                items.append({'station': 'shotlist', 'kind': 'finding', 'clip': c['key'],
+                              'message': f"{c['label']} shot {str(f['shot']).split(':')[-1]}: " + (f.get('message') or f.get('criterion') or '')[:200]})
         if c['status'] == 'failed':
             items.append({'station': 'clips', 'kind': 'error', 'clip': c['key'], 'message': f"{c['label']}: {c['reason'][:240]}", 'hint': c['hint']})
         for u in c.get('unknown_jobs') or []:
@@ -718,28 +1098,117 @@ def _inbox(row, clips, mats, findings) -> list[dict]:
 
 # ─────────────────────────────── assembly ───────────────────────────────
 
-async def assemble(session_factory, row: VideoAnalysis) -> dict:
-    """Join the newest render of every clip that has one, in film order (cleaned audio
-    when present). Clips not made yet are listed, never filled."""
-    from flowboard.services import production_media
+def _chosen(session_factory, row: VideoAnalysis) -> tuple[dict, list[dict], list[str]]:
+    """Each made clip in film order with the take and audio the owner chose."""
     with session_factory() as s:
         project = s.get(AutomationProject, row.automation_project_id)
         board = automation_jobs.project_board(s, project)
-        jobs = s.exec(select(AutomationJob).where(AutomationJob.project_id == project.id)).all()
-    settings = _settings(row)
-    clips, missing = [], []
+        index = Jobs(s.exec(select(AutomationJob).where(AutomationJob.project_id == project.id)).all())
+    videos = {n['id'][4:]: n.get('data') or {} for n in board.get('nodes', []) if str(n.get('id', '')).startswith('vid:')}
+    chosen, missing = [], []
     for seq in sequences(board):
         key = _key(seq)
-        st = clip_state(key, jobs, {}, set())
+        st = clip_state(key, index, {}, set(), videos.get(key))
         if not st['url']:
             missing.append(key)
             continue
-        source_job = _latest(jobs, 'clip', 'vid:' + key)
-        clips.append({'url': st['url'], 'duration_s': clip_seconds(seq), 'sequence_key': key, 'job_id': str(source_job.id)})
-    if not clips:
+        shots = seq['data']['shots']
+        chosen.append({'key': key, 'label': seq['data']['sequence'].get('label') or key, 'url': st['url'], 'job_id': st['take_id'],
+                       'duration_s': clip_seconds(seq), 'source_start': shots[0]['source_start'], 'source_end': shots[-1]['source_end'],
+                       'mute': st['audio_choice'] == 'silent', 'audio_choice': st['audio_choice'],
+                       'speech_end_s': (st.get('quality') or {}).get('speech_end_s')})
+    return board, chosen, missing
+
+
+async def assemble(session_factory, row: VideoAnalysis) -> dict:
+    """Join each made clip (its chosen take and audio) in film order. Clips not made yet
+    are listed, never filled. Cutting to source length never cuts a line: a take whose
+    checked speech runs past its source length keeps its whole length."""
+    from flowboard.services import production_media
+    board, chosen, missing = _chosen(session_factory, row)
+    if not chosen:
         raise ValueError('Chưa có clip nào để ghép.')
-    result = await production_media.assemble({'clips': clips, 'fps': 24, 'aspect_ratio': board.get('aspectRatio', '1:1'),
-                                              'resolution': settings.get('resolution', '480p'),
-                                              'timing_policy': settings.get('timing_policy', 'full_take'), 'require_quality': False})
+    policy_name = _settings(row).get('timing_policy', 'full_take')
+    kept, unchecked = [], []
+    for c in chosen:
+        if policy_name == 'source_duration':
+            if c['speech_end_s'] is None:
+                unchecked.append(c['key'])
+            elif float(c['speech_end_s']) > c['duration_s'] - .04:
+                c['keep_full'] = True
+                kept.append(c['key'])
+    result = await production_media.assemble({
+        'clips': [{'url': c['url'], 'duration_s': c['duration_s'], 'sequence_key': c['key'], 'job_id': c['job_id'],
+                   **({'keep_full': True} if c.get('keep_full') else {}), **({'mute': True} if c['mute'] else {})} for c in chosen],
+        'fps': 24, 'aspect_ratio': board.get('aspectRatio', '1:1'), 'resolution': _settings(row).get('resolution', '480p'),
+        'timing_policy': policy_name, 'require_quality': False})
     return {'filename': result['filename'], 'duration_s': result['duration_s'], 'at': datetime.now(timezone.utc).isoformat(),
-            'clips': [c['sequence_key'] for c in clips], 'missing': missing, 'timing_policy': result['timing_policy']}
+            'clips': [c['key'] for c in chosen], 'missing': missing, 'timing_policy': result['timing_policy'],
+            'kept_full': kept, 'unchecked': unchecked}
+
+
+def _timecode(seconds: float, fps: int = 24) -> str:
+    frames = int(round(seconds * fps))
+    return f'{frames // (3600 * fps):02d}:{frames // (60 * fps) % 60:02d}:{frames // fps % 60:02d}:{frames % fps:02d}'
+
+
+def edl(title: str, clips: list[dict], fps: int = 24) -> str:
+    """CMX 3600 EDL: one event per clip file, laid end to end."""
+    lines = [f'TITLE: {title[:60]}', 'FCM: NON-DROP FRAME', '']
+    record = 0.0
+    for n, c in enumerate(clips, 1):
+        length = float(c['length_s'])
+        reel = f'C{n:03d}'
+        lines.append(f"{n:03d}  {reel:<8} V     C        {_timecode(0, fps)} {_timecode(length, fps)} {_timecode(record, fps)} {_timecode(record + length, fps)}")
+        lines.append(f"* FROM CLIP NAME: {c['file']}")
+        lines.append(f"* SOURCE FILM: {_mmss(c['source_start'])}-{_mmss(c['source_end'])} ({c['label']})")
+        lines.append('')
+        record += length
+    return '\n'.join(lines)
+
+
+async def export(session_factory, row: VideoAnalysis) -> dict:
+    """A zip of every made clip (chosen take and audio), an EDL that lays them out, and a
+    CSV of what each one is."""
+    import csv, io, zipfile
+    from pathlib import Path
+    from flowboard.config import STORAGE_DIR
+    from flowboard.services import production_media as media
+    board, chosen, missing = _chosen(session_factory, row)
+    if not chosen:
+        raise ValueError('Chưa có clip nào để xuất.')
+    folder = Path(STORAGE_DIR) / 'production-renders' / 'studio-exports'
+    folder.mkdir(parents=True, exist_ok=True)
+    name = uuid.uuid4().hex + '.zip'
+    work = folder / (name + '.parts')
+    work.mkdir()
+    rows, laid = [], []
+    try:
+        for n, c in enumerate(chosen, 1):
+            raw = work / f"{n:03d}_{c['key']}.raw.mp4"
+            await media.fetch(c['url'], raw)
+            out = work / f"{n:03d}_{c['key']}.mp4"
+            if c['mute']:
+                await media.command('ffmpeg', '-v', 'error', '-y', '-i', raw, '-c:v', 'copy', '-an', out)
+                raw.unlink()
+            else:
+                raw.replace(out)
+            info = await media.probe(out)
+            length = float(info['format']['duration'])
+            laid.append({**c, 'file': out.name, 'length_s': length})
+            rows.append([n, c['key'], c['label'], out.name, f"{length:.3f}", f"{c['duration_s']:.3f}", _mmss(c['source_start']),
+                         _mmss(c['source_end']), c['audio_choice'], c['job_id']])
+        table = io.StringIO()
+        writer = csv.writer(table)
+        writer.writerow(['order', 'clip', 'label', 'file', 'length_s', 'source_length_s', 'source_in', 'source_out', 'audio', 'take_job'])
+        writer.writerows(rows)
+        with zipfile.ZipFile(folder / name, 'w', zipfile.ZIP_STORED) as z:
+            for c in laid:
+                z.write(work / c['file'], c['file'])
+            z.writestr('film.edl', edl(row.name, laid))
+            z.writestr('clips.csv', table.getvalue())
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    return {'filename': name, 'at': datetime.now(timezone.utc).isoformat(), 'clips': [c['key'] for c in chosen],
+            'missing': missing, 'bytes': (folder / name).stat().st_size}

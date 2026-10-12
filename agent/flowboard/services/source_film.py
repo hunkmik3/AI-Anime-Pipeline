@@ -47,6 +47,12 @@ class FilmOptions(BaseModel):
     # then continues), and/or draw sheets and write prompts without rendering any clip.
     pause_for_review: bool = False
     prepare_before_render: bool = False
+    # Studio: the most this film may spend on Seedance, the image model that draws a picture
+    # when the chosen one's provider refuses, and the owner's own style direction.
+    budget_usd: Optional[float] = Field(default=None, ge=0, le=100000)
+    image_fallback_model: str = Field(default='', pattern='^(|dola-seedream-5-0-pro|gemini-3-pro-image|gemini-3.1-flash-image|gemini-2.5-flash-image)$')
+    style_note: str = Field(default='', max_length=2000)
+    style_image_url: str = Field(default='', max_length=2000)
 
 
 def source_rules(style):
@@ -185,6 +191,10 @@ def graph(out, options):
             **({'reskinMaxSeconds':min(float(opt.clip_seconds),30.0)} if float(opt.clip_seconds) > 15 else {}),
             **({'motionProfile':opt.motion_profile} if opt.motion_profile != 'standard' else {})} if opt.pipeline == 'reskin_v1' else {}),
         "style": opt.style,
+        **({'budgetUsd': float(opt.budget_usd)} if opt.budget_usd else {}),
+        **({'imageFallbackModel': opt.image_fallback_model} if opt.image_fallback_model else {}),
+        **({'styleNote': ' '.join(opt.style_note.split())} if opt.style_note.strip() else {}),
+        **({'styleImageUrl': opt.style_image_url.strip()} if opt.style_image_url.strip() else {}),
         "preserveSourceShots": True,
         "stateSpecificReferences": bool(out.get('state_specific_references')),
         "imageModel": "dola-seedream-5-0-pro",

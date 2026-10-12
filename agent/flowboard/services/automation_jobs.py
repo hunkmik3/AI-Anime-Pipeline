@@ -53,6 +53,21 @@ def enqueue(project_id,kind,node_id,slot,payload,request_key,expected_revision=N
         j=AutomationJob(project_id=project_id,kind=kind,node_id=node_id,slot=slot,payload=payload,request_key=request_key,prepared=metadata or {})
         s.add(j);s.commit();s.refresh(j);return public(j)
 
+# Provider failures a different image model can work around (not a refusal of the content).
+_PROVIDER_DOWN = ('overdue', 'balance', 'quota', 'unavailable', 'timeout', 'timed out', '403', '429', '500', '502', '503', '504')
+
+
+def image_fallback(project_id, model, exc):
+    """The board's fallback image model for a provider failure of ``model``, if any."""
+    text = str(exc).lower()
+    if not any(k in text for k in _PROVIDER_DOWN):
+        return None
+    with get_session() as s:
+        project = s.get(AutomationProject, uuid.UUID(str(project_id)))
+        other = ((project.board or {}).get('imageFallbackModel') or '') if project else ''
+    return other if other and other != model else None
+
+
 def overlay(board, jobs):
     """Server-owned results win over stale browser statuses, without replacing edits."""
     original_board = board
@@ -273,8 +288,17 @@ async def execute(data):
             if submitted.get('shot_frame'):
                 validate_shot_frame(data['project_id'], submitted)
             await asyncio.to_thread(checkpoint,jid,token,status='submitting');submitting=True
-            images=await automation.generate_plate(**body.model_dump())
-            result={'images':images, 'shot_frame': submitted.get('shot_frame')};submitting=False
+            fallback={}
+            try:
+                images=await automation.generate_plate(**body.model_dump())
+            except Exception as exc:
+                # The owner's fallback image model (board imageFallbackModel) draws this
+                # picture once when the chosen model's provider refuses or is unavailable.
+                other=await asyncio.to_thread(image_fallback,data['project_id'],body.image_model,exc)
+                if not other:raise
+                images=await automation.generate_plate(**{**body.model_dump(),'image_model':other})
+                fallback={'image_model_used':other,'fallback_from':body.image_model,'fallback_reason':str(exc)[:400]}
+            result={'images':images, 'shot_frame': submitted.get('shot_frame'), **fallback};submitting=False
         if data['kind']=='clip':result['quality_status']='not_checked'
         # Job result is authoritative even if a tab has an old board in memory.
         await asyncio.to_thread(checkpoint,jid,token,status='succeeded',result=result,error='')
