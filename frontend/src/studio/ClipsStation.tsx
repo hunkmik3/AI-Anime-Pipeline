@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CLIP_STATUS_LABEL, IMAGE_MODEL_LABELS, fmtTime, studioApi, type Clip, type FilmDetail } from "./api";
+import { CLIP_STATUS_LABEL, IMAGE_MODEL_LABELS, MOTION_LABEL, fmtTime, studioApi, type Clip, type FilmDetail, type MotionProfile } from "./api";
 import type { StationProps } from "./StudioPage";
 
 const TONE: Record<string, string> = {
@@ -7,16 +7,47 @@ const TONE: Record<string, string> = {
   waiting: "pending", failed: "attention", held: "attention",
 };
 
-function PromptView({ film, clip, onClose }: { film: FilmDetail; clip: Clip; onClose(): void }) {
-  const [text, setText] = useState<string | null>(null);
+function PromptEditor({ film, clip, act, busy, onClose }: { film: FilmDetail; clip: Clip; act: StationProps["act"]; busy: string; onClose(): void }) {
+  const [loaded, setLoaded] = useState<{ prompt: string; end_state: string; manual: boolean; verified?: boolean; writer: string } | null>(null);
+  const [text, setText] = useState("");
+  const [endState, setEndState] = useState("");
   const [error, setError] = useState("");
   useEffect(() => {
-    studioApi.prompt(film.id, clip.key).then(p => setText(p.prompt)).catch(e => setError(String(e.message ?? e)));
+    studioApi.prompt(film.id, clip.key)
+      .then(p => { setLoaded(p); setText(p.prompt ?? ""); setEndState(p.end_state ?? ""); })
+      .catch(e => setError(String(e.message ?? e)));
   }, [film.id, clip.key]);
+  const changed = loaded && (text !== loaded.prompt || endState !== (loaded.end_state ?? ""));
   return <div className="st-modal" role="dialog" aria-label={`Prompt ${clip.label}`}>
-    <div className="st-modal__box">
-      <header><h2>Prompt — {clip.label}</h2><button type="button" onClick={onClose} aria-label="Đóng">×</button></header>
-      {error ? <p className="st-error">{error}</p> : text === null ? <p className="st-muted">Đang tải…</p> : <pre className="st-prompt">{text}</pre>}
+    <div className="st-modal__box st-modal__box--editor">
+      <header>
+        <h2>Prompt — {clip.label}</h2>
+        {loaded && <span className={`st-pill st-pill--${loaded.manual ? "attention" : "done"}`}>
+          {loaded.manual ? (loaded.verified ? "Tự viết · đã kiểm tra" : "Tự viết · chưa kiểm tra") : `Tự động · ${loaded.writer}`}</span>}
+        <button type="button" onClick={onClose} aria-label="Đóng">×</button>
+      </header>
+      {error ? <p className="st-error">{error}</p> : loaded === null ? <p className="st-muted">Đang tải…</p> : <div className="st-editor">
+        <p className="st-muted">Sửa trực tiếp rồi bấm Dùng prompt này. Trước khi render, một model độc lập đối chiếu nguyên văn prompt với shotlist
+          (thoại, người nói, khoá nguồn); prompt không bị viết lại, sai thì clip dừng và báo lý do.</p>
+        <textarea className="st-prompt st-prompt--edit" value={text} onChange={e => setText(e.target.value)} spellCheck={false} aria-label="Nội dung prompt" />
+        <label className="st-field st-field--compact">
+          <span>Trạng thái cuối clip (cho clip sau nối tiếp)</span>
+          <textarea rows={2} value={endState} onChange={e => setEndState(e.target.value)} />
+        </label>
+        <div className="st-actions">
+          <button type="button" className="st-primary" disabled={!changed || !!busy || film.revision == null}
+            onClick={() => void act(`prompt-${clip.key}`, async () => {
+              await studioApi.editClip(film.id, clip.key, film.revision!, { manual_prompt: text, end_state: endState });
+              onClose();
+            })}>Dùng prompt này cho clip</button>
+          {loaded.manual && <button type="button" disabled={!!busy || film.revision == null}
+            onClick={() => void act(`auto-${clip.key}`, async () => {
+              await studioApi.editClip(film.id, clip.key, film.revision!, { auto_prompt: true });
+              onClose();
+            })}>Về prompt tự động</button>}
+          {changed && <button type="button" className="st-link" onClick={() => { setText(loaded.prompt); setEndState(loaded.end_state ?? ""); }}>Bỏ thay đổi</button>}
+        </div>
+      </div>}
     </div>
   </div>;
 }
@@ -60,7 +91,7 @@ export function ClipsStation({ film, act, busy, go }: StationProps) {
     {running && <p className="st-note">Đang có một lượt chạy; chờ nó xong để bắt đầu lượt khác.</p>}
     <table className="st-table">
       <thead><tr><th scope="col"><span className="st-sr">Chọn</span></th><th scope="col">Clip</th><th scope="col">Thời lượng</th>
-        <th scope="col">Trạng thái</th><th scope="col">Ảnh dàn cảnh</th><th scope="col">Ước tính</th><th scope="col"></th></tr></thead>
+        <th scope="col">Trạng thái</th><th scope="col">Chuyển động</th><th scope="col">Ảnh dàn cảnh</th><th scope="col">Ước tính</th><th scope="col"></th></tr></thead>
       <tbody>
         {clips.map(c => <tr key={c.key} className={picked.has(c.key) ? "is-picked" : ""}>
           <td><input type="checkbox" aria-label={`Chọn ${c.label}`} checked={picked.has(c.key)} onChange={() => toggle(c.key)} /></td>
@@ -73,6 +104,12 @@ export function ClipsStation({ film, act, busy, go }: StationProps) {
             {c.unknown_jobs.map(j => <AbsentButton key={j.id} film={film} job={j} act={act} busy={busy} />)}
           </td>
           <td>
+            <select aria-label={`Kiểu chuyển động ${c.label}`} value={c.motion_profile ?? "standard"} disabled={!!busy || film.revision == null}
+              onChange={e => void act(`motion-${c.key}`, () => studioApi.editClip(film.id, c.key, film.revision!, { motion_profile: e.target.value }))}>
+              {(Object.keys(MOTION_LABEL) as MotionProfile[]).map(k => <option key={k} value={k}>{MOTION_LABEL[k]}</option>)}
+            </select>
+          </td>
+          <td>
             <select aria-label={`Model ảnh dàn cảnh ${c.label}`} value={c.staging_image_model} disabled={!!busy || film.revision == null}
               onChange={e => void act(`staging-${c.key}`, () => studioApi.editClip(film.id, c.key, film.revision!, { staging_image_model: e.target.value }))}>
               {Object.entries(IMAGE_MODEL_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
@@ -80,7 +117,8 @@ export function ClipsStation({ film, act, busy, go }: StationProps) {
           </td>
           <td className="st-num">${c.estimate_usd.toFixed(2)}</td>
           <td className="st-row-actions">
-            {c.has_prompt && <button type="button" className="st-link" onClick={() => setPrompt(c)}>Prompt</button>}
+            {(c.has_prompt || c.prompt_by === "manual") && <button type="button" className="st-link" onClick={() => setPrompt(c)}>
+              {c.prompt_by === "manual" ? "Prompt tự viết" : "Prompt"}</button>}
             {c.url && <a className="st-link" href={c.url} target="_blank" rel="noreferrer">Xem clip</a>}
           </td>
         </tr>)}
@@ -94,6 +132,6 @@ export function ClipsStation({ film, act, busy, go }: StationProps) {
         {r.errors.length > 0 && <small className="st-reason">{r.errors[0]}</small>}
       </li>)}</ul>
     </section>}
-    {prompt && <PromptView film={film} clip={prompt} onClose={() => setPrompt(null)} />}
+    {prompt && <PromptEditor film={film} clip={prompt} act={act} busy={busy} onClose={() => setPrompt(null)} />}
   </div>;
 }

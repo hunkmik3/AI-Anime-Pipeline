@@ -133,3 +133,75 @@ async def test_a_film_that_pauses_for_review_waits_before_any_production(monkeyp
     opt = source_film.FilmOptions(pipeline='reskin_v1', pause_for_review=True)
     await source_film.finish_board(row, opt, {})
     assert states[-1]['stage'] == 'awaiting_review' and not started
+
+
+def two_clip_board():
+    from tests.test_reskin_review_policy import two_clips
+    return two_clips()
+
+
+def test_a_clip_splits_at_a_shot_into_two_clips_in_film_order():
+    b = fixture()
+    key = b['nodes'][-1]['data']['sequence']['key']
+    out, impact = studio.split_clip(b, key, 2)
+    seqs = studio.sequences(out)
+    assert [studio._key(s) for s in seqs] == [key, key + 'b'] and impact == {'clips': [key, key + 'b'], 'review': True}
+    first, second = seqs
+    assert len(first['data']['shots']) == 1 and len(second['data']['shots']) == 1
+    assert second['data']['sequence']['duration_s'] == second['data']['shots'][0]['duration_s']
+    ids = [n['id'] for n in out['nodes']]
+    assert ids.index('seq:' + key) < ids.index('seq:' + key + 'b') and 'vid:' + key + 'b' in ids
+    assert {'source': 'seq:' + key + 'b', 'target': 'vid:' + key + 'b'}.items() <= next(
+        e for e in out['edges'] if e['target'] == 'vid:' + key + 'b' and e['source'].startswith('seq:')).items()
+    with pytest.raises(ValueError, match='từ thứ 2'):
+        studio.split_clip(b, key, 1)
+
+
+def test_two_neighbouring_clips_merge_back_when_they_fit_one_clip():
+    b = fixture()
+    key = b['nodes'][-1]['data']['sequence']['key']
+    split, _ = studio.split_clip(b, key, 2)
+    merged, impact = studio.merge_clips(split, key)
+    assert [studio._key(s) for s in studio.sequences(merged)] == [key]
+    seq = next(n for n in merged['nodes'] if n['id'] == 'seq:' + key)
+    assert [s['source_shot'] for s in seq['data']['shots']] == [s['source_shot'] for s in b['nodes'][-1]['data']['shots']]
+    assert impact['removed'] == [key + 'b'] and not any('clip' in e['id'] and key + 'b' in e['id'] for e in merged['edges'])
+    with pytest.raises(ValueError, match='clip cuối'):
+        studio.merge_clips(merged, key)
+
+
+def test_a_merge_that_would_pass_the_reskin_limit_or_skip_source_time_is_refused():
+    b = two_clip_board()
+    with pytest.raises(ValueError, match='liền nhau|giới hạn'):
+        studio.merge_clips(b, 'c1')
+
+
+def test_a_clip_takes_the_owners_prompt_and_can_return_to_the_writer():
+    b = fixture()
+    key = b['nodes'][-1]['data']['sequence']['key']
+    with pytest.raises(ValueError, match='quá ngắn'):
+        studio.set_clip(b, key, manual_prompt='Too short')
+    text = 'Create a 8-second sequence. ' * 12
+    out = studio.set_clip(b, key, manual_prompt=text, end_state='She waits.')
+    video = next(n for n in out['nodes'] if n['id'] == 'vid:' + key)['data']
+    assert video['promptBy'] == 'manual' and video['prompt'] == text.strip() and video['endState'] == 'She waits.'
+    back = studio.set_clip(out, key, auto_prompt={'prompt': 'Written prompt', 'writer': 'gpt-6-luna', 'end_state': 'x'})
+    video = next(n for n in back['nodes'] if n['id'] == 'vid:' + key)['data']
+    assert video['promptBy'] == 'gpt-6-luna' and video['prompt'] == 'Written prompt'
+    cleared = studio.set_clip(out, key, auto_prompt={})
+    assert 'promptBy' not in next(n for n in cleared['nodes'] if n['id'] == 'vid:' + key)['data']
+
+
+def test_a_clip_can_take_the_pose_motion_profile_and_only_its_motion_payload_changes():
+    from flowboard.services import reskin
+    from tests.test_reskin import packages
+    b = fixture()
+    p = packages(b)[0]
+    before = reskin.motion_payload(b, p)
+    assert before['fps'] == 30 and 'render' not in before
+    out = studio.set_clip(b, p['sequence_key'], motion_profile='pose')
+    after = reskin.motion_payload(out, packages(out)[0])
+    assert after['render'] == reskin.POSE_RENDER and after['fps'] == 30
+    assert reskin.motion_payload({**b, 'motionProfile': 'fast'}, p)['render'] == reskin.FAST_RENDER
+    with pytest.raises(ValueError, match='không hỗ trợ'):
+        studio.set_clip(b, p['sequence_key'], motion_profile='mocap')

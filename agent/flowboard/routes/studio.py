@@ -186,18 +186,56 @@ def choose_material_image(video_id: uuid.UUID, node_id: str, slot: str, body: Im
 class ClipEdit(BaseModel):
     expected_revision: int = Field(ge=0)
     staging_image_model: Optional[str] = None
+    motion_profile: Optional[str] = None
+    # The owner's own prompt (checked unchanged by an independent review before use) ...
+    manual_prompt: Optional[str] = Field(default=None, max_length=60000)
+    end_state: Optional[str] = Field(default=None, max_length=4000)
+    # ... or back to the writer's newest prompt.
+    auto_prompt: bool = False
 
 
 @router.patch("/films/{video_id}/clips/{key}")
 def edit_clip(video_id: uuid.UUID, key: str, body: ClipEdit, user=Depends(get_optional_user)) -> dict[str, Any]:
     with get_session() as s:
         project = _project(s, _film(s, video_id, user), user)
+        auto = (studio.latest_written(s, project.id, key, manual=False) or {}) if body.auto_prompt else None
         try:
-            board = studio.set_clip(_board(s, project), key, staging_image_model=body.staging_image_model)
+            board = studio.set_clip(_board(s, project), key, staging_image_model=body.staging_image_model,
+                                    motion_profile=body.motion_profile, manual_prompt=body.manual_prompt,
+                                    end_state=body.end_state, auto_prompt=auto)
         except ValueError as exc:
             raise HTTPException(422, detail=str(exc)) from exc
         pid = project.id
     return {'revision': _save(pid, board, body.expected_revision, user)}
+
+
+class Split(BaseModel):
+    expected_revision: int = Field(ge=0)
+    at_shot: int = Field(ge=2)
+
+
+@router.post("/films/{video_id}/clips/{key}/split")
+def split_clip(video_id: uuid.UUID, key: str, body: Split, user=Depends(get_optional_user)) -> dict[str, Any]:
+    with get_session() as s:
+        project = _project(s, _film(s, video_id, user), user)
+        try:
+            board, impact = studio.split_clip(_board(s, project), key, body.at_shot)
+        except ValueError as exc:
+            raise HTTPException(422, detail=str(exc)) from exc
+        pid = project.id
+    return {'revision': _save(pid, board, body.expected_revision, user), 'impact': impact}
+
+
+@router.post("/films/{video_id}/clips/{key}/merge-next")
+def merge_clip(video_id: uuid.UUID, key: str, body: Revision, user=Depends(get_optional_user)) -> dict[str, Any]:
+    with get_session() as s:
+        project = _project(s, _film(s, video_id, user), user)
+        try:
+            board, impact = studio.merge_clips(_board(s, project), key)
+        except ValueError as exc:
+            raise HTTPException(422, detail=str(exc)) from exc
+        pid = project.id
+    return {'revision': _save(pid, board, body.expected_revision, user), 'impact': impact}
 
 
 class RenderRequest(BaseModel):
@@ -229,7 +267,7 @@ def render(video_id: uuid.UUID, body: RenderRequest, user=Depends(get_optional_u
 def clip_prompt(video_id: uuid.UUID, key: str, user=Depends(get_optional_user)):
     with get_session() as s:
         project = _project(s, _film(s, video_id, user), user)
-        found = studio.prompt(s, project.id, key)
+        found = studio.prompt(s, project.id, key, _board(s, project))
     if not found:
         raise HTTPException(404, detail='Clip này chưa có prompt.')
     return found

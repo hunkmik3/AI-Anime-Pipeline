@@ -120,7 +120,10 @@ def clip_state(key: str, jobs: list[AutomationJob], held: dict, pending: set) ->
     elif write and write.status == 'succeeded':
         status = 'prepared'
     q = (quality.result or {}) if quality and quality.status == 'succeeded' else {}
+    clay = (motion.result or {}) if motion and motion.status == 'succeeded' else {}
     return {
+        'motion_url': clay.get('url'), 'motion_method': clay.get('method'),
+        'camera': ((clay.get('layers') or {}).get('camera') or []),
         'status': status, 'reason': reason, 'hint': hint(reason),
         'render_url': render, 'cleaned_url': cleaned, 'url': cleaned or render,
         'quality': {'status': q.get('status') or (quality.status if quality else None),
@@ -327,11 +330,34 @@ def use_image(board: dict, node_id: str, slot: str, url: str, media_id: str, job
 
 # ─────────────────────────────── clips ───────────────────────────────
 
-def set_clip(board: dict, key: str, *, staging_image_model: Optional[str] = None) -> dict:
+def set_clip(board: dict, key: str, *, staging_image_model: Optional[str] = None, motion_profile: Optional[str] = None,
+             manual_prompt: Optional[str] = None, end_state: Optional[str] = None, auto_prompt: Optional[dict] = None) -> dict:
+    """One clip's own settings: staging image model, motion profile, and its prompt —
+    the owner's own text (an independent review checks it unchanged against the source)
+    or, with ``auto_prompt`` ({} or the newest written result), back to the writer."""
     out = deepcopy(board)
     node = next((n for n in out.get('nodes', []) if n['id'] == 'vid:' + key), None)
     if not node:
         raise ValueError('Không tìm thấy clip %s.' % key)
+    d = node['data']
+    if motion_profile is not None:
+        if motion_profile and motion_profile not in reskin.MOTION_PROFILES:
+            raise ValueError('Kiểu chuyển động không hỗ trợ: %s' % motion_profile)
+        if motion_profile:
+            d['motionProfile'] = motion_profile
+        else:
+            d.pop('motionProfile', None)
+    if manual_prompt is not None:
+        text = manual_prompt.strip()
+        if len(text) < 200:
+            raise ValueError('Prompt tự viết quá ngắn; dùng prompt tự động làm điểm xuất phát rồi sửa.')
+        d.update(promptBy='manual', prompt=text, endState=(end_state if end_state is not None else d.get('endState')) or '')
+    elif auto_prompt is not None:
+        if auto_prompt.get('prompt'):
+            d.update(promptBy=auto_prompt.get('writer') or 'writer', prompt=auto_prompt['prompt'], endState=auto_prompt.get('end_state') or '')
+        else:
+            for k in ('promptBy', 'prompt', 'endState'):
+                d.pop(k, None)
     if staging_image_model is not None:
         if staging_image_model and staging_image_model not in IMAGE_MODELS:
             raise ValueError('Model ảnh không hỗ trợ: %s' % staging_image_model)
@@ -340,6 +366,99 @@ def set_clip(board: dict, key: str, *, staging_image_model: Optional[str] = None
         else:
             node['data'].pop('stagingImageModel', None)
     return out
+
+
+# The fields a clip's video node keeps when its shots change; everything written or rendered
+# for the old shots is left to the job history.
+_KEEP_VIDEO = ('kind', 'label', 'title', 'refs', 'sequenceKey', 'stagingImageModel', 'motionProfile')
+
+
+def _sequence_fields(sequence: dict, shots: list[dict]) -> dict:
+    """A clip's sequence record recomputed from its shots (identity fields kept)."""
+    def mmss(s):
+        return f'{int(s // 60):02d}:{s % 60:05.2f}'
+    chars, assets = [], []
+    for s in shots:
+        chars += [k for k in s.get('character_keys') or [] if k not in chars]
+        assets += [k for k in s.get('asset_keys') or [] if k not in assets]
+    nums = [s.get('source_shot') for s in shots]
+    return {**sequence, 'duration_s': round(sum(float(s.get('duration_s') or 0) for s in shots), 3),
+            'source_range': f"{mmss(shots[0]['source_start'])}–{mmss(shots[-1]['source_end'])} · shots {min(nums):03d}–{max(nums):03d}",
+            'character_keys': chars, 'asset_keys': assets, 'environment_key': shots[0].get('environment_key') or sequence.get('environment_key')}
+
+
+def _reset_video(data: dict, key: str, label: str) -> dict:
+    return {**{k: data[k] for k in _KEEP_VIDEO if k in data}, 'kind': 'video', 'label': label, 'sequenceKey': key}
+
+
+def split_clip(board: dict, key: str, at_shot: int) -> tuple[dict, dict]:
+    """Two clips from one: shots before ``at_shot`` (1-based) keep the key, the rest
+    become a new clip right after it. Both need a source review and a new render."""
+    out = deepcopy(board)
+    nodes = out['nodes']
+    i = next((n for n, x in enumerate(nodes) if x['id'] == 'seq:' + key), None)
+    if i is None:
+        raise ValueError('Không tìm thấy clip %s.' % key)
+    seq = nodes[i]
+    shots = seq['data']['shots']
+    if not 1 < at_shot <= len(shots):
+        raise ValueError('Chọn một shot từ thứ 2 tới thứ %d để tách.' % len(shots))
+    taken = {_key(n) for n in sequences(out)}
+    new = next(f'{key}{c}' for c in 'bcdefghijklmnopqrstuvwxyz' if f'{key}{c}' not in taken)
+    label = seq['data']['sequence'].get('label') or key
+    new_label = label + new[len(key):].upper()
+    first, second = shots[:at_shot - 1], shots[at_shot - 1:]
+    seq['data']['shots'] = first
+    seq['data']['sequence'] = _sequence_fields(seq['data']['sequence'], first)
+    twin = deepcopy(seq)
+    twin['id'] = 'seq:' + new
+    twin['data']['shots'] = second
+    twin['data']['sequence'] = _sequence_fields({**seq['data']['sequence'], 'key': new, 'label': new_label}, second)
+    if 'position' in twin:
+        twin['position'] = {**twin['position'], 'y': twin['position'].get('y', 0) + 320}
+    video = next(x for x in nodes if x['id'] == 'vid:' + key)
+    video['data'] = _reset_video(video['data'], key, label)
+    twin_video = {**deepcopy(video), 'id': 'vid:' + new, 'data': _reset_video(video['data'], new, new_label)}
+    if 'position' in twin_video:
+        twin_video['position'] = {**twin_video['position'], 'y': twin_video['position'].get('y', 0) + 320}
+    # Film order is the order of the sequence nodes: the new clip follows its source clip.
+    nodes.insert(i + 1, twin)
+    nodes.insert(next(n for n, x in enumerate(nodes) if x['id'] == 'vid:' + key) + 1, twin_video)
+    edges = out.setdefault('edges', [])
+    for e in [e for e in edges if e.get('target') == 'vid:' + key and e.get('source') != 'seq:' + key]:
+        edges.append({**e, 'id': f"e-{e['source']}-vid:{new}", 'target': 'vid:' + new})
+    edges += [{'id': f'e-script-seq:{new}', 'source': 'script', 'target': 'seq:' + new},
+              {'id': f'e-seq:{new}-vid:{new}', 'source': 'seq:' + new, 'target': 'vid:' + new}]
+    return out, {'clips': [key, new], 'review': True}
+
+
+def merge_clips(board: dict, key: str) -> tuple[dict, dict]:
+    """One clip from this one and the next in film order, when their shots are
+    contiguous and the whole fits one reskin clip."""
+    out = deepcopy(board)
+    seqs = sequences(out)
+    pos = next((n for n, x in enumerate(seqs) if _key(x) == key), None)
+    if pos is None:
+        raise ValueError('Không tìm thấy clip %s.' % key)
+    if pos + 1 >= len(seqs):
+        raise ValueError('Đây là clip cuối; không có clip sau để gộp.')
+    a, b = seqs[pos], seqs[pos + 1]
+    other = _key(b)
+    shots = a['data']['shots'] + b['data']['shots']
+    if abs(b['data']['shots'][0]['source_start'] - a['data']['shots'][-1]['source_end']) > .05:
+        raise ValueError('Hai clip không liền nhau trên video gốc.')
+    limit = reskin.max_seconds(out) if reskin.enabled(out) else 30.0
+    total = shots[-1]['source_end'] - shots[0]['source_start']
+    if total > limit + .001:
+        raise ValueError('Gộp lại dài %.1f s, quá giới hạn %g s của một clip reskin.' % (total, limit))
+    a['data']['shots'] = shots
+    a['data']['sequence'] = _sequence_fields(a['data']['sequence'], shots)
+    video = next(n for n in out['nodes'] if n['id'] == 'vid:' + key)
+    video['data'] = _reset_video(video['data'], key, a['data']['sequence'].get('label') or key)
+    gone = {'seq:' + other, 'vid:' + other}
+    out['nodes'] = [n for n in out['nodes'] if n['id'] not in gone]
+    out['edges'] = [e for e in out.get('edges', []) if e.get('source') not in gone and e.get('target') not in gone]
+    return out, {'clips': [key], 'removed': [other], 'review': True}
 
 
 def run_config(settings: dict, keys: list[str], mode: str) -> dict:
@@ -475,6 +594,7 @@ def detail(session, row: VideoAnalysis) -> dict:
         clips.append({'key': key, 'label': seq['data']['sequence'].get('label') or key,
                       'source_start': shots[0]['source_start'], 'source_end': shots[-1]['source_end'], 'seconds': clip_seconds(seq),
                       'estimate_usd': estimate(settings, clip_seconds(seq)), 'staging_image_model': video.get('stagingImageModel') or '',
+                      'motion_profile': reskin.motion_profile(board, key), 'prompt_by': video.get('promptBy') or '',
                       'shots': shot_rows(board, seq, heard.get(key, []), mine),
                       'findings': [f for f in mine if not f.get('shot')],
                       'blocking': [f for f in mine if f['severity'] == 'blocking' and not f['accepted']],
@@ -504,15 +624,27 @@ def needs_review(clip: dict) -> bool:
             and (clip.get('quality') or {}).get('status') not in ('checks_passed', None))
 
 
-def prompt(session, project_id, key: str) -> Optional[dict]:
-    jobs = session.exec(select(AutomationJob).where(AutomationJob.project_id == project_id, AutomationJob.kind == 'write',
-                                                    AutomationJob.node_id == 'vid:' + key, AutomationJob.status == 'succeeded')).all()
+def latest_written(session, project_id, key: str, *, manual: Optional[bool] = None) -> Optional[dict]:
+    jobs = [j for j in session.exec(select(AutomationJob).where(AutomationJob.project_id == project_id, AutomationJob.kind == 'write',
+                                                                AutomationJob.node_id == 'vid:' + key, AutomationJob.status == 'succeeded')).all()
+            if manual is None or ((j.result or {}).get('writer') == 'manual') == manual]
     if not jobs:
         return None
     j = max(jobs, key=lambda j: j.created_at)
     r = j.result or {}
     return {'prompt': r.get('prompt'), 'end_state': r.get('end_state'), 'writer': r.get('writer'),
             'warnings': r.get('warnings') or [], 'at': _iso(j.updated_at)}
+
+
+def prompt(session, project_id, key: str, board: Optional[dict] = None) -> Optional[dict]:
+    """The clip's prompt: the owner's own text when it is in manual mode, else the newest written one."""
+    video = next((n.get('data') or {} for n in (board or {}).get('nodes', []) if n.get('id') == 'vid:' + key), {})
+    written = latest_written(session, project_id, key)
+    if video.get('promptBy') == 'manual':
+        return {'prompt': video.get('prompt') or '', 'end_state': video.get('endState') or '', 'writer': 'manual', 'manual': True,
+                'verified': bool(written and written['writer'] == 'manual' and written['prompt'] == video.get('prompt')),
+                'warnings': [], 'at': written['at'] if written else None}
+    return {**written, 'manual': False} if written else None
 
 
 def _stations(row, board, clips, mats, findings, review) -> list[dict]:

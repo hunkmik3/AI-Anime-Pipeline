@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { fmtTime, studioApi, type Clip, type FilmDetail } from "./api";
+import { cameraLabel, fmtTime, studioApi, type Clip, type FilmDetail } from "./api";
 import type { StationProps } from "./StudioPage";
 
 const QUALITY: Record<string, string> = { checks_passed: "Đạt kiểm tra tự động", needs_review: "Cần bạn nghe/xem", failed: "Kiểm tra lỗi" };
@@ -19,11 +19,17 @@ function ClipReview({ film, clip, act, busy }: { film: FilmDetail; clip: Clip; a
         <video key={clip.url ?? ""} controls preload="metadata" src={clip.url ?? undefined} />
         <figcaption>Bản gen{clip.cleaned_url ? " (đã lọc nhạc)" : ""}</figcaption>
       </figure>
+      {clip.motion_url && <figure>
+        <video key={clip.motion_url} controls preload="none" src={clip.motion_url} />
+        <figcaption>Clay{clip.motion_method?.includes("pose") ? " + khung xương" : ""}</figcaption>
+      </figure>}
       <figure>
         <video key={clip.key} controls preload="none" src={`${studioApi.sourceUrl(film.id)}#t=${clip.source_start},${clip.source_end}`} />
         <figcaption>Video gốc</figcaption>
       </figure>
     </div>
+    {clip.camera.length > 0 && <p className="st-review__lines"><span>Máy quay đo từ nền (gần đúng):</span>{" "}
+      {clip.camera.map(c => `shot ${c.shot + 1} ${cameraLabel(c.label)}`).join(" · ")}</p>}
     {lines && <p className="st-review__lines"><span>Thoại cần có:</span> {lines}</p>}
     {q?.heard && <p className="st-review__lines"><span>Nghe được trong bản gen:</span> {q.heard}</p>}
     {q && q.findings.length > 0 && <ul className="st-review__findings">{q.findings.map((f, i) => <li key={i}>{f}</li>)}</ul>}

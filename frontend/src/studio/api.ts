@@ -7,6 +7,20 @@ export type StationKey = "source" | "shotlist" | "materials" | "clips" | "review
 export type StationStatus = "pending" | "running" | "attention" | "done";
 export type ClipStatus = "done" | "rendering" | "preparing" | "prepared" | "failed" | "held" | "reviewing" | "waiting";
 export type Delivery = "on_camera" | "offscreen" | "voice_over";
+export type MotionProfile = "standard" | "fast" | "pose" | "fast_pose";
+
+export const MOTION_LABEL: Record<MotionProfile, string> = {
+  standard: "Clay chuẩn", fast: "Clay nhanh", pose: "Chuẩn + khung xương & máy quay", fast_pose: "Nhanh + khung xương & máy quay",
+};
+
+/** The camera measured from the source background for one shot (4D blocking layer). */
+export interface CameraShot { shot: number; label: string; pan_pct?: number; tilt_pct?: number; zoom_pct?: number; roll_deg?: number; shake_pct?: number }
+
+const CAMERA_WORDS: Record<string, string> = {
+  static: "tĩnh", "push in": "đẩy vào", "pull out": "kéo ra", "pan left": "lia trái", "pan right": "lia phải",
+  "tilt up": "ngước lên", "tilt down": "cúi xuống", roll: "nghiêng", handheld: "cầm tay", unclear: "chưa đo được",
+};
+export const cameraLabel = (label: string) => label.split(" + ").map(w => CAMERA_WORDS[w] ?? w).join(", ");
 
 export interface FilmSettings {
   pipeline?: "cinematic" | "reskin_v1";
@@ -16,7 +30,7 @@ export interface FilmSettings {
   clip_seconds?: number;
   clip_max_shots?: number;
   timing_policy?: "full_take" | "source_duration";
-  motion_profile?: "standard" | "fast";
+  motion_profile?: MotionProfile;
   generate_seconds?: number;
   casting_request?: string;
   environment_request?: string;
@@ -63,6 +77,7 @@ export interface Clip {
   staging_image_model: string; shots: Shot[]; findings: Finding[]; blocking: Finding[];
   status: ClipStatus; reason: string; hint: string; render_url: string | null; cleaned_url: string | null; url: string | null;
   quality: Quality | null; has_prompt: boolean; unknown_jobs: { id: string; kind: string; slot: string; error: string }[];
+  motion_url: string | null; motion_method: string | null; camera: CameraShot[]; motion_profile?: MotionProfile; prompt_by?: string;
   updated_at: string | null; approval: { url: string; by: string; at: string; note?: string } | null;
 }
 
@@ -126,9 +141,15 @@ export const studioApi = {
   chooseImage: (id: string, node: string, slot: string, revision: number, url: string, mediaId: string) =>
     api<{ revision: number; impact: { clips: string[] } }>(`${base(id)}/materials/${encodeURIComponent(node)}/${encodeURIComponent(slot)}/image`,
       json({ expected_revision: revision, url, media_id: mediaId })),
-  editClip: (id: string, key: string, revision: number, body: { staging_image_model?: string }) =>
-    api<{ revision: number }>(`${base(id)}/clips/${key}`, patch({ expected_revision: revision, ...body })),
-  prompt: (id: string, key: string) => api<{ prompt: string; end_state: string; writer: string; warnings: string[]; at: string }>(`${base(id)}/clips/${key}/prompt`),
+  editClip: (id: string, key: string, revision: number, body: {
+    staging_image_model?: string; motion_profile?: string; manual_prompt?: string; end_state?: string; auto_prompt?: boolean;
+  }) => api<{ revision: number }>(`${base(id)}/clips/${key}`, patch({ expected_revision: revision, ...body })),
+  prompt: (id: string, key: string) => api<{ prompt: string; end_state: string; writer: string; warnings: string[]; at: string | null;
+    manual: boolean; verified?: boolean }>(`${base(id)}/clips/${key}/prompt`),
+  split: (id: string, key: string, revision: number, atShot: number) =>
+    api<{ revision: number; impact: { clips: string[] } }>(`${base(id)}/clips/${key}/split`, json({ expected_revision: revision, at_shot: atShot })),
+  mergeNext: (id: string, key: string, revision: number) =>
+    api<{ revision: number; impact: { clips: string[]; removed: string[] } }>(`${base(id)}/clips/${key}/merge-next`, json({ expected_revision: revision })),
   approve: (id: string, key: string, url: string, approved: boolean, note = "") =>
     api<unknown>(`${base(id)}/clips/${key}/approve`, json({ url, approved, note })),
   render: (id: string, revision: number, keys: string[], mode: "prepare" | "render") =>

@@ -31,7 +31,9 @@ function FindingList({ film, findings, act, busy }: { film: FilmDetail; findings
 
 const sameLines = (a: Line[], b: Line[]) => JSON.stringify(a) === JSON.stringify(b);
 
-function ShotEditor({ film, shot, act, busy }: { film: FilmDetail; shot: Shot; act: StationProps["act"]; busy: string }) {
+function ShotEditor({ film, clipKey, clipLabel, shot, act, busy }: {
+  film: FilmDetail; clipKey: string; clipLabel: string; shot: Shot; act: StationProps["act"]; busy: string;
+}) {
   const [lines, setLines] = useState<Line[]>(shot.lines);
   const [action, setAction] = useState(shot.action.join("\n"));
   const [saved, setSaved] = useState("");
@@ -100,6 +102,11 @@ function ShotEditor({ film, shot, act, busy }: { film: FilmDetail; shot: Shot; a
         <button type="button" className="st-primary" disabled={!dirty || !!busy || film.revision == null} onClick={() => void save()}>Lưu shot</button>
         {dirty && <button type="button" className="st-link" onClick={() => { setLines(shot.lines); setAction(shot.action.join("\n")); }}>Bỏ thay đổi</button>}
         {saved && !dirty && <span className="st-muted">{saved}</span>}
+        {shot.index > 1 && <button type="button" className="st-link st-push" disabled={!!busy || film.revision == null}
+          onClick={() => {
+            if (!window.confirm(`Tách ${clipLabel} thành 2 clip, clip mới bắt đầu từ shot ${shot.index}? Cả hai clip sẽ cần đối chiếu lại nguồn và render lại.`)) return;
+            void act(`split-${clipKey}`, () => studioApi.split(film.id, clipKey, film.revision!, shot.index));
+          }}>Tách clip tại shot này</button>}
       </div>
     </div>
   </article>;
@@ -134,14 +141,22 @@ export function ShotlistStation({ film, act, busy, go, params }: StationProps) {
           <h2>{selected.label}</h2>
           <p>{fmtTime(selected.source_start)}–{fmtTime(selected.source_end)} · {selected.seconds.toFixed(1)} s · {selected.shots.length} shot</p>
         </div>
-        <button type="button" disabled={!!busy || film.revision == null || film.review?.in_progress}
-          onClick={() => void act("review", () => studioApi.review(film.id, film.revision!))}>
-          {film.review?.in_progress ? "Đang đối chiếu…" : "Đối chiếu lại với nguồn"}</button>
+        <div className="st-actions st-actions--tight">
+          {clips[clips.length - 1]?.key !== selected.key && <button type="button" disabled={!!busy || film.revision == null}
+            onClick={() => {
+              const next = clips[clips.findIndex(c => c.key === selected.key) + 1];
+              if (!window.confirm(`Gộp ${selected.label} với ${next.label} thành một clip? Clip gộp sẽ cần đối chiếu lại nguồn và render lại.`)) return;
+              void act(`merge-${selected.key}`, () => studioApi.mergeNext(film.id, selected.key, film.revision!));
+            }}>Gộp với clip sau</button>}
+          <button type="button" disabled={!!busy || film.revision == null || film.review?.in_progress}
+            onClick={() => void act("review", () => studioApi.review(film.id, film.revision!))}>
+            {film.review?.in_progress ? "Đang đối chiếu…" : "Đối chiếu lại với nguồn"}</button>
+        </div>
       </header>
       <video key={selected.key} className="st-clip__video" controls preload="metadata"
         src={`${studioApi.sourceUrl(film.id)}#t=${selected.source_start},${selected.source_end}`} />
       <FindingList film={film} findings={selected.findings} act={act} busy={busy} />
-      {selected.shots.map(s => <ShotEditor key={`${selected.key}-${s.source_shot}`} film={film} shot={s} act={act} busy={busy} />)}
+      {selected.shots.map(s => <ShotEditor key={`${selected.key}-${s.source_shot}`} film={film} clipKey={selected.key} clipLabel={selected.label} shot={s} act={act} busy={busy} />)}
     </section>}
   </div>;
 }

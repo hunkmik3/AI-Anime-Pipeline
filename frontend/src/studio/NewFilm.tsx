@@ -2,7 +2,7 @@ import { useState, type ChangeEvent, type DragEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { DEFAULT_RULES, STYLE_PRESETS } from "../store/videoAnalysis";
 import type { FilmStyle } from "../automation/filmStyles";
-import { uploadFilm, type FilmSettings } from "./api";
+import { MOTION_LABEL, uploadFilm, type FilmSettings, type MotionProfile } from "./api";
 
 const LANGUAGES: [string, string][] = [["", "Tự nhận"], ["en", "Tiếng Anh"], ["vi", "Tiếng Việt"], ["zh", "Tiếng Trung"], ["ja", "Tiếng Nhật"], ["ko", "Tiếng Hàn"], ["es", "Tiếng Tây Ban Nha"]];
 
@@ -36,7 +36,7 @@ export function NewFilm() {
   const [clipSeconds, setClipSeconds] = useState(15);
   const [language, setLanguage] = useState("");
   const [minutes, setMinutes] = useState("");
-  const [motion, setMotion] = useState<"standard" | "fast">("standard");
+  const [motion, setMotion] = useState<MotionProfile>("standard");
   const [timing, setTiming] = useState<"full_take" | "source_duration">("full_take");
   const [casting, setCasting] = useState("");
   const [environment, setEnvironment] = useState("");
@@ -109,8 +109,14 @@ export function NewFilm() {
     <div className="st-row">
       <Choice<number> label="Clip dài tối đa" value={clipSeconds} onChange={setClipSeconds} options={[[15, "15 s"], [20, "20 s"], [30, "30 s"]]}
         hint={clipSeconds > 15 ? "Clip dài từng làm rơi thoại ở bản thử; nên giữ 15 s." : "Đã kiểm chứng trên phim 1011."} />
-      <Choice<"standard" | "fast"> label="Chuyển động (clay)" value={motion} onChange={setMotion} options={[["standard", "Chuẩn"], ["fast", "Nhanh"]]}
-        hint={motion === "fast" ? "Độ sâu thô hơn, 24 fps — cho phim dài." : undefined} />
+      <label className="st-field">
+        <span>Chuyển động (clay)</span>
+        <select value={motion} onChange={e => setMotion(e.target.value as MotionProfile)}>
+          {(Object.keys(MOTION_LABEL) as MotionProfile[]).map(k => <option key={k} value={k}>{MOTION_LABEL[k]}</option>)}
+        </select>
+        <small>{motion.includes("pose") ? "Thêm tay chân dạng ma-nơ-canh và đo máy quay từng shot (4D blocking) — chậm hơn ~2/3, chạy trên máy."
+          : motion === "fast" ? "Độ sâu thô hơn, 24 fps — cho phim dài." : "Bản đã kiểm chứng trên phim 1011."}</small>
+      </label>
     </div>
     <div className="st-row">
       <label className="st-field">

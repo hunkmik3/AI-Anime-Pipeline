@@ -1,5 +1,5 @@
 import { STYLE_PRESETS } from "../store/videoAnalysis";
-import { studioApi } from "./api";
+import { MOTION_LABEL, studioApi } from "./api";
 import type { StationProps } from "./StudioPage";
 
 const yes = (v?: boolean) => (v ? "Có" : "Không");
@@ -10,7 +10,7 @@ export function SourceStation({ film, act, busy }: StationProps) {
     ["Phong cách", STYLE_PRESETS.find(p => p.key === s.style)?.label ?? String(s.style ?? "")],
     ["Độ phân giải · khung", `${s.resolution} · ${s.aspect_ratio}`],
     ["Clip dài tối đa", `${s.clip_seconds ?? 15} s`],
-    ["Chuyển động", s.motion_profile === "fast" ? "Nhanh" : "Chuẩn"],
+    ["Chuyển động", MOTION_LABEL[s.motion_profile ?? "standard"] ?? String(s.motion_profile)],
     ["Phạm vi", s.generate_seconds ? `${Math.round(s.generate_seconds / 60)} phút đầu` : "Cả phim"],
     ["Khi ghép", s.timing_policy === "source_duration" ? "Cắt đúng thời lượng gốc" : "Giữ trọn bản gen"],
     ["Đổi vai", s.casting_request || "—"],
