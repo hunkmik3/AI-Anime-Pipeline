@@ -39,6 +39,9 @@ override-dependencies = ["opencv-python; sys_platform == 'never'"]
 
 [project.optional-dependencies]
 audio = ["demucs>=4.0,<5", "torch>=2.0,<2.7", "torchaudio>=2.0,<2.7", "soundfile>=0.12"]
+# The clay's opt-in mannequin layer (motion profiles 'pose' / 'fast_pose'): YOLOX + RTMPose
+# via ONNX; its models download to ~/.cache/rtmlib on first use.
+pose = ["rtmlib>=0.0.15"]
 dev = [
     "ruff>=0.6",
     "pytest>=8.0",
