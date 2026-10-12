@@ -77,7 +77,9 @@ def test_a_clip_is_done_by_its_newest_render_and_failed_by_a_newer_failure():
             _job('clip', 'vid:c1', 'succeeded', 1, result={'url': 'https://r/1.mp4'}),
             _job('audio_cleanup', 'vid:c1', 'succeeded', 2, 'audio', {'url': 'https://r/1-clean.mp4', 'native_url': 'https://r/1.mp4'})]
     st = studio.clip_state('c1', jobs, {}, set())
-    assert st['status'] == 'done' and st['url'] == 'https://r/1-clean.mp4' and st['has_prompt']
+    # Seedance's own audio by default; the music-free version only when the owner chooses it.
+    assert st['status'] == 'done' and st['url'] == 'https://r/1.mp4' and st['has_prompt'] and st['audio_choice'] == 'native'
+    assert studio.clip_state('c1', jobs, {}, set(), {'audioChoice': 'cleaned'})['url'] == 'https://r/1-clean.mp4'
     jobs.append(_job('plate', 'vid:c1', 'unknown', 3, 'staging', error='avis: 403 your account has an overdue balance'))
     st = studio.clip_state('c1', jobs, {}, set())
     assert st['status'] == 'failed' and 'nợ quá hạn' in st['hint'] and st['unknown_jobs'][0]['kind'] == 'plate'
@@ -314,7 +316,7 @@ def test_a_clip_shows_the_take_the_owner_chose_and_its_audio_choice():
     jobs = [first, second, clean]
     made = studio.takes('c1', jobs)
     assert [t['render_url'] for t in made] == ['https://r/2.mp4', 'https://r/1.mp4'] and made[1]['set_aside']
-    st = studio.clip_state('c1', jobs, {}, set())
+    st = studio.clip_state('c1', jobs, {}, set(), {'audioChoice': 'cleaned'})
     assert st['take_id'] == str(second.id) and st['url'] == 'https://r/2-clean.mp4' and st['take_count'] == 2
     st = studio.clip_state('c1', jobs, {}, set(), {'selectedTake': str(first.id), 'audioChoice': 'native'})
     assert st['url'] == 'https://r/1.mp4' and st['take_selected'] and st['audio_choice'] == 'native'
@@ -342,3 +344,21 @@ def test_a_provider_outage_draws_with_the_boards_fallback_model_but_a_refusal_do
     assert automation_jobs.image_fallback(pid, 'dola-seedream-5-0-pro', outage) == 'gemini-3-pro-image'
     assert automation_jobs.image_fallback(pid, 'gemini-3-pro-image', outage) is None
     assert automation_jobs.image_fallback(pid, 'dola-seedream-5-0-pro', RuntimeError('content policy: refused')) is None
+
+
+def test_choosing_a_music_free_clip_cleans_its_chosen_take_once():
+    b = fixture()
+    key = b['nodes'][-1]['data']['sequence']['key']
+    take = _job('clip', 'vid:' + key, 'succeeded', 0, result={'url': 'https://r/take.mp4'})
+
+    class Session:
+        def __init__(self): self.added = []
+        def add(self, job): self.added.append(job)
+    s = Session()
+    job = studio.cleanup_job(s, b, uuid.uuid4(), key, [take])
+    assert job and job.kind == 'audio_cleanup' and job.payload['url'] == 'https://r/take.mp4' and job.payload['source_job'] == str(take.id)
+    running = _job('audio_cleanup', 'vid:' + key, 'running', 1, 'audio')
+    running.payload = {'url': 'https://r/take.mp4'}
+    assert studio.cleanup_job(s, b, uuid.uuid4(), key, [take, running]) is None          # already being cleaned
+    state = studio.clip_state(key, [take, running], {}, set(), {'audioChoice': 'cleaned'})
+    assert state['cleaning'] and state['url'] == 'https://r/take.mp4'

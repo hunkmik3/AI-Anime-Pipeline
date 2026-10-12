@@ -3,7 +3,7 @@ import { cameraLabel, fmtTime, studioApi, type AudioChoice, type Clip, type Film
 import type { StationProps } from "./StudioPage";
 
 const QUALITY: Record<string, string> = { checks_passed: "Đạt kiểm tra tự động", needs_review: "Cần bạn nghe/xem", failed: "Kiểm tra lỗi" };
-const AUDIO: Record<AudioChoice, string> = { cleaned: "Đã lọc nhạc", native: "Bản gốc Seedance", silent: "Im lặng" };
+const AUDIO: Record<AudioChoice, string> = { native: "Tiếng gốc Seedance", cleaned: "Lọc nhạc (chỉ giữ giọng nói)", silent: "Im lặng" };
 
 function Takes({ film, clip, act, busy }: { film: FilmDetail; clip: Clip; act: StationProps["act"]; busy: string }) {
   const [list, setList] = useState<Take[] | null>(null);
@@ -37,7 +37,7 @@ function ClipReview({ film, clip, act, busy }: { film: FilmDetail; clip: Clip; a
     <div className="st-review__players">
       <figure>
         <video key={clip.url ?? ""} controls preload="metadata" src={clip.url ?? undefined} muted={clip.audio_choice === "silent"} />
-        <figcaption>Bản gen · {AUDIO[clip.audio_choice]}</figcaption>
+        <figcaption>Bản gen · {clip.cleaning ? "đang lọc nhạc…" : AUDIO[clip.audio_choice]}</figcaption>
       </figure>
       {clip.motion_url && <figure>
         <video key={clip.motion_url} controls preload="none" src={clip.motion_url} />
@@ -54,6 +54,7 @@ function ClipReview({ film, clip, act, busy }: { film: FilmDetail; clip: Clip; a
     {q?.heard && <p className="st-review__lines"><span>Nghe được trong bản gen:</span> {q.heard}</p>}
     {q && q.findings.length > 0 && <ul className="st-review__findings">{q.findings.map((f, i) => <li key={i}>{f}</li>)}</ul>}
     {q?.error && <p className="st-reason">{q.error.slice(0, 240)}</p>}
+    {clip.cleanup_error && <p className="st-reason">Lọc nhạc lỗi: {clip.cleanup_error.slice(0, 240)} — clip đang dùng tiếng gốc.</p>}
     <Takes film={film} clip={clip} act={act} busy={busy} />
     <div className="st-actions">
       {clip.approval
@@ -90,7 +91,8 @@ export function ReviewStation({ film, act, busy }: StationProps) {
       <div>
         <h2>Ghép &amp; xuất</h2>
         <p>{made.length}/{film.clips.length} clip đã có bản gen{missing.length ? ` — thiếu ${missing.map(c => c.label).join(", ")}` : ""}.
-          Ghép theo thứ tự phim, dùng bản gen và âm thanh bạn chọn cho từng clip.</p>
+          Ghép theo thứ tự phim, dùng bản gen và âm thanh bạn chọn cho từng clip (mặc định tiếng gốc Seedance;
+          muốn bỏ nhạc ở clip nào thì chọn "Lọc nhạc" cho clip đó).</p>
       </div>
       <div className="st-actions st-actions--tight">
         <button type="button" disabled={!!busy || !made.length} onClick={() => void act("export", () => studioApi.exportClips(film.id))}>

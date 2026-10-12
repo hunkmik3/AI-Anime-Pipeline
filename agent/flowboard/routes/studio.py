@@ -345,7 +345,16 @@ def edit_clip(video_id: uuid.UUID, key: str, body: ClipEdit, user=Depends(get_op
         redo = body.manual_prompt is not None or body.auto_prompt or body.motion_profile is not None or body.staging_image_model is not None
         return out, {'clips': [key] if redo else [], 'review': False}
     fields = [k for k, v in body.model_dump(exclude={'expected_revision', 'dry_run'}).items() if v not in (None, False)]
-    return _change(video_id, user, fn, kind='clip', summary=f"{key}: " + ', '.join(fields), revision=body.expected_revision, dry_run=body.dry_run)
+    out = _change(video_id, user, fn, kind='clip', summary=f"{key}: " + ', '.join(fields), revision=body.expected_revision, dry_run=body.dry_run)
+    if body.audio_choice == 'cleaned' and not body.dry_run:
+        # The owner asked for this clip without music: clean its chosen take now.
+        with get_session() as s:
+            project = _project(s, _film(s, video_id, user), user)
+            job = studio.cleanup_job(s, _board(s, project), project.id, key,
+                                     s.exec(select(AutomationJob).where(AutomationJob.project_id == project.id)).all())
+            s.commit()
+            out['cleanup_job'] = str(job.id) if job else None
+    return out
 
 
 class Split(BaseModel):

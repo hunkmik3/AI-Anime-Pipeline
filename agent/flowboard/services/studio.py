@@ -140,7 +140,9 @@ def takes(key: str, jobs) -> list[dict]:
     return out
 
 
-AUDIO_CHOICES = ('cleaned', 'native', 'silent')
+# Seedance's own audio by default (owner, 2026-10-12); 'cleaned' isolates the voices of one
+# clip on request (music, room tone and effects go with it); 'silent' mutes it.
+AUDIO_CHOICES = ('native', 'cleaned', 'silent')
 
 
 def clip_state(key: str, jobs, held: dict, pending: set, video: Optional[dict] = None) -> dict:
@@ -171,7 +173,7 @@ def clip_state(key: str, jobs, held: dict, pending: set, video: Optional[dict] =
     elif write and write.status == 'succeeded':
         status = 'prepared'
     clay = (motion.result or {}) if motion and motion.status == 'succeeded' else {}
-    choice = video.get('audioChoice') if video.get('audioChoice') in AUDIO_CHOICES else 'cleaned'
+    choice = video.get('audioChoice') if video.get('audioChoice') in AUDIO_CHOICES else 'native'
     render = take['render_url'] if take else None
     cleaned = take['cleaned_url'] if take else None
     url = render if choice in ('native', 'silent') else (cleaned or render)
@@ -184,6 +186,10 @@ def clip_state(key: str, jobs, held: dict, pending: set, video: Optional[dict] =
         'status': status, 'reason': reason, 'hint': hint(reason),
         'take_id': take['job_id'] if take else None, 'take_count': len(made), 'take_selected': bool(take and video.get('selectedTake') == take['job_id']),
         'render_url': render, 'cleaned_url': cleaned, 'url': url, 'audio_choice': choice,
+        'cleaning': bool(choice == 'cleaned' and render and not cleaned and any(
+            j.status in automation_jobs.ACTIVE and (j.payload or {}).get('url') == render for j in index.all('audio_cleanup', node))),
+        'cleanup_error': next((_error(j) for j in reversed(index.all('audio_cleanup', node))
+                               if (j.payload or {}).get('url') == render), '') if choice == 'cleaned' and render and not cleaned else '',
         'quality': take['quality'] if take else None,
         'has_prompt': bool(write and write.status == 'succeeded' and (write.result or {}).get('prompt')),
         'unknown_jobs': [{'id': str(j.id), 'kind': j.kind, 'slot': j.slot, 'error': _error(j)}
@@ -775,6 +781,28 @@ def set_audio_and_take(board: dict, key: str, *, audio_choice: Optional[str] = N
     return out
 
 
+def cleanup_job(session, board: dict, pid, key: str, jobs) -> Optional[AutomationJob]:
+    """A music cleanup of the clip's chosen take, when the owner chose 'cleaned' and that
+    take has none yet (made or running). Returns the new job, else None."""
+    from flowboard.services import reskin_audio
+    index = _index(jobs)
+    video = next((n.get('data') or {} for n in board.get('nodes', []) if n.get('id') == 'vid:' + key), {})
+    made = takes(key, index)
+    take = next((t for t in made if t['job_id'] == video.get('selectedTake')), None) or (made[0] if made else None)
+    if not take or take['cleaned_url']:
+        return None
+    if any((j.payload or {}).get('url') == take['render_url'] and j.status in automation_jobs.ACTIVE | {'succeeded'}
+           for j in index.all('audio_cleanup', 'vid:' + key)):
+        return None
+    seq = next(n for n in sequences(board) if _key(n) == key)
+    job = AutomationJob(project_id=uuid.UUID(str(pid)), kind='audio_cleanup', node_id='vid:' + key, slot='audio',
+                        request_key=f"studio-audio:{key}:{take['job_id']}:{int(datetime.now(timezone.utc).timestamp())}",
+                        payload={'version': reskin_audio.VERSION, 'source_job': take['job_id'], 'url': take['render_url'],
+                                 'has_dialogue': any(d.get('line') for s in seq['data']['shots'] for d in s.get('dialogue') or [])})
+    session.add(job)
+    return job
+
+
 def quality_payload(board: dict, pid: str, key: str, take: dict, timing_policy: str) -> dict:
     """A new automatic check of one take, the same request a run makes."""
     from flowboard.services import production_quality as quality
@@ -788,7 +816,7 @@ def run_config(settings: dict, keys: list[str], mode: str) -> dict:
     reskin_film = settings.get('pipeline') == 'reskin_v1'
     return ProductionRunConfig(mode=mode, sequence_keys=keys, review_masters=False, assemble=False,
                                resolution=settings.get('resolution', '480p'), timing_policy=settings.get('timing_policy', 'full_take'),
-                               audio_cleanup=reskin_film, set_continuity=not reskin_film,
+                               audio_cleanup=False, set_continuity=not reskin_film,
                                image_parallel=settings.get('image_parallel', 16), video_parallel=settings.get('video_parallel', 16),
                                max_images=settings.get('max_images', 500), max_videos=settings.get('max_videos', 500),
                                max_text=10000).model_dump()

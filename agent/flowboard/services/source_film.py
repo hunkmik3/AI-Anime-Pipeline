@@ -366,7 +366,9 @@ async def finish_board(row, opt, board):
     def run_config():
         return ProductionRunConfig(mode='prepare' if opt.prepare_before_render else 'render',
             review_masters=opt.review_masters,assemble=True,
-            resolution=opt.resolution,timing_policy=opt.timing_policy,audio_cleanup=opt.pipeline=='reskin_v1',
+            # Clips keep Seedance's own audio (owner, 2026-10-12); music is removed only from
+            # a clip the owner chooses to clean in the studio.
+            resolution=opt.resolution,timing_policy=opt.timing_policy,audio_cleanup=False,
             set_continuity=opt.pipeline!='reskin_v1',image_parallel=opt.image_parallel,video_parallel=opt.video_parallel,
             max_images=opt.max_images,max_videos=opt.max_videos,max_text=10000).model_dump()
     def start_run():
@@ -444,7 +446,8 @@ async def execute(video_id):
                 raise ValueError('Reskin hiện dùng 480p hoặc 720p theo cấu hình provider.')
             from flowboard.services.reskin_runtime import require_ready
             import asyncio
-            await asyncio.to_thread(require_ready)
+            # Music cleanup is the owner's per-clip choice now: Demucs is optional at start.
+            await asyncio.to_thread(require_ready, False)
         state(video_id, stage="analysis", error=None)
         if (
             not row.analysis.get("shots")

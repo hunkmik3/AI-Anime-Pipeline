@@ -6,6 +6,7 @@ Nhánh: `claude/reskin-long-film`. Nhánh này chứa toàn bộ `codex/film-pip
 - trang **Reskin Studio** (`/studio`): tải video vào, chọn phong cách, độ phân giải,
   khung hình, rồi duyệt và sửa ở từng bước (shotlist, thoại, người/vật trong shot,
   material, clip, bản gen, ghép phim và xuất EDL);
+- âm thanh: mặc định giữ nguyên tiếng gốc Seedance; lọc nhạc chỉ khi bạn chọn cho từng clip;
 - pipeline reskin nhanh hơn (chạy song song, giữ từng clip, đối chiếu nguồn theo
   từng clip, clip tới 30 s);
 - lớp clay tuỳ chọn: tay chân dạng ma-nơ-canh và máy quay đo từ nguồn.
@@ -52,8 +53,10 @@ cd agent
 .\.venv\Scripts\pip.exe install -e ".[pose]"
 ```
 
-Runtime tách nhạc (Demucs) chạy trong một venv riêng. Bỏ qua nếu máy đã có
-`agent\.venv-audio`. Cần `uv` (`winget install astral-sh.uv`):
+**Tuỳ chọn — lọc nhạc theo từng clip.** Mặc định clip giữ nguyên tiếng gốc của
+Seedance; chỉ khi bạn chọn "Lọc nhạc" cho một clip ở trạm Duyệt thì mới cần runtime
+tách nhạc (Demucs, venv riêng). Bỏ qua nếu không dùng hoặc máy đã có `agent\.venv-audio`.
+Cần `uv` (`winget install astral-sh.uv`):
 
 ```powershell
 uv venv --python 3.11 .venv-audio
@@ -81,8 +84,8 @@ không gọi được ffmpeg hay worker clay.
 ## 6. Kiểm tra
 
 1. Mở `https://giantstudio.reelmind.co/api/automation/reskin/capabilities` (đã đăng nhập).
-   Mọi mục trong `checks` phải là `true`. Mục nào `false` thì xem lại bước tương ứng
-   (`ffmpeg`, `motion_runtime`, `audio_runtime`, `avis`, `atrium`, `reference_storage`).
+   Các mục `ffmpeg`, `motion_runtime`, `avis`, `atrium`, `reference_storage` phải là `true`.
+   `audio_runtime` chỉ cần `true` nếu muốn lọc nhạc từng clip.
 2. Mở `https://giantstudio.reelmind.co/studio`, tải lại trang (Ctrl+F5). Tab
    **Reskin Studio** nằm trên thanh trên cùng.
 3. Chạy thử một phim ngắn trước: ở form Phim mới đặt **Chỉ làm N phút đầu = 1**. Theo dõi

@@ -80,13 +80,13 @@ export interface Take {
 
 export interface Quality { status: string | null; findings: string[]; heard: string; error: string }
 
-export type AudioChoice = "cleaned" | "native" | "silent";
+export type AudioChoice = "native" | "cleaned" | "silent";
 
 export interface Clip {
   key: string; label: string; source_start: number; source_end: number; seconds: number; estimate_usd: number;
   staging_image_model: string; blocking: Finding[]; finding_count: number;
   shot_count: number; line_count: number; dialogue_text: string; heard_differs: boolean;
-  take_id: string | null; take_count: number; take_selected: boolean; audio_choice: AudioChoice;
+  take_id: string | null; take_count: number; take_selected: boolean; audio_choice: AudioChoice; cleaning: boolean; cleanup_error: string;
   staging_url: string | null; staging_model_used: string | null;
   status: ClipStatus; reason: string; hint: string; render_url: string | null; cleaned_url: string | null; url: string | null;
   quality: Quality | null; has_prompt: boolean; unknown_jobs: { id: string; kind: string; slot: string; error: string }[];
