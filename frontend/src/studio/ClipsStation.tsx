@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CLIP_STATUS_LABEL, IMAGE_MODEL_LABELS, MOTION_LABEL, fmtTime, studioApi, type Clip, type FilmDetail, type MotionProfile } from "./api";
+import { CLIP_STATUS_LABEL, IMAGE_MODEL_LABELS, MOTION_LABEL, cameraLabel, fmtTime, studioApi, type Clip, type FilmDetail, type MotionProfile } from "./api";
 import type { StationProps } from "./StudioPage";
 
 const TONE: Record<string, string> = {
@@ -52,6 +52,31 @@ function PromptEditor({ film, clip, act, busy, onClose }: { film: FilmDetail; cl
   </div>;
 }
 
+function Preview({ clip, onClose, onPrompt }: { clip: Clip; onClose(): void; onPrompt(): void }) {
+  return <div className="st-modal" role="dialog" aria-label={`Xem trước ${clip.label}`}>
+    <div className="st-modal__box st-modal__box--editor">
+      <header><h2>Xem trước — {clip.label}</h2><button type="button" onClick={onClose} aria-label="Đóng">×</button></header>
+      <div className="st-preview">
+        <figure>
+          {clip.motion_url ? <video controls preload="metadata" src={clip.motion_url} /> : <div className="st-preview__none">Chưa dựng clay</div>}
+          <figcaption>Clay{clip.motion_method?.includes("pose") ? " + khung xương" : ""}</figcaption>
+        </figure>
+        <figure>
+          {clip.staging_url ? <img src={clip.staging_url} alt={`Ảnh dàn cảnh ${clip.label}`} /> : <div className="st-preview__none">Chưa có ảnh dàn cảnh</div>}
+          <figcaption>Ảnh dàn cảnh{clip.staging_model_used ? ` · vẽ bằng ${IMAGE_MODEL_LABELS[clip.staging_model_used] ?? clip.staging_model_used} (dự phòng)` : ""}</figcaption>
+        </figure>
+      </div>
+      <div className="st-editor">
+        {clip.camera.length > 0 && <p className="st-muted">Máy quay đo từ nền: {clip.camera.map(c => `shot ${c.shot + 1} ${cameraLabel(c.label)}`).join(" · ")}</p>}
+        <div className="st-actions">
+          {(clip.has_prompt || clip.prompt_by === "manual") && <button type="button" onClick={onPrompt}>Mở prompt</button>}
+          <span className="st-muted">{clip.status === "prepared" ? "Đã chuẩn bị xong; render khi bạn thấy ổn." : CLIP_STATUS_LABEL[clip.status]}</span>
+        </div>
+      </div>
+    </div>
+  </div>;
+}
+
 function AbsentButton({ film, job, act, busy }: { film: FilmDetail; job: Clip["unknown_jobs"][number]; act: StationProps["act"]; busy: string }) {
   return <button type="button" className="st-link" disabled={!!busy}
     title="Nhà cung cấp đã từ chối nên không có gì được tạo; đóng job để chạy lại."
@@ -63,6 +88,7 @@ function AbsentButton({ film, job, act, busy }: { film: FilmDetail; job: Clip["u
 export function ClipsStation({ film, act, busy, go }: StationProps) {
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [prompt, setPrompt] = useState<Clip | null>(null);
+  const [preview, setPreview] = useState<Clip | null>(null);
   const clips = film.clips;
   const chosen = clips.filter(c => picked.has(c.key));
   const usd = chosen.reduce((s, c) => s + c.estimate_usd, 0);
@@ -70,8 +96,15 @@ export function ClipsStation({ film, act, busy, go }: StationProps) {
   const pick = (f: (c: Clip) => boolean) => setPicked(new Set(clips.filter(f).map(c => c.key)));
   const running = film.runs.some(r => r.status === "running");
   if (!clips.length) return <p className="st-empty">Chưa có clip — trạm Nguồn đang dựng board.</p>;
+  const doneChosen = chosen.filter(c => c.take_count > 0);
   async function start(mode: "prepare" | "render") {
     await act(`run-${mode}`, () => studioApi.render(film.id, film.revision!, chosen.map(c => c.key), mode));
+    setPicked(new Set());
+  }
+  async function retake() {
+    const usd = doneChosen.reduce((s, c) => s + c.estimate_usd, 0);
+    if (!window.confirm(`Gen lại ${doneChosen.length} clip thành bản mới (khoảng $${usd.toFixed(2)})? Bản cũ vẫn giữ để chọn ở trạm Duyệt.`)) return;
+    await act("retake", () => studioApi.retake(film.id, film.revision!, doneChosen.map(c => c.key)));
     setPicked(new Set());
   }
   return <div className="st-clips">
@@ -85,6 +118,8 @@ export function ClipsStation({ film, act, busy, go }: StationProps) {
       <span className="st-muted">{chosen.length} clip · ~${usd.toFixed(2)}</span>
       <button type="button" disabled={!chosen.length || !!busy || running || film.revision == null} onClick={() => void start("prepare")}
         title="Vẽ thẻ, dựng clay, ảnh dàn cảnh và viết prompt — chưa render">Chuẩn bị</button>
+      <button type="button" disabled={!doneChosen.length || !!busy || running || film.revision == null} onClick={() => void retake()}
+        title="Clip đã gen: làm bản mới, giữ bản cũ">Gen lại {doneChosen.length || ""}</button>
       <button type="button" className="st-primary" disabled={!chosen.length || !!busy || running || film.revision == null} onClick={() => void start("render")}>
         Render {chosen.length || ""}</button>
     </div>
@@ -95,7 +130,7 @@ export function ClipsStation({ film, act, busy, go }: StationProps) {
       <tbody>
         {clips.map(c => <tr key={c.key} className={picked.has(c.key) ? "is-picked" : ""}>
           <td><input type="checkbox" aria-label={`Chọn ${c.label}`} checked={picked.has(c.key)} onChange={() => toggle(c.key)} /></td>
-          <td><strong>{c.label}</strong><small>{fmtTime(c.source_start)}–{fmtTime(c.source_end)} · {c.shots.length} shot</small></td>
+          <td><strong>{c.label}</strong><small>{fmtTime(c.source_start)}–{fmtTime(c.source_end)} · {c.shot_count} shot{c.take_count > 1 ? ` · ${c.take_count} bản` : ""}</small></td>
           <td className="st-num">{c.seconds.toFixed(1)} s</td>
           <td>
             <span className={`st-pill st-pill--${TONE[c.status] ?? "pending"}`}>{CLIP_STATUS_LABEL[c.status] ?? c.status}</span>
@@ -117,6 +152,7 @@ export function ClipsStation({ film, act, busy, go }: StationProps) {
           </td>
           <td className="st-num">${c.estimate_usd.toFixed(2)}</td>
           <td className="st-row-actions">
+            <button type="button" className="st-link" onClick={() => setPreview(c)}>Xem trước</button>
             {(c.has_prompt || c.prompt_by === "manual") && <button type="button" className="st-link" onClick={() => setPrompt(c)}>
               {c.prompt_by === "manual" ? "Prompt tự viết" : "Prompt"}</button>}
             {c.url && <a className="st-link" href={c.url} target="_blank" rel="noreferrer">Xem clip</a>}
@@ -129,9 +165,14 @@ export function ClipsStation({ film, act, busy, go }: StationProps) {
       <ul>{film.runs.map(r => <li key={r.id}>
         <span className={`st-pill st-pill--${r.status === "succeeded" ? "done" : r.status === "running" ? "running" : "attention"}`}>{r.status}</span>
         <span>{r.mode === "prepare" ? "Chuẩn bị" : "Render"} · {r.keys.length ? `${r.keys.length} clip` : "cả phim"} · {new Date(r.created_at).toLocaleString("vi-VN")}</span>
+        {r.status === "running" && <button type="button" className="st-link" disabled={!!busy}
+          onClick={() => void act(`pause-${r.id}`, () => studioApi.controlRun(film.id, r.id, "pause"))}>Tạm dừng</button>}
+        {(r.status === "paused" || r.status === "blocked") && <button type="button" className="st-link" disabled={!!busy || running}
+          onClick={() => void act(`resume-${r.id}`, () => studioApi.controlRun(film.id, r.id, "resume"))}>Chạy tiếp</button>}
         {r.errors.length > 0 && <small className="st-reason">{r.errors[0]}</small>}
       </li>)}</ul>
     </section>}
     {prompt && <PromptEditor film={film} clip={prompt} act={act} busy={busy} onClose={() => setPrompt(null)} />}
+    {preview && <Preview clip={preview} onClose={() => setPreview(null)} onPrompt={() => { setPrompt(preview); setPreview(null); }} />}
   </div>;
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { IMAGE_MODEL_LABELS, studioApi, uploadMaterialImage, type FilmDetail, type Material, type MaterialSlot } from "./api";
+import { IMAGE_MODEL_LABELS, confirmChange, studioApi, uploadMaterialImage, type FilmDetail, type Material, type MaterialSlot } from "./api";
 import type { StationProps } from "./StudioPage";
 
 type Group = "character" | "environment" | "other";
@@ -13,11 +13,17 @@ const SLOT_STATUS: Record<string, string> = {
 function SlotCard({ film, material, slot, act, busy }: { film: FilmDetail; material: Material; slot: MaterialSlot; act: StationProps["act"]; busy: string }) {
   const input = useRef<HTMLInputElement>(null);
   const [zoom, setZoom] = useState(false);
+  const [history, setHistory] = useState(false);
+  const earlier = (slot.versions ?? []).filter(v => v.url !== slot.image);
+  async function choose(url: string, mediaId: string, what: string) {
+    if (!await confirmChange(() => studioApi.chooseImage(film.id, material.node_id, slot.slot, film.revision!, url, mediaId, true), what)) return;
+    await studioApi.chooseImage(film.id, material.node_id, slot.slot, film.revision!, url, mediaId);
+  }
   const working = ["queued", "preparing", "submitting", "running"].includes(slot.status);
   async function upload(file: File) {
     await act(`upload-${material.node_id}-${slot.slot}`, async () => {
       const { url, mediaId } = await uploadMaterialImage(film.project_id!, file);
-      await studioApi.chooseImage(film.id, material.node_id, slot.slot, film.revision!, url, mediaId);
+      await choose(url, mediaId, `Dùng ảnh "${file.name}" cho ${material.name} — ${slot.label}?`);
     });
   }
   return <figure className={`st-slot st-slot--${slot.status}${slot.used ? "" : " is-unused"}`}>
@@ -34,6 +40,14 @@ function SlotCard({ film, material, slot, act, busy }: { film: FilmDetail; mater
           onClick={() => void act(`redraw-${material.node_id}-${slot.slot}`, () => studioApi.regenerate(film.id, material.node_id, slot.slot, film.revision!))}>Vẽ lại</button>
         <button type="button" className="st-link" disabled={!!busy || !film.project_id} onClick={() => input.current?.click()}>Dùng ảnh của tôi</button>
         <input ref={input} type="file" accept="image/*" hidden onChange={e => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void upload(f); }} />
+        {earlier.length > 0 && <button type="button" className="st-link" onClick={() => setHistory(h => !h)} aria-expanded={history}>Bản vẽ cũ ({earlier.length})</button>}
+      </span>}
+      {history && <span className="st-versions">
+        {earlier.map(v => <button type="button" key={v.job_id} className="st-version" disabled={!!busy || film.revision == null}
+          title={`${v.model ?? ""} · ${v.at ? new Date(v.at).toLocaleString("vi-VN") : ""} — bấm để dùng bản này`}
+          onClick={() => void act(`version-${material.node_id}-${slot.slot}`, () => choose(v.url, v.media_id, `Dùng lại bản vẽ cũ cho ${material.name} — ${slot.label}?`))}>
+          <img src={v.url} alt={`Bản vẽ cũ ${slot.label}`} loading="lazy" />
+        </button>)}
       </span>}
     </figcaption>
     {zoom && slot.image && <div className="st-zoom" role="dialog" aria-label={slot.label} onClick={() => setZoom(false)}>
@@ -49,11 +63,14 @@ function MaterialCard({ film, material, act, busy }: { film: FilmDetail; materia
   useEffect(() => { setNote(material.target_description); setModel(material.image_model); }, [material.target_description, material.image_model]);
   const dirty = note.trim() !== material.target_description || model !== material.image_model;
   async function save() {
+    const body = {
+      ...(note.trim() !== material.target_description ? { target_description: note.trim() } : {}),
+      ...(model !== material.image_model ? { image_model: model } : {}),
+    };
     await act(`material-${material.node_id}`, async () => {
-      const out = await studioApi.editMaterial(film.id, material.node_id, film.revision!, {
-        ...(note.trim() !== material.target_description ? { target_description: note.trim() } : {}),
-        ...(model !== material.image_model ? { image_model: model } : {}),
-      });
+      if (!await confirmChange(() => studioApi.editMaterial(film.id, material.node_id, film.revision!, { ...body, dry_run: true }),
+        `Lưu thiết kế mới cho ${material.name}? Các sheet của nó sẽ được vẽ lại ở lượt chạy tới.`)) return;
+      const out = await studioApi.editMaterial(film.id, material.node_id, film.revision!, body);
       setImpact(out.impact.clips.length ? `Các sheet sẽ được vẽ lại ở lượt chạy tới; ${out.impact.clips.length} clip dùng material này cần render lại.` : "Đã lưu.");
     });
   }

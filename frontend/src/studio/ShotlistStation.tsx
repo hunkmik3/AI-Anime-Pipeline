@@ -1,6 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
-import { DELIVERY_LABEL, fmtTime, studioApi, type Delivery, type FilmDetail, type Finding, type Line, type Shot } from "./api";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  DELIVERY_LABEL, confirmChange, fmtTime, studioApi,
+  type ClipDetail, type Delivery, type FilmDetail, type Finding, type Line, type Presence, type Shot, type Visibility,
+} from "./api";
 import type { StationProps } from "./StudioPage";
+
+const VISIBILITY_LABEL: Record<Visibility, string> = { visible: "Trong khung", partial: "Một phần", offscreen: "Ngoài khung", occluded: "Bị che" };
 
 /** Accept one blocking finding with the owner's reason. */
 function AcceptFinding({ film, finding, act, busy }: { film: FilmDetail; finding: Finding; act: StationProps["act"]; busy: string }) {
@@ -29,34 +34,107 @@ function FindingList({ film, findings, act, busy }: { film: FilmDetail; findings
   </ul>;
 }
 
-const sameLines = (a: Line[], b: Line[]) => JSON.stringify(a) === JSON.stringify(b);
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
-function ShotEditor({ film, clipKey, clipLabel, shot, act, busy }: {
-  film: FilmDetail; clipKey: string; clipLabel: string; shot: Shot; act: StationProps["act"]; busy: string;
+function PresenceEditor({ film, rows, states, onRows, onStates }: {
+  film: FilmDetail; rows: Presence[]; states: Record<string, string>;
+  onRows(r: Presence[]): void; onStates(s: Record<string, string>): void;
+}) {
+  const assets = film.assets ?? [];
+  const byId = new Map(assets.map(a => [a.id, a]));
+  const set = (i: number, change: Partial<Presence>) => onRows(rows.map((r, j) => (j === i ? { ...r, ...change } : r)));
+  const unused = assets.filter(a => !rows.some(r => r.asset_id === a.id));
+  return <div className="st-presence">
+    <span className="st-lines__head">Ai và vật gì trong shot</span>
+    {rows.map((r, i) => {
+      const asset = byId.get(r.asset_id);
+      return <div className="st-presence__row" key={r.asset_id}>
+        <strong title={r.asset_id}>{asset?.name ?? r.asset_id}</strong>
+        <select aria-label={`Mức hiện diện ${asset?.name ?? r.asset_id}`} value={r.visibility} onChange={e => set(i, { visibility: e.target.value as Visibility })}>
+          {(Object.keys(VISIBILITY_LABEL) as Visibility[]).map(v => <option key={v} value={v}>{VISIBILITY_LABEL[v]}</option>)}
+        </select>
+        <input aria-label="Trạng thái" placeholder="Trạng thái (ví dụ: đeo vòng ở cổ tay trái)" value={r.state ?? ""} onChange={e => set(i, { state: e.target.value })} />
+        <input aria-label="Vị trí" placeholder="Vị trí trong khung" value={r.position ?? ""} onChange={e => set(i, { position: e.target.value })} />
+        {asset?.kind === "character" && asset.states.length > 0 && <select aria-label={`Trang phục ${asset.name}`} value={states[r.asset_id] ?? ""}
+          onChange={e => onStates({ ...states, [r.asset_id]: e.target.value })}>
+          <option value="" disabled>Trang phục…</option>
+          {asset.states.map(st => <option key={st.key} value={st.key}>{st.label}</option>)}
+        </select>}
+        <button type="button" className="st-link" onClick={() => {
+          onRows(rows.filter((_, j) => j !== i));
+          const rest = { ...states };
+          delete rest[r.asset_id];
+          onStates(rest);
+        }}>Bỏ</button>
+      </div>;
+    })}
+    {unused.length > 0 && <select className="st-presence__add" aria-label="Thêm người hoặc vật" value="" onChange={e => {
+      const a = byId.get(e.target.value);
+      if (!a) return;
+      onRows([...rows, { asset_id: a.id, visibility: "visible", state: "", position: "" }]);
+      if (a.kind === "character" && a.states[0]) onStates({ ...states, [a.id]: a.states[0].key });
+    }}>
+      <option value="">+ Thêm người / vật…</option>
+      {unused.map(a => <option key={a.id} value={a.id}>{a.name} · {a.kind}</option>)}
+    </select>}
+  </div>;
+}
+
+function ShotEditor({ film, clip, shot, isLastOfFilm, act, busy, reload }: {
+  film: FilmDetail; clip: ClipDetail; shot: Shot; isLastOfFilm: boolean; act: StationProps["act"]; busy: string; reload(): void;
 }) {
   const [lines, setLines] = useState<Line[]>(shot.lines);
   const [action, setAction] = useState(shot.action.join("\n"));
+  const [rows, setRows] = useState<Presence[]>(shot.presence);
+  const [states, setStates] = useState<Record<string, string>>(shot.states);
+  const [cut, setCut] = useState(shot.end.toFixed(2));
   const [saved, setSaved] = useState("");
   // The page refreshes every few seconds; only a real change on the server resets the form.
-  const serverVersion = JSON.stringify([shot.lines, shot.action]);
-  useEffect(() => { setLines(shot.lines); setAction(shot.action.join("\n")); }, [serverVersion]);
+  const serverVersion = JSON.stringify([shot.lines, shot.action, shot.presence, shot.states, shot.end]);
+  useEffect(() => {
+    setLines(shot.lines); setAction(shot.action.join("\n")); setRows(shot.presence); setStates(shot.states); setCut(shot.end.toFixed(2));
+  }, [serverVersion]);
   const characters = film.characters ?? [];
-  const dirty = !sameLines(lines, shot.lines) || action.trim() !== shot.action.join("\n").trim();
-  const setLine = (i: number, change: Partial<Line>) => setLines(ls => ls.map((l, j) => j === i ? { ...l, ...change } : l));
-  async function save() {
-    const body: { lines?: Line[]; action?: string[] } = {};
-    if (!sameLines(lines, shot.lines)) body.lines = lines;
+  const changes = useMemo(() => {
+    const body: { lines?: Line[]; action?: string[]; presence?: Presence[]; character_states?: Record<string, string> } = {};
+    if (!same(lines, shot.lines)) body.lines = lines;
     if (action.trim() !== shot.action.join("\n").trim()) body.action = action.split("\n").map(x => x.trim()).filter(Boolean);
+    if (!same(rows, shot.presence)) body.presence = rows;
+    if (!same(states, shot.states)) body.character_states = states;
+    return body;
+  }, [lines, action, rows, states, shot]);
+  const dirty = Object.keys(changes).length > 0;
+  const setLine = (i: number, change: Partial<Line>) => setLines(ls => ls.map((l, j) => (j === i ? { ...l, ...change } : l)));
+  const reset = () => { setLines(shot.lines); setAction(shot.action.join("\n")); setRows(shot.presence); setStates(shot.states); };
+  async function save() {
     await act(`shot-${shot.source_shot}`, async () => {
-      const out = await studioApi.editShot(film.id, shot.source_shot, film.revision!, body);
+      if (!await confirmChange(() => studioApi.editShot(film.id, shot.source_shot, film.revision!, { ...changes, dry_run: true }),
+        `Lưu thay đổi shot ${shot.index} của ${clip.label}?`)) return;
+      const out = await studioApi.editShot(film.id, shot.source_shot, film.revision!, changes);
       setSaved(`Đã lưu. ${out.impact.clips.join(", ")} cần đối chiếu lại nguồn trước khi gen.`);
+      reload();
+    });
+  }
+  async function moveCut() {
+    const at = clip.source_start + Number(cut);
+    await act(`cut-${shot.source_shot}`, async () => {
+      if (!await confirmChange(() => studioApi.moveCut(film.id, shot.source_shot, film.revision!, at, true),
+        `Dời điểm cắt sau shot ${shot.index} tới ${Number(cut).toFixed(2)} s?`)) return;
+      await studioApi.moveCut(film.id, shot.source_shot, film.revision!, at);
+      reload();
     });
   }
   return <article className="st-shot">
     <div className="st-shot__media">
       {shot.frame ? <img src={studioApi.frameUrl(film.id, shot.frame)} alt={`Khung hình gốc shot ${shot.index}`} loading="lazy" />
         : <div className="st-shot__noframe">Không có ảnh</div>}
-      <span className="st-shot__time">#{shot.index} · {shot.start.toFixed(1)}–{shot.end.toFixed(1)} s</span>
+      <span className="st-shot__time">#{shot.index} · {shot.start.toFixed(2)}–{shot.end.toFixed(2)} s</span>
+      {!isLastOfFilm && <label className="st-cut" title="Thời điểm (giây trong clip) cắt sang shot sau">
+        <span>Cắt ở</span>
+        <input type="number" step="0.01" value={cut} onChange={e => setCut(e.target.value)} aria-label="Điểm cắt sau shot này" />
+        <button type="button" className="st-link" disabled={!!busy || Math.abs(Number(cut) - shot.end) < 0.005 || film.revision == null}
+          onClick={() => void moveCut()}>Dời</button>
+      </label>}
     </div>
     <div className="st-shot__body">
       <p className="st-shot__camera">{[shot.framing, shot.camera].filter(Boolean).join(" · ")}</p>
@@ -64,6 +142,7 @@ function ShotEditor({ film, clipKey, clipLabel, shot, act, busy }: {
         <span>Hành động (mỗi dòng một nhịp)</span>
         <textarea rows={Math.max(2, action.split("\n").length)} value={action} onChange={e => setAction(e.target.value)} />
       </label>
+      <PresenceEditor film={film} rows={rows} states={states} onRows={setRows} onStates={setStates} />
       <div className="st-lines">
         <span className="st-lines__head">Thoại</span>
         {lines.length === 0 && <p className="st-muted">Shot không có thoại.</p>}
@@ -100,13 +179,15 @@ function ShotEditor({ film, clipKey, clipLabel, shot, act, busy }: {
       <FindingList film={film} findings={shot.findings} act={act} busy={busy} />
       <div className="st-actions">
         <button type="button" className="st-primary" disabled={!dirty || !!busy || film.revision == null} onClick={() => void save()}>Lưu shot</button>
-        {dirty && <button type="button" className="st-link" onClick={() => { setLines(shot.lines); setAction(shot.action.join("\n")); }}>Bỏ thay đổi</button>}
+        {dirty && <button type="button" className="st-link" onClick={reset}>Bỏ thay đổi</button>}
         {saved && !dirty && <span className="st-muted">{saved}</span>}
         {shot.index > 1 && <button type="button" className="st-link st-push" disabled={!!busy || film.revision == null}
-          onClick={() => {
-            if (!window.confirm(`Tách ${clipLabel} thành 2 clip, clip mới bắt đầu từ shot ${shot.index}? Cả hai clip sẽ cần đối chiếu lại nguồn và render lại.`)) return;
-            void act(`split-${clipKey}`, () => studioApi.split(film.id, clipKey, film.revision!, shot.index));
-          }}>Tách clip tại shot này</button>}
+          onClick={() => void act(`split-${clip.key}`, async () => {
+            if (!await confirmChange(() => studioApi.split(film.id, clip.key, film.revision!, shot.index, true),
+              `Tách ${clip.label} thành 2 clip, clip mới bắt đầu từ shot ${shot.index}?`)) return;
+            await studioApi.split(film.id, clip.key, film.revision!, shot.index);
+            reload();
+          })}>Tách clip tại shot này</button>}
       </div>
     </div>
   </article>;
@@ -114,49 +195,61 @@ function ShotEditor({ film, clipKey, clipLabel, shot, act, busy }: {
 
 export function ShotlistStation({ film, act, busy, go, params }: StationProps) {
   const clips = film.clips;
-  const selected = useMemo(() => clips.find(c => c.key === params.get("clip")) ?? clips.find(c => c.blocking.length) ?? clips[0], [clips, params]);
+  const selectedKey = useMemo(() => (clips.find(c => c.key === params.get("clip")) ?? clips.find(c => c.blocking.length) ?? clips[0])?.key,
+    [clips, params]);
+  const [clip, setClip] = useState<ClipDetail | null>(null);
+  const [error, setError] = useState("");
+  const load = useCallback(() => {
+    if (!selectedKey) return;
+    studioApi.clip(film.id, selectedKey).then(c => { setClip(c); setError(""); }).catch(e => setError(String(e.message ?? e)));
+  }, [film.id, selectedKey]);
+  // A new board revision (any save) or another clip reloads the clip's shots.
+  useEffect(() => { load(); }, [load, film.revision]);
   if (!clips.length) return <p className="st-empty">Shotlist chưa có — trạm Nguồn đang phân tích video.</p>;
   const waiting = film.stage === "awaiting_review";
+  const lastKey = clips[clips.length - 1]?.key;
+  const position = clips.findIndex(c => c.key === selectedKey);
   return <div className="st-split">
     <nav className="st-cliplist" aria-label="Clip">
-      {clips.map(c => {
-        const lines = c.shots.reduce((n, s) => n + s.lines.length, 0);
-        const heard = c.shots.some(s => s.heard);
-        return <button type="button" key={c.key} className={`st-cliplist__item${c.key === selected?.key ? " is-active" : ""}`}
-          onClick={() => go("shotlist", { clip: c.key })}>
-          <strong>{c.label}</strong>
-          <small>{fmtTime(c.source_start)}–{fmtTime(c.source_end)} · {c.shots.length} shot · {lines} câu</small>
-          {c.blocking.length > 0 ? <span className="st-pill st-pill--attention">{c.blocking.length} lỗi</span>
-            : heard ? <span className="st-pill st-pill--warning">khác nguồn</span> : null}
-        </button>;
-      })}
+      {clips.map(c => <button type="button" key={c.key} className={`st-cliplist__item${c.key === selectedKey ? " is-active" : ""}`}
+        onClick={() => go("shotlist", { clip: c.key })}>
+        <strong>{c.label}</strong>
+        <small>{fmtTime(c.source_start)}–{fmtTime(c.source_end)} · {c.shot_count} shot · {c.line_count} câu</small>
+        {c.blocking.length > 0 ? <span className="st-pill st-pill--attention">{c.blocking.length} lỗi</span>
+          : c.heard_differs ? <span className="st-pill st-pill--warning">khác nguồn</span> : null}
+      </button>)}
     </nav>
-    {selected && <section className="st-clip">
+    <section className="st-clip">
       {waiting && <div className="st-gatebar">
         <span>Phim đang dừng để bạn duyệt shotlist và material.</span>
         <button type="button" className="st-primary" disabled={!!busy} onClick={() => void act("continue", () => studioApi.continueFilm(film.id))}>Tiếp tục sản xuất</button>
       </div>}
-      <header className="st-clip__head">
-        <div>
-          <h2>{selected.label}</h2>
-          <p>{fmtTime(selected.source_start)}–{fmtTime(selected.source_end)} · {selected.seconds.toFixed(1)} s · {selected.shots.length} shot</p>
-        </div>
-        <div className="st-actions st-actions--tight">
-          {clips[clips.length - 1]?.key !== selected.key && <button type="button" disabled={!!busy || film.revision == null}
-            onClick={() => {
-              const next = clips[clips.findIndex(c => c.key === selected.key) + 1];
-              if (!window.confirm(`Gộp ${selected.label} với ${next.label} thành một clip? Clip gộp sẽ cần đối chiếu lại nguồn và render lại.`)) return;
-              void act(`merge-${selected.key}`, () => studioApi.mergeNext(film.id, selected.key, film.revision!));
-            }}>Gộp với clip sau</button>}
-          <button type="button" disabled={!!busy || film.revision == null || film.review?.in_progress}
-            onClick={() => void act("review", () => studioApi.review(film.id, film.revision!))}>
-            {film.review?.in_progress ? "Đang đối chiếu…" : "Đối chiếu lại với nguồn"}</button>
-        </div>
-      </header>
-      <video key={selected.key} className="st-clip__video" controls preload="metadata"
-        src={`${studioApi.sourceUrl(film.id)}#t=${selected.source_start},${selected.source_end}`} />
-      <FindingList film={film} findings={selected.findings} act={act} busy={busy} />
-      {selected.shots.map(s => <ShotEditor key={`${selected.key}-${s.source_shot}`} film={film} clipKey={selected.key} clipLabel={selected.label} shot={s} act={act} busy={busy} />)}
-    </section>}
+      {error && <p className="st-error">{error}</p>}
+      {!clip || clip.key !== selectedKey ? <p className="st-muted">Đang tải clip…</p> : <>
+        <header className="st-clip__head">
+          <div>
+            <h2>{clip.label}</h2>
+            <p>{fmtTime(clip.source_start)}–{fmtTime(clip.source_end)} · {clip.seconds.toFixed(1)} s · {clip.shots.length} shot</p>
+          </div>
+          <div className="st-actions st-actions--tight">
+            {clip.key !== lastKey && <button type="button" disabled={!!busy || film.revision == null}
+              onClick={() => void act(`merge-${clip.key}`, async () => {
+                const next = clips[position + 1];
+                if (!await confirmChange(() => studioApi.mergeNext(film.id, clip.key, film.revision!, true),
+                  `Gộp ${clip.label} với ${next?.label ?? "clip sau"} thành một clip?`)) return;
+                await studioApi.mergeNext(film.id, clip.key, film.revision!);
+              })}>Gộp với clip sau</button>}
+            <button type="button" disabled={!!busy || film.revision == null || film.review?.in_progress}
+              onClick={() => void act("review", () => studioApi.review(film.id, film.revision!))}>
+              {film.review?.in_progress ? "Đang đối chiếu…" : "Đối chiếu lại với nguồn"}</button>
+          </div>
+        </header>
+        <video key={clip.key} className="st-clip__video" controls preload="metadata"
+          src={`${studioApi.sourceUrl(film.id)}#t=${clip.source_start},${clip.source_end}`} />
+        <FindingList film={film} findings={clip.findings} act={act} busy={busy} />
+        {clip.shots.map((s, i) => <ShotEditor key={`${clip.key}-${s.source_shot}`} film={film} clip={clip} shot={s}
+          isLastOfFilm={clip.key === lastKey && i === clip.shots.length - 1} act={act} busy={busy} reload={load} />)}
+      </>}
+    </section>
   </div>;
 }

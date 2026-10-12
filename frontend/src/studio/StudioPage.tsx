@@ -105,7 +105,8 @@ function Workspace({ id }: { id: string }) {
         <p>{styleLabel(film.settings.style)} · {film.settings.aspect_ratio} · {film.settings.resolution} · {film.stage_label}</p>
       </div>
       {film.cost && <div className="st-cost" title={film.cost.note}>
-        <strong>${film.cost.seedance_usd.toFixed(2)}</strong><small>{film.cost.seconds.toFixed(0)} s Seedance · {film.cost.images} ảnh</small>
+        <strong>${film.cost.seedance_usd.toFixed(2)}{film.cost.budget_usd ? <small> / ${film.cost.budget_usd.toFixed(0)}</small> : null}</strong>
+        <small>{film.cost.seconds.toFixed(0)} s Seedance · {film.cost.images} ảnh{film.cost.left_usd != null ? ` · còn $${film.cost.left_usd.toFixed(2)}` : ""}</small>
       </div>}
       <div className="st-providers" aria-label="Tình trạng nhà cung cấp">
         {film.providers.map(p => <span key={p.name} className={`st-dot st-dot--${p.status}`}

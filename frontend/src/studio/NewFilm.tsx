@@ -2,7 +2,16 @@ import { useState, type ChangeEvent, type DragEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { DEFAULT_RULES, STYLE_PRESETS } from "../store/videoAnalysis";
 import type { FilmStyle } from "../automation/filmStyles";
-import { MOTION_LABEL, uploadFilm, type FilmSettings, type MotionProfile } from "./api";
+import { IMAGE_MODEL_LABELS, MOTION_LABEL, uploadFilm, type FilmSettings, type MotionProfile } from "./api";
+
+const PRESETS_KEY = "flowboard.studio.presets";
+type Preset = { name: string; values: Record<string, unknown> };
+function readPresets(): Preset[] {
+  try { return JSON.parse(localStorage.getItem(PRESETS_KEY) || "[]"); } catch { return []; }
+}
+function writePresets(list: Preset[]) {
+  try { localStorage.setItem(PRESETS_KEY, JSON.stringify(list)); } catch { /* storage unavailable: presets stay for this visit */ }
+}
 
 const LANGUAGES: [string, string][] = [["", "Tự nhận"], ["en", "Tiếng Anh"], ["vi", "Tiếng Việt"], ["zh", "Tiếng Trung"], ["ja", "Tiếng Nhật"], ["ko", "Tiếng Hàn"], ["es", "Tiếng Tây Ban Nha"]];
 
@@ -44,6 +53,26 @@ export function NewFilm() {
   const [reviewMasters, setReviewMasters] = useState(true);
   const [prepareFirst, setPrepareFirst] = useState(false);
   const [longFilm, setLongFilm] = useState(false);
+  const [budget, setBudget] = useState("");
+  const [fallback, setFallback] = useState("gemini-3-pro-image");
+  const [styleNote, setStyleNote] = useState("");
+  const [presets, setPresets] = useState<Preset[]>(readPresets);
+  const values = { style, resolution, ratio, clipSeconds, language, motion, timing, pauseForReview, reviewMasters, prepareFirst, longFilm, budget, fallback, styleNote };
+  function applyPreset(p: Preset) {
+    const v = p.values as Partial<typeof values>;
+    if (v.style) setStyle(v.style); if (v.resolution) setResolution(v.resolution); if (v.ratio) setRatio(v.ratio);
+    if (v.clipSeconds) setClipSeconds(v.clipSeconds); if (v.language !== undefined) setLanguage(v.language);
+    if (v.motion) setMotion(v.motion); if (v.timing) setTiming(v.timing);
+    if (v.pauseForReview !== undefined) setPauseForReview(v.pauseForReview); if (v.reviewMasters !== undefined) setReviewMasters(v.reviewMasters);
+    if (v.prepareFirst !== undefined) setPrepareFirst(v.prepareFirst); if (v.longFilm !== undefined) setLongFilm(v.longFilm);
+    if (v.budget !== undefined) setBudget(v.budget); if (v.fallback !== undefined) setFallback(v.fallback); if (v.styleNote !== undefined) setStyleNote(v.styleNote);
+  }
+  function savePreset() {
+    const name = window.prompt("Tên preset (ví dụ: Anime 1:1 phim dài)")?.trim();
+    if (!name) return;
+    const next = [...presets.filter(p => p.name !== name), { name, values }];
+    setPresets(next); writePresets(next);
+  }
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState(false);
@@ -68,6 +97,9 @@ export function NewFilm() {
       ...(clipSeconds > 15 ? { clip_max_shots: 12 } : {}),
       ...(minutes.trim() && opening > 0 ? { generate_seconds: Math.max(10, Math.round(opening * 60)) } : {}),
       ...(longFilm ? { catalog_parallel: 4 } : {}),
+      ...(budget.trim() && Number(budget.replace(",", ".")) > 0 ? { budget_usd: Number(budget.replace(",", ".")) } : {}),
+      ...(fallback ? { image_fallback_model: fallback } : {}),
+      ...(styleNote.trim() ? { style_note: styleNote.trim() } : {}),
     };
     const text = STYLE_PRESETS.find(p => p.key === style)?.text ?? DEFAULT_RULES.visual_style;
     setError(""); setProgress(0);
@@ -91,6 +123,13 @@ export function NewFilm() {
       {file ? <span><strong>{file.name}</strong><small>{(file.size / 1e6).toFixed(1)} MB · bấm để đổi file</small></span>
         : <span><strong>Kéo video vào đây</strong><small>hoặc bấm để chọn file (.mp4, .mov)</small></span>}
     </label>
+    <div className="st-presets">
+      <select aria-label="Preset" value="" onChange={e => { const p = presets.find(x => x.name === e.target.value); if (p) applyPreset(p); }}>
+        <option value="">{presets.length ? "Dùng preset…" : "Chưa có preset"}</option>
+        {presets.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+      </select>
+      <button type="button" className="st-link" onClick={savePreset}>Lưu thiết lập này thành preset</button>
+    </div>
     <label className="st-field">
       <span>Tên phim</span>
       <input value={name} onChange={e => setName(e.target.value)} placeholder="Ví dụ: Unexpected Pregnancy — tập 1" />
@@ -138,6 +177,23 @@ export function NewFilm() {
       <span>Đổi bối cảnh <small>(tuỳ chọn)</small></span>
       <textarea rows={2} value={environment} onChange={e => setEnvironment(e.target.value)} placeholder="Ví dụ: chuyển văn phòng sang toà nhà cổ ở Kyoto" />
     </label>
+    <label className="st-field">
+      <span>Ghi chú phong cách <small>(tuỳ chọn, thêm vào mọi sheet và prompt)</small></span>
+      <textarea rows={2} value={styleNote} onChange={e => setStyleNote(e.target.value)} placeholder="Ví dụ: tông màu ấm, hạt phim nhẹ" />
+    </label>
+    <div className="st-row">
+      <label className="st-field">
+        <span>Trần chi phí Seedance (USD)</span>
+        <input inputMode="decimal" value={budget} onChange={e => setBudget(e.target.value)} placeholder="Để trống = không giới hạn" />
+      </label>
+      <label className="st-field">
+        <span>Khi model ảnh bị chặn, vẽ bằng</span>
+        <select value={fallback} onChange={e => setFallback(e.target.value)}>
+          <option value="">Không tự chuyển</option>
+          {Object.entries(IMAGE_MODEL_LABELS).filter(([k]) => k).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+        </select>
+      </label>
+    </div>
     <Choice<"full_take" | "source_duration"> label="Khi ghép phim" value={timing} onChange={setTiming}
       options={[["full_take", "Giữ trọn bản gen"], ["source_duration", "Cắt đúng thời lượng gốc"]]} />
     <fieldset className="st-gates">
