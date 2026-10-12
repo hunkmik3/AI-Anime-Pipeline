@@ -43,6 +43,9 @@ async def generate(payload, progress=None):
                 if process.returncode is None: process.kill()
                 await process.wait(); raise
         await media.command('ffmpeg','-v','error','-i',temporary,'-f','null','-')
+        # The worker's opt-in layers (pose frames, measured camera per shot) stay beside the video.
+        sidecar = Path(str(temporary) + '.layers.json')
+        if sidecar.exists(): sidecar.replace(root / 'layers.json')
         temporary.replace(output)
     from flowboard.services import automation, media as library
     from flowboard.services.flowstudio import r2
@@ -55,9 +58,11 @@ async def generate(payload, progress=None):
     media_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'flowboard:motion:' + sha))
     if not await asyncio.to_thread(library.ingest_inline_bytes, media_id, output.read_bytes(), kind='video', mime='video/mp4'):
         raise ValueError('Không lưu được video chuyển động vào thư viện KYC.')
+    layers = json.loads((root / 'layers.json').read_text()) if (root / 'layers.json').exists() else None
+    method = 'relative_depth_clay' + ('+pose' if layers and layers.get('pose') else '') + ('+camera' if layers and 'camera' in layers else '')
     result = {'url': url, 'media_id': media_id, 'sha256': sha, 'input_digest': pm.digest(payload),
               'duration_s': payload['end']-payload['start'], 'source_sha256':payload['source_sha256'],
-              'local_path':str(output), 'has_audio':False, 'method':'relative_depth_clay'}
+              'local_path':str(output), 'has_audio':False, 'method':method, **({'layers': layers} if layers else {})}
     from flowboard.services.video_analyzer.one_pass_film import atomic
     atomic(receipt, result)
     return result

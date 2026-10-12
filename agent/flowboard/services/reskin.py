@@ -32,6 +32,19 @@ def max_seconds(board) -> float:
 # About 3x faster per clip than the standard render; boards without it keep their exact
 # standard payload, so nothing already made is rendered again.
 FAST_RENDER = {'depth_long_side': 448, 'fps': 24, 'depth_stride': 2}
+# "4D blocking" layers over the clay (opt-in): limbs drawn as shaded mannequin tubes from
+# per-frame body keypoints, and a measured camera track per shot (pan, tilt, zoom, roll,
+# shake). Monochrome and identity-free like the clay itself.
+POSE_RENDER = {'pose': True, 'camera': True}
+MOTION_RENDERS = {'fast': FAST_RENDER, 'pose': POSE_RENDER, 'fast_pose': {**FAST_RENDER, **POSE_RENDER}}
+MOTION_PROFILES = ('standard', 'fast', 'pose', 'fast_pose')
+
+
+def motion_profile(board, key: str) -> str:
+    """A clip's own motion profile (its video node), else the board's, else standard."""
+    video = next((n.get('data') or {} for n in board.get('nodes', []) if n.get('id') == 'vid:' + key), {})
+    profile = video.get('motionProfile') or board.get('motionProfile') or 'standard'
+    return profile if profile in MOTION_PROFILES else 'standard'
 POLICY = '''SOURCE MOTION / TARGET DESIGN CONTROL
 @video1 is a silent depth-shaded motion reference of the selected original shots.
 Follow its cut order, camera motion, framing, actions, eyelines, prop custody and
@@ -115,7 +128,12 @@ def motion_payload(board, package):
             'shot_ids': [s.get('source_shots') or [s.get('source_shot')] for s in shots],
             'source_review_digest': digest([r for r in (board.get('reskinSourceReview') or {}).get('receipts',[])
                                            if r.get('clip') == package['sequence_key']]),
-            **({'fps': FAST_RENDER['fps'], 'render': FAST_RENDER} if board.get('motionProfile') == 'fast' else {'fps': 30})}
+            **_render(motion_profile(board, package['sequence_key']))}
+
+
+def _render(profile: str) -> dict:
+    render = MOTION_RENDERS.get(profile)
+    return {'fps': render.get('fps', 30), 'render': render} if render else {'fps': 30}
 
 
 REVIEW_STALE_SECONDS = 2 * 3600

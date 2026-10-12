@@ -37,7 +37,8 @@ class FilmOptions(BaseModel):
     # Story segments catalogued this many at a time (1 = one pass in film order).
     catalog_parallel: int = Field(default=1, ge=1, le=8)
     # 'fast' renders the white-model video with coarser depth at 24 fps (long films).
-    motion_profile: str = Field(default='standard', pattern='^(standard|fast)$')
+    # 'pose' / 'fast_pose' add the mannequin limbs and the measured camera track to the clay.
+    motion_profile: str = Field(default='standard', pattern='^(standard|fast|pose|fast_pose)$')
     image_parallel: int = Field(default=16, ge=1, le=64)
     video_parallel: int = Field(default=16, ge=1, le=64)
     max_images: int = Field(default=500, ge=0, le=10000)
@@ -182,7 +183,7 @@ def graph(out, options):
         "sourceVideoId": out["source_video_id"],
         **({'motionReference':'white_model','reskinVersion':'source-motion-reskin-v1',
             **({'reskinMaxSeconds':min(float(opt.clip_seconds),30.0)} if float(opt.clip_seconds) > 15 else {}),
-            **({'motionProfile':'fast'} if opt.motion_profile == 'fast' else {})} if opt.pipeline == 'reskin_v1' else {}),
+            **({'motionProfile':opt.motion_profile} if opt.motion_profile != 'standard' else {})} if opt.pipeline == 'reskin_v1' else {}),
         "style": opt.style,
         "preserveSourceShots": True,
         "stateSpecificReferences": bool(out.get('state_specific_references')),
