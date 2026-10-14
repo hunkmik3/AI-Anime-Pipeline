@@ -29,6 +29,7 @@ export interface FilmSettings {
   resolution?: string;
   clip_seconds?: number;
   clip_max_shots?: number;
+  clip_min_seconds?: number;
   timing_policy?: "full_take" | "source_duration";
   motion_profile?: MotionProfile;
   generate_seconds?: number;

@@ -8,8 +8,7 @@ each group's mean. A group is a voice: V1 is the largest.
 ``voice_confidence`` per line:
 
 * ``high`` — an anchor in a group of at least three anchors, close to its group (measured
-  without itself) and clearly closer to it than to any other group. The same voice with
-  high confidence is the same person everywhere in the film.
+  without itself) and clearly closer to it than to any other group. This confidence measures cluster fit, not proof of a person’s identity.
 * ``low`` — nearest to one group by a margin: a hint, not proof.
 * ``none`` — the audio cannot tell (very short, quiet or overlapped speech).
 
@@ -17,10 +16,9 @@ Lines recovered from captions are quiet or overlapped by nature and are never an
 Unsure lines can be heard once by Gemini through Atrium (``listen``), who picks a voice
 by ear; that answer stays a hint.
 
-A person can still have two voices here (a phone, a bathroom's echo). The catalog maps
-voices to characters; ``reconcile`` then makes every high-confidence line of a voice speak
-as the character most of that voice's high-confidence lines were given, with a receipt
-per change. A voice whose lines are split between people is left alone and reported.
+A person can have several clusters, and one cluster can contain several people.
+Only unanimous, repeated local bindings are exposed as identity hints. A cluster vote
+never overwrites a catalog speaker; contradictions remain for original AV review.
 """
 from __future__ import annotations
 
@@ -39,7 +37,6 @@ ANCHOR_SPEECH_S = 1.0
 ANCHOR_WORDS = 3
 HIGH_SIM, HIGH_MARGIN, HIGH_GROUP = 0.4, 0.1, 3
 LOW_SIM, LOW_MARGIN = 0.3, 0.05
-MAJORITY = 0.7             # share of a voice's high lines that must agree before it is enforced
 
 
 def _digest(value) -> str:
@@ -509,8 +506,7 @@ def _listening_summary(answer: dict, table: list[dict]) -> dict:
 # ── consistency after the catalog ────────────────────────────────────────────
 
 def bindings(line_speakers: dict, track: list[dict]) -> dict:
-    """Whom the catalog has so far given each voice, counting high-confidence lines:
-    ``{voice: {asset_id, label, lines, of}}`` for the character most of them went to."""
+    """Repeated, unanimous catalog identity hints for high-confidence clusters."""
     count: dict[str, dict[str, list]] = {}
     for line in track:
         if line.get('voice_confidence') != 'high' or not line.get('voice'):
@@ -522,85 +518,22 @@ def bindings(line_speakers: dict, track: list[dict]) -> dict:
     out = {}
     for voice, c in sorted(count.items()):
         aid, (label, n) = max(c.items(), key=lambda kv: kv[1][1])
-        out[voice] = {'asset_id': aid, 'label': label, 'lines': n, 'of': sum(v[1] for v in c.values())}
+        # A mixed cluster is not an identity mapping, even with a large majority.
+        # One observed line is also insufficient for a film-wide identity hint.
+        if len(c) == 1 and n >= 3:
+            out[voice] = {'asset_id': aid, 'label': label, 'lines': n, 'of': n,
+                          'basis': 'unanimous catalog observations; acoustic hint only'}
     return out
 
 
 def reconcile(catalog_shots: dict, shots: list[dict], visible: set[str] | frozenset = frozenset({'visible'})) -> list[dict]:
-    """One person per voice: make each high-confidence line of a voice speak as the
-    character most of that voice's high-confidence lines were given. In place on the
-    catalog's ``speakers``; returns receipts. A voice with fewer than three bound lines,
-    or no clear majority, is left as the catalog had it. A majority that conflicts
-    with local on-camera mouth evidence is also left alone: a voice cluster can
-    contain two people. ``disputes`` retains that conflict for source review."""
-    lines: dict[str, list[tuple[str, int]]] = {}       # line id -> [(shot key, speaker index)]
-    voice_of: dict[str, str] = {}
-    for shot in shots:
-        for k, piece in enumerate(shot.get('dialogue_pieces') or []):
-            lid = piece.get('line_id')
-            if not lid:
-                continue
-            lines.setdefault(lid, []).append((str(shot['shot']), k))
-            if piece.get('voice') and piece.get('voice_confidence') == 'high':
-                voice_of[lid] = piece['voice']
+    """Compatibility hook: cluster majority alone never rewrites a speaker.
 
-    def speaker(at):
-        speakers = (catalog_shots.get(at[0]) or {}).get('speakers') or []
-        return speakers[at[1]] if at[1] < len(speakers) and isinstance(speakers[at[1]], dict) else None
-
-    receipts = []
-    by_voice: dict[str, list[str]] = {}
-    for lid, voice in voice_of.items():
-        by_voice.setdefault(voice, []).append(lid)
-    for voice, lids in by_voice.items():
-        bound = {}
-        for lid in lids:
-            first = speaker(lines[lid][0])
-            if first and first.get('asset_id'):
-                bound.setdefault(first['asset_id'], []).append(lid)
-        total = sum(len(v) for v in bound.values())
-        if total < 3:
-            continue
-        winner, winners = max(bound.items(), key=lambda kv: len(kv[1]))
-        if len(winners) / total < MAJORITY:
-            continue
-        # Voice clustering is evidence, not proof of character identity. Do not
-        # erase a visible speaker (or another piece of their continued line) to
-        # satisfy a vote dominated by a different scene. Keep the entire disputed
-        # group unchanged, including offscreen pieces; the source reviewer can
-        # resolve it using the original audiovisual interval.
-        def contradicts_local_mouth(at):
-            s = speaker(at)
-            row = catalog_shots.get(at[0]) or {}
-            if not s or not s.get('asset_id') or s['asset_id'] == winner:
-                return False
-            own = set(row.get('evidence_ids') or [])
-            evidence = set(s.get('evidence_ids') or [])
-            return (s.get('delivery') == 'on_camera' and s.get('mouth_visible') is True
-                    and bool(evidence) and evidence <= own
-                    and any(p.get('asset_id') == s['asset_id'] and p.get('visibility') == 'visible'
-                            for p in row.get('asset_presence') or []))
-        if any(contradicts_local_mouth(at) for lid in lids for at in lines[lid]):
-            continue
-        label = next(s.get('label') for lid in winners for s in [speaker(lines[lid][0])] if s)
-        for lid in lids:
-            for at in lines[lid]:
-                s = speaker(at)
-                if not s or s.get('asset_id') == winner:
-                    continue
-                presence = {p.get('asset_id'): p for p in (catalog_shots.get(at[0]) or {}).get('asset_presence') or []}
-                delivery = s.get('delivery')
-                if delivery != 'voice_over':
-                    delivery = 'on_camera' if (presence.get(winner) or {}).get('visibility') in visible else 'offscreen'
-                receipts.append({'line_id': lid, 'shot': int(at[0]), 'voice': voice,
-                                 'from': {k: s.get(k) for k in ('asset_id', 'label', 'delivery')},
-                                 'to': {'asset_id': winner, 'label': label, 'delivery': delivery},
-                                 'basis': f'{len(winners)} of {total} high-confidence lines of {voice}'})
-                s.update(asset_id=winner, label=label, delivery=delivery)
-                if delivery != 'on_camera':
-                    s.pop('mouth_visible', None)
-                    s.pop('evidence_ids', None)
-    return receipts
+    ``disputes`` preserves conflicts for source AV review. In particular, an
+    offscreen line has no visible mouth to contradict a bad majority, so lack
+    of visible evidence must not be interpreted as permission to relabel it.
+    """
+    return []
 
 
 def disputes(catalog_shots: dict, shots: list[dict]) -> list[dict]:

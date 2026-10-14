@@ -520,8 +520,12 @@ def advance(s, run, project, all_jobs):
     if shared: raise Blocked('; '.join(shared))
     if held and len(held)==len(packs): raise Blocked('; '.join(f'{k}: {e}' for k,v in held.items() for e in v))
     # A clip held by its own source findings waits; every other clip is produced now.
-    usable=lambda ps:[p for p in ps if p['sequence_key'] not in held]
-    packs=usable(packs);specs=material_specs(board,packs)
+    usable=lambda ps:[p for p in ps if p['sequence_key'] not in held and p['sequence_key'] not in reviewing]
+    packs=usable(packs)
+    if not packs and reviewing:
+        state.update(stage='source_review',source_pending=sorted(reviewing))
+        return state,'running'
+    specs=material_specs(board,packs)
     if held: state['source_holds']=held
     else: state.pop('source_holds',None)
     if reviewing: state['source_pending']=sorted(reviewing)
@@ -542,6 +546,10 @@ def advance(s, run, project, all_jobs):
     ready={};waiting=False;errors=[];failed_materials=set()
     state['stage']='materials'
     for key,spec in specs.items():
+        if any(d in failed_materials for d in spec['deps']):
+            failed_materials.add(key)
+            errors.append('Material dependency failed: '+key)
+            continue
         if any(d not in ready for d in spec['deps']): waiting=True;continue
         fixtures=set_fixtures(board,spec['asset_id']) if spec['kind']=='environment' else []
         deps=[ready[d] for d in spec['deps']];plate=spec['plate'];signature=pm.digest({'item':spec['item'],'deps':[{k:v for k,v in d.items() if k!='media_id'} for d in deps],'slot':spec['slot'],
@@ -747,7 +755,7 @@ def advance(s, run, project, all_jobs):
         # Settle the run only when every clip is done or held for a stated reason.
         settled=(completed if config['mode']=='prepare' else set(clips)|set(holds))|failed_clips|set(material_holds)
         errors=errors+[f'{k}: sheet failed — '+'; '.join(v)[:400] for k,v in material_holds.items()]
-        if len(settled)<len(packs):
+        if len(settled)<len(packs) or reviewing:
             if errors: state['errors']=errors
             return state,'running'
         if errors:
@@ -801,6 +809,11 @@ def resume_settled(run_id):
 
 def tick(run_id):
     with get_session() as s:
+        # SQLite ignores SELECT FOR UPDATE. Serialize the short scheduling
+        # transaction across processes before reading, as Postgres row locks do.
+        if s.bind.dialect.name == 'sqlite':
+            from sqlalchemy import text
+            s.execute(text('BEGIN IMMEDIATE'))
         initial=s.get(AutomationJob,run_id)
         if not initial or initial.status!='running':return
         project=s.exec(select(AutomationProject).where(AutomationProject.id==initial.project_id).with_for_update(skip_locked=True)).first()

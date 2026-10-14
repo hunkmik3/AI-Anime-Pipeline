@@ -73,7 +73,9 @@ def overlay(board, jobs):
     original_board = board
     board=deepcopy(board);nodes={n['id']:n.get('data',{}) for n in board.get('nodes',[])}
     latest={}
-    for j in sorted(jobs,key=lambda x:x.created_at):
+    # SQLite reloads UTC timestamps without tzinfo; newly created bindings still
+    # carry it. Normalize both before overlaying mixed persisted/new results.
+    for j in sorted(jobs,key=lambda x:x.created_at.replace(tzinfo=timezone.utc) if x.created_at.tzinfo is None else x.created_at):
         # Retain an obsolete text attempt in history without replacing the
         # reviewed draft actually used by a submitted generation.
         if j.kind=='write' and j.prepared.get('superseded_by_generation'):

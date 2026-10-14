@@ -42,7 +42,7 @@ export function NewFilm() {
   const [style, setStyle] = useState<FilmStyle>("anime_jp_modern" as FilmStyle);
   const [resolution, setResolution] = useState("480p");
   const [ratio, setRatio] = useState("1:1");
-  const [clipSeconds, setClipSeconds] = useState(15);
+  const [clipSeconds, setClipSeconds] = useState(20);
   const [language, setLanguage] = useState("");
   const [minutes, setMinutes] = useState("");
   const [motion, setMotion] = useState<MotionProfile>("standard");
@@ -94,7 +94,7 @@ export function NewFilm() {
       motion_profile: motion, kyc: true, unmoderated: true, review_masters: reviewMasters,
       pause_for_review: pauseForReview, prepare_before_render: prepareFirst,
       casting_request: casting.trim(), environment_request: environment.trim(),
-      ...(clipSeconds > 15 ? { clip_max_shots: 12 } : {}),
+      clip_max_shots: 12, clip_min_seconds: Math.min(12, clipSeconds),
       ...(minutes.trim() && opening > 0 ? { generate_seconds: Math.max(10, Math.round(opening * 60)) } : {}),
       ...(longFilm ? { catalog_parallel: 4 } : {}),
       ...(budget.trim() && Number(budget.replace(",", ".")) > 0 ? { budget_usd: Number(budget.replace(",", ".")) } : {}),
@@ -147,7 +147,7 @@ export function NewFilm() {
     </div>
     <div className="st-row">
       <Choice<number> label="Clip dài tối đa" value={clipSeconds} onChange={setClipSeconds} options={[[15, "15 s"], [20, "20 s"], [30, "30 s"]]}
-        hint={clipSeconds > 15 ? "Clip dài từng làm rơi thoại ở bản thử; nên giữ 15 s." : "Đã kiểm chứng trên phim 1011."} />
+        hint="Ưu tiên đoạn 12 giây trở lên, kết ở điểm cắt ngoài câu thoại; cảnh ngắn vẫn giữ nguyên. Thời lượng dài hơn cần kiểm tra bản gen." />
       <label className="st-field">
         <span>Chuyển động (clay)</span>
         <select value={motion} onChange={e => setMotion(e.target.value as MotionProfile)}>

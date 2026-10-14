@@ -1,0 +1,292 @@
+{
+  "checkpoint_date": "2026-10-14",
+  "branch": "claude/reskin-long-film",
+  "base_commit": "156c0192a01a20e6b2ae2b5e782f6b6893baef14",
+  "scope": "Application source/dialogue fixes and sequence planning, plus standalone depth export and a record of the local 1011 film trial. Not all manual trial corrections are app features.",
+  "trial_directory": "pipeline-tests/1011-rest-after-v-v1",
+  "source": {
+    "filename": "1011(2).mov",
+    "sha256": "4a13f56b292575df42b401ebf981c6ae21c059df879928e17db19a9dbdad8d9d",
+    "duration_s": 371.8
+  },
+  "owner_choices": {
+    "style": "Japanese drawn 2D anime",
+    "ratio": "1:1",
+    "nathan": "Adult Black man; no necklace after the transfer; bare wrists after the bangle is pocketed.",
+    "woman_in_house": "Owner-approved opaque modest red nightdress.",
+    "status": "These are bound trial designs/continuity facts, not a newly implemented global app rule."
+  },
+  "selected_takes": [
+    {
+      "label": "W",
+      "take": "clip-w",
+      "source_start": 238.533,
+      "source_end": 248.0,
+      "source_shots": [
+        117,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123
+      ],
+      "generated_path": "clips/clip-w/video.mp4",
+      "generated_sha256": "95f1ec49e6ce8340a1d6cc960cf8fa9544f451e030edb404c901584497f47858",
+      "duration_s": 10.08
+    },
+    {
+      "label": "X",
+      "take": "clip-x-edit-v4",
+      "source_start": 248.0,
+      "source_end": 262.367,
+      "source_shots": [
+        124,
+        125,
+        126,
+        127,
+        128,
+        129,
+        130,
+        131,
+        132
+      ],
+      "generated_path": "clips/clip-x-edit-v4/video.mp4",
+      "generated_sha256": "8292afb84b6d16c5475f87db0d652dfb271949472c23837c7b83ab945388b576",
+      "duration_s": 15.072
+    },
+    {
+      "label": "Y",
+      "take": "clip-y-v2",
+      "source_start": 262.367,
+      "source_end": 276.433,
+      "source_shots": [
+        133,
+        134,
+        135,
+        136,
+        137,
+        138,
+        139,
+        140,
+        141,
+        142,
+        143,
+        144,
+        145,
+        146
+      ],
+      "generated_path": "clips/clip-y-v2/video.mp4",
+      "generated_sha256": "cc7b919a0be7aeb0c6ef120bfe5474d33f4645c67873d45a03ca82ce1b13d8af",
+      "duration_s": 15.072
+    },
+    {
+      "label": "Z",
+      "take": "clip-z",
+      "source_start": 276.433,
+      "source_end": 288.6,
+      "source_shots": [
+        147,
+        148,
+        149,
+        150,
+        151,
+        152
+      ],
+      "generated_path": "clips/clip-z/video.mp4",
+      "generated_sha256": "5f704531d608a887cbdc6399839d792c053cc5ff4e016cd17c558ce30b549401",
+      "duration_s": 13.056
+    },
+    {
+      "label": "AA",
+      "take": "clip-aa",
+      "source_start": 288.6,
+      "source_end": 298.833,
+      "source_shots": [
+        153,
+        154,
+        155,
+        156
+      ],
+      "generated_path": "clips/clip-aa/video.mp4",
+      "generated_sha256": "cde324703d6c79474e3e5030344058caaba6c5e23177b82dd0cfd6e7b85210fa",
+      "duration_s": 11.072
+    },
+    {
+      "label": "AB",
+      "take": "clip-ab",
+      "source_start": 298.833,
+      "source_end": 309.767,
+      "source_shots": [
+        157,
+        158,
+        159,
+        160
+      ],
+      "generated_path": "clips/clip-ab/video.mp4",
+      "generated_sha256": "9b3915a505cc48ae57d2e24d416e9db895c61f7138026d4e21b316292a9a1886",
+      "duration_s": 11.041667
+    },
+    {
+      "label": "AC",
+      "take": "clip-ac-v2",
+      "source_start": 309.767,
+      "source_end": 320.133,
+      "source_shots": [
+        161,
+        162,
+        163
+      ],
+      "generated_path": "clips/clip-ac-v2/video.mp4",
+      "generated_sha256": "2aa4422276b00db99e987f6a9bbcc4c584070b85d8d73ade10327940f76cbeb3",
+      "duration_s": 11.072
+    },
+    {
+      "label": "AD",
+      "take": "clip-ad",
+      "source_start": 320.133,
+      "source_end": 328.367,
+      "source_shots": [
+        164,
+        165,
+        166
+      ],
+      "generated_path": "clips/clip-ad/video.mp4",
+      "generated_sha256": "b4862355b1d3ec64233a93a75221b50db73c3cd52633aef85656c437ab466b21",
+      "duration_s": 9.056
+    },
+    {
+      "label": "AE",
+      "take": "clip-ae",
+      "source_start": 328.367,
+      "source_end": 339.467,
+      "source_shots": [
+        167,
+        168,
+        169,
+        170
+      ],
+      "generated_path": "clips/clip-ae/video.mp4",
+      "generated_sha256": "c8321a4e97bee8a5196859cae11c626fa3073d2344ea17e9e923f39416c9ee6d",
+      "duration_s": 12.064
+    },
+    {
+      "label": "AF",
+      "take": "clip-af",
+      "source_start": 339.467,
+      "source_end": 353.867,
+      "source_shots": [
+        171,
+        172,
+        173,
+        174,
+        175,
+        176
+      ],
+      "generated_path": "clips/clip-af/video.mp4",
+      "generated_sha256": "fe87d6331b1d497ffbd74df9e4a4625f96592d02a060e2f40bd81c55658bcbd5",
+      "duration_s": 15.072
+    },
+    {
+      "label": "AG",
+      "take": "clip-ag-v2",
+      "source_start": 353.867,
+      "source_end": 364.633,
+      "source_shots": [
+        177,
+        178,
+        179,
+        180,
+        181,
+        182
+      ],
+      "generated_path": "clips/clip-ag-v2/video.mp4",
+      "generated_sha256": "43caac1e70ea4883305a3dcedf048c21c5f89a2e621b024d5b1db6ade55a50a8",
+      "duration_s": 11.072
+    },
+    {
+      "label": "AH",
+      "take": "clip-ah-v2",
+      "source_start": 364.633,
+      "source_end": 371.8,
+      "source_shots": [
+        183,
+        184,
+        185,
+        186,
+        187,
+        188,
+        189
+      ],
+      "generated_path": "clips/clip-ah-v2/video.mp4",
+      "generated_sha256": "2d618bc941f7c285fb757d8505c53c9482acd4d221ab0a3c540688356409eac1",
+      "duration_s": 8.064
+    }
+  ],
+  "assemblies": {
+    "status": "preview_not_delivery_certified",
+    "new_clip_count": 12,
+    "new_generated_duration_s": 141.825,
+    "full_generated_duration_s": 392.342,
+    "sha256": {
+      "remaining-w-ah-preview.mp4": "0d15c7b1f90a5e12044b5ecd24e76af48971ff1725ff17f4c66740026ec20fd6",
+      "full-film-preview.mp4": "d880c28d2db8720768c7fc826e5c3e1f316cecc9153efe5832c915d246321593"
+    },
+    "limitations": [
+      "Y retains misaligned shout/action timing and conflicting word-count observations.",
+      "Some source camera/framing/performance differences persist; see output-review.json.",
+      "Prefix was accepted earlier; its historic issues retained, not re-certified by this run.",
+      "Automated AV review is evidence, not approval. All raw takes/reports retained."
+    ]
+  },
+  "depth_export": {
+    "model": "Depth Anything V2 Small",
+    "model_source": "https://github.com/DepthAnything/Depth-Anything-V2",
+    "model_commit": "a561b849ebae10a6f5ef49e26c83cbbcd36c71bf",
+    "checkpoint_sha256": "715fade13be8f229f8a70cc02066f656f2423a59effd0579197bbf57860e1378",
+    "source_sha256": "d880c28d2db8720768c7fc826e5c3e1f316cecc9153efe5832c915d246321593",
+    "output_sha256": "860235adebc41d3f903367929663614e64e4b6d710f9dc8154e8877fe8328031",
+    "output_size": [
+      640,
+      640
+    ],
+    "frames": 9408,
+    "duration_s": 392.298333,
+    "max_frame_timestamp_error_s": 0.0,
+    "verification": "All frames decoded; frame count and every relative timestamp matched source.",
+    "depth_convention": "relative inverse depth; white=near, black=far; not metric distances",
+    "normalization": "per-frame robust 2nd–98th percentile; no clay lighting, no face smoothing, no frame interpolation",
+    "elapsed_s": 881.27,
+    "limitations": [
+      "Single-image depth estimates may flicker in animated details and cannot measure real distances.",
+      "Depth is estimated from the final generated film, so its original content defects are unchanged."
+    ]
+  },
+  "generated_output_findings": {
+    "W": "Không phát hiện thêm thoại trong lượt nghe lại và ASR. Dây đeo tay được cất đi; cổ trống. Đoạn fade cuối nguồn chưa được tái hiện đầy đủ.",
+    "X": "Đã bỏ lỗi lặp câu, sửa âm “minds” bằng take đã phát âm đúng và ghép lại góc vào phòng. Cú lia đầu rất ngắn vẫn chưa sát nguồn.",
+    "Y": "Greg đã được giữ kín đến đoạn lộ mặt cuối. Nhịp hét, số tiếng hét nhận diện và một số điểm cắt/động tác vẫn chưa khớp; chưa chốt chất lượng clip này.",
+    "Z": "Lượt nghe lại ghi đủ thoại. Khung hình có lúc để lộ cây gậy nhiều hơn nguồn; chi tiết râu Greg hơi đơn giản.",
+    "AA": "Lượt nghe lại ghi đủ thoại; nét mặt Nathan còn cười nhẹ hơn diễn xuất gốc ở vài nhịp.",
+    "AB": "Thoại ghi nhận đủ; “punchline” và “punch line” là khác cách chép, không phải thêm hoặc thiếu câu.",
+    "AC": "Bản sửa đã bỏ góc toàn phát sinh ở đầu và giữ nền đúng phía nhân vật. Tuy vậy, shot 162 còn thành khung hai người rộng hơn nguồn; hướng vai tiền cảnh ở shot 162–163 bị đổi bên.",
+    "AD": "Lượt nghe lại ghi đủ thoại. Phông cửa sổ/nền xanh còn khác chi tiết với nguồn.",
+    "AE": "ASR ghi đủ thoại theo bản khóa. Một lượt nghe khác chép “you were” thay “you’re”; giữ ghi chú bất đồng này.",
+    "AF": "Lượt nghe lại ghi đủ thoại. Các khung đối chiếu giữ một điện thoại; vị trí tay và nhịp khẩu hình chưa được chứng nhận từng frame.",
+    "AG": "Bản sửa đã bỏ câu đuổi khách bị lặp. Có cảnh cận tay cần lưu ý; vị trí và hướng nắm trên khung đối chiếu bám nguồn.",
+    "AH": "Bản sửa đã bỏ các câu đe dọa bị lặp, giữ Greg nói và Nathan nghe. Giữ lại cú lia từ tay lên mặt cùng cảnh Greg ở cuối."
+  },
+  "retained_locally": [
+    "Source and generated media",
+    "Materials and prompts for each take",
+    "Original review findings and correction receipts",
+    "Database, credentials and model caches"
+  ],
+  "validation": {
+    "backend": "207 tests passed in a fresh isolated SQLite harness with mocked providers; no live provider generation or production DB access. This is not a full Postgres integration run.",
+    "frontend": "TypeScript and Vite production build passed. Existing bundle-size/dynamic-import warnings remain.",
+    "depth_export_cli": "12-frame native MPS smoke export passed; every frame timestamp matched. Original full-film export independently completed 9,408 frames with zero relative-timestamp error.",
+    "diff_check": "passed",
+    "test_fixture_correction": "character_states defaults to a dictionary in source-repair tests, matching production schema."
+  }
+}

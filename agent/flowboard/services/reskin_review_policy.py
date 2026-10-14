@@ -1,16 +1,9 @@
-"""Which reskin source-review findings stop a clip, and which only inform it.
+"""Source findings that gate a reskin clip.
 
-A reskin clip takes every shot's cuts, camera, framing, blocking, screen positions and set
-geometry from the white-model video rendered from the source pixels; the writer drops
-those texts. What the clay cannot carry must be right before a clip is generated: the
-words, who says them and how, who is on screen and what they wear. So a finding about
-speech or identity stops its own clip, and every other clip goes on. A finding about
-camera, positions, set wording or cut timing is shown as a warning, as are the model's
-free-text notes (its real problems also arrive as criterion statuses) and differences
-that are only spellings of one spoken form or an interjection.
-
-The owner can accept a blocking finding. An acceptance is keyed to that finding in that
-receipt, so it lapses as soon as the shot is edited and reviewed again.
+Source motion is a conditioning reference, not proof that a mistaken shotlist is safe.
+Unresolved measured cuts, framing, action, identity, props and speech block their clip.
+Informational reviewer notes and supported delivery changes at cuts remain visible.
+Owner dispositions stay keyed to their exact source receipt and expire on source edits.
 """
 from __future__ import annotations
 
@@ -20,11 +13,11 @@ from flowboard.services import production_manifest as pm
 from flowboard.services.video_analyzer.source_integrity import comparison_tokens
 
 BOARD_KEY = 'reskinFindingDispositions'
-# Carried by the white-model motion video, so never a reason to stop a reskin clip.
+# Geometric criteria also require source review; motion conditioning is not approval.
 MOTION_CARRIED = frozenset({'cuts_timing', 'framing_camera', 'action_positions', 'environment_props'})
-WARNING_ORIGINS = frozenset({'model_note', 'boundary', 'speech_position', 'speech_delivery_cut', 'speech_interjection',
-                             'speech_spelling', 'speech_boundary', 'criterion_missing'})
-BLOCKING_ORIGINS = frozenset({'speech_words', 'speech_speaker'})
+WARNING_ORIGINS = frozenset({'model_note', 'boundary', 'speech_delivery_cut'})
+BLOCKING_ORIGINS = frozenset({'speech_words', 'speech_speaker', 'speech_position',
+                              'speech_interjection', 'speech_spelling', 'speech_boundary'})
 
 # Spellings of one spoken form: the clip speaks the shotlist's words either way.
 SPOKEN_FORMS = {
@@ -49,36 +42,18 @@ def spoken(text) -> list[str]:
     return [t for token in comparison_tokens(text) for t in SPOKEN_FORMS.get(token, token).split()]
 
 
-def _spelling(a: str, b: str) -> bool:
-    """Two hearings of one long word (a name, mostly): 'norriston' / 'norston'."""
-    from difflib import SequenceMatcher
-    return min(len(a), len(b)) >= 5 and SequenceMatcher(None, a, b).ratio() >= .75
-
-
 def word_difference(expected: list[str], heard: list[str], *, edges=(False, False)) -> str | None:
-    """None when the words agree; a warning origin when they differ only by
-    interjections ('speech_interjection'), by hearings of one long word
-    ('speech_spelling') or by one extra word heard right at an edge of the excerpt whose
-    audio touches that edge (``edges``: the neighbouring clip's sound can bleed in there,
-    'speech_boundary'); else 'speech_words'. A word the shotlist lacks anywhere else blocks."""
+    """Compare spoken words, never infer equivalent meaning from spelling similarity.
+
+    An extra word at a clip edge may be bleed OR omitted dialogue. Keep it blocking
+    until source evidence settles its ownership. ``edges`` is retained for old receipts.
+    """
     if expected == heard:
         return None
     strip = lambda words: [w for w in words if w not in INTERJECTIONS]
-    expected, heard = strip(expected), strip(heard)
-    if expected == heard:
+    if strip(expected) == strip(heard):
         return 'speech_interjection'
-    from difflib import SequenceMatcher
-    kinds = set()
-    for tag, i1, i2, j1, j2 in SequenceMatcher(None, expected, heard, autojunk=False).get_opcodes():
-        if tag == 'equal':
-            continue
-        if tag == 'replace' and i2 - i1 == j2 - j1 and all(_spelling(a, b) for a, b in zip(expected[i1:i2], heard[j1:j2])):
-            kinds.add('speech_spelling')
-        elif tag == 'insert' and j2 - j1 == 1 and (j1 == 0 and edges[0] or j2 == len(heard) and edges[1]):
-            kinds.add('speech_boundary')
-        else:
-            return 'speech_words'
-    return 'speech_boundary' if 'speech_boundary' in kinds else 'speech_spelling'
+    return 'speech_words'
 
 
 def severity(finding: dict) -> str:
@@ -91,7 +66,7 @@ def severity(finding: dict) -> str:
     if origin in BLOCKING_ORIGINS:
         return 'blocking'
     # A criterion status, or a report written before findings carried an origin.
-    return 'warning' if criterion in MOTION_CARRIED else 'blocking'
+    return 'blocking'
 
 
 def finding_key(receipt_digest: str, finding: dict) -> str:

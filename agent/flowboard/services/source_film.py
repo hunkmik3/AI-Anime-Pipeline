@@ -34,6 +34,8 @@ class FilmOptions(BaseModel):
     # Source shots one reskin clip may hold (never past clip_seconds / 15 s). Fewer, longer
     # clips mean fewer Seedance, writer and review calls; 4 is the tested default.
     clip_max_shots: int = Field(default=4, ge=1, le=16)
+    # Positive: balance scene/dialogue groups; zero preserves saved legacy planning.
+    clip_min_seconds: float = Field(default=0, ge=0, le=30)
     # Story segments catalogued this many at a time (1 = one pass in film order).
     catalog_parallel: int = Field(default=1, ge=1, le=8)
     # 'fast' renders the white-model video with coarser depth at 24 fps (long films).
@@ -378,13 +380,11 @@ async def finish_board(row, opt, board):
     if opt.pipeline == 'reskin_v1':
         from flowboard.services import reskin, reskin_source_review, production_manifest, production_progress
         state(video_id,board_ready=True,stage='reskin_review')
-        # The sheets are not part of the reviewed source contract: production starts now and
-        # draws them while the source is reviewed; each clip waits for its own receipt.
+        # Correct source words/speakers before paid material creation. A corrected
+        # source revision must be the input version of the newly started run.
         payload = reskin_source_review.mark_started(row.automation_project_id)
         # Not yet the committed handoff (run_id): a failed review is resumed by running this
         # source again, which finds the same run by its request key.
-        run = start_run()
-        state(video_id, sheets_run_id=run['id'])
         try:
             review = await reskin_source_review.review_project(row.automation_project_id, payload,
                 on_progress=routes._progress_writer(video_id))
@@ -405,8 +405,7 @@ async def finish_board(row, opt, board):
                     raise incomplete
                 raise ValueError(reskin_source_review.summary(review))
             state(video_id, source_holds=sorted(held))
-        # The run may have settled while every clip waited for the review.
-        production_run.resume_settled(run['id'])
+        run = start_run()
         state(video_id, run_id=run['id'], stage='production', error=None)
     else:
         state(video_id, board_ready=True, stage='production')
@@ -572,6 +571,10 @@ async def execute(video_id):
         if not existing:
             raise ValueError("Output project was deleted")
         if empty_output_board(existing):
+            sequence_boundaries = None
+            if opt.pipeline == 'reskin_v1':
+                from flowboard.services.video_analyzer.sequence_clips import boundary_context
+                sequence_boundaries = await boundary_context(production_analysis, routes._work_dir(video_id))
             out = await board_mod.build_board(
                 production_analysis,
                 row.adaptation,
@@ -582,6 +585,8 @@ async def execute(video_id):
                 preserve_source_shots=True,
                 source_id=str(video_id),
                 max_clip_shots=opt.clip_max_shots,
+                min_clip_s=opt.clip_min_seconds if opt.pipeline == 'reskin_v1' else 0,
+                sequence_boundaries=sequence_boundaries,
             )
             board = graph(out, opt.model_dump())
             # The language the source is spoken in, for checking generated speech (one

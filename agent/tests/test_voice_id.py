@@ -93,21 +93,21 @@ def catalog(assignments, visible=('lily', 'damian')):
     return shots, rows
 
 
-def test_a_high_confidence_line_given_to_the_wrong_person_follows_its_voice():
+def test_a_cluster_majority_never_changes_a_conflicting_speaker():
     shots, rows = catalog([('L1', 'V1', 'high', 'lily'), ('L2', 'V1', 'high', 'lily'), ('L3', 'V1', 'high', 'lily'),
                            ('L4', 'V1', 'high', 'damian'), ('L5', 'V1', 'low', 'damian')])
     receipts = voice_id.reconcile(rows, shots)
-    assert [(r['line_id'], r['from']['asset_id'], r['to']['asset_id']) for r in receipts] == [('L4', 'damian', 'lily')]
-    assert rows['4']['speakers'][0] == {'asset_id': 'lily', 'label': 'Lily', 'delivery': 'on_camera'}
+    assert receipts == []
+    assert rows['4']['speakers'][0] == {'asset_id': 'damian', 'label': 'Damian', 'delivery': 'on_camera'}
     assert rows['5']['speakers'][0]['asset_id'] == 'damian'        # a hint is never enforced
-    assert voice_id.disputes(rows, shots) == []
+    assert voice_id.disputes(rows, shots) == [{'voice': 'V1', 'speakers': {'lily': 3, 'damian': 1}}]
 
 
-def test_the_new_speaker_is_offscreen_when_not_in_the_shot():
+def test_cluster_majority_does_not_invent_offscreen_delivery():
     shots, rows = catalog([('L1', 'V1', 'high', 'lily'), ('L2', 'V1', 'high', 'lily'), ('L3', 'V1', 'high', 'lily'),
                            ('L4', 'V1', 'high', 'damian')], visible=('damian',))
     voice_id.reconcile(rows, shots)
-    assert rows['4']['speakers'][0]['delivery'] == 'offscreen'
+    assert rows['4']['speakers'][0]['delivery'] == 'on_camera'
 
 
 def test_voice_majority_cannot_overwrite_local_visible_mouth_evidence():
@@ -143,7 +143,8 @@ def test_foreign_frame_does_not_establish_local_mouth_evidence():
                            ('L3', 'V1', 'high', 'lily'), ('L4', 'V1', 'high', 'damian')])
     rows['4']['evidence_ids'] = ['shot-4-frame-1']
     rows['4']['speakers'][0].update(mouth_visible=True, evidence_ids=['shot-99-frame-1'])
-    assert len(voice_id.reconcile(rows, shots)) == 1
+    assert voice_id.reconcile(rows, shots) == []
+    assert rows['4']['speakers'][0]['asset_id'] == 'damian'
 
 
 def test_a_voice_split_between_people_is_left_alone_and_reported():
@@ -153,23 +154,28 @@ def test_a_voice_split_between_people_is_left_alone_and_reported():
     assert voice_id.disputes(rows, shots) == [{'voice': 'V1', 'speakers': {'lily': 2, 'damian': 2}}]
 
 
-def test_a_line_cut_at_a_shot_edge_moves_as_a_whole():
+def test_a_line_cut_at_a_shot_edge_preserves_both_local_bindings():
     shots, rows = catalog([('L1', 'V1', 'high', 'lily'), ('L2', 'V1', 'high', 'lily'), ('L3', 'V1', 'high', 'lily'),
                            ('L4', 'V1', 'high', 'damian')])
     shots.append({'shot': 5, 'dialogue_lines': ['y'], 'dialogue_pieces': [
         {'line_id': 'L4', 'text': 'y', 'cont': True, 'voice': 'V1', 'voice_confidence': 'high'}]})
     rows['5'] = {'speakers': [{'asset_id': 'damian', 'label': 'Damian', 'delivery': 'offscreen'}], 'asset_presence': []}
     receipts = voice_id.reconcile(rows, shots)
-    assert {(r['shot'], r['to']['asset_id']) for r in receipts} == {(4, 'lily'), (5, 'lily')}
+    assert receipts == []
+    assert rows['4']['speakers'][0]['asset_id'] == rows['5']['speakers'][0]['asset_id'] == 'damian'
     assert rows['5']['speakers'][0]['delivery'] == 'offscreen'
 
 
-def test_bindings_name_each_voices_majority_character():
+def test_mixed_cluster_does_not_become_a_named_identity_hint():
     track = [{'id': f'L{i}', 'voice': 'V1', 'voice_confidence': 'high'} for i in range(1, 5)]
     track.append({'id': 'L9', 'voice': 'V2', 'voice_confidence': 'low'})
     speakers = {'L1': {'asset_id': 'lily', 'label': 'Lily'}, 'L2': {'asset_id': 'lily', 'label': 'Lily'},
                 'L3': {'asset_id': 'damian', 'label': 'Damian'}, 'L9': {'asset_id': 'maria', 'label': 'Maria'}}
-    assert voice_id.bindings(speakers, track) == {'V1': {'asset_id': 'lily', 'label': 'Lily', 'lines': 2, 'of': 3}}
+    assert voice_id.bindings(speakers, track) == {}
+    speakers['L3']={'asset_id':'lily','label':'Lily'}
+    assert voice_id.bindings(speakers,track)['V1']['asset_id']=='lily'
+    speakers.pop('L3')
+    assert voice_id.bindings(speakers,track)=={}
 
 
 # ── the pipeline step ────────────────────────────────────────────────────────

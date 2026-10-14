@@ -178,8 +178,7 @@ async def test_source_resume_starts_at_saved_review_without_rebuilding_profiles(
     monkeypatch.setattr(one_pass_film,'prepare',forbidden)
     monkeypatch.setattr(builder,'build_board',forbidden)
     monkeypatch.setattr(video_analysis,'_run_design',forbidden)
-    # Production starts before the review so the sheets draw meanwhile; every clip waits
-    # for its own receipt, and an incomplete review still stops the source job.
+    # An incomplete source review must not start paid material preparation.
     started=[]
     def start(pid_,revision,config,key):
         with get_session() as s:
@@ -189,7 +188,7 @@ async def test_source_resume_starts_at_saved_review_without_rebuilding_profiles(
     monkeypatch.setattr(production_run,'start',start)
     monkeypatch.setattr(video_analysis,'_work_dir',lambda _:tmp_path)
     with pytest.raises(review.ReviewIncomplete):await source_film.execute(vid)
-    assert started==['source-film:'+str(vid)]
+    assert started==[]
     with get_session() as s:
         v=s.get(VideoAnalysis,vid);p=s.get(AutomationProject,pid)
         assert v.cast=={'preserved':'all paid designs'}

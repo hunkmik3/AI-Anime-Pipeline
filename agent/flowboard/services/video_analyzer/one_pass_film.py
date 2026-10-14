@@ -1550,7 +1550,7 @@ async def _prepare(analysis, work: Path, title, rules, on_progress=None, *, prod
     if os.getenv('FLOWBOARD_SCENE_STAGING', '1') != '0':
         from . import scene_staging
         known['staging'] = await scene_staging.extract(shots, known, evidence, work, on_progress=on_progress)
-    # One person per voice: high-confidence lines of a voice follow its majority character.
+    # Voice clusters are hints; never rewrite a speaker by majority vote.
     voices = analysis.setdefault('voices', {})
     voices['reconciled'] = voice_id.reconcile(known['shots'], shots)
     voices['disputes'] = voice_id.disputes(known['shots'], shots)

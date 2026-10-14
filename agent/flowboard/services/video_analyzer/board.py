@@ -105,6 +105,89 @@ def plan_clips(
     return merged
 
 
+def plan_scene_dialogue_clips(shots, sequences, dialogue_track, max_clip_s, *,
+                              min_clip_s=12, character_states=None, scene_ids=None,
+                              state_specific_references=False, max_shots=None, hard_limit_s=HARD_MAX_S):
+    """Balance complete source shots into scene-sized clips without cutting speech.
+
+    Look ahead across the whole scene so a greedy 20s clip cannot strand a 1s tail.
+    Duration and dialogue boundaries are hard constraints. Shot count and the requested
+    minimum are preferences: an actual short scene stays short rather than being padded
+    with invented action. This opt-in planner leaves legacy projects unchanged.
+    """
+    if not shots:
+        return []
+    limit = min(float(max_clip_s), float(hard_limit_s))
+    floor = min(float(min_clip_s), limit)
+    if limit <= 0 or floor < 0:
+        raise ValueError('Clip duration must be positive.')
+    for i, shot in enumerate(shots):
+        if shot['end'] <= shot['start'] or (i and abs(shot['start']-shots[i-1]['end']) > .05):
+            raise ValueError('Source shots must be positive, contiguous and in time order.')
+    # Only established scene IDs separate locations. Narrative beat summaries are not
+    # proof of a location change, and a reverse angle is not a new scene.
+    scene_ids = scene_ids or {}
+    breaks = {i for i in range(1,len(shots)) if scene_ids.get(shots[i-1]['shot']) and
+              scene_ids.get(shots[i]['shot']) and scene_ids[shots[i-1]['shot']] != scene_ids[shots[i]['shot']]}
+    # Alternating locations in one narrative beat (telephone/reaction/insert)
+    # are one editing context. A return to a previously seen set is not a new
+    # independent scene that deserves a new request at every reverse cut.
+    for q in sequences:
+        indexes=[i for i,s in enumerate(shots) if q['first_shot']<=s['shot']<=q['last_shot']]
+        if not indexes:
+            continue
+        lo,hi=indexes[0],indexes[-1]+1
+        for boundary in list(breaks):
+            if lo < boundary < hi:
+                left={scene_ids.get(s['shot']) for s in shots[lo:boundary]}-{None,''}
+                right={scene_ids.get(s['shot']) for s in shots[boundary:hi]}-{None,''}
+                if left & right:
+                    breaks.remove(boundary)
+    safe = [not any(d['start'] < s['end']-.001 and d['end'] > s['end']+.001
+                    for d in dialogue_track) for s in shots]
+    count = len(shots)
+    best = [float('inf')] * (count+1)
+    choice = [None] * count
+    best[count] = 0.
+    target = max(floor, limit * .85)
+    for i in range(count-1,-1,-1):
+        states = {}
+        wardrobe_changes = 0
+        for j in range(i,count):
+            incoming = (character_states or {}).get(shots[j]['shot'], {})
+            if any(a in states and states[a] != state for a,state in incoming.items()):
+                if not state_specific_references:
+                    break
+                # A source flashback can change wardrobe under continuous voice-over.
+                # Keep per-shot states and their separate refs; prefer a safe split.
+                wardrobe_changes += 1
+            states.update(incoming)
+            duration = shots[j]['end']-shots[i]['start']
+            if duration > limit+.001:
+                break
+            if not safe[j] or best[j+1] == float('inf'):
+                continue
+            # A short isolated scene is valid. It still pays a short-clip penalty so
+            # the planner balances two neighbors within a scene whenever possible.
+            short = max(0.,floor-duration)
+            crossed = sum(i < boundary <= j for boundary in breaks)
+            excess = max(0,j-i+1-(max_shots or count))
+            cost = 30 + 10*((duration-target)/target)**2 + 8*short**2 + 400*crossed + 60*wardrobe_changes + 4*excess**2
+            value = cost + best[j+1]
+            if value < best[i]:
+                best[i],choice[i] = value,j
+    if choice[0] is None:
+        raise ValueError(f'No dialogue-safe source-cut plan within {limit:g}s; inspect the spanning sentence or wardrobe change.')
+    result=[]
+    i=0
+    while i<count:
+        last=choice[i]
+        qi=next((k for k,q in enumerate(sequences) if q['first_shot'] <= shots[i]['shot'] <= q['last_shot']),0)
+        result.append({'sequence':qi,'shots':[s['shot'] for s in shots[i:last+1]]})
+        i=last+1
+    return result
+
+
 def plan_dialogue_clips(shots, sequences, dialogue_track, max_clip_s, *, character_states=None,
                         state_specific_references=False, max_shots=None, hard_limit_s=HARD_MAX_S):
     """Never cut a spoken sentence between independent generation requests.
@@ -661,7 +744,8 @@ def _normalise(characters: list[dict], environments: list[dict]) -> None:
 
 async def build_board(analysis: dict, adaptation: dict, cast: Optional[dict] = None,
                       *, max_clip_s: float = MAX_CLIP_S, preserve_source_shots: bool = True, source_id: str = "",
-                      hard_limit_s: float = HARD_MAX_S, max_clip_shots: int = 4) -> dict:
+                      hard_limit_s: float = HARD_MAX_S, max_clip_shots: int = 4, min_clip_s: float = 0,
+                      sequence_boundaries: Optional[dict] = None) -> dict:
     """The /api/automation/breakdown response shape, plus each clip's shots already cut.
 
     ``cast`` is the stored bible when there is one — reusing it keeps the board's
@@ -698,13 +782,21 @@ async def build_board(analysis: dict, adaptation: dict, cast: Optional[dict] = N
         for run in runs:normalized.append({**q,'first_shot':run[0],'last_shot':run[-1]})
         covered.update(ns)
     for n in sorted(set(by_n)-covered):
-        normalized.append({'first_shot':n,'last_shot':n,'title':'Source shot '+str(n)})
+        normalized.append({'first_shot':n,'last_shot':n,'title':'Source shot '+str(n), '_coverage_fallback':True})
     sequences_src = sorted(normalized,key=lambda q:q['first_shot'])
     one_pass_film = (analysis.get('source_verification') or {}).get('method') == 'one_pass_production'
-    if one_pass_film:
-        clips = plan_dialogue_clips(analysis['shots'], sequences_src, analysis.get('dialogue_track') or [], max_clip_s,
-                                   character_states={n: row.get('character_states') or {} for n, row in per_shot.items()},
-                                   state_specific_references=True, max_shots=max_clip_shots, hard_limit_s=hard_limit_s)
+    if sequence_boundaries is not None:
+        from flowboard.services.video_analyzer.sequence_clips import plan
+        clips = plan(analysis['shots'], sequences_src, analysis.get('dialogue_track') or [], max_clip_s,
+                     semantic=sequence_boundaries, min_clip_s=min_clip_s, hard_limit_s=hard_limit_s,
+                     character_states={n: row.get('character_states') or {} for n,row in per_shot.items()},
+                     state_specific_references=True, max_shots=max_clip_shots)
+    elif one_pass_film:
+        planner = plan_scene_dialogue_clips if min_clip_s > 0 else plan_dialogue_clips
+        context = {'state_specific_references': True, 'min_clip_s': min_clip_s, 'scene_ids': {n: row.get('scene_id') for n,row in per_shot.items()}} if min_clip_s > 0 else {'state_specific_references': True}
+        clips = planner(analysis['shots'], sequences_src, analysis.get('dialogue_track') or [], max_clip_s,
+                        character_states={n: row.get('character_states') or {} for n, row in per_shot.items()},
+                        max_shots=max_clip_shots, hard_limit_s=hard_limit_s, **context)
     else:
         clips = plan_clips(analysis["shots"], sequences_src, max_clip_s=max_clip_s,hard_limit_s=hard_limit_s)
 
@@ -761,8 +853,14 @@ async def build_board(analysis: dict, adaptation: dict, cast: Optional[dict] = N
                 "title": rename(q.get("title")) or (titles[0] if titles else key),
                 "duration_s": round(last["end"] - first["start"], 2),
                 "summary": " ".join(
-                    x for x in [rename(q.get("goal")), "Beats: " + "; ".join(titles) if titles else ""] if x
+                    x for x in [rename(q.get("goal")), "Beats: " + "; ".join(titles) if titles else "",
+                                ("Shared sequence context (unspoken context only; render ONLY this clip's source shots): " +
+                                 " | ".join(rename(c.get('goal')) or '' for c in clip.get('sequence_context', [])))
+                                if clip.get('sequence_context') else ""] if x
                 ),
+                **({"sequence_context": clip['sequence_context'],
+                    "boundary_plan": {k: clip[k] for k in ('planner_version', 'cut_reason', 'boundary_kind', 'semantic_degraded')}}
+                   if clip.get('sequence_context') else {}),
                 "beat": rename(q.get("conflict") or q.get("goal")),
                 "environment_key": envs.most_common(1)[0][0] if envs else "",
                 "character_keys": cast_in,

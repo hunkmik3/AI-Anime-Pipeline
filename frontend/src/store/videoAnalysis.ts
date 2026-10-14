@@ -122,6 +122,7 @@ export interface AutoFilmOptions {
   catalog_parallel?: number;
   /** Source shots one reskin clip may hold (default 4). */
   clip_max_shots?: number;
+  clip_min_seconds?: number;
   kyc: boolean;
   unmoderated: boolean;
 }

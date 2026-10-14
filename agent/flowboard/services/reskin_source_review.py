@@ -105,7 +105,25 @@ def _same_speaker(line, piece):
     heard = None if heard in (None, '', 'unknown') else heard
     if line.get('speaker_id'):
         return heard == line['speaker_id']
-    return heard is None or heard == line.get('who')
+    # Unknown is not an identity: two different offscreen voices can both be unknown.
+    who = str(line.get('who') or '').strip().casefold()
+    label = str(piece.get('speaker') or '').strip().casefold()
+    return bool(who and who not in {'unknown', 'unidentified'} and
+                (heard == line.get('who') or heard is None and label == who))
+
+
+
+def aligned_words(expected, heard):
+    """Align tokens before checking identities; one omitted word must not shift every speaker.
+
+    Equal words and one-for-one substitutions retain correspondence. Insertions and
+    deletions remain word findings, while the other words still get a speaker check.
+    """
+    from difflib import SequenceMatcher
+    for tag, a, b, c, d in SequenceMatcher(None, [v[0] for v in expected],
+                                        [v[0] for v in heard], autojunk=False).get_opcodes():
+        if tag == 'equal' or tag == 'replace' and b-a == d-c:
+            yield from zip(expected[a:b], heard[c:d])
 
 
 def validate(answer, shots, offset):
@@ -164,7 +182,7 @@ def validate(answer, shots, offset):
                 findings.append({'shot':s['id'],'criterion':'speech_delivery','origin':words,
                     'message':'Original audio words differ in this shot.',
                     'expected':' '.join(w for w,_,_ in expected),'heard':' '.join(w for w,_,_ in actual)})
-            elif any(not _same_speaker(e[1],a[1]) or e[2]!=a[2] for e,a in zip(expected,actual)):
+            if any(not _same_speaker(e[1],a[1]) or e[2]!=a[2] for e,a in aligned_words(expected,actual)):
                 findings.append({'shot':s['id'],'criterion':'speech_delivery','origin':'speech_speaker',
                     'message':'Original audio speaker or delivery differs in this shot.'})
             for d in (d for d in heard if d['shot_id']==s['id']):
@@ -180,37 +198,36 @@ def validate(answer, shots, offset):
     if words:
         findings.append({'criterion':'speech_delivery','origin':words,'message':'Original audio differs from shotlist dialogue.',
                          'expected':' '.join(expected),'heard':' '.join(actual)})
-    else:
-        expected_words=[(d, d.get('delivery') or 'on_camera',
-                         s['source_start']-offset,s['source_end']-offset)
-                        for s in shots for d in s.get('dialogue',[]) for _ in policy.spoken(d.get('line',''))]
-        heard_words=[d for d in heard for _ in policy.spoken(d['text'])]
-        bounds=[(s['source_start']-offset,s['source_end']-offset) for s in shots]
-        for (line,delivery,start,end),d in zip(expected_words,heard_words):
-            speaker=line.get('speaker_id') or line.get('who') or 'unknown'
-            if not _same_speaker(line,d):
-                findings.append({'criterion':'speech_delivery','origin':'speech_speaker','message':'Speaker differs / remains unclear.',
-                                 'expected':str(speaker)+' · '+delivery,
-                                 'heard':str(d.get('speaker_id','unknown'))+' · '+str(d.get('delivery','unclear'))})
-                break
-            if d.get('delivery') != delivery:
-                # One heard piece carries one delivery; a sentence can go from offscreen to
-                # on camera at a cut, so a piece that spans a cut cannot settle it per word.
-                spans_cut=sum(1 for a,b in bounds if d['start'] < b-.15 and d['end'] > a+.15) > 1
-                # The listener's times are about a second apart: when this word's shot begins or
-                # ends within that of the heard piece, the piece cannot tell which side of the cut
-                # it is on, and the shotlist's word timing decides.
-                at_cut=any(abs(edge-x)<=CUT_TOLERANCE for edge in (start,end) for x in (d['start'],d['end'])
-                           if any(abs(edge-b)<.01 for a,b in bounds[:-1]) or any(abs(edge-a)<.01 for a,b in bounds[1:]))
-                findings.append({'criterion':'speech_delivery','origin':'speech_delivery_cut' if spans_cut or at_cut else 'speech_speaker',
-                                 'message':'Delivery differs'+(' in a piece that spans a cut.' if spans_cut else
-                                                               ' in a piece heard at a cut.' if at_cut else ' / remains unclear.'),
-                                 'expected':str(speaker)+' · '+delivery,
-                                 'heard':str(d.get('speaker_id','unknown'))+' · '+str(d.get('delivery','unclear'))})
-                break
-            if d['end'] < start-.15 or d['start'] > end+.15:
-                findings.append({'criterion':'speech_delivery','origin':'speech_position','message':'Dialogue occurs outside its assigned shot.'})
-                break
+    expected_words=[(token, d, d.get('delivery') or 'on_camera',
+                     s['source_start']-offset,s['source_end']-offset)
+                    for s in shots for d in s.get('dialogue',[]) for token in policy.spoken(d.get('line',''))]
+    heard_words=[(token,d) for d in heard for token in policy.spoken(d['text'])]
+    bounds=[(s['source_start']-offset,s['source_end']-offset) for s in shots]
+    for (_,line,delivery,start,end),(_,d) in aligned_words(expected_words,heard_words):
+        speaker=line.get('speaker_id') or line.get('who') or 'unknown'
+        if not _same_speaker(line,d):
+            findings.append({'criterion':'speech_delivery','origin':'speech_speaker','message':'Speaker differs / remains unclear.',
+                             'expected':str(speaker)+' · '+delivery,
+                             'heard':str(d.get('speaker_id','unknown'))+' · '+str(d.get('delivery','unclear'))})
+            break
+        if d.get('delivery') != delivery:
+            # One heard piece carries one delivery; a sentence can go from offscreen to
+            # on camera at a cut, so a piece that spans a cut cannot settle it per word.
+            spans_cut=sum(1 for a,b in bounds if d['start'] < b-.15 and d['end'] > a+.15) > 1
+            # The listener's times are about a second apart: when this word's shot begins or
+            # ends within that of the heard piece, the piece cannot tell which side of the cut
+            # it is on, and the shotlist's word timing decides.
+            at_cut=any(abs(edge-x)<=CUT_TOLERANCE for edge in (start,end) for x in (d['start'],d['end'])
+                       if any(abs(edge-b)<.01 for a,b in bounds[:-1]) or any(abs(edge-a)<.01 for a,b in bounds[1:]))
+            findings.append({'criterion':'speech_delivery','origin':'speech_delivery_cut' if spans_cut or at_cut else 'speech_speaker',
+                             'message':'Delivery differs'+(' in a piece that spans a cut.' if spans_cut else
+                                                           ' in a piece heard at a cut.' if at_cut else ' / remains unclear.'),
+                             'expected':str(speaker)+' · '+delivery,
+                             'heard':str(d.get('speaker_id','unknown'))+' · '+str(d.get('delivery','unclear'))})
+            break
+        if d['end'] < start-.15 or d['start'] > end+.15:
+            findings.append({'criterion':'speech_delivery','origin':'speech_position','message':'Dialogue occurs outside its assigned shot.'})
+            break
     return findings
 
 
@@ -219,7 +236,26 @@ async def inspect(board, work: Path, on_progress=None, *, parallel=None):
     board['sourceMediaSha256'] = await asyncio.to_thread(reskin.source_fingerprint, source)
     digest = pm.digest(reskin.source_contract(board))
     old = board.get('reskinSourceReview') or {}
-    if old.get('input_digest') == digest and old.get('status') == 'reviewed': return old
+    if old.get('input_digest') == digest and old.get('status') == 'reviewed':
+        # Revalidate paid evidence locally under current word/speaker rules. A cached
+        # 'reviewed' label from an older permissive policy is not a fresh approval.
+        cached = {r['clip']: r for r in old.get('receipts', [])}
+        found = []
+        try:
+            for node in board['nodes']:
+                seq = node.get('data', {})
+                if seq.get('kind') != 'sequence': continue
+                key = seq['sequence']['key']; receipt = cached[key]
+                rows = [{**deepcopy(shot), 'id': f'{key}:{i+1}'} for i,shot in enumerate(seq['shots'])]
+                if receipt.get('source_sha256') != board['sourceMediaSha256']: raise ValueError('Changed source')
+                items = validate(receipt['observations'],rows,max(0,rows[0]['source_start']-1))
+                found.extend({'clip':key,**f} for f in policy.annotate(items,receipt['input_digest']))
+        except (ValueError,KeyError,TypeError):
+            pass  # Normal receipt recovery below retains any malformed evidence.
+        else:
+            blocked = [f for f in found if f['severity']=='blocking' and f['key'] not in policy.accepted(board)]
+            return {**old,'status':'needs_review' if blocked else 'reviewed','findings':found,
+                    'counts':{**old.get('counts',{}),**policy.summarize(blocked+[f for f in found if f['severity']!='blocking'])}}
     sequences = [n['data'] for n in board['nodes'] if n.get('data',{}).get('kind') == 'sequence']
     # Original excerpts include neighboring cuts and use a fixed shared catalog.
     # Reviewing independent intervals concurrently does not remove any evidence.
@@ -421,12 +457,27 @@ async def review_project(project_id, payload, on_progress=None):
         report=await inspect(board,_work_dir(uuid.UUID(board['sourceVideoId'])),on_progress)
     except ReviewIncomplete as exc:
         report=exc.report;incomplete=exc
+    # One bounded correction of concrete audio defects, using original AV evidence.
+    # Pending/declined/unknown requests are preserved; they are not retried here.
+    from flowboard.services import reskin_source_repair
+    reviewed = {**board, 'reskinSourceReview': report}
+    corrected = await reskin_source_repair.repair(reviewed, _work_dir(uuid.UUID(board['sourceVideoId'])), on_progress)
+    report = corrected['reskinSourceReview']
     with get_session() as session:
         project=session.exec(select(AutomationProject).where(AutomationProject.id==uuid.UUID(str(project_id))).with_for_update()).one()
         current=automation_jobs.project_board(session,project)
         if pm.digest(reskin.source_contract(current)) != payload['input_digest']:
             raise ValueError('Nguồn đã đổi trong lúc đối chiếu. Kết quả đã giữ ở checkpoint; chưa áp dụng vào board.')
-        project.board={**project.board,'sourceMediaSha256':board['sourceMediaSha256'],'reskinSourceReview':report}
+        # Preserve unrelated layout/design edits that occurred while review ran.
+        updated = deepcopy(project.board)
+        source_nodes = {n['id']: n for n in corrected['nodes'] if n.get('data',{}).get('kind') == 'sequence'}
+        for node in updated.get('nodes', []):
+            if node['id'] in source_nodes:
+                candidate = source_nodes[node['id']]['data']
+                node['data']['shots'] = deepcopy(candidate['shots'])
+                node['data']['sequence'] = deepcopy(candidate['sequence'])
+        project.board={**updated,'sourceVerification':corrected.get('sourceVerification'),
+                       'sourceMediaSha256':board['sourceMediaSha256'],'reskinSourceReview':report}
         project.revision+=1;session.add(project);session.commit()
     if incomplete:raise incomplete
     return report

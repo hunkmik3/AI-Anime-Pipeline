@@ -82,7 +82,7 @@ export function VideoSourceInput() {
         ...(reskin ? { motion_profile: fastMotion ? "fast" as const : "standard" as const } : {}),
         ...(generateSeconds ? { generate_seconds: generateSeconds } : {}),
         ...(parallelCatalog ? { catalog_parallel: 4 } : {}),
-        ...(reskin && (longerClips || reskinSeconds > 15) ? { clip_max_shots: reskinSeconds > 15 ? 12 : 8 } : {}) } : undefined,
+        ...(reskin ? { clip_max_shots: longerClips || reskinSeconds > 15 ? 12 : 8, clip_min_seconds: Math.min(12, reskinSeconds) } : {}) } : undefined,
       mode, speechLanguage).catch(() => undefined);
   }
 

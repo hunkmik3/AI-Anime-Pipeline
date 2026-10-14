@@ -1,9 +1,8 @@
-"""Reskin source findings hold only their own clip, and only when the clay cannot carry them.
+"""Unresolved source findings hold their affected clips, including motion criteria.
 
-The white-model video carries cuts, camera, positions and set geometry; the words, the
-speakers and who wears what must be settled before a clip is generated. The model's
-free-text notes are shown, never a hold. The owner can accept a finding for exactly
-that receipt; an edited shot asks again."""
+Source motion is conditioning rather than proof of source accuracy. Informational
+notes stay visible. Owner dispositions apply only to the exact reviewed receipt.
+"""
 from copy import deepcopy
 
 import pytest
@@ -48,20 +47,20 @@ def criterion(b, key, name, status='fail'):
     receipt(b, key)['observations']['shots'][0]['criteria'][name]['status'] = status
 
 
-def test_spellings_of_one_spoken_form_agree_and_interjections_only_warn():
+def test_spellings_of_one_spoken_form_agree_and_interjections_remain_findings():
     assert policy.word_difference(policy.spoken("I gotta go, it's late"), policy.spoken('Aye got to go it is late')) is None
     assert policy.word_difference(policy.spoken('I see.'), policy.spoken('Oh, I see.')) == 'speech_interjection'
     assert policy.word_difference(policy.spoken('I see.'), policy.spoken('You see.')) == 'speech_words'
 
 
-def test_model_notes_and_motion_carried_findings_never_hold_a_clip():
+def test_model_summary_does_not_clear_concrete_motion_findings():
     b = two_clips()
     receipt(b, 'c1')['observations']['findings'] = ['The candidate shotlist is an accurate representation of the excerpt.']
     for name in policy.MOTION_CARRIED:
         criterion(b, 'c1', name)
-    assert reskin.split_readiness(b, packages(b)) == ([], {})
+    assert list(reskin.split_readiness(b, packages(b))[1]) == ['c1']
     report = run.preview(b, 'film', config())
-    assert report['ready'] and 'source_holds' not in report
+    assert report['ready'] and list(report['source_holds']) == ['c1']
 
 
 def test_a_speech_or_identity_finding_holds_only_its_own_clip():
@@ -120,7 +119,7 @@ def test_delivery_across_a_cut_warns_but_a_wrong_speaker_holds():
     assert [(f['origin'], policy.severity(f)) for f in found] == [('speech_speaker', 'blocking')]
     answer['heard_dialogue'][0].update(speaker_id='hero', text='Come here now, gotta go.')
     found = review.validate(answer, rows, 0)
-    assert [(f['origin'], policy.severity(f)) for f in found] == [('speech_words', 'blocking')]
+    assert ('speech_words', 'blocking') in [(f['origin'], policy.severity(f)) for f in found]
 
 
 def test_a_delivery_heard_beside_a_cut_warns_but_one_far_from_it_holds():
@@ -137,14 +136,14 @@ def test_a_delivery_heard_beside_a_cut_warns_but_one_far_from_it_holds():
     assert [(f['origin'], policy.severity(f)) for f in found] == [('speech_speaker', 'blocking')]
 
 
-def test_an_unnamed_voice_is_the_listeners_unknown_speaker():
+def test_an_unknown_voice_does_not_establish_unnamed_speaker_identity():
     b, rows = dialogue_board()
     rows[0]['dialogue'] = [{'who': 'Voice from inside the car', 'delivery': 'offscreen', 'line': 'Come here'}]
     rows[1]['dialogue'] = []
     answer = observations(shots_of(b, 'c1'))
     answer['heard_dialogue'] = [{'speaker': 'Unidentified woman', 'speaker_id': 'unknown', 'delivery': 'offscreen',
                                  'text': 'Come here', 'start': 1.0, 'end': 2.0}]
-    assert review.validate(answer, rows, 0) == []
+    assert [f['origin'] for f in review.validate(answer, rows, 0)] == ['speech_speaker']
     answer['heard_dialogue'][0]['speaker_id'] = 'hero'
     assert [f['origin'] for f in review.validate(answer, rows, 0)] == ['speech_speaker']
 
@@ -250,7 +249,7 @@ def test_materials_follow_the_clips_but_never_precede_what_they_depend_on():
     assert order.index('letter') == len(order) - 1                   # only clip 2 needs it
 
 
-def test_sheets_draw_while_the_source_is_reviewed_and_clips_follow_their_receipts(local_ready):
+def test_materials_wait_for_source_evidence_and_clips_follow_their_receipts(local_ready):
     from datetime import datetime, timezone
     from flowboard.db import get_session
     from flowboard.db.models import AutomationProject
@@ -263,7 +262,7 @@ def test_sheets_draw_while_the_source_is_reviewed_and_clips_follow_their_receipt
     out = drive(pid, a['id'], finish_reskin, rounds=8)
     kinds = {(j.kind, j.slot) for j in all_jobs(pid)}
     assert out.status == 'running' and out.result['source_pending'] == ['c1', 'c2'], out.error
-    assert ('plate', 'plate') in kinds or ('plate', 'identity') in kinds            # the letter's sheet
+    assert not {k for k, _ in kinds} & {'plate', 'material_binding'}  # no unreviewed materials
     assert not {k for k, _ in kinds} & {'motion_reference', 'write', 'clip'}
     with get_session() as s:
         p = s.get(AutomationProject, pid)
@@ -274,26 +273,26 @@ def test_sheets_draw_while_the_source_is_reviewed_and_clips_follow_their_receipt
 
 
 @pytest.mark.parametrize('expected, heard, edges, origin', [
-    ("nathan we are done lex norriston's back", "nathan we are done lex norston's back", (False, False), 'speech_spelling'),
-    ('besides lex norrington who else', 'see besides lex norrington who else', (True, False), 'speech_boundary'),
-    ('no i love you sweetheart', 'going no i love you sweetheart', (True, False), 'speech_boundary'),
+    ("nathan we are done lex norriston's back", "nathan we are done lex norston's back", (False, False), 'speech_words'),
+    ('besides lex norrington who else', 'see besides lex norrington who else', (True, False), 'speech_words'),
+    ('no i love you sweetheart', 'going no i love you sweetheart', (True, False), 'speech_words'),
     ('no i love you sweetheart', 'going no i love you sweetheart', (False, False), 'speech_words'),   # not at the edge
     ('always loved him he is rich', 'i have always loved him he is rich', (True, False), 'speech_words'),  # two words
     ('i have always loved you', 'i have always loved him', (True, True), 'speech_words'),       # meaning changed
     ('are you answering where are you', 'vivian why were not you answering where are you', (True, True), 'speech_words'),
     ('you could never give me what he bye', 'you could never give me what he could bye', (True, True), 'speech_words'),
 ])
-def test_long_word_hearings_and_one_edge_word_warn_but_changed_or_missing_words_block(expected, heard, edges, origin):
+def test_long_word_variants_and_edge_words_require_source_evidence(expected, heard, edges, origin):
     assert policy.word_difference(policy.spoken(expected), policy.spoken(heard), edges=edges) == origin
 
 
-def test_a_missing_observation_of_a_motion_carried_criterion_warns_but_speech_still_must_be_there():
+def test_a_missing_source_criterion_blocks_and_speech_still_must_be_there():
     b = two_clips()
     rows = [{**s, 'id': f'c1:{i + 1}'} for i, s in enumerate(shots_of(b, 'c1'))]
     answer = deepcopy(receipt(b, 'c1')['observations'])
     del answer['shots'][0]['criteria']['action_positions']
     found = review.validate(answer, rows, 0)
-    assert [(f['origin'], policy.severity(f)) for f in found] == [('criterion_missing', 'warning')]
+    assert [(f['origin'], policy.severity(f)) for f in found] == [('criterion_missing', 'blocking')]
     del answer['shots'][0]['criteria']['speech_delivery']
     with pytest.raises(ValueError, match='speech_delivery'):
         review.validate(answer, rows, 0)
